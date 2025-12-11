@@ -5,6 +5,8 @@ members = [
 ]
 
 [workspace.dependencies]
+reme-identity = { path = "crates/reme-identity" }
+reme-prekeys = { path = "crates/reme-prekeys" }
 
 anyhow = "^1.0.99"
 thiserror = "^2.0.16"

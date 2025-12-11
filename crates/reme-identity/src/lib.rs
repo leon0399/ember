@@ -1,11 +1,12 @@
 use std::fmt::Debug;
-use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use ed25519_dalek::ed25519::Error;
 use getset::Getters;
 use rand_core::OsRng;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Getters)]
 pub struct PublicID {
-  #[get = "pub(crate)"]
+  #[get = "pub"]
   pub(crate) verifying_key: VerifyingKey,
 }
 
@@ -45,7 +46,7 @@ impl AsRef<VerifyingKey> for PublicID {
 
 #[derive(Getters)]
 pub struct Identity {
-  #[get(public)]
+  #[get = "pub"]
   pub(crate) public_id: PublicID,
   pub(crate) signing_key: SigningKey,
 }
@@ -74,13 +75,6 @@ impl Identity {
     }
   }
 
-  /// Sign arbitrary data with this identity's private key.
-  ///
-  /// Sign prekeys, config, etc.
-  pub fn sign(&self, msg: &[u8]) -> ed25519_dalek::Signature {
-    self.signing_key.sign(msg)
-  }
-
   pub fn from_bytes(bytes: &[u8; 32]) -> Self {
     let signing_key = SigningKey::from_bytes(bytes);
     let verifying_key = signing_key.verifying_key();
@@ -97,6 +91,12 @@ impl Identity {
   /// IMPORTANT: you should encrypt these before writing to disk.
   pub fn to_bytes(&self) -> [u8; 32] {
     self.signing_key.to_bytes()
+  }
+}
+
+impl Signer<Signature> for Identity {
+  fn try_sign(&self, msg: &[u8]) -> Result<Signature, Error> {
+    self.signing_key.try_sign(msg)
   }
 }
 
