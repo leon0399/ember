@@ -1,0 +1,17 @@
+[package]
+name = "reme-identity"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+derivative = { workspace = true }
+derive_more = { workspace = true, features = ["display"] }
+getset = { workspace = true }
+strum = { workspace = true, features = ["derive"] }
+
+rand_chacha = { version = "0.3.1" }
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+blake3 = { workspace = true }
+
+hex = "0.4.3"
