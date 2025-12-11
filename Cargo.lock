@@ -421,6 +421,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "reme-message"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "reme-identity",
+ "uuid",
+]
+
+[[package]]
 name = "reme-prekeys"
 version = "0.1.0"
 dependencies = [

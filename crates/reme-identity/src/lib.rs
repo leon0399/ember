@@ -5,6 +5,7 @@ use getset::Getters;
 use rand_core::OsRng;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Getters)]
+#[repr(transparent)]
 pub struct PublicID {
   #[get = "pub"]
   pub(crate) verifying_key: VerifyingKey,
