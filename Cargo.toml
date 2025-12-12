@@ -11,6 +11,9 @@ reme-prekeys = { path = "crates/reme-prekeys" }
 reme-message = { path = "crates/reme-message" }
 reme-session = { path = "crates/reme-session" }
 reme-encryption = { path = "crates/reme-encryption" }
+reme-transport = { path = "crates/reme-transport" }
+reme-storage = { path = "crates/reme-storage" }
+reme-core = { path = "crates/reme-core" }
 
 anyhow = "^1.0.99"
 thiserror = "^2.0.16"

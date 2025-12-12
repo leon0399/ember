@@ -65,6 +65,18 @@ impl PublicID {
     let hash = blake3::hash(&self.to_bytes());
     hex::encode(hash.as_bytes())
   }
+
+  /// Calculate routing key for mailbox addressing
+  ///
+  /// Returns a 16-byte key derived from the public ID hash.
+  /// This is used to address messages in the mailbox system
+  /// without revealing the full public key.
+  pub fn routing_key(&self) -> [u8; 16] {
+    let hash = blake3::hash(&self.to_bytes());
+    let mut routing_key = [0u8; 16];
+    routing_key.copy_from_slice(&hash.as_bytes()[0..16]);
+    routing_key
+  }
 }
 
 impl AsRef<X25519PublicKey> for PublicID {
