@@ -130,14 +130,14 @@ impl Identity {
     xed_private.sign(message, OsRng)
   }
 
-  /// Generate a new identity from a random 32-byte seed
+  /// Generate a new identity from random bytes
   pub fn generate() -> Self {
-    let mut seed = [0u8; 32];
-    rand_core::RngCore::fill_bytes(&mut OsRng, &mut seed);
-    Self::from_seed(&seed)
+    let mut bytes = [0u8; 32];
+    rand_core::RngCore::fill_bytes(&mut OsRng, &mut bytes);
+    Self::from_bytes(&bytes)
   }
 
-  /// Derive identity from a 32-byte seed
+  /// Create Identity from 32-byte secret key
   ///
   /// Derives a single X25519 key that will be used for both:
   /// - X25519 DH operations (direct usage)
@@ -145,10 +145,10 @@ impl Identity {
   ///
   /// The XEdDSA signing implementation automatically enforces sign bit = 0
   /// convention, ensuring unique Ed25519 representation.
-  pub fn from_seed(seed: &[u8; 32]) -> Self {
-    // Use seed directly as X25519 private key
+  pub fn from_bytes(bytes: &[u8; 32]) -> Self {
+    // Use bytes directly as X25519 private key
     // XEdDSA signing/verification will handle sign bit normalization
-    let x25519_secret = X25519Secret::from(*seed);
+    let x25519_secret = X25519Secret::from(*bytes);
     let x25519_public = X25519PublicKey::from(&x25519_secret);
 
     // PublicID stores only the 32-byte X25519 public key
@@ -160,22 +160,10 @@ impl Identity {
     }
   }
 
-  /// Return the 32-byte secret key for backup
+  /// Return the 32-byte secret key for backup/serialization
   ///
   /// IMPORTANT: This is the secret that backs up the entire identity.
   /// Encrypt this before writing to disk.
-  pub fn to_seed(&self) -> [u8; 32] {
-    self.x25519_secret.to_bytes()
-  }
-
-  /// Create Identity from 32-byte seed
-  pub fn from_bytes(bytes: &[u8; 32]) -> Self {
-    Self::from_seed(bytes)
-  }
-
-  /// Return the 32-byte secret key for serialization
-  ///
-  /// IMPORTANT: Encrypt this before writing to disk.
   pub fn to_bytes(&self) -> [u8; 32] {
     self.x25519_secret.to_bytes()
   }
@@ -197,24 +185,24 @@ mod tests {
 
   #[test]
   fn deterministic_derivation() {
-    let seed = [42u8; 32];
+    let bytes = [42u8; 32];
 
-    let id1 = Identity::from_seed(&seed);
-    let id2 = Identity::from_seed(&seed);
+    let id1 = Identity::from_bytes(&bytes);
+    let id2 = Identity::from_bytes(&bytes);
 
-    // Same seed should produce identical identities
+    // Same bytes should produce identical identities
     assert_eq!(id1.public_id(), id2.public_id());
-    assert_eq!(id1.to_seed(), id2.to_seed());
+    assert_eq!(id1.to_bytes(), id2.to_bytes());
     assert_eq!(id1.x25519_secret.to_bytes(), id2.x25519_secret.to_bytes());
   }
 
   #[test]
-  fn seed_roundtrip() {
+  fn bytes_roundtrip() {
     let id1 = Identity::generate();
-    let seed = id1.to_seed();
+    let bytes = id1.to_bytes();
 
-    // Recreate from seed
-    let id2 = Identity::from_seed(&seed);
+    // Recreate from bytes
+    let id2 = Identity::from_bytes(&bytes);
 
     // Should have identical keys
     assert_eq!(id1.public_id(), id2.public_id());
