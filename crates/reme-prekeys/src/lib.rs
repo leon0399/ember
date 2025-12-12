@@ -52,7 +52,7 @@ impl LocalPrekeySecrets {
 
 #[derive(Clone, Encode, Decode)]
 pub struct PrekeyBundle {
-    id_pub: [u8; 32],
+    id_pub: [u8; 64],
 
     signed_prekey_id: SignedPrekeyID,
 
@@ -138,7 +138,7 @@ impl PrekeyBundle {
 pub struct SignedPrekeyBundle(PrekeyBundle, Vec<u8>);
 
 impl SignedPrekeyBundle {
-    pub fn id_pub(&self) -> &[u8; 32] {
+    pub fn id_pub(&self) -> &[u8; 64] {
         &self.0.id_pub
     }
 

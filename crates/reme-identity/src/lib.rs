@@ -11,76 +11,59 @@ use bincode::enc::Encoder;
 use bincode::de::Decoder;
 use bincode::error::{EncodeError, DecodeError};
 
-/// PublicID is a 32-byte address for a user identity.
+/// PublicID is a 64-byte address for a user identity.
 ///
-/// **Serialization**: Only the X25519 public key is serialized (32 bytes)
-/// **In-memory**: Stores both X25519 (encryption) and Ed25519 (signing) keys
+/// **Structure**: 32 bytes Ed25519 public key + 32 bytes X25519 public key
+/// **Serialization**: Both keys are serialized (64 bytes total)
 ///
-/// This design achieves 32-byte wire format while supporting both encryption
-/// and signature verification. The Ed25519 key can be reconstructed from the
-/// master seed when deserializing.
-///
-/// **Equality**: Only compares X25519 keys (since Ed25519 may be placeholder after deserialization)
-#[derive(Clone, Copy, Debug)]
+/// This design provides full functionality:
+/// - Ed25519 for signature verification
+/// - X25519 for encryption and key exchange
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PublicID {
-  pub(crate) x25519_public: X25519PublicKey,
   pub(crate) verifying_key: VerifyingKey,
-}
-
-impl PartialEq for PublicID {
-  fn eq(&self, other: &Self) -> bool {
-    self.x25519_public == other.x25519_public
-  }
-}
-
-impl Eq for PublicID {}
-
-impl std::hash::Hash for PublicID {
-  fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-    self.x25519_public.as_bytes().hash(state);
-  }
+  pub(crate) x25519_public: X25519PublicKey,
 }
 
 impl PublicID {
   /// Create a new PublicID from both keys
-  pub fn new(x25519_public: X25519PublicKey, verifying_key: VerifyingKey) -> Self {
+  pub fn new(verifying_key: VerifyingKey, x25519_public: X25519PublicKey) -> Self {
     Self {
-      x25519_public,
       verifying_key,
+      x25519_public,
     }
   }
 
-  /// Get the raw 32-byte X25519 public key (what gets serialized)
-  pub fn to_bytes(&self) -> [u8; 32] {
-    self.x25519_public.to_bytes()
+  /// Serialize to 64 bytes (32 Ed25519 + 32 X25519)
+  pub fn to_bytes(&self) -> [u8; 64] {
+    let mut bytes = [0u8; 64];
+    bytes[0..32].copy_from_slice(self.verifying_key.as_bytes());
+    bytes[32..64].copy_from_slice(self.x25519_public.as_bytes());
+    bytes
   }
 
-  /// Create a PublicID from raw 32-byte X25519 public key
-  ///
-  /// **IMPORTANT**: The Ed25519 verifying key will be a placeholder.
-  /// This is acceptable for remote identities (encryption only).
-  /// For signature verification, you need the full PublicID from Identity::from_seed().
-  pub fn from_bytes(bytes: &[u8; 32]) -> Self {
-    let x25519_public = X25519PublicKey::from(*bytes);
+  /// Deserialize from 64 bytes (32 Ed25519 + 32 X25519)
+  pub fn from_bytes(bytes: &[u8; 64]) -> Result<Self, ed25519_dalek::SignatureError> {
+    let ed25519_bytes: [u8; 32] = bytes[0..32].try_into().expect("slice is exactly 32 bytes");
+    let x25519_bytes: [u8; 32] = bytes[32..64].try_into().expect("slice is exactly 32 bytes");
 
-    // Use placeholder Ed25519 key (same as Decode implementation)
-    let verifying_key = VerifyingKey::from_bytes(&[0u8; 32])
-      .expect("placeholder verifying key should always be valid");
+    let verifying_key = VerifyingKey::from_bytes(&ed25519_bytes)?;
+    let x25519_public = X25519PublicKey::from(x25519_bytes);
 
-    Self {
-      x25519_public,
+    Ok(Self {
       verifying_key,
-    }
-  }
-
-  /// Get X25519 public key for encryption/DH
-  pub fn x25519_public(&self) -> &X25519PublicKey {
-    &self.x25519_public
+      x25519_public,
+    })
   }
 
   /// Get Ed25519 VerifyingKey for signature verification
   pub fn verifying_key(&self) -> &VerifyingKey {
     &self.verifying_key
+  }
+
+  /// Get X25519 public key for encryption/DH
+  pub fn x25519_public(&self) -> &X25519PublicKey {
+    &self.x25519_public
   }
 
   /// Calculate fingerprint hash of the public ID
@@ -96,8 +79,8 @@ impl AsRef<X25519PublicKey> for PublicID {
   }
 }
 
-// Implement bincode Encode/Decode for PublicID (32 bytes on wire)
-// Note: Only X25519 key is serialized. Ed25519 key must be reconstructed from seed.
+// Implement bincode Encode/Decode for PublicID (64 bytes on wire)
+// Serializes both Ed25519 and X25519 public keys
 impl Encode for PublicID {
     fn encode<E: Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {
         self.to_bytes().encode(encoder)
@@ -106,20 +89,9 @@ impl Encode for PublicID {
 
 impl<Context> Decode<Context> for PublicID {
     fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, DecodeError> {
-        let x25519_bytes: [u8; 32] = Decode::decode(decoder)?;
-        let x25519_public = X25519PublicKey::from(x25519_bytes);
-
-        // IMPORTANT: We cannot reconstruct the Ed25519 key from X25519 alone.
-        // This decode is only valid when reconstructing from a full Identity seed.
-        // For now, we'll use a placeholder that will cause errors if used incorrectly.
-        // The proper way is to always reconstruct PublicID through Identity::from_seed().
-        let verifying_key = VerifyingKey::from_bytes(&[0u8; 32])
-            .map_err(|_| DecodeError::Other("PublicID decode requires full identity context"))?;
-
-        Ok(PublicID {
-            x25519_public,
-            verifying_key,
-        })
+        let bytes: [u8; 64] = Decode::decode(decoder)?;
+        Self::from_bytes(&bytes)
+            .map_err(|_| DecodeError::Other("Invalid Ed25519 public key"))
     }
 }
 
@@ -127,16 +99,9 @@ impl<'de, Context> bincode::BorrowDecode<'de, Context> for PublicID {
     fn borrow_decode<D: bincode::de::BorrowDecoder<'de>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
-        let x25519_bytes: [u8; 32] = bincode::BorrowDecode::borrow_decode(decoder)?;
-        let x25519_public = X25519PublicKey::from(x25519_bytes);
-
-        let verifying_key = VerifyingKey::from_bytes(&[0u8; 32])
-            .map_err(|_| DecodeError::Other("PublicID decode requires full identity context"))?;
-
-        Ok(PublicID {
-            x25519_public,
-            verifying_key,
-        })
+        let bytes: [u8; 64] = bincode::BorrowDecode::borrow_decode(decoder)?;
+        Self::from_bytes(&bytes)
+            .map_err(|_| DecodeError::Other("Invalid Ed25519 public key"))
     }
 }
 
@@ -174,12 +139,8 @@ impl Identity {
 
   /// Derive identity from a 32-byte master seed using HKDF-SHA256
   ///
-  /// Strategy: Generate keys and store the X25519 public key as PublicID.
-  /// For signature verification, we store the Ed25519 VerifyingKey internally
-  /// and expose it through PublicID's verifying_key() method.
-  ///
-  /// This achieves 32-byte serialization (X25519 only) while maintaining both
-  /// encryption and signature capabilities.
+  /// Derives both Ed25519 (signing) and X25519 (encryption) keys independently
+  /// using HKDF with domain separation. Both public keys are stored in PublicID.
   pub fn from_seed(seed: &[u8; 32]) -> Self {
     // Derive Ed25519 signing key from HKDF
     let hkdf_ed25519 = Hkdf::<Sha256>::new(None, seed);
@@ -201,8 +162,8 @@ impl Identity {
     let x25519_secret = X25519Secret::from(x25519_seed);
     let x25519_public = X25519PublicKey::from(&x25519_secret);
 
-    // Store both Ed25519 verifying key and X25519 public in PublicID
-    let public_id = PublicID::new(x25519_public, verifying_key);
+    // Store both keys in PublicID (64 bytes)
+    let public_id = PublicID::new(verifying_key, x25519_public);
 
     Self {
       public_id,
@@ -294,11 +255,11 @@ mod tests {
   }
 
   #[test]
-  fn public_id_is_32_bytes() {
+  fn public_id_is_64_bytes() {
     let id = Identity::generate();
     let public_id_bytes = id.public_id().to_bytes();
 
-    assert_eq!(public_id_bytes.len(), 32);
+    assert_eq!(public_id_bytes.len(), 64);
   }
 
   #[test]
@@ -325,16 +286,19 @@ mod tests {
 
     // Serialize to bytes
     let bytes = public_id.to_bytes();
-    assert_eq!(bytes.len(), 32);
+    assert_eq!(bytes.len(), 64);
 
     // Deserialize from bytes
-    let restored = PublicID::from_bytes(&bytes);
+    let restored = PublicID::from_bytes(&bytes).unwrap();
 
-    // Should be equal (based on X25519 key)
+    // Should be fully equal (both keys)
     assert_eq!(public_id, &restored);
+    assert_eq!(public_id.verifying_key(), restored.verifying_key());
     assert_eq!(public_id.x25519_public(), restored.x25519_public());
 
-    // Note: Ed25519 key will be placeholder after from_bytes
-    // So signature verification won't work, but that's expected for remote identities
+    // Both encryption and signature verification should work
+    let msg = b"test message";
+    let sig = id.sign(msg);
+    restored.verifying_key().verify_strict(msg, &sig).unwrap();
   }
 }

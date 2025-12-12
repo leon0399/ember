@@ -52,7 +52,10 @@ pub fn derive_session_as_initiator(
     let ephemeral_public = X25519PublicKey::from(&ephemeral_secret);
 
     // Extract Bob's public keys
-    let bob_id_pub = X25519PublicKey::from(*bob_bundle.id_pub());
+    // id_pub is 64 bytes: [Ed25519 (32 bytes)] [X25519 (32 bytes)]
+    let bob_id_pub_64 = bob_bundle.id_pub();
+    let bob_x25519_bytes: [u8; 32] = bob_id_pub_64[32..64].try_into().expect("X25519 key is last 32 bytes");
+    let bob_id_pub = X25519PublicKey::from(bob_x25519_bytes);
     let bob_signed_prekey = X25519PublicKey::from(*bob_bundle.signed_prekey_pub());
 
     // Perform DH operations
