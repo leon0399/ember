@@ -14,6 +14,7 @@ reme-encryption = { path = "crates/reme-encryption" }
 reme-transport = { path = "crates/reme-transport" }
 reme-storage = { path = "crates/reme-storage" }
 reme-core = { path = "crates/reme-core" }
+reme-node = { path = "crates/reme-node" }
 
 anyhow = "^1.0.99"
 thiserror = "^2.0.16"

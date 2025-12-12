@@ -1318,6 +1318,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "reme-node"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64",
+ "bincode",
+ "reme-identity",
+ "reme-message",
+ "reme-prekeys",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "reme-prekeys"
 version = "0.1.0"
 dependencies = [

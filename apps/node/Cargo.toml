@@ -1,0 +1,28 @@
+[package]
+name = "node"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reme-message = { workspace = true }
+reme-prekeys = { workspace = true }
+
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# serialization
+base64 = { workspace = true }
+bincode = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+# async
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+# web
+axum = { workspace = true }
+
+[dev-dependencies]
+reme-identity = { workspace = true }
