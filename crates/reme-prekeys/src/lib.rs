@@ -85,7 +85,7 @@ pub fn generate_prekey_bundle(
     }
 
     let bundle = PrekeyBundle {
-        id_pub: identity.public_id().x25519_to_bytes(),
+        id_pub: identity.public_id().to_bytes(),
         signed_prekey_id,
         signed_prekey_pub: signed_prekey_pk.to_bytes(),
         signed_prekey_sig: identity
