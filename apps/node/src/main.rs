@@ -8,6 +8,18 @@
 //! - Message TTL and automatic expiration
 //! - P2P-ready architecture (future Iroh integration)
 //!
+//! ## Configuration
+//!
+//! Configuration is loaded from multiple sources with the following priority
+//! (highest to lowest):
+//!
+//! 1. **CLI arguments** - `-p`, `--port`, `--bind-addr`, etc.
+//! 2. **Environment variables** - `REME_NODE_PORT`, `REME_NODE_BIND_ADDR`, etc.
+//! 3. **Config file** - `~/.config/reme/node.toml`
+//! 4. **Built-in defaults**
+//!
+//! See `--help` for all CLI options.
+//!
 //! ## API Endpoints
 //! - POST /api/v1/enqueue - Submit a message
 //! - GET /api/v1/fetch/:routing_key - Fetch messages
@@ -17,52 +29,51 @@
 //! - GET /api/v1/stats - Store statistics
 
 mod api;
+mod config;
 mod store;
 
 use api::AppState;
+use config::{load_config, NodeConfig};
 use std::sync::Arc;
-use tracing::info;
+use tracing::{info, Level};
+use tracing_subscriber::FmtSubscriber;
 
-/// Node configuration
-#[derive(Debug, Clone)]
-pub struct Config {
-    /// Address to bind HTTP server
-    pub bind_addr: String,
-
-    /// Maximum messages per mailbox
-    pub max_messages_per_mailbox: usize,
-
-    /// Default message TTL in seconds
-    pub default_ttl_secs: u32,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            bind_addr: "0.0.0.0:23003".to_string(), // REME -> (leetspeak) 23M3 -> Treat M as roman 1000 -> 23 * 1000 + 3 = 23003
-            max_messages_per_mailbox: 1000,
-            default_ttl_secs: 7 * 24 * 60 * 60, // 7 days
-        }
+/// Parse log level from string
+fn parse_log_level(level: &str) -> Level {
+    match level.to_lowercase().as_str() {
+        "trace" => Level::TRACE,
+        "debug" => Level::DEBUG,
+        "info" => Level::INFO,
+        "warn" | "warning" => Level::WARN,
+        "error" => Level::ERROR,
+        _ => Level::INFO,
     }
 }
 
 #[tokio::main]
 async fn main() {
-    // Initialize tracing
-    tracing_subscriber::fmt::init();
+    // Load configuration from all sources
+    let config = match load_config() {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Failed to load configuration: {}", e);
+            eprintln!("Using default configuration...");
+            NodeConfig::default()
+        }
+    };
 
-    let config = Config::default();
+    // Initialize tracing with configured log level
+    let log_level = parse_log_level(&config.log_level);
+    let subscriber = FmtSubscriber::builder().with_max_level(log_level).finish();
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     info!("Starting Branch Messenger Node v{}", env!("CARGO_PKG_VERSION"));
     info!("Bind address: {}", config.bind_addr);
-    info!("Max messages per mailbox: {}", config.max_messages_per_mailbox);
-    info!("Default TTL: {} seconds", config.default_ttl_secs);
+    info!("Max messages per mailbox: {}", config.max_messages);
+    info!("Default TTL: {} seconds", config.default_ttl);
 
     // Create store
-    let store = store::MailboxStore::new(
-        config.max_messages_per_mailbox,
-        config.default_ttl_secs,
-    );
+    let store = store::MailboxStore::new(config.max_messages, config.default_ttl);
 
     // Create app state
     let state = Arc::new(AppState { store });
@@ -77,7 +88,5 @@ async fn main() {
 
     info!("Node listening on {}", config.bind_addr);
 
-    axum::serve(listener, app)
-        .await
-        .expect("Server failed");
+    axum::serve(listener, app).await.expect("Server failed");
 }
