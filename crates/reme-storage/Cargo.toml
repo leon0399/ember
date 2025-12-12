@@ -1,0 +1,17 @@
+[package]
+name = "reme-storage"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reme-identity = { workspace = true }
+reme-message = { workspace = true }
+reme-prekeys = { workspace = true }
+reme-session = { workspace = true }
+
+rusqlite = { version = "0.32", features = ["bundled"] }
+thiserror = { workspace = true }
+bincode = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.13"

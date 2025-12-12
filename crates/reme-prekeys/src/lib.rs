@@ -3,9 +3,10 @@ use bincode::error::EncodeError;
 use bincode::{Decode, Encode, impl_borrow_decode};
 use rand_core::OsRng;
 use reme_identity::Identity;
+use serde::{Deserialize, Serialize};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[repr(transparent)]
 pub struct SignedPrekeyID(uuid::Uuid);
 
@@ -27,9 +28,12 @@ impl<C> bincode::Decode<C> for SignedPrekeyID {
 
 impl_borrow_decode!(SignedPrekeyID);
 
+#[derive(Encode, Decode)]
 pub struct LocalPrekeySecrets {
     signed_prekey_id: SignedPrekeyID,
+    #[bincode(with_serde)]
     signed_prekey_secret: X25519Secret,
+    #[bincode(with_serde)]
     one_time_prekeys: Vec<(SignedPrekeyID, X25519Secret)>,
 }
 
