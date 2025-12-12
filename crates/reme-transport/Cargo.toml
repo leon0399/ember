@@ -12,10 +12,12 @@ async-trait = { workspace = true }
 bincode = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 base64 = "0.22"
+tracing = { workspace = true }
 
 # HTTP implementation
 reqwest = { workspace = true, features = ["json"] }
 tokio = { workspace = true, features = ["full"] }
+futures = { workspace = true }
 
 # Optional: for server implementation
 axum = { workspace = true, optional = true }

@@ -69,8 +69,8 @@ impl App {
         let db_path = config.data_dir.join("messages.db");
         let storage = Storage::open(db_path.to_str().unwrap())?;
 
-        // Create transport
-        let transport = Arc::new(HttpTransport::new(&config.node_url));
+        // Create transport with multiple nodes for redundancy
+        let transport = Arc::new(HttpTransport::with_nodes(config.node_urls.clone()));
 
         // Create client
         let client = Client::new(identity, transport, storage);
@@ -156,7 +156,7 @@ impl App {
 
     fn show_config(&self) {
         println!("Current Configuration:");
-        println!("  node_url:    {}", self.config.node_url);
+        println!("  node_urls:   {:?}", self.config.node_urls);
         println!("  data_dir:    {:?}", self.config.data_dir);
         println!("  log_level:   {}", self.config.log_level);
         println!("  num_prekeys: {}", self.config.num_prekeys);
@@ -206,7 +206,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     println!("Branch Messenger Client v{}", env!("CARGO_PKG_VERSION"));
-    println!("Connecting to node: {}", config.node_url);
+    if config.node_urls.len() == 1 {
+        println!("Connecting to node: {}", config.node_urls[0]);
+    } else {
+        println!("Connecting to {} nodes:", config.node_urls.len());
+        for url in &config.node_urls {
+            println!("  - {}", url);
+        }
+    }
     println!("Data directory: {:?}", config.data_dir);
     println!();
 

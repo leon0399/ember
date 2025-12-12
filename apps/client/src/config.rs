@@ -11,7 +11,7 @@
 //! ## Environment Variables
 //!
 //! All environment variables are prefixed with `REME_` and use `_` as separator:
-//! - `REME_NODE_URL` - URL of the mailbox node
+//! - `REME_NODE_URLS` - Comma-separated list of node URLs
 //! - `REME_DATA_DIR` - Directory for storing identity, keys, and messages
 //! - `REME_LOG_LEVEL` - Log level (trace, debug, info, warn, error)
 //! - `REME_NUM_PREKEYS` - Number of one-time prekeys to generate
@@ -22,7 +22,15 @@
 //! `%APPDATA%\reme\config.toml` (Windows)
 //!
 //! ```toml
+//! # Single node (backward compatible)
 //! node_url = "http://localhost:23003"
+//!
+//! # OR multiple nodes for redundancy
+//! node_urls = [
+//!     "http://localhost:23003",
+//!     "http://localhost:23004",
+//! ]
+//!
 //! data_dir = "~/.local/share/reme"
 //! log_level = "info"
 //! num_prekeys = 10
@@ -39,10 +47,12 @@ use std::path::PathBuf;
 #[command(name = "reme-client")]
 #[command(author, version, about = "Branch Messenger CLI Client")]
 pub struct CliArgs {
-    /// URL of the mailbox node
-    #[arg(short = 'n', long, env = "REME_NODE_URL")]
+    /// URLs of the mailbox nodes (comma-separated for multiple nodes)
+    ///
+    /// Example: -n http://node1:23003,http://node2:23003
+    #[arg(short = 'n', long, env = "REME_NODE_URLS", value_delimiter = ',')]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub node_url: Option<String>,
+    pub node_urls: Option<Vec<String>>,
 
     /// Directory for storing identity, keys, and messages
     #[arg(short = 'd', long, env = "REME_DATA_DIR")]
@@ -68,8 +78,9 @@ pub struct CliArgs {
 /// Final resolved configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
-    /// URL of the mailbox node
-    pub node_url: String,
+    /// URLs of the mailbox nodes
+    #[serde(default = "default_node_urls")]
+    pub node_urls: Vec<String>,
 
     /// Directory for storing identity, keys, and messages
     pub data_dir: PathBuf,
@@ -81,10 +92,14 @@ pub struct AppConfig {
     pub num_prekeys: u32,
 }
 
+fn default_node_urls() -> Vec<String> {
+    vec!["http://localhost:23003".to_string()]
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            node_url: "http://localhost:23003".to_string(),
+            node_urls: default_node_urls(),
             data_dir: default_data_dir(),
             log_level: "info".to_string(),
             num_prekeys: 10,
@@ -106,6 +121,16 @@ fn default_config_path() -> Option<PathBuf> {
     ProjectDirs::from("com", "branch", "reme").map(|dirs| dirs.config_dir().join("config.toml"))
 }
 
+/// Intermediate config for deserializing node URLs from file/env
+/// Supports both `node_url` (single, backward compat) and `node_urls` (multiple)
+#[derive(Debug, Clone, Deserialize, Default)]
+struct RawConfig {
+    /// Single node URL (backward compatible)
+    node_url: Option<String>,
+    /// Multiple node URLs
+    node_urls: Option<Vec<String>>,
+}
+
 /// Load configuration from all sources with proper layering
 ///
 /// Priority (highest to lowest):
@@ -121,7 +146,6 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
 
     let mut builder = Config::builder()
         // Layer 1: Built-in defaults (lowest priority)
-        .set_default("node_url", defaults.node_url)?
         .set_default("data_dir", defaults.data_dir.to_string_lossy().to_string())?
         .set_default("log_level", defaults.log_level)?
         .set_default("num_prekeys", defaults.num_prekeys as i64)?;
@@ -144,9 +168,6 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
 
     // Layer 4: CLI arguments (highest priority)
     // Only override if explicitly provided (skip None values)
-    if let Some(ref node_url) = cli.node_url {
-        builder = builder.set_override("node_url", node_url.clone())?;
-    }
     if let Some(ref data_dir) = cli.data_dir {
         builder = builder.set_override("data_dir", data_dir.to_string_lossy().to_string())?;
     }
@@ -159,17 +180,39 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
 
     let config = builder.build()?;
 
-    // Deserialize into AppConfig, handling PathBuf specially
-    let node_url: String = config.get("node_url")?;
-    let data_dir_str: String = config.get("data_dir")?;
-    let log_level: String = config.get("log_level")?;
-    let num_prekeys: u32 = config.get::<i64>("num_prekeys")? as u32;
+    // Get other config values first (before consuming config)
+    let data_dir_str: String = config.get("data_dir").unwrap_or_else(|_| {
+        defaults.data_dir.to_string_lossy().to_string()
+    });
+    let log_level: String = config.get("log_level").unwrap_or_else(|_| "info".to_string());
+    let num_prekeys: u32 = config
+        .get::<i64>("num_prekeys")
+        .map(|v| v as u32)
+        .unwrap_or(defaults.num_prekeys);
+
+    // Deserialize raw config to handle node_url vs node_urls
+    let raw: RawConfig = config.try_deserialize().unwrap_or_default();
+
+    // Resolve node URLs with priority:
+    // 1. CLI --node-urls (multiple)
+    // 2. Config file node_urls (array)
+    // 3. Config file node_url (single, backward compat)
+    // 4. Default
+    let node_urls = if let Some(urls) = cli.node_urls {
+        urls
+    } else if let Some(urls) = raw.node_urls {
+        urls
+    } else if let Some(url) = raw.node_url {
+        vec![url]
+    } else {
+        defaults.node_urls
+    };
 
     // Expand ~ in data_dir path
     let data_dir = expand_tilde(&data_dir_str);
 
     Ok(AppConfig {
-        node_url,
+        node_urls,
         data_dir,
         log_level,
         num_prekeys,
@@ -202,11 +245,16 @@ pub fn default_config_toml() -> String {
 #   Windows: %APPDATA%\reme\config.toml
 #
 # All settings can be overridden by:
-#   1. Environment variables (REME_NODE_URL, REME_DATA_DIR, etc.)
-#   2. CLI arguments (--node-url, --data-dir, etc.)
+#   1. Environment variables (REME_NODE_URLS, REME_DATA_DIR, etc.)
+#   2. CLI arguments (--node-urls, --data-dir, etc.)
 
-# URL of the mailbox node
-node_url = "{}"
+# URLs of the mailbox nodes
+# For redundancy, you can specify multiple nodes:
+# node_urls = [
+#     "http://node1.example.com:23003",
+#     "http://node2.example.com:23003",
+# ]
+node_urls = ["{}"]
 
 # Directory for storing identity, keys, and messages
 # Use ~ for home directory
@@ -218,7 +266,7 @@ log_level = "{}"
 # Number of one-time prekeys to generate
 num_prekeys = {}
 "#,
-        defaults.node_url,
+        defaults.node_urls[0],
         defaults.data_dir.to_string_lossy(),
         defaults.log_level,
         defaults.num_prekeys
@@ -232,7 +280,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = AppConfig::default();
-        assert_eq!(config.node_url, "http://localhost:23003");
+        assert_eq!(config.node_urls, vec!["http://localhost:23003"]);
         assert_eq!(config.log_level, "info");
         assert_eq!(config.num_prekeys, 10);
     }
@@ -250,9 +298,16 @@ mod tests {
     #[test]
     fn test_default_config_toml() {
         let toml = default_config_toml();
-        assert!(toml.contains("node_url"));
+        assert!(toml.contains("node_urls"));
         assert!(toml.contains("data_dir"));
         assert!(toml.contains("log_level"));
         assert!(toml.contains("num_prekeys"));
+    }
+
+    #[test]
+    fn test_default_node_urls() {
+        let urls = default_node_urls();
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0], "http://localhost:23003");
     }
 }
