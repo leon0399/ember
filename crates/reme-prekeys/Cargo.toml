@@ -1,7 +1,7 @@
 [package]
 name = "reme-prekeys"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 reme-identity = { workspace = true }
@@ -10,6 +10,6 @@ bincode = { workspace = true }
 
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
-x25519-dalek = { workspace = true }
+x25519-dalek = { workspace = true, features = ["static_secrets"] }
 blake3 = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
