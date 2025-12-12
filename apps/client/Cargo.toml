@@ -1,0 +1,29 @@
+[package]
+name = "client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reme-identity = { workspace = true }
+reme-prekeys = { workspace = true }
+reme-message = { workspace = true }
+reme-session = { workspace = true }
+reme-encryption = { workspace = true }
+reme-transport = { workspace = true }
+reme-storage = { workspace = true }
+reme-core = { workspace = true }
+
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# serialization
+hex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+# async
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
+
+# CLI
+rustyline = "15"
