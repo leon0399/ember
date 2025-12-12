@@ -2,6 +2,18 @@
 //!
 //! A simple command-line client for testing the messenger.
 //!
+//! ## Configuration
+//!
+//! Configuration is loaded from multiple sources with the following priority
+//! (highest to lowest):
+//!
+//! 1. **CLI arguments** - `--node-url`, `--data-dir`, etc.
+//! 2. **Environment variables** - `REME_NODE_URL`, `REME_DATA_DIR`, etc.
+//! 3. **Config file** - `~/.config/reme/config.toml`
+//! 4. **Built-in defaults**
+//!
+//! See `--help` for all CLI options.
+//!
 //! ## Commands
 //! - `init` - Generate new identity and prekeys
 //! - `id` - Show your public ID
@@ -9,9 +21,13 @@
 //! - `send <name> <message>` - Send a message to a contact
 //! - `fetch` - Fetch pending messages
 //! - `contacts` - List contacts
+//! - `config` - Show current configuration
 //! - `help` - Show help
 //! - `quit` - Exit
 
+mod config;
+
+use crate::config::{load_config, AppConfig};
 use reme_core::Client;
 use reme_identity::{Identity, PublicID};
 use reme_storage::Storage;
@@ -20,23 +36,23 @@ use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::{error, info, Level};
+use tracing_subscriber::FmtSubscriber;
 
 struct App {
     client: Client<HttpTransport>,
     contacts_by_name: HashMap<String, PublicID>,
-    data_dir: PathBuf,
+    config: AppConfig,
 }
 
 impl App {
-    async fn new(node_url: &str, data_dir: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
+    async fn new(config: AppConfig) -> Result<Self, Box<dyn std::error::Error>> {
         // Ensure data directory exists
-        fs::create_dir_all(&data_dir)?;
+        fs::create_dir_all(&config.data_dir)?;
 
         // Load or generate identity
-        let identity_path = data_dir.join("identity.key");
+        let identity_path = config.data_dir.join("identity.key");
         let identity = if identity_path.exists() {
             let bytes = fs::read(&identity_path)?;
             let key: [u8; 32] = bytes.try_into().map_err(|_| "Invalid identity file")?;
@@ -50,11 +66,11 @@ impl App {
         };
 
         // Create storage
-        let db_path = data_dir.join("messages.db");
+        let db_path = config.data_dir.join("messages.db");
         let storage = Storage::open(db_path.to_str().unwrap())?;
 
         // Create transport
-        let transport = Arc::new(HttpTransport::new(node_url));
+        let transport = Arc::new(HttpTransport::new(&config.node_url));
 
         // Create client
         let client = Client::new(identity, transport, storage);
@@ -62,7 +78,7 @@ impl App {
         Ok(Self {
             client,
             contacts_by_name: HashMap::new(),
-            data_dir,
+            config,
         })
     }
 
@@ -71,11 +87,17 @@ impl App {
     }
 
     async fn init_prekeys(&self) -> Result<(), Box<dyn std::error::Error>> {
-        self.client.init_prekeys(10).await?;
+        self.client
+            .init_prekeys(self.config.num_prekeys as usize)
+            .await?;
         Ok(())
     }
 
-    fn add_contact(&mut self, public_id_hex: &str, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    fn add_contact(
+        &mut self,
+        public_id_hex: &str,
+        name: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let bytes = hex::decode(public_id_hex)?;
         if bytes.len() != 32 {
             return Err("Public ID must be 32 bytes (64 hex chars)".into());
@@ -91,7 +113,9 @@ impl App {
     }
 
     async fn send_message(&self, name: &str, text: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let public_id = self.contacts_by_name.get(name)
+        let public_id = self
+            .contacts_by_name
+            .get(name)
             .ok_or_else(|| format!("Contact '{}' not found", name))?;
 
         self.client.send_text(public_id, text).await?;
@@ -129,6 +153,14 @@ impl App {
             })
             .collect()
     }
+
+    fn show_config(&self) {
+        println!("Current Configuration:");
+        println!("  node_url:    {}", self.config.node_url);
+        println!("  data_dir:    {:?}", self.config.data_dir);
+        println!("  log_level:   {}", self.config.log_level);
+        println!("  num_prekeys: {}", self.config.num_prekeys);
+    }
 }
 
 fn print_help() {
@@ -139,30 +171,46 @@ fn print_help() {
     println!("  send <name> <message>   - Send a message");
     println!("  fetch                   - Fetch pending messages");
     println!("  contacts                - List contacts");
+    println!("  config                  - Show current configuration");
     println!("  help                    - Show this help");
     println!("  quit                    - Exit");
 }
 
+/// Parse log level from string
+fn parse_log_level(level: &str) -> Level {
+    match level.to_lowercase().as_str() {
+        "trace" => Level::TRACE,
+        "debug" => Level::DEBUG,
+        "info" => Level::INFO,
+        "warn" | "warning" => Level::WARN,
+        "error" => Level::ERROR,
+        _ => Level::INFO,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing
-    tracing_subscriber::fmt::init();
+    // Load configuration from all sources
+    let config = match load_config() {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Failed to load configuration: {}", e);
+            eprintln!("Using default configuration...");
+            AppConfig::default()
+        }
+    };
 
-    // Get node URL from args or use default
-    let args: Vec<String> = std::env::args().collect();
-    let node_url = args.get(1).map(|s| s.as_str()).unwrap_or("http://localhost:23003");
-
-    // Get data directory from args or use default
-    let data_dir = args.get(2)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("./client_data"));
+    // Initialize tracing with configured log level
+    let log_level = parse_log_level(&config.log_level);
+    let subscriber = FmtSubscriber::builder().with_max_level(log_level).finish();
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     println!("Branch Messenger Client v{}", env!("CARGO_PKG_VERSION"));
-    println!("Connecting to node: {}", node_url);
-    println!("Data directory: {:?}", data_dir);
+    println!("Connecting to node: {}", config.node_url);
+    println!("Data directory: {:?}", config.data_dir);
     println!();
 
-    let mut app = App::new(node_url, data_dir).await?;
+    let mut app = App::new(config).await?;
 
     println!("Your ID: {}", app.public_id());
     println!();
@@ -170,6 +218,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     let mut rl = DefaultEditor::new()?;
+
+    // Load history if exists
+    let history_path = app.config.data_dir.join(".history");
+    let _ = rl.load_history(&history_path);
 
     loop {
         let readline = rl.readline(">> ");
@@ -198,12 +250,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("Your ID: {}", app.public_id());
                     }
 
-                    "init" => {
-                        match app.init_prekeys().await {
-                            Ok(_) => println!("Prekeys initialized and uploaded"),
-                            Err(e) => error!("Failed to init prekeys: {}", e),
-                        }
-                    }
+                    "init" => match app.init_prekeys().await {
+                        Ok(_) => println!("Prekeys initialized and uploaded"),
+                        Err(e) => error!("Failed to init prekeys: {}", e),
+                    },
 
                     "add" => {
                         if parts.len() < 3 {
@@ -233,21 +283,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
 
-                    "fetch" => {
-                        match app.fetch_messages().await {
-                            Ok(messages) => {
-                                if messages.is_empty() {
-                                    println!("No new messages");
-                                } else {
-                                    println!("Received {} message(s):", messages.len());
-                                    for (from, text) in messages {
-                                        println!("  [{}...]: {}", from, text);
-                                    }
+                    "fetch" => match app.fetch_messages().await {
+                        Ok(messages) => {
+                            if messages.is_empty() {
+                                println!("No new messages");
+                            } else {
+                                println!("Received {} message(s):", messages.len());
+                                for (from, text) in messages {
+                                    println!("  [{}...]: {}", from, text);
                                 }
                             }
-                            Err(e) => error!("Failed to fetch: {}", e),
                         }
-                    }
+                        Err(e) => error!("Failed to fetch: {}", e),
+                    },
 
                     "contacts" => {
                         let contacts = app.list_contacts();
@@ -259,6 +307,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 println!("  {} -> {}", name, id);
                             }
                         }
+                    }
+
+                    "config" => {
+                        app.show_config();
                     }
 
                     _ => {
@@ -281,6 +333,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+
+    // Save history
+    let _ = rl.save_history(&history_path);
 
     Ok(())
 }

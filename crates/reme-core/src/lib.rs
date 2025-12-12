@@ -11,10 +11,10 @@ use reme_encryption::{decrypt_inner_envelope, encrypt_inner_envelope, Encryption
 use reme_identity::{Identity, PublicID};
 use reme_message::{
     Content, InnerEnvelope, MessageID, OuterEnvelope, ReceiptContent, ReceiptKind, RoutingKey,
-    TextContent, CURRENT_VERSION,
+    SessionEstablishment, TextContent, CURRENT_VERSION,
 };
-use reme_prekeys::{generate_prekey_bundle, LocalPrekeySecrets};
-use reme_session::{derive_session_as_initiator, Session, SessionError};
+use reme_prekeys::{generate_prekey_bundle, LocalPrekeySecrets, SignedPrekeyID};
+use reme_session::{derive_session_as_initiator, derive_session_as_responder, Session, SessionError};
 use reme_storage::{Storage, StorageError};
 use reme_transport::{Transport, TransportError};
 use std::collections::HashMap;
@@ -22,6 +22,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
+use x25519_dalek::PublicKey as X25519PublicKey;
 
 #[derive(Debug, Error)]
 pub enum ClientError {
@@ -281,9 +282,12 @@ impl<T: Transport> Client<T> {
             self.establish_session(to).await?;
         }
 
-        // Get session
-        let sessions = self.sessions.read().await;
-        let session = sessions.get(to).ok_or(ClientError::NoSession)?;
+        // Get session and check if we need to include session init data
+        let needs_session_init = {
+            let sessions = self.sessions.read().await;
+            let session = sessions.get(to).ok_or(ClientError::NoSession)?;
+            !session.is_confirmed()
+        };
 
         // Create outer envelope first to get message ID
         let routing_key = to.routing_key();
@@ -304,29 +308,61 @@ impl<T: Transport> Client<T> {
             content: content.clone(),
         };
 
+        // Get session for encryption
+        let sessions = self.sessions.read().await;
+        let session = sessions.get(to).ok_or(ClientError::NoSession)?;
+
         // Encrypt inner envelope
         let ciphertext = encrypt_inner_envelope(&inner, session.send_key(), &outer_message_id)?;
 
-        // Create outer envelope
-        let outer = OuterEnvelope {
-            version: CURRENT_VERSION,
-            flags: 0,
-            routing_key,
-            created_at_ms: Some(now_ms),
-            ttl: Some(7 * 24 * 60 * 60), // 7 days default TTL
-            message_id: outer_message_id,
-            inner_ciphertext: ciphertext,
+        // Create outer envelope (with or without session init)
+        let outer = if needs_session_init {
+            let session_init = SessionEstablishment {
+                sender_identity: self.identity.public_id().to_bytes(),
+                ephemeral_public: session.ephemeral_public().to_bytes(),
+                used_one_time_prekey_id: session.used_one_time_prekey_id().map(|id| id.to_bytes()),
+            };
+            OuterEnvelope {
+                version: CURRENT_VERSION,
+                flags: reme_message::flags::SESSION_INIT,
+                routing_key,
+                created_at_ms: Some(now_ms),
+                ttl: Some(7 * 24 * 60 * 60), // 7 days default TTL
+                message_id: outer_message_id,
+                session_init: Some(session_init),
+                inner_ciphertext: ciphertext,
+            }
+        } else {
+            OuterEnvelope {
+                version: CURRENT_VERSION,
+                flags: 0,
+                routing_key,
+                created_at_ms: Some(now_ms),
+                ttl: Some(7 * 24 * 60 * 60), // 7 days default TTL
+                message_id: outer_message_id,
+                session_init: None,
+                inner_ciphertext: ciphertext,
+            }
         };
+        drop(sessions);
 
         // Submit to transport
         self.transport.submit_message(outer).await?;
+
+        // Mark session as confirmed after first message sent
+        if needs_session_init {
+            let mut sessions = self.sessions.write().await;
+            if let Some(session) = sessions.get_mut(to) {
+                session.set_confirmed();
+            }
+        }
 
         // Store sent message
         let contact_id = self.storage.get_contact_id(to)?;
         self.storage
             .store_sent_message(contact_id, outer_message_id, &content)?;
 
-        debug!("Message sent to contact");
+        debug!("Message sent to contact (session_init: {})", needs_session_init);
         Ok(outer_message_id)
     }
 
@@ -340,10 +376,9 @@ impl<T: Transport> Client<T> {
         let envelopes = self.transport.fetch_messages(routing_key).await?;
 
         let mut messages = Vec::new();
-        let sessions = self.sessions.read().await;
 
         for outer in envelopes {
-            match self.decrypt_message(&outer, &sessions).await {
+            match self.decrypt_message(&outer).await {
                 Ok(msg) => messages.push(msg),
                 Err(e) => {
                     warn!("Failed to decrypt message: {}", e);
@@ -359,11 +394,16 @@ impl<T: Transport> Client<T> {
     async fn decrypt_message(
         &self,
         outer: &OuterEnvelope,
-        sessions: &HashMap<PublicID, Session>,
     ) -> Result<ReceivedMessage, ClientError> {
-        // Try to decrypt with each known session
-        // TODO: This is inefficient - we should have a way to identify the sender
-        // from the outer envelope (e.g., include sender's routing key)
+        // First, check if this is a session establishment message
+        if outer.has_session_init() {
+            if let Some(ref session_init) = outer.session_init {
+                return self.handle_session_init_message(outer, session_init).await;
+            }
+        }
+
+        // Try to decrypt with known sessions
+        let sessions = self.sessions.read().await;
         for (sender_id, session) in sessions.iter() {
             match decrypt_inner_envelope(
                 &outer.inner_ciphertext,
@@ -396,16 +436,81 @@ impl<T: Transport> Client<T> {
             }
         }
 
-        // If no session worked, this might be an initial message from a new contact
-        // We need prekey secrets to establish the session
-        let prekey_secrets = self.prekey_secrets.read().await;
-        let _secrets = prekey_secrets.as_ref().ok_or(ClientError::NoPrekeys)?;
-
-        // TODO: The outer envelope doesn't contain enough info to establish session
-        // We need the sender's ephemeral public key and identity in the message header
-        // For now, return an error - this will be fixed in the session establishment protocol
-
         Err(ClientError::UnknownSender)
+    }
+
+    /// Handle an incoming message with session establishment data
+    async fn handle_session_init_message(
+        &self,
+        outer: &OuterEnvelope,
+        session_init: &SessionEstablishment,
+    ) -> Result<ReceivedMessage, ClientError> {
+        // Get our prekey secrets
+        let prekey_secrets = self.prekey_secrets.read().await;
+        let secrets = prekey_secrets.as_ref().ok_or(ClientError::NoPrekeys)?;
+
+        // Parse sender's identity and ephemeral key
+        let sender_id = PublicID::from_bytes(&session_init.sender_identity);
+        let ephemeral_public = X25519PublicKey::from(session_init.ephemeral_public);
+        let used_otp_id = session_init
+            .used_one_time_prekey_id
+            .map(SignedPrekeyID::from_bytes);
+
+        // Derive the session as responder
+        let session = derive_session_as_responder(
+            &self.identity,
+            secrets,
+            &sender_id,
+            &ephemeral_public,
+            used_otp_id,
+        )?;
+
+        // Try to decrypt the message
+        let inner = decrypt_inner_envelope(
+            &outer.inner_ciphertext,
+            session.recv_key(),
+            &outer.message_id,
+        )?;
+
+        // Verify the sender matches
+        if inner.from != sender_id {
+            return Err(ClientError::UnknownSender);
+        }
+
+        // Ensure contact exists (add if not)
+        let contact_id = match self.storage.get_contact_id(&sender_id) {
+            Ok(id) => id,
+            Err(StorageError::NotFound) => {
+                info!("Adding new contact from incoming message");
+                self.storage.add_contact(&sender_id, None)?
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        // Store the session
+        self.storage.store_session(contact_id, &session)?;
+
+        // Add session to memory cache
+        {
+            let mut sessions = self.sessions.write().await;
+            sessions.insert(sender_id, session);
+        }
+
+        // Store received message
+        let _ = self.storage.store_received_message(
+            contact_id,
+            outer.message_id,
+            &inner.content,
+        );
+
+        info!("Session established from incoming message");
+
+        Ok(ReceivedMessage {
+            message_id: outer.message_id,
+            from: inner.from,
+            content: inner.content,
+            created_at_ms: inner.created_at_ms,
+        })
     }
 
     /// Process a delivery receipt

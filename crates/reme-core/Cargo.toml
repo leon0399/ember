@@ -17,6 +17,8 @@ tracing = { workspace = true }
 
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
+x25519-dalek = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+hex = { workspace = true }

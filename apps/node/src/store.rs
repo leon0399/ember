@@ -171,6 +171,7 @@ mod tests {
             created_at_ms: Some(1234567890),
             ttl: Some(3600), // 1 hour
             message_id: MessageID::new(),
+            session_init: None,
             inner_ciphertext: vec![1, 2, 3, 4],
         }
     }

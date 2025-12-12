@@ -6,9 +6,21 @@ use reme_identity::Identity;
 use serde::{Deserialize, Serialize};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct SignedPrekeyID(uuid::Uuid);
+
+impl SignedPrekeyID {
+    /// Get the ID as bytes
+    pub fn to_bytes(&self) -> [u8; 16] {
+        *self.0.as_bytes()
+    }
+
+    /// Create from bytes
+    pub fn from_bytes(bytes: [u8; 16]) -> Self {
+        SignedPrekeyID(uuid::Uuid::from_bytes(bytes))
+    }
+}
 
 impl bincode::Encode for SignedPrekeyID {
     fn encode<E: Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {

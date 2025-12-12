@@ -5,15 +5,33 @@ use sha2::Sha256;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
 
 /// A symmetric session derived from X3DH key exchange
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Session {
     send_key: [u8; 32],
     recv_key: [u8; 32],
     ephemeral_public: X25519PublicKey,
     used_one_time_prekey_id: Option<SignedPrekeyID>,
+    /// Whether this session has been confirmed (first message sent/received)
+    confirmed: bool,
 }
 
 impl Session {
+    /// Create a session from raw keys (for storage reconstruction)
+    pub fn from_keys(
+        send_key: [u8; 32],
+        recv_key: [u8; 32],
+        ephemeral_public: [u8; 32],
+        used_one_time_prekey_id: Option<SignedPrekeyID>,
+    ) -> Self {
+        Self {
+            send_key,
+            recv_key,
+            ephemeral_public: X25519PublicKey::from(ephemeral_public),
+            used_one_time_prekey_id,
+            confirmed: true, // Reconstructed sessions are already confirmed
+        }
+    }
+
     pub fn send_key(&self) -> &[u8; 32] {
         &self.send_key
     }
@@ -28,6 +46,16 @@ impl Session {
 
     pub fn used_one_time_prekey_id(&self) -> Option<SignedPrekeyID> {
         self.used_one_time_prekey_id
+    }
+
+    /// Check if this session has been confirmed (first message exchanged)
+    pub fn is_confirmed(&self) -> bool {
+        self.confirmed
+    }
+
+    /// Mark this session as confirmed
+    pub fn set_confirmed(&mut self) {
+        self.confirmed = true;
     }
 }
 
@@ -103,6 +131,7 @@ pub fn derive_session_as_initiator(
         recv_key,
         ephemeral_public,
         used_one_time_prekey_id: used_otp_id,
+        confirmed: false, // Not confirmed until first message is sent
     })
 }
 
@@ -158,6 +187,7 @@ pub fn derive_session_as_responder(
         recv_key,
         ephemeral_public: *alice_ephemeral,
         used_one_time_prekey_id,
+        confirmed: true, // Responder session is confirmed when first message is received
     })
 }
 

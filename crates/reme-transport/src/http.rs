@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
 use reme_message::{OuterEnvelope, RoutingKey};
 use reme_prekeys::SignedPrekeyBundle;
@@ -15,8 +16,8 @@ pub struct HttpTransport {
 
 #[derive(Debug, Serialize)]
 struct EnqueueRequest {
-    routing_key: String,
-    blob: String,
+    /// Base64-encoded OuterEnvelope
+    envelope: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -25,13 +26,13 @@ struct EnqueueResponse {
 }
 
 #[derive(Debug, Deserialize)]
-struct DequeueResponse {
+struct FetchResponse {
     messages: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
 struct UploadPrekeysRequest {
-    routing_key: String,
+    /// Base64-encoded SignedPrekeyBundle
     bundle: String,
 }
 
@@ -71,10 +72,9 @@ impl Transport for HttpTransport {
             .map_err(|e| TransportError::Serialization(e.to_string()))?;
 
         // Base64 encode
-        let blob = BASE64_STANDARD.encode(&envelope_bytes);
-        let routing_key = BASE64_STANDARD.encode(&envelope.routing_key);
+        let envelope_b64 = BASE64_STANDARD.encode(&envelope_bytes);
 
-        let request = EnqueueRequest { routing_key, blob };
+        let request = EnqueueRequest { envelope: envelope_b64 };
 
         let url = format!("{}/api/v1/enqueue", self.base_url);
         let response = self
@@ -109,8 +109,8 @@ impl Transport for HttpTransport {
         &self,
         routing_key: RoutingKey,
     ) -> Result<Vec<OuterEnvelope>, TransportError> {
-        let routing_key_b64 = BASE64_STANDARD.encode(&routing_key);
-        let url = format!("{}/api/v1/dequeue?routing_key={}", self.base_url, routing_key_b64);
+        let routing_key_b64 = URL_SAFE_NO_PAD.encode(&routing_key);
+        let url = format!("{}/api/v1/fetch/{}", self.base_url, routing_key_b64);
 
         let response = self
             .client
@@ -121,13 +121,17 @@ impl Transport for HttpTransport {
 
         if !response.status().is_success() {
             let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "unknown error".to_string());
             return Err(TransportError::ServerError(format!(
-                "HTTP {}",
-                status
+                "HTTP {}: {}",
+                status, body
             )));
         }
 
-        let result: DequeueResponse = response
+        let result: FetchResponse = response
             .json()
             .await
             .map_err(|e| TransportError::Serialization(e.to_string()))?;
@@ -157,16 +161,15 @@ impl Transport for HttpTransport {
         let bundle_bytes = bincode::encode_to_vec(&bundle, bincode::config::standard())
             .map_err(|e| TransportError::Serialization(e.to_string()))?;
 
-        // Base64 encode
+        // Base64 encode (URL-safe for routing key in path)
         let bundle_b64 = BASE64_STANDARD.encode(&bundle_bytes);
-        let routing_key_b64 = BASE64_STANDARD.encode(&routing_key);
+        let routing_key_b64 = URL_SAFE_NO_PAD.encode(&routing_key);
 
         let request = UploadPrekeysRequest {
-            routing_key: routing_key_b64,
             bundle: bundle_b64,
         };
 
-        let url = format!("{}/api/v1/prekeys", self.base_url);
+        let url = format!("{}/api/v1/prekeys/{}", self.base_url, routing_key_b64);
         let response = self
             .client
             .post(&url)
@@ -199,7 +202,7 @@ impl Transport for HttpTransport {
         &self,
         routing_key: RoutingKey,
     ) -> Result<SignedPrekeyBundle, TransportError> {
-        let routing_key_b64 = BASE64_STANDARD.encode(&routing_key);
+        let routing_key_b64 = URL_SAFE_NO_PAD.encode(&routing_key);
         let url = format!("{}/api/v1/prekeys/{}", self.base_url, routing_key_b64);
 
         let response = self

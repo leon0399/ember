@@ -178,16 +178,54 @@ impl Storage {
     }
 
     /// Load a session for a contact
-    pub fn load_session(&self, _contact_id: i64) -> Result<Session, StorageError> {
-        // Note: We can't reconstruct a full Session from storage since Session doesn't
-        // have a public constructor. This is a simplified version - in practice we'd
-        // need to either:
-        // 1. Add a from_keys() constructor to Session
-        // 2. Store the entire serialized Session
-        // 3. Keep sessions in memory only
-        //
-        // For now, return NotFound to indicate sessions aren't persisted
-        Err(StorageError::NotFound)
+    pub fn load_session(&self, contact_id: i64) -> Result<Session, StorageError> {
+        let row: Option<(Vec<u8>, Vec<u8>, Vec<u8>, Option<Vec<u8>>)> = self
+            .conn
+            .query_row(
+                "SELECT send_key, recv_key, ephemeral_public, used_one_time_prekey_id FROM sessions WHERE contact_id = ?",
+                params![contact_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+
+        let (send_key, recv_key, ephemeral_public, used_otp_id_bytes) =
+            row.ok_or(StorageError::NotFound)?;
+
+        let send_key: [u8; 32] = send_key
+            .try_into()
+            .map_err(|_| StorageError::Serialization("Invalid send_key length".to_string()))?;
+        let recv_key: [u8; 32] = recv_key
+            .try_into()
+            .map_err(|_| StorageError::Serialization("Invalid recv_key length".to_string()))?;
+        let ephemeral_public: [u8; 32] = ephemeral_public
+            .try_into()
+            .map_err(|_| StorageError::Serialization("Invalid ephemeral_public length".to_string()))?;
+
+        let used_one_time_prekey_id = if let Some(bytes) = used_otp_id_bytes {
+            let (id, _): (reme_prekeys::SignedPrekeyID, usize) =
+                bincode::decode_from_slice(&bytes, bincode::config::standard())
+                    .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            Some(id)
+        } else {
+            None
+        };
+
+        Ok(Session::from_keys(
+            send_key,
+            recv_key,
+            ephemeral_public,
+            used_one_time_prekey_id,
+        ))
+    }
+
+    /// Check if a session exists for a contact
+    pub fn has_session(&self, contact_id: i64) -> Result<bool, StorageError> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE contact_id = ?",
+            params![contact_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
     }
 
     // ============================================

@@ -14,6 +14,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
 use reme_message::OuterEnvelope;
 use reme_prekeys::SignedPrekeyBundle;
@@ -156,8 +157,8 @@ async fn fetch_messages(
     State(state): State<Arc<AppState>>,
     Path(routing_key_b64): Path<String>,
 ) -> impl IntoResponse {
-    // Decode routing key
-    let routing_key_bytes = match BASE64_STANDARD.decode(&routing_key_b64) {
+    // Decode routing key (URL-safe base64)
+    let routing_key_bytes = match URL_SAFE_NO_PAD.decode(&routing_key_b64) {
         Ok(b) => b,
         Err(e) => {
             error!("Failed to decode routing key: {}", e);
@@ -221,8 +222,8 @@ async fn upload_prekeys(
     Path(routing_key_b64): Path<String>,
     Json(req): Json<UploadPrekeysRequest>,
 ) -> impl IntoResponse {
-    // Decode routing key
-    let routing_key_bytes = match BASE64_STANDARD.decode(&routing_key_b64) {
+    // Decode routing key (URL-safe base64)
+    let routing_key_bytes = match URL_SAFE_NO_PAD.decode(&routing_key_b64) {
         Ok(b) => b,
         Err(_) => {
             return (
@@ -305,8 +306,8 @@ async fn fetch_prekeys(
     State(state): State<Arc<AppState>>,
     Path(routing_key_b64): Path<String>,
 ) -> impl IntoResponse {
-    // Decode routing key
-    let routing_key_bytes = match BASE64_STANDARD.decode(&routing_key_b64) {
+    // Decode routing key (URL-safe base64)
+    let routing_key_bytes = match URL_SAFE_NO_PAD.decode(&routing_key_b64) {
         Ok(b) => b,
         Err(_) => {
             return (
