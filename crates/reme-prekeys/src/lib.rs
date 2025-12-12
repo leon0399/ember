@@ -1,7 +1,6 @@
 use bincode::enc::Encoder;
 use bincode::error::EncodeError;
 use bincode::{Decode, Encode, impl_borrow_decode};
-use ed25519_dalek::{Signature, Signer};
 use rand_core::OsRng;
 use reme_identity::Identity;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
@@ -52,7 +51,7 @@ impl LocalPrekeySecrets {
 
 #[derive(Clone, Encode, Decode)]
 pub struct PrekeyBundle {
-    id_pub: [u8; 64],
+    id_pub: [u8; 32],
 
     signed_prekey_id: SignedPrekeyID,
 
@@ -89,8 +88,7 @@ pub fn generate_prekey_bundle(
         signed_prekey_id,
         signed_prekey_pub: signed_prekey_pk.to_bytes(),
         signed_prekey_sig: identity
-            .sign(&signed_prekey_pk.to_bytes())
-            .to_bytes()
+            .sign_xeddsa(&signed_prekey_pk.to_bytes())
             .to_vec(),
         one_time_prekeys: ot_public_vec,
     };
@@ -126,11 +124,11 @@ impl PrekeyBundle {
     pub fn try_sign(
         self: Self,
         signer: &Identity,
-    ) -> Result<SignedPrekeyBundle, ed25519_dalek::SignatureError> {
+    ) -> Result<SignedPrekeyBundle, ()> {
         let payload = self.bundle();
-        let signature: Signature = signer.try_sign(&payload)?;
+        let signature = signer.sign_xeddsa(&payload);
 
-        Ok(SignedPrekeyBundle(self, signature.to_bytes().to_vec()))
+        Ok(SignedPrekeyBundle(self, signature.to_vec()))
     }
 }
 
@@ -138,7 +136,7 @@ impl PrekeyBundle {
 pub struct SignedPrekeyBundle(PrekeyBundle, Vec<u8>);
 
 impl SignedPrekeyBundle {
-    pub fn id_pub(&self) -> &[u8; 64] {
+    pub fn id_pub(&self) -> &[u8; 32] {
         &self.0.id_pub
     }
 
@@ -165,12 +163,8 @@ mod tests {
 
         let bundle = generate_prekey_bundle(&id, 5).1;
 
-        id.public_id()
-            .verifying_key()
-            .verify_strict(
-                &bundle.0.bundle(),
-                &Signature::from_slice(&bundle.1).unwrap(),
-            )
-            .unwrap()
+        // Verify XEdDSA signature
+        let sig: [u8; 64] = bundle.1[..64].try_into().unwrap();
+        assert!(id.public_id().verify_xeddsa(&bundle.0.bundle(), &sig));
     }
 }
