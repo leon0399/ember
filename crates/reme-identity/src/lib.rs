@@ -55,6 +55,24 @@ impl PublicID {
     self.x25519_public.to_bytes()
   }
 
+  /// Create a PublicID from raw 32-byte X25519 public key
+  ///
+  /// **IMPORTANT**: The Ed25519 verifying key will be a placeholder.
+  /// This is acceptable for remote identities (encryption only).
+  /// For signature verification, you need the full PublicID from Identity::from_seed().
+  pub fn from_bytes(bytes: &[u8; 32]) -> Self {
+    let x25519_public = X25519PublicKey::from(*bytes);
+
+    // Use placeholder Ed25519 key (same as Decode implementation)
+    let verifying_key = VerifyingKey::from_bytes(&[0u8; 32])
+      .expect("placeholder verifying key should always be valid");
+
+    Self {
+      x25519_public,
+      verifying_key,
+    }
+  }
+
   /// Get X25519 public key for encryption/DH
   pub fn x25519_public(&self) -> &X25519PublicKey {
     &self.x25519_public
@@ -298,5 +316,25 @@ mod tests {
 
     // X25519 key should work for DH
     assert_eq!(x25519_key.as_bytes().len(), 32);
+  }
+
+  #[test]
+  fn public_id_from_bytes_roundtrip() {
+    let id = Identity::generate();
+    let public_id = id.public_id();
+
+    // Serialize to bytes
+    let bytes = public_id.to_bytes();
+    assert_eq!(bytes.len(), 32);
+
+    // Deserialize from bytes
+    let restored = PublicID::from_bytes(&bytes);
+
+    // Should be equal (based on X25519 key)
+    assert_eq!(public_id, &restored);
+    assert_eq!(public_id.x25519_public(), restored.x25519_public());
+
+    // Note: Ed25519 key will be placeholder after from_bytes
+    // So signature verification won't work, but that's expected for remote identities
   }
 }
