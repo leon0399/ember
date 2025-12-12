@@ -4,6 +4,10 @@ use ed25519_dalek::ed25519::Error;
 use getset::Getters;
 use rand_core::OsRng;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
+use bincode::{Encode, Decode};
+use bincode::enc::Encoder;
+use bincode::de::Decoder;
+use bincode::error::{EncodeError, DecodeError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Getters)]
 pub struct PublicID {
@@ -51,6 +55,45 @@ impl AsRef<VerifyingKey> for PublicID {
   fn as_ref(&self) -> &VerifyingKey {
     &self.verifying_key
   }
+}
+
+// Implement bincode Encode/Decode for PublicID
+impl Encode for PublicID {
+    fn encode<E: Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {
+        // Encode Ed25519 public key (32 bytes)
+        self.to_bytes().encode(encoder)?;
+        // Encode X25519 public key (32 bytes)
+        self.x25519_to_bytes().encode(encoder)?;
+        Ok(())
+    }
+}
+
+impl<Context> Decode<Context> for PublicID {
+    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, DecodeError> {
+        let ed25519_bytes: [u8; 32] = Decode::decode(decoder)?;
+        let x25519_bytes: [u8; 32] = Decode::decode(decoder)?;
+
+        let verifying_key = VerifyingKey::from_bytes(&ed25519_bytes)
+            .map_err(|_| DecodeError::Other("Invalid Ed25519 public key"))?;
+        let x25519_public = X25519PublicKey::from(x25519_bytes);
+
+        Ok(PublicID::from((verifying_key, x25519_public)))
+    }
+}
+
+impl<'de, Context> bincode::BorrowDecode<'de, Context> for PublicID {
+    fn borrow_decode<D: bincode::de::BorrowDecoder<'de>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        let ed25519_bytes: [u8; 32] = bincode::BorrowDecode::borrow_decode(decoder)?;
+        let x25519_bytes: [u8; 32] = bincode::BorrowDecode::borrow_decode(decoder)?;
+
+        let verifying_key = VerifyingKey::from_bytes(&ed25519_bytes)
+            .map_err(|_| DecodeError::Other("Invalid Ed25519 public key"))?;
+        let x25519_public = X25519PublicKey::from(x25519_bytes);
+
+        Ok(PublicID::from((verifying_key, x25519_public)))
+    }
 }
 
 #[derive(Getters)]

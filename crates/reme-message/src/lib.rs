@@ -1,7 +1,6 @@
-use bincode::enc::Encoder;
-use bincode::error::{DecodeError, EncodeError};
 use bincode::{impl_borrow_decode, Decode, Encode};
-use bincode::de::BorrowDecoder;
+use bincode::enc::Encoder;
+use bincode::error::EncodeError;
 pub use reme_identity::PublicID;
 use uuid::Uuid;
 
@@ -44,7 +43,7 @@ pub struct OuterEnvelope {
 
     pub routing_key: RoutingKey,
 
-    pub created_at: Option<u64>,
+    pub created_at_ms: Option<u64>,
 
     pub ttl: Option<u32>,
 
@@ -59,10 +58,10 @@ impl OuterEnvelope {
             version: CURRENT_VERSION,
             flags: 0,
             routing_key,
-            created_at: std::time::SystemTime::now()
+            created_at_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .ok()
-                .map(|d| d.as_secs()),
+                .map(|d| d.as_millis() as u64),
             ttl,
             message_id: MessageID(Uuid::new_v4()),
             inner_ciphertext,
@@ -74,7 +73,7 @@ impl OuterEnvelope {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub struct InnerEnvelope {
     pub version: Version,
 
@@ -82,32 +81,34 @@ pub struct InnerEnvelope {
 
     pub to: PublicID,
 
-    pub created_at: u64,
+    pub created_at_ms: u64,
 
     /// Echo of the message ID of the outer envelope.
     pub outer_message_id: MessageID,
+
+    pub content: Content,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Encode, Decode)]
 #[non_exhaustive]
 pub enum Content {
     Text(TextContent),
     Receipt(ReceiptContent),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub struct TextContent {
     /// UTF-8 encoded.
     pub body: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub struct ReceiptContent {
     pub target_message_id: MessageID,
     pub kind: ReceiptKind,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Encode, Decode)]
 #[non_exhaustive]
 pub enum ReceiptKind {
     Delivered,

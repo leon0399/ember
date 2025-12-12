@@ -1,11 +1,10 @@
 [package]
 name = "reme-message"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 reme-identity = { workspace = true }
 
 bincode = { workspace = true }
-
 uuid = { workspace = true, features = ["v4"] }
