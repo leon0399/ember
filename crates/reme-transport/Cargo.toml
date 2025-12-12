@@ -1,0 +1,30 @@
+[package]
+name = "reme-transport"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reme-message = { workspace = true }
+reme-prekeys = { workspace = true }
+
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+bincode = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+base64 = "0.22"
+
+# HTTP implementation
+reqwest = { workspace = true, features = ["json"] }
+tokio = { workspace = true, features = ["full"] }
+
+# Optional: for server implementation
+axum = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+
+[features]
+default = ["http-client"]
+http-client = []
+http-server = ["axum", "tower"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

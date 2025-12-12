@@ -132,7 +132,7 @@ impl PrekeyBundle {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Encode, Decode)]
 pub struct SignedPrekeyBundle(PrekeyBundle, Vec<u8>);
 
 impl SignedPrekeyBundle {
@@ -150,6 +150,10 @@ impl SignedPrekeyBundle {
 
     pub fn one_time_prekeys(&self) -> &[(SignedPrekeyID, [u8; 32])] {
         &self.0.one_time_prekeys
+    }
+
+    pub fn signature(&self) -> &[u8] {
+        &self.1
     }
 }
 
