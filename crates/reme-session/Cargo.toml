@@ -1,0 +1,14 @@
+[package]
+name = "reme-session"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reme-identity = { workspace = true }
+reme-prekeys = { workspace = true }
+thiserror = { workspace = true }
+
+x25519-dalek = { workspace = true, features = ["static_secrets"] }
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+hkdf = "0.12"
+sha2 = "0.10"

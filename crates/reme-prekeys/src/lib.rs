@@ -6,7 +6,7 @@ use rand_core::OsRng;
 use reme_identity::Identity;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
 pub struct SignedPrekeyID(uuid::Uuid);
 
