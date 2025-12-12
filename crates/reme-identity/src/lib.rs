@@ -2,7 +2,9 @@ use std::fmt::Debug;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use ed25519_dalek::ed25519::Error;
 use getset::Getters;
+use hkdf::Hkdf;
 use rand_core::OsRng;
+use sha2::Sha256;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
 use bincode::{Encode, Decode};
 use bincode::enc::Encoder;
@@ -100,6 +102,7 @@ impl<'de, Context> bincode::BorrowDecode<'de, Context> for PublicID {
 pub struct Identity {
   #[get = "pub"]
   pub(crate) public_id: PublicID,
+  pub(crate) master_seed: [u8; 32],
   pub(crate) signing_key: SigningKey,
   pub(crate) x25519_secret: X25519Secret,
 }
@@ -108,6 +111,7 @@ impl Debug for Identity {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("Identity")
       .field("public_id", &self.public_id)
+      .field("master_seed", &"[REDACTED]")
       .field("signing_key", &"[REDACTED]")
       .field("x25519_secret", &"[REDACTED]")
       .finish()
@@ -118,57 +122,68 @@ impl Identity {
   pub fn x25519_secret(&self) -> &X25519Secret {
     &self.x25519_secret
   }
-}
 
-impl Identity {
+  /// Generate a new identity from a random 32-byte seed
   pub fn generate() -> Self {
-    // Use the OS randomness source directly; OsRng implements RngCore + CryptoRng
-    let mut rng = OsRng;
-
-    // Generate Ed25519 keypair for signing
-    let signing_key = SigningKey::generate(&mut rng);
-    let verifying_key = signing_key.verifying_key();
-
-    // Generate X25519 keypair for encryption (DH key agreement)
-    let x25519_secret = X25519Secret::random_from_rng(&mut rng);
-    let x25519_public = X25519PublicKey::from(&x25519_secret);
-
-    let public_id = PublicID::from((verifying_key, x25519_public));
-
-    Self {
-      public_id,
-      signing_key,
-      x25519_secret,
-    }
+    let mut seed = [0u8; 32];
+    rand_core::RngCore::fill_bytes(&mut OsRng, &mut seed);
+    Self::from_seed(&seed)
   }
 
-  /// Create Identity from 64 bytes: first 32 for Ed25519, last 32 for X25519
-  pub fn from_bytes(bytes: &[u8; 64]) -> Self {
-    let (ed25519_bytes, x25519_bytes) = bytes.split_at(32);
-
-    let signing_key = SigningKey::from_bytes(ed25519_bytes.try_into().expect("slice with incorrect length"));
-    let verifying_key = signing_key.verifying_key();
-
-    let x25519_secret = X25519Secret::from(*<&[u8; 32]>::try_from(x25519_bytes).expect("slice with incorrect length"));
-    let x25519_public = X25519PublicKey::from(&x25519_secret);
-
-    let public_id = PublicID::from((verifying_key, x25519_public));
-
-    Self {
-      public_id,
-      signing_key,
-      x25519_secret,
-    }
-  }
-
-  /// Return raw secret key bytes (64 bytes: first 32 for Ed25519, last 32 for X25519).
+  /// Derive identity from a 32-byte master seed using HKDF-SHA256
   ///
-  /// IMPORTANT: you should encrypt these before writing to disk.
-  pub fn to_bytes(&self) -> [u8; 64] {
-    let mut bytes = [0u8; 64];
-    bytes[0..32].copy_from_slice(&self.signing_key.to_bytes());
-    bytes[32..64].copy_from_slice(&self.x25519_secret.to_bytes());
-    bytes
+  /// This follows Signal Protocol's approach with domain separation:
+  /// - Ed25519 seed: HKDF(seed, info="reme-ed25519-identity-v1")
+  /// - X25519 seed: HKDF(seed, info="reme-x25519-identity-v1")
+  pub fn from_seed(seed: &[u8; 32]) -> Self {
+    // Derive Ed25519 signing key
+    let hkdf_ed25519 = Hkdf::<Sha256>::new(None, seed);
+    let mut ed25519_seed = [0u8; 32];
+    hkdf_ed25519
+      .expand(b"reme-ed25519-identity-v1", &mut ed25519_seed)
+      .expect("HKDF expand should never fail for 32 bytes");
+
+    let signing_key = SigningKey::from_bytes(&ed25519_seed);
+    let verifying_key = signing_key.verifying_key();
+
+    // Derive X25519 encryption key
+    let hkdf_x25519 = Hkdf::<Sha256>::new(None, seed);
+    let mut x25519_seed = [0u8; 32];
+    hkdf_x25519
+      .expand(b"reme-x25519-identity-v1", &mut x25519_seed)
+      .expect("HKDF expand should never fail for 32 bytes");
+
+    let x25519_secret = X25519Secret::from(x25519_seed);
+    let x25519_public = X25519PublicKey::from(&x25519_secret);
+
+    let public_id = PublicID::from((verifying_key, x25519_public));
+
+    Self {
+      public_id,
+      master_seed: *seed,
+      signing_key,
+      x25519_secret,
+    }
+  }
+
+  /// Return the 32-byte master seed
+  ///
+  /// IMPORTANT: This is the secret that backs up the entire identity.
+  /// Encrypt this before writing to disk.
+  pub fn to_seed(&self) -> &[u8; 32] {
+    &self.master_seed
+  }
+
+  /// Create Identity from 32-byte seed (new format)
+  pub fn from_bytes(bytes: &[u8; 32]) -> Self {
+    Self::from_seed(bytes)
+  }
+
+  /// Return the 32-byte master seed (new format)
+  ///
+  /// IMPORTANT: Encrypt this before writing to disk.
+  pub fn to_bytes(&self) -> [u8; 32] {
+    self.master_seed
   }
 }
 
@@ -193,5 +208,43 @@ mod tests {
       .verifying_key()
       .verify_strict(msg, &sig)
       .unwrap();
+  }
+
+  #[test]
+  fn deterministic_derivation() {
+    let seed = [42u8; 32];
+
+    let id1 = Identity::from_seed(&seed);
+    let id2 = Identity::from_seed(&seed);
+
+    // Same seed should produce identical identities
+    assert_eq!(id1.public_id(), id2.public_id());
+    assert_eq!(id1.to_seed(), id2.to_seed());
+    assert_eq!(id1.signing_key.to_bytes(), id2.signing_key.to_bytes());
+    assert_eq!(id1.x25519_secret.to_bytes(), id2.x25519_secret.to_bytes());
+  }
+
+  #[test]
+  fn seed_roundtrip() {
+    let id1 = Identity::generate();
+    let seed = id1.to_seed();
+
+    // Recreate from seed
+    let id2 = Identity::from_seed(seed);
+
+    // Should have identical keys
+    assert_eq!(id1.public_id(), id2.public_id());
+  }
+
+  #[test]
+  fn bytes_compatibility() {
+    let id1 = Identity::generate();
+
+    // to_bytes/from_bytes should work with 32-byte seed
+    let bytes = id1.to_bytes();
+    let id2 = Identity::from_bytes(&bytes);
+
+    assert_eq!(id1.public_id(), id2.public_id());
+    assert_eq!(bytes.len(), 32);
   }
 }
