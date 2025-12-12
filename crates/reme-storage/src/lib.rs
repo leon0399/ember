@@ -384,6 +384,13 @@ impl Storage {
 
         Ok(secrets)
     }
+
+    /// Load both prekey bundle and secrets
+    pub fn load_prekeys(&self) -> Result<(SignedPrekeyBundle, LocalPrekeySecrets), StorageError> {
+        let bundle = self.load_prekey_bundle()?;
+        let secrets = self.load_prekey_secrets()?;
+        Ok((bundle, secrets))
+    }
 }
 
 #[cfg(test)]

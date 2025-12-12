@@ -164,6 +164,24 @@ impl<T: Transport> Client<T> {
         Ok(())
     }
 
+    /// Upload existing prekeys to server (useful for multi-node sync)
+    pub async fn upload_prekeys(&self) -> Result<(), ClientError> {
+        // Load prekeys from storage
+        let (bundle, secrets) = self.storage.load_prekeys()?;
+
+        // Upload to server
+        self.transport
+            .upload_prekeys(self.routing_key(), bundle)
+            .await?;
+
+        // Update in-memory cache
+        let mut prekey_secrets = self.prekey_secrets.write().await;
+        *prekey_secrets = Some(secrets);
+
+        info!("Prekeys uploaded to server");
+        Ok(())
+    }
+
     // ========================================
     // Contact Management
     // ========================================

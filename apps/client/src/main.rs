@@ -16,6 +16,7 @@
 //!
 //! ## Commands
 //! - `init` - Generate new identity and prekeys
+//! - `upload` - Upload prekeys to all configured nodes
 //! - `id` - Show your public ID
 //! - `add <public_id> [name]` - Add a contact
 //! - `send <name> <message>` - Send a message to a contact
@@ -93,6 +94,11 @@ impl App {
         Ok(())
     }
 
+    async fn upload_prekeys(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.client.upload_prekeys().await?;
+        Ok(())
+    }
+
     fn add_contact(
         &mut self,
         public_id_hex: &str,
@@ -166,6 +172,7 @@ impl App {
 fn print_help() {
     println!("Commands:");
     println!("  init                    - Initialize prekeys (required before messaging)");
+    println!("  upload                  - Upload prekeys to all configured nodes");
     println!("  id                      - Show your public ID");
     println!("  add <public_id> <name>  - Add a contact");
     println!("  send <name> <message>   - Send a message");
@@ -260,6 +267,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "init" => match app.init_prekeys().await {
                         Ok(_) => println!("Prekeys initialized and uploaded"),
                         Err(e) => error!("Failed to init prekeys: {}", e),
+                    },
+
+                    "upload" => match app.upload_prekeys().await {
+                        Ok(_) => println!("Prekeys uploaded to all nodes"),
+                        Err(e) => error!("Failed to upload prekeys: {}", e),
                     },
 
                     "add" => {
