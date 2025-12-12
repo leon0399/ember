@@ -7,6 +7,28 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MessageID(Uuid);
 
+impl MessageID {
+    pub fn new() -> Self {
+        MessageID(Uuid::new_v4())
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        self.0.as_bytes()
+    }
+}
+
+impl From<Uuid> for MessageID {
+    fn from(uuid: Uuid) -> Self {
+        MessageID(uuid)
+    }
+}
+
+impl Default for MessageID {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl bincode::Encode for MessageID {
     fn encode<E: Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {
         self.0.as_bytes().encode(encoder)
@@ -63,7 +85,7 @@ impl OuterEnvelope {
                 .ok()
                 .map(|d| d.as_millis() as u64),
             ttl,
-            message_id: MessageID(Uuid::new_v4()),
+            message_id: MessageID::new(),
             inner_ciphertext,
         }
     }

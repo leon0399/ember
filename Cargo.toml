@@ -2,11 +2,15 @@
 resolver = "3"
 members = [
     "crates/*",
+    "apps/*",
 ]
 
 [workspace.dependencies]
 reme-identity = { path = "crates/reme-identity" }
 reme-prekeys = { path = "crates/reme-prekeys" }
+reme-message = { path = "crates/reme-message" }
+reme-session = { path = "crates/reme-session" }
+reme-encryption = { path = "crates/reme-encryption" }
 
 anyhow = "^1.0.99"
 thiserror = "^2.0.16"
