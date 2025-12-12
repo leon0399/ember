@@ -101,7 +101,6 @@ impl<'de, Context> bincode::BorrowDecode<'de, Context> for PublicID {
 pub struct Identity {
   #[get = "pub"]
   pub(crate) public_id: PublicID,
-  pub(crate) master_seed: [u8; 32],
   pub(crate) x25519_secret: X25519Secret,
 }
 
@@ -109,7 +108,6 @@ impl Debug for Identity {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("Identity")
       .field("public_id", &self.public_id)
-      .field("master_seed", &"[REDACTED]")
       .field("x25519_secret", &"[REDACTED]")
       .finish()
   }
@@ -139,7 +137,7 @@ impl Identity {
     Self::from_seed(&seed)
   }
 
-  /// Derive identity from a 32-byte master seed
+  /// Derive identity from a 32-byte seed
   ///
   /// Derives a single X25519 key that will be used for both:
   /// - X25519 DH operations (direct usage)
@@ -158,29 +156,28 @@ impl Identity {
 
     Self {
       public_id,
-      master_seed: *seed,
       x25519_secret,
     }
   }
 
-  /// Return the 32-byte master seed
+  /// Return the 32-byte secret key for backup
   ///
   /// IMPORTANT: This is the secret that backs up the entire identity.
   /// Encrypt this before writing to disk.
-  pub fn to_seed(&self) -> &[u8; 32] {
-    &self.master_seed
+  pub fn to_seed(&self) -> [u8; 32] {
+    self.x25519_secret.to_bytes()
   }
 
-  /// Create Identity from 32-byte seed (new format)
+  /// Create Identity from 32-byte seed
   pub fn from_bytes(bytes: &[u8; 32]) -> Self {
     Self::from_seed(bytes)
   }
 
-  /// Return the 32-byte master seed (new format)
+  /// Return the 32-byte secret key for serialization
   ///
   /// IMPORTANT: Encrypt this before writing to disk.
   pub fn to_bytes(&self) -> [u8; 32] {
-    self.master_seed
+    self.x25519_secret.to_bytes()
   }
 }
 
@@ -217,7 +214,7 @@ mod tests {
     let seed = id1.to_seed();
 
     // Recreate from seed
-    let id2 = Identity::from_seed(seed);
+    let id2 = Identity::from_seed(&seed);
 
     // Should have identical keys
     assert_eq!(id1.public_id(), id2.public_id());
