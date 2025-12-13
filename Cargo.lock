@@ -1434,6 +1434,7 @@ dependencies = [
  "reme-identity",
  "reme-message",
  "reme-prekeys",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror",
@@ -1441,6 +1442,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

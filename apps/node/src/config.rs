@@ -62,6 +62,14 @@ pub struct CliArgs {
     /// Log level (trace, debug, info, warn, error)
     #[arg(short = 'l', long, env = "REME_NODE_LOG_LEVEL")]
     pub log_level: Option<String>,
+
+    /// Unique node ID for replication (defaults to random UUID)
+    #[arg(long, env = "REME_NODE_ID")]
+    pub node_id: Option<String>,
+
+    /// Peer node URLs for replication (comma-separated)
+    #[arg(short = 'P', long, env = "REME_NODE_PEERS", value_delimiter = ',')]
+    pub peers: Option<Vec<String>>,
 }
 
 /// Final resolved configuration
@@ -78,6 +86,13 @@ pub struct NodeConfig {
 
     /// Log level
     pub log_level: String,
+
+    /// Unique node ID for replication
+    pub node_id: String,
+
+    /// Peer node URLs for replication
+    #[serde(default)]
+    pub peers: Vec<String>,
 }
 
 impl Default for NodeConfig {
@@ -88,6 +103,8 @@ impl Default for NodeConfig {
             max_messages: 1000,
             default_ttl: 7 * 24 * 60 * 60, // 7 days
             log_level: "info".to_string(),
+            node_id: uuid::Uuid::new_v4().to_string(),
+            peers: Vec::new(),
         }
     }
 }
@@ -115,7 +132,9 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         .set_default("bind_addr", defaults.bind_addr.clone())?
         .set_default("max_messages", defaults.max_messages as i64)?
         .set_default("default_ttl", defaults.default_ttl as i64)?
-        .set_default("log_level", defaults.log_level.clone())?;
+        .set_default("log_level", defaults.log_level.clone())?
+        .set_default("node_id", defaults.node_id.clone())?
+        .set_default::<_, Vec<String>>("peers", defaults.peers.clone())?;
 
     // Layer 2: Config file
     let config_path = cli.config.clone().or_else(default_config_path);
@@ -149,6 +168,12 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     if let Some(ref log_level) = cli.log_level {
         builder = builder.set_override("log_level", log_level.clone())?;
     }
+    if let Some(ref node_id) = cli.node_id {
+        builder = builder.set_override("node_id", node_id.clone())?;
+    }
+    if let Some(ref peers) = cli.peers {
+        builder = builder.set_override("peers", peers.clone())?;
+    }
 
     let config = builder.build()?;
 
@@ -163,12 +188,18 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         .map(|v| v as u32)
         .unwrap_or(defaults.default_ttl);
     let log_level: String = config.get("log_level").unwrap_or(defaults.log_level);
+    let node_id: String = config.get("node_id").unwrap_or(defaults.node_id);
+    let peers: Vec<String> = config
+        .get::<Vec<String>>("peers")
+        .unwrap_or(defaults.peers);
 
     Ok(NodeConfig {
         bind_addr,
         max_messages,
         default_ttl,
         log_level,
+        node_id,
+        peers,
     })
 }
 
@@ -183,5 +214,7 @@ mod tests {
         assert_eq!(config.max_messages, 1000);
         assert_eq!(config.default_ttl, 604800); // 7 days
         assert_eq!(config.log_level, "info");
+        assert!(!config.node_id.is_empty());
+        assert!(config.peers.is_empty());
     }
 }

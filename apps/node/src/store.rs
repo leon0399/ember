@@ -3,7 +3,7 @@
 //! This module provides storage for message envelopes and prekey bundles.
 //! Currently in-memory only; designed for future distributed storage.
 
-use reme_message::{OuterEnvelope, RoutingKey};
+use reme_message::{MessageID, OuterEnvelope, RoutingKey};
 use reme_prekeys::SignedPrekeyBundle;
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -85,6 +85,20 @@ impl MailboxStore {
 
         queue.push(entry);
         Ok(())
+    }
+
+    /// Check if a message with the given ID already exists for the routing key
+    pub fn has_message(&self, routing_key: &RoutingKey, message_id: &MessageID) -> Result<bool, StoreError> {
+        let messages = self.messages.read().map_err(|e| {
+            StoreError::LockPoisoned(e.to_string())
+        })?;
+
+        if let Some(queue) = messages.get(routing_key) {
+            let now = Instant::now();
+            Ok(queue.iter().any(|e| e.expires_at > now && e.envelope.message_id == *message_id))
+        } else {
+            Ok(false)
+        }
     }
 
     /// Fetch and remove all messages for a routing key

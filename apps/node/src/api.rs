@@ -6,10 +6,12 @@
 //! - POST /api/v1/prekeys/:routing_key - Upload prekeys
 //! - GET /api/v1/prekeys/:routing_key - Fetch prekeys
 
+use crate::replication::{ReplicationClient, FROM_NODE_HEADER};
 use crate::store::{MailboxStore, StoreError};
 use axum::{
+    body::Bytes,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -25,6 +27,7 @@ use tracing::{debug, error, info};
 /// Shared application state
 pub struct AppState {
     pub store: MailboxStore,
+    pub replication: Arc<ReplicationClient>,
 }
 
 /// Create the API router
@@ -99,47 +102,87 @@ pub struct ErrorResponse {
 // Handlers
 // ============================================
 
+/// Parse envelope from body (supports both JSON and plain text base64)
+fn parse_envelope_body(body: &Bytes) -> Result<(String, OuterEnvelope), String> {
+    let body_str = std::str::from_utf8(body).map_err(|_| "Invalid UTF-8")?;
+
+    // Try JSON first, then plain text
+    let envelope_b64 = if body_str.starts_with('{') {
+        // JSON format
+        let req: EnqueueRequest =
+            serde_json::from_str(body_str).map_err(|e| format!("Invalid JSON: {}", e))?;
+        req.envelope
+    } else {
+        // Plain text base64
+        body_str.trim().to_string()
+    };
+
+    // Decode envelope
+    let envelope_bytes = BASE64_STANDARD
+        .decode(&envelope_b64)
+        .map_err(|_| "Invalid base64 encoding")?;
+
+    // Deserialize envelope
+    let (envelope, _): (OuterEnvelope, _) =
+        bincode::decode_from_slice(&envelope_bytes, bincode::config::standard())
+            .map_err(|e| format!("Invalid envelope format: {}", e))?;
+
+    Ok((envelope_b64, envelope))
+}
+
 async fn enqueue_message(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<EnqueueRequest>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> impl IntoResponse {
-    // Decode envelope
-    let envelope_bytes = match BASE64_STANDARD.decode(&req.envelope) {
-        Ok(b) => b,
+    // Parse envelope from body
+    let (envelope_b64, envelope) = match parse_envelope_body(&body) {
+        Ok(result) => result,
         Err(e) => {
-            error!("Failed to decode envelope: {}", e);
+            error!("Failed to parse envelope: {}", e);
             return (
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Invalid base64 encoding".to_string(),
-                }),
+                Json(ErrorResponse { error: e }),
             )
                 .into_response();
         }
     };
 
-    // Deserialize envelope
-    let envelope: OuterEnvelope =
-        match bincode::decode_from_slice(&envelope_bytes, bincode::config::standard()) {
-            Ok((env, _)) => env,
-            Err(e) => {
-                error!("Failed to deserialize envelope: {}", e);
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "Invalid envelope format".to_string(),
-                    }),
-                )
-                    .into_response();
-            }
-        };
-
     let routing_key = envelope.routing_key;
+    let message_id = envelope.message_id;
+
+    // Check for duplicate (idempotent operation)
+    match state.store.has_message(&routing_key, &message_id) {
+        Ok(true) => {
+            debug!("Duplicate message {:?}, skipping", message_id);
+            return (StatusCode::OK, Json(EnqueueResponse { status: "ok".to_string() }))
+                .into_response();
+        }
+        Ok(false) => {}
+        Err(e) => {
+            error!("Failed to check message existence: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse { error: e.to_string() }),
+            )
+                .into_response();
+        }
+    }
 
     // Enqueue
     match state.store.enqueue(routing_key, envelope) {
         Ok(_) => {
             debug!("Message enqueued for {:?}", &routing_key[..4]);
+
+            // Extract source node from header (if this came from a peer)
+            let from_node = headers
+                .get(FROM_NODE_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+
+            // Trigger replication to peers (fire-and-forget)
+            state.replication.replicate_message(envelope_b64, from_node);
+
             (StatusCode::OK, Json(EnqueueResponse { status: "ok".to_string() })).into_response()
         }
         Err(e) => {
@@ -217,10 +260,39 @@ async fn fetch_messages(
     }
 }
 
+/// Parse prekey bundle from body (supports both JSON and plain text base64)
+fn parse_prekey_body(body: &Bytes) -> Result<(String, SignedPrekeyBundle), String> {
+    let body_str = std::str::from_utf8(body).map_err(|_| "Invalid UTF-8")?;
+
+    // Try JSON first, then plain text
+    let bundle_b64 = if body_str.starts_with('{') {
+        // JSON format
+        let req: UploadPrekeysRequest =
+            serde_json::from_str(body_str).map_err(|e| format!("Invalid JSON: {}", e))?;
+        req.bundle
+    } else {
+        // Plain text base64
+        body_str.trim().to_string()
+    };
+
+    // Decode bundle
+    let bundle_bytes = BASE64_STANDARD
+        .decode(&bundle_b64)
+        .map_err(|_| "Invalid base64 encoding")?;
+
+    // Deserialize bundle
+    let (bundle, _): (SignedPrekeyBundle, _) =
+        bincode::decode_from_slice(&bundle_bytes, bincode::config::standard())
+            .map_err(|e| format!("Invalid bundle format: {}", e))?;
+
+    Ok((bundle_b64, bundle))
+}
+
 async fn upload_prekeys(
     State(state): State<Arc<AppState>>,
     Path(routing_key_b64): Path<String>,
-    Json(req): Json<UploadPrekeysRequest>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> impl IntoResponse {
     // Decode routing key (URL-safe base64)
     let routing_key_bytes = match URL_SAFE_NO_PAD.decode(&routing_key_b64) {
@@ -249,40 +321,35 @@ async fn upload_prekeys(
     let mut routing_key = [0u8; 16];
     routing_key.copy_from_slice(&routing_key_bytes);
 
-    // Decode bundle
-    let bundle_bytes = match BASE64_STANDARD.decode(&req.bundle) {
-        Ok(b) => b,
-        Err(_) => {
+    // Parse bundle from body
+    let (bundle_b64, bundle) = match parse_prekey_body(&body) {
+        Ok(result) => result,
+        Err(e) => {
+            error!("Failed to parse prekey bundle: {}", e);
             return (
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Invalid bundle encoding".to_string(),
-                }),
+                Json(ErrorResponse { error: e }),
             )
                 .into_response();
         }
     };
 
-    // Deserialize bundle
-    let bundle: SignedPrekeyBundle =
-        match bincode::decode_from_slice(&bundle_bytes, bincode::config::standard()) {
-            Ok((b, _)) => b,
-            Err(e) => {
-                error!("Failed to deserialize prekey bundle: {}", e);
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "Invalid bundle format".to_string(),
-                    }),
-                )
-                    .into_response();
-            }
-        };
-
     // Store
     match state.store.store_prekeys(routing_key, bundle) {
         Ok(_) => {
             info!("Prekeys uploaded for {:?}", &routing_key[..4]);
+
+            // Extract source node from header (if this came from a peer)
+            let from_node = headers
+                .get(FROM_NODE_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+
+            // Trigger replication to peers (fire-and-forget)
+            state
+                .replication
+                .replicate_prekeys(routing_key_b64, bundle_b64, from_node);
+
             (
                 StatusCode::OK,
                 Json(UploadPrekeysResponse { status: "ok".to_string() }),

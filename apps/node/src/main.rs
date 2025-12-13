@@ -30,10 +30,12 @@
 
 mod api;
 mod config;
+mod replication;
 mod store;
 
 use api::AppState;
 use config::{load_config, NodeConfig};
+use replication::ReplicationClient;
 use std::sync::Arc;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
@@ -75,8 +77,12 @@ async fn main() {
     // Create store
     let store = store::MailboxStore::new(config.max_messages, config.default_ttl);
 
+    // Create replication client
+    let replication = Arc::new(ReplicationClient::new(config.node_id, config.peers));
+    replication.log_config();
+
     // Create app state
-    let state = Arc::new(AppState { store });
+    let state = Arc::new(AppState { store, replication });
 
     // Create router
     let app = api::router(state);
