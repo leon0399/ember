@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use reme_message::{OuterEnvelope, RoutingKey};
+use reme_message::{OuterEnvelope, RoutingKey, TombstoneEnvelope};
 use reme_prekeys::SignedPrekeyBundle;
 use thiserror::Error;
 
@@ -31,6 +31,12 @@ pub enum TransportError {
 pub trait Transport: Send + Sync {
     /// Submit an OuterEnvelope to the mailbox
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError>;
+
+    /// Submit a tombstone to acknowledge message receipt
+    ///
+    /// Tombstones enable cache clearing and prevent duplicate delivery.
+    /// They are cryptographically signed by the recipient.
+    async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError>;
 
     /// Fetch pending messages for a given routing key
     async fn fetch_messages(&self, routing_key: RoutingKey) -> Result<Vec<OuterEnvelope>, TransportError>;
