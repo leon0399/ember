@@ -1,6 +1,6 @@
-//! Node-to-node message replication
+//! Node-to-node replication
 //!
-//! This module handles replicating messages and prekeys to peer nodes.
+//! This module handles replicating payloads (messages/tombstones) and prekeys to peer nodes.
 //! Uses fire-and-forget pattern to avoid blocking the client response.
 
 use reqwest::Client;
@@ -27,10 +27,10 @@ impl ReplicationClient {
         }
     }
 
-    /// Replicate a message envelope to all peer nodes (except the source)
+    /// Replicate a wire payload (message or tombstone) to all peer nodes (except the source)
     ///
     /// Uses fire-and-forget pattern - spawns tasks and returns immediately.
-    pub fn replicate_message(self: &Arc<Self>, envelope_b64: String, from_node: Option<String>) {
+    pub fn replicate_payload(self: &Arc<Self>, payload_b64: String, from_node: Option<String>) {
         if self.peer_urls.is_empty() {
             return;
         }
@@ -46,29 +46,29 @@ impl ReplicationClient {
                     }
                 }
 
-                let url = format!("{}/api/v1/enqueue", peer_url);
+                let url = format!("{}/api/v1/submit", peer_url);
                 let result = this
                     .client
                     .post(&url)
                     .header(FROM_NODE_HEADER, &this.node_id)
                     .header("Content-Type", "text/plain")
-                    .body(envelope_b64.clone())
+                    .body(payload_b64.clone())
                     .send()
                     .await;
 
                 match result {
                     Ok(resp) if resp.status().is_success() => {
-                        debug!("Replicated message to {}", peer_url);
+                        debug!("Replicated payload to {}", peer_url);
                     }
                     Ok(resp) => {
                         warn!(
-                            "Peer {} returned status {} for message replication",
+                            "Peer {} returned status {} for payload replication",
                             peer_url,
                             resp.status()
                         );
                     }
                     Err(e) => {
-                        error!("Failed to replicate message to {}: {}", peer_url, e);
+                        error!("Failed to replicate payload to {}: {}", peer_url, e);
                     }
                 }
             }

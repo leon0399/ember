@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
 use futures::future::join_all;
-use reme_message::{OuterEnvelope, RoutingKey};
+use reme_message::{OuterEnvelope, RoutingKey, WirePayload};
 use reme_prekeys::SignedPrekeyBundle;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -15,7 +15,7 @@ use crate::{Transport, TransportError};
 /// HTTP transport client for communicating with mailbox nodes
 ///
 /// Supports multiple nodes for redundancy. When multiple nodes are configured:
-/// - Messages are sent to ALL nodes (broadcast)
+/// - Payloads (messages/tombstones) are sent to ALL nodes (broadcast)
 /// - Messages are fetched from ALL nodes and deduplicated
 /// - Prekeys are uploaded to ALL nodes
 /// - Prekey fetches try all nodes and return first success
@@ -24,20 +24,15 @@ pub struct HttpTransport {
     client: Client,
 }
 
-#[derive(Debug, Serialize)]
-struct EnqueueRequest {
-    /// Base64-encoded OuterEnvelope
-    envelope: String,
-}
-
 #[derive(Debug, Deserialize)]
-struct EnqueueResponse {
+struct SubmitResponse {
+    #[allow(dead_code)]
     status: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct FetchResponse {
-    messages: Vec<String>,
+    payloads: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -93,21 +88,18 @@ impl HttpTransport {
         &self.base_urls
     }
 
-    /// Submit message to a single node
+    /// Submit wire payload to a single node
     async fn submit_to_node(
         &self,
         base_url: &str,
-        envelope_b64: &str,
+        payload_b64: &str,
     ) -> Result<(), TransportError> {
-        let request = EnqueueRequest {
-            envelope: envelope_b64.to_string(),
-        };
-
-        let url = format!("{}/api/v1/enqueue", base_url);
+        let url = format!("{}/api/v1/submit", base_url);
         let response = self
             .client
             .post(&url)
-            .json(&request)
+            .header("Content-Type", "text/plain")
+            .body(payload_b64.to_string())
             .send()
             .await
             .map_err(|e| TransportError::Network(e.to_string()))?;
@@ -124,7 +116,7 @@ impl HttpTransport {
             )));
         }
 
-        let _result: EnqueueResponse = response
+        let _result: SubmitResponse = response
             .json()
             .await
             .map_err(|e| TransportError::Serialization(e.to_string()))?;
@@ -164,18 +156,20 @@ impl HttpTransport {
             .await
             .map_err(|e| TransportError::Serialization(e.to_string()))?;
 
-        // Decode and deserialize each envelope
+        // Decode and deserialize each wire payload
         let mut envelopes = Vec::new();
-        for blob in result.messages {
-            let envelope_bytes = BASE64_STANDARD
+        for blob in result.payloads {
+            let wire_bytes = BASE64_STANDARD
                 .decode(&blob)
                 .map_err(|e| TransportError::Serialization(format!("base64 decode: {}", e)))?;
 
-            let (envelope, _): (OuterEnvelope, usize) =
-                bincode::decode_from_slice(&envelope_bytes, bincode::config::standard())
-                    .map_err(|e| TransportError::Serialization(format!("bincode decode: {}", e)))?;
+            let payload = WirePayload::decode(&wire_bytes)
+                .map_err(|e| TransportError::Serialization(format!("wire decode: {}", e)))?;
 
-            envelopes.push(envelope);
+            // Only extract messages (tombstones are handled separately)
+            if let WirePayload::Message(envelope) = payload {
+                envelopes.push(envelope);
+            }
         }
 
         Ok(envelopes)
@@ -269,12 +263,12 @@ impl Transport for HttpTransport {
     ///
     /// Returns success if ANY node accepts the message.
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
-        // Serialize envelope to bytes
-        let envelope_bytes = bincode::encode_to_vec(&envelope, bincode::config::standard())
-            .map_err(|e| TransportError::Serialization(e.to_string()))?;
+        // Encode as WirePayload (includes type discriminator)
+        let wire_payload = WirePayload::Message(envelope);
+        let wire_bytes = wire_payload.encode();
 
         // Base64 encode
-        let envelope_b64 = BASE64_STANDARD.encode(&envelope_bytes);
+        let envelope_b64 = BASE64_STANDARD.encode(&wire_bytes);
 
         // Submit to all nodes in parallel
         let futures: Vec<_> = self

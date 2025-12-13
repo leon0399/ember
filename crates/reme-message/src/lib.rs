@@ -1,8 +1,14 @@
-use bincode::{impl_borrow_decode, Decode, Encode};
 use bincode::enc::Encoder;
 use bincode::error::EncodeError;
+use bincode::{impl_borrow_decode, Decode, Encode};
 pub use reme_identity::PublicID;
 use uuid::Uuid;
+
+pub mod tombstone;
+pub use tombstone::{
+    DetailedReceipt, DeviceID, TombstoneEnvelope, TombstoneStatus, TombstoneValidationError,
+    WirePayload, WireType, CLOCK_SKEW_ALLOWANCE_MS, TOMBSTONE_MAX_AGE_MS,
+};
 
 /// Session establishment data included in the first message from initiator
 /// This allows the recipient to derive the same session keys

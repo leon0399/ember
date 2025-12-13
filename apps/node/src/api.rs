@@ -1,7 +1,7 @@
 //! HTTP API for the mailbox node
 //!
 //! Provides REST endpoints for:
-//! - POST /api/v1/enqueue - Submit a message
+//! - POST /api/v1/submit - Submit a message or tombstone (unified wire format)
 //! - GET /api/v1/fetch/:routing_key - Fetch messages
 //! - POST /api/v1/prekeys/:routing_key - Upload prekeys
 //! - GET /api/v1/prekeys/:routing_key - Fetch prekeys
@@ -18,11 +18,11 @@ use axum::{
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
-use reme_message::OuterEnvelope;
+use reme_message::{OuterEnvelope, TombstoneEnvelope, WirePayload};
 use reme_prekeys::SignedPrekeyBundle;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Shared application state
 pub struct AppState {
@@ -33,7 +33,7 @@ pub struct AppState {
 /// Create the API router
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/api/v1/enqueue", post(enqueue_message))
+        .route("/api/v1/submit", post(submit_payload))
         .route("/api/v1/fetch/{routing_key}", get(fetch_messages))
         .route("/api/v1/prekeys/{routing_key}", post(upload_prekeys))
         .route("/api/v1/prekeys/{routing_key}", get(fetch_prekeys))
@@ -46,21 +46,15 @@ pub fn router(state: Arc<AppState>) -> Router {
 // Request/Response types
 // ============================================
 
-#[derive(Debug, Deserialize)]
-pub struct EnqueueRequest {
-    /// Base64-encoded OuterEnvelope
-    pub envelope: String,
-}
-
 #[derive(Debug, Serialize)]
-pub struct EnqueueResponse {
+pub struct SubmitResponse {
     pub status: String,
 }
 
 #[derive(Debug, Serialize)]
 pub struct FetchResponse {
-    /// Base64-encoded OuterEnvelopes
-    pub messages: Vec<String>,
+    /// Base64-encoded WirePayload bytes (includes wire type prefix)
+    pub payloads: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,6 +85,8 @@ pub struct StatsResponse {
     pub mailbox_count: usize,
     pub total_messages: usize,
     pub prekey_bundles: usize,
+    pub tombstone_count: usize,
+    pub orphan_tombstone_count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -102,44 +98,38 @@ pub struct ErrorResponse {
 // Handlers
 // ============================================
 
-/// Parse envelope from body (supports both JSON and plain text base64)
-fn parse_envelope_body(body: &Bytes) -> Result<(String, OuterEnvelope), String> {
-    let body_str = std::str::from_utf8(body).map_err(|_| "Invalid UTF-8")?;
+/// Parse wire payload from body (plain text base64 of wire format bytes)
+fn parse_wire_payload(body: &Bytes) -> Result<(String, WirePayload), String> {
+    let body_str = std::str::from_utf8(body)
+        .map_err(|_| "Invalid UTF-8")?
+        .trim();
 
-    // Try JSON first, then plain text
-    let envelope_b64 = if body_str.starts_with('{') {
-        // JSON format
-        let req: EnqueueRequest =
-            serde_json::from_str(body_str).map_err(|e| format!("Invalid JSON: {}", e))?;
-        req.envelope
-    } else {
-        // Plain text base64
-        body_str.trim().to_string()
-    };
-
-    // Decode envelope
-    let envelope_bytes = BASE64_STANDARD
-        .decode(&envelope_b64)
+    // Decode base64 to get wire format bytes
+    let wire_bytes = BASE64_STANDARD
+        .decode(body_str)
         .map_err(|_| "Invalid base64 encoding")?;
 
-    // Deserialize envelope
-    let (envelope, _): (OuterEnvelope, _) =
-        bincode::decode_from_slice(&envelope_bytes, bincode::config::standard())
-            .map_err(|e| format!("Invalid envelope format: {}", e))?;
+    // Decode wire payload (includes type discriminator)
+    let payload = WirePayload::decode(&wire_bytes)?;
 
-    Ok((envelope_b64, envelope))
+    Ok((body_str.to_string(), payload))
 }
 
-async fn enqueue_message(
+/// Unified submit endpoint for messages and tombstones
+///
+/// Accepts base64-encoded wire format: `[type: u8][payload: bincode bytes]`
+/// - type 0x00: Message (OuterEnvelope)
+/// - type 0x01: Tombstone (TombstoneEnvelope)
+async fn submit_payload(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
-    // Parse envelope from body
-    let (envelope_b64, envelope) = match parse_envelope_body(&body) {
+    // Parse wire payload from body
+    let (payload_b64, payload) = match parse_wire_payload(&body) {
         Ok(result) => result,
         Err(e) => {
-            error!("Failed to parse envelope: {}", e);
+            error!("Failed to parse wire payload: {}", e);
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse { error: e }),
@@ -148,6 +138,28 @@ async fn enqueue_message(
         }
     };
 
+    // Extract source node from header (if this came from a peer)
+    let from_node = headers
+        .get(FROM_NODE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    match payload {
+        WirePayload::Message(envelope) => {
+            handle_message(state, envelope, payload_b64, from_node).await
+        }
+        WirePayload::Tombstone(tombstone) => {
+            handle_tombstone(state, tombstone, payload_b64, from_node).await
+        }
+    }
+}
+
+async fn handle_message(
+    state: Arc<AppState>,
+    envelope: OuterEnvelope,
+    payload_b64: String,
+    from_node: Option<String>,
+) -> axum::response::Response {
     let routing_key = envelope.routing_key;
     let message_id = envelope.message_id;
 
@@ -155,7 +167,7 @@ async fn enqueue_message(
     match state.store.has_message(&routing_key, &message_id) {
         Ok(true) => {
             debug!("Duplicate message {:?}, skipping", message_id);
-            return (StatusCode::OK, Json(EnqueueResponse { status: "ok".to_string() }))
+            return (StatusCode::OK, Json(SubmitResponse { status: "ok".to_string() }))
                 .into_response();
         }
         Ok(false) => {}
@@ -174,16 +186,10 @@ async fn enqueue_message(
         Ok(_) => {
             debug!("Message enqueued for {:?}", &routing_key[..4]);
 
-            // Extract source node from header (if this came from a peer)
-            let from_node = headers
-                .get(FROM_NODE_HEADER)
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string());
-
             // Trigger replication to peers (fire-and-forget)
-            state.replication.replicate_message(envelope_b64, from_node);
+            state.replication.replicate_payload(payload_b64, from_node);
 
-            (StatusCode::OK, Json(EnqueueResponse { status: "ok".to_string() })).into_response()
+            (StatusCode::OK, Json(SubmitResponse { status: "ok".to_string() })).into_response()
         }
         Err(e) => {
             error!("Failed to enqueue message: {}", e);
@@ -192,6 +198,81 @@ async fn enqueue_message(
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
             (status, Json(ErrorResponse { error: e.to_string() })).into_response()
+        }
+    }
+}
+
+async fn handle_tombstone(
+    state: Arc<AppState>,
+    tombstone: TombstoneEnvelope,
+    payload_b64: String,
+    from_node: Option<String>,
+) -> axum::response::Response {
+    let message_id = tombstone.target_message_id;
+
+    // Check if we already have this tombstone (idempotent operation)
+    match state.store.has_tombstone(&message_id) {
+        Ok(true) => {
+            debug!("Duplicate tombstone for {:?}, skipping", message_id);
+            return (StatusCode::OK, Json(SubmitResponse { status: "ok".to_string() }))
+                .into_response();
+        }
+        Ok(false) => {}
+        Err(e) => {
+            error!("Failed to check tombstone existence: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse { error: e.to_string() }),
+            )
+                .into_response();
+        }
+    }
+
+    // Store tombstone (includes validation)
+    match state.store.store_tombstone(tombstone.clone()) {
+        Ok(_) => {
+            info!("Tombstone stored for message {:?}", message_id);
+
+            // Trigger replication to peers (fire-and-forget)
+            state.replication.replicate_payload(payload_b64, from_node);
+
+            (StatusCode::OK, Json(SubmitResponse { status: "ok".to_string() })).into_response()
+        }
+        Err(StoreError::RateLimitExceeded) => {
+            warn!("Tombstone rate limit exceeded for {:?}", &tombstone.recipient_id_pub[..4]);
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(ErrorResponse {
+                    error: "Rate limit exceeded".to_string(),
+                }),
+            )
+                .into_response()
+        }
+        Err(StoreError::ValidationError(e)) => {
+            warn!("Tombstone validation failed: {}", e);
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse { error: e }),
+            )
+                .into_response()
+        }
+        Err(StoreError::SequenceNotMonotonic) => {
+            warn!("Tombstone sequence not monotonic");
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Sequence number not monotonic".to_string(),
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!("Failed to store tombstone: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse { error: e.to_string() }),
+            )
+                .into_response()
         }
     }
 }
@@ -231,21 +312,21 @@ async fn fetch_messages(
     // Fetch messages
     match state.store.fetch(&routing_key) {
         Ok(envelopes) => {
-            let messages: Vec<String> = envelopes
-                .iter()
-                .filter_map(|env| {
-                    bincode::encode_to_vec(env, bincode::config::standard())
-                        .ok()
-                        .map(|bytes| BASE64_STANDARD.encode(&bytes))
+            // Encode as WirePayload format (with type discriminator)
+            let payloads: Vec<String> = envelopes
+                .into_iter()
+                .map(|env| {
+                    let wire_payload = WirePayload::Message(env);
+                    BASE64_STANDARD.encode(wire_payload.encode())
                 })
                 .collect();
 
             debug!(
-                "Fetched {} messages for {:?}",
-                messages.len(),
+                "Fetched {} payloads for {:?}",
+                payloads.len(),
                 &routing_key[..4]
             );
-            (StatusCode::OK, Json(FetchResponse { messages })).into_response()
+            (StatusCode::OK, Json(FetchResponse { payloads })).into_response()
         }
         Err(e) => {
             error!("Failed to fetch messages: {}", e);
@@ -443,5 +524,7 @@ async fn get_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         mailbox_count: stats.mailbox_count,
         total_messages: stats.total_messages,
         prekey_bundles: stats.prekey_bundles,
+        tombstone_count: stats.tombstone_count,
+        orphan_tombstone_count: stats.orphan_tombstone_count,
     })
 }
