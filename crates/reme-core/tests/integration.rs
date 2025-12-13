@@ -389,6 +389,102 @@ async fn test_tombstone_with_status() {
     println!("\n✓ Tombstone status test passed!");
 }
 
+/// Test multi-node replication: messages sent to one node replicate to peers
+#[tokio::test]
+async fn test_multi_node_replication() {
+    use node::{api, store, replication};
+
+    // Start two nodes
+    let listener1 = TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind node1");
+    let addr1 = listener1.local_addr().expect("Failed to get local addr");
+    let url1 = format!("http://{}", addr1);
+
+    let listener2 = TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind node2");
+    let addr2 = listener2.local_addr().expect("Failed to get local addr");
+    let url2 = format!("http://{}", addr2);
+
+    println!("Node 1: {}", url1);
+    println!("Node 2: {}", url2);
+
+    // Create node 1 with node 2 as peer
+    let store1 = store::MailboxStore::new(1000, 3600);
+    let replication1 = Arc::new(replication::ReplicationClient::new(
+        "node-1".to_string(),
+        vec![url2.clone()],
+    ));
+    let state1 = Arc::new(api::AppState { store: store1, replication: replication1 });
+    let app1 = api::router(state1);
+
+    // Create node 2 with node 1 as peer
+    let store2 = store::MailboxStore::new(1000, 3600);
+    let replication2 = Arc::new(replication::ReplicationClient::new(
+        "node-2".to_string(),
+        vec![url1.clone()],
+    ));
+    let state2 = Arc::new(api::AppState { store: store2, replication: replication2 });
+    let app2 = api::router(state2);
+
+    // Spawn both servers
+    let _handle1 = tokio::spawn(async move {
+        axum::serve(listener1, app1).await.expect("Server 1 failed");
+    });
+    let _handle2 = tokio::spawn(async move {
+        axum::serve(listener2, app2).await.expect("Server 2 failed");
+    });
+
+    // Wait for servers to be ready
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Create transports for both nodes
+    let transport1 = HttpTransport::new(&url1);
+    let transport2 = HttpTransport::new(&url2);
+
+    // Create a test identity
+    let identity = Identity::generate();
+    let routing_key = identity.public_id().routing_key();
+
+    // Upload prekeys to node 1
+    let (_, bundle) = generate_prekey_bundle(&identity, 5);
+    transport1
+        .upload_prekeys(routing_key, bundle.clone())
+        .await
+        .expect("upload_prekeys to node1 failed");
+    println!("Uploaded prekeys to node 1");
+
+    // Wait for replication
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Verify prekeys are available on node 2
+    let fetched_from_node2 = transport2
+        .fetch_prekeys(routing_key)
+        .await
+        .expect("fetch_prekeys from node2 failed");
+    assert_eq!(fetched_from_node2.id_pub(), bundle.id_pub());
+    println!("Prekeys replicated to node 2: OK");
+
+    // Send a message to node 1
+    let test_envelope = OuterEnvelope::new(routing_key, vec![42, 43, 44, 45], Some(3600));
+    transport1
+        .submit_message(test_envelope)
+        .await
+        .expect("submit_message to node1 failed");
+    println!("Sent message to node 1");
+
+    // Wait for replication
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Fetch message from node 2
+    let messages_from_node2 = transport2
+        .fetch_messages(routing_key)
+        .await
+        .expect("fetch_messages from node2 failed");
+    assert_eq!(messages_from_node2.len(), 1);
+    assert_eq!(messages_from_node2[0].inner_ciphertext, vec![42, 43, 44, 45]);
+    println!("Message replicated to node 2: OK");
+
+    println!("\n✓ Multi-node replication test passed!");
+}
+
 /// Test that tombstone sequence numbers are monotonically increasing
 #[tokio::test]
 async fn test_tombstone_sequence() {
