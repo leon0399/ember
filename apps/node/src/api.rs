@@ -26,7 +26,7 @@ use tracing::{debug, error, info, warn};
 
 /// Shared application state
 pub struct AppState {
-    pub store: MailboxStore,
+    pub store: Arc<MailboxStore>,
     pub replication: Arc<ReplicationClient>,
 }
 

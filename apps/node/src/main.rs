@@ -29,11 +29,13 @@
 //! - GET /api/v1/stats - Store statistics
 
 mod api;
+mod cleanup;
 mod config;
 mod replication;
 mod store;
 
 use api::AppState;
+use cleanup::run_cleanup_task;
 use config::{load_config, NodeConfig};
 use replication::ReplicationClient;
 use std::sync::Arc;
@@ -74,12 +76,25 @@ async fn main() {
     info!("Max messages per mailbox: {}", config.max_messages);
     info!("Default TTL: {} seconds", config.default_ttl);
 
-    // Create store
-    let store = store::MailboxStore::new(config.max_messages, config.default_ttl);
+    // Create store with configured TTLs
+    let mut store = store::MailboxStore::new(config.max_messages, config.default_ttl);
+    store.set_tombstone_ttl(config.cleanup.tombstone_delay_secs);
+    store.set_orphan_ttl(config.cleanup.orphan_delay_secs);
+    let store = Arc::new(store);
 
     // Create replication client
     let replication = Arc::new(ReplicationClient::new(config.node_id, config.peers));
     replication.log_config();
+
+    // Log cleanup configuration
+    config.cleanup.log_config();
+
+    // Spawn cleanup task
+    let cleanup_store = Arc::clone(&store);
+    let cleanup_config = config.cleanup.clone();
+    tokio::spawn(async move {
+        run_cleanup_task(cleanup_store, cleanup_config).await;
+    });
 
     // Create app state
     let state = Arc::new(AppState { store, replication });

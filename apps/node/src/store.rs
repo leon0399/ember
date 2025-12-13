@@ -555,6 +555,45 @@ impl MailboxStore {
 
         Ok(cleaned)
     }
+
+    /// Cleanup expired messages across all mailboxes
+    ///
+    /// This is an explicit sweep that removes messages whose TTL has expired.
+    /// Returns the number of messages cleaned up.
+    pub fn cleanup_expired_messages(&self) -> Result<usize, StoreError> {
+        let mut messages = self
+            .messages
+            .write()
+            .map_err(|e| StoreError::LockPoisoned(e.to_string()))?;
+
+        let now = Instant::now();
+        let mut cleaned = 0;
+
+        for queue in messages.values_mut() {
+            let before = queue.len();
+            queue.retain(|e| e.expires_at > now);
+            cleaned += before - queue.len();
+        }
+
+        // Remove empty mailboxes to free memory
+        messages.retain(|_, queue| !queue.is_empty());
+
+        if cleaned > 0 {
+            debug!("Cleaned up {} expired messages", cleaned);
+        }
+
+        Ok(cleaned)
+    }
+
+    /// Update the tombstone TTL (for configurable cleanup delays)
+    pub fn set_tombstone_ttl(&mut self, ttl_secs: u64) {
+        self.tombstone_ttl = Duration::from_secs(ttl_secs);
+    }
+
+    /// Update the orphan TTL (for configurable cleanup delays)
+    pub fn set_orphan_ttl(&mut self, ttl_secs: u64) {
+        self.orphan_ttl = Duration::from_secs(ttl_secs);
+    }
 }
 
 /// Statistics about the store

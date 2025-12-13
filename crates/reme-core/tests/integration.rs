@@ -33,7 +33,7 @@ impl TestServer {
         let url = format!("http://{}", addr);
 
         // Create minimal node components
-        let store = store::MailboxStore::new(1000, 3600);
+        let store = Arc::new(store::MailboxStore::new(1000, 3600));
         let replication = Arc::new(replication::ReplicationClient::new(
             "test-node".to_string(),
             vec![], // No peers for testing
@@ -407,7 +407,7 @@ async fn test_multi_node_replication() {
     println!("Node 2: {}", url2);
 
     // Create node 1 with node 2 as peer
-    let store1 = store::MailboxStore::new(1000, 3600);
+    let store1 = Arc::new(store::MailboxStore::new(1000, 3600));
     let replication1 = Arc::new(replication::ReplicationClient::new(
         "node-1".to_string(),
         vec![url2.clone()],
@@ -416,7 +416,7 @@ async fn test_multi_node_replication() {
     let app1 = api::router(state1);
 
     // Create node 2 with node 1 as peer
-    let store2 = store::MailboxStore::new(1000, 3600);
+    let store2 = Arc::new(store::MailboxStore::new(1000, 3600));
     let replication2 = Arc::new(replication::ReplicationClient::new(
         "node-2".to_string(),
         vec![url1.clone()],

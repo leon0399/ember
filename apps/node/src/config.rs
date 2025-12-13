@@ -28,6 +28,7 @@
 //! log_level = "info"
 //! ```
 
+use crate::cleanup::CleanupConfig;
 use clap::Parser;
 use config::{Config, Environment, File, FileFormat};
 use directories::ProjectDirs;
@@ -70,6 +71,22 @@ pub struct CliArgs {
     /// Peer node URLs for replication (comma-separated)
     #[arg(short = 'P', long, env = "REME_NODE_PEERS", value_delimiter = ',')]
     pub peers: Option<Vec<String>>,
+
+    /// Disable background cleanup task
+    #[arg(long, env = "REME_NODE_CLEANUP_DISABLED")]
+    pub cleanup_disabled: bool,
+
+    /// Cleanup task interval in seconds (default: 300)
+    #[arg(long, env = "REME_NODE_CLEANUP_INTERVAL")]
+    pub cleanup_interval: Option<u64>,
+
+    /// Tombstone cleanup delay in seconds (default: 3600)
+    #[arg(long, env = "REME_NODE_CLEANUP_TOMBSTONE_DELAY")]
+    pub cleanup_tombstone_delay: Option<u64>,
+
+    /// Orphan tombstone cleanup delay in seconds (default: 86400)
+    #[arg(long, env = "REME_NODE_CLEANUP_ORPHAN_DELAY")]
+    pub cleanup_orphan_delay: Option<u64>,
 }
 
 /// Final resolved configuration
@@ -93,6 +110,10 @@ pub struct NodeConfig {
     /// Peer node URLs for replication
     #[serde(default)]
     pub peers: Vec<String>,
+
+    /// Cleanup task configuration
+    #[serde(default)]
+    pub cleanup: CleanupConfig,
 }
 
 impl Default for NodeConfig {
@@ -105,6 +126,7 @@ impl Default for NodeConfig {
             log_level: "info".to_string(),
             node_id: uuid::Uuid::new_v4().to_string(),
             peers: Vec::new(),
+            cleanup: CleanupConfig::default(),
         }
     }
 }
@@ -134,7 +156,13 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         .set_default("default_ttl", defaults.default_ttl as i64)?
         .set_default("log_level", defaults.log_level.clone())?
         .set_default("node_id", defaults.node_id.clone())?
-        .set_default::<_, Vec<String>>("peers", defaults.peers.clone())?;
+        .set_default::<_, Vec<String>>("peers", defaults.peers.clone())?
+        // Cleanup defaults
+        .set_default("cleanup.enabled", defaults.cleanup.enabled)?
+        .set_default("cleanup.interval_secs", defaults.cleanup.interval_secs as i64)?
+        .set_default("cleanup.tombstone_delay_secs", defaults.cleanup.tombstone_delay_secs as i64)?
+        .set_default("cleanup.orphan_delay_secs", defaults.cleanup.orphan_delay_secs as i64)?
+        .set_default("cleanup.rate_limit_delay_secs", defaults.cleanup.rate_limit_delay_secs as i64)?;
 
     // Layer 2: Config file
     let config_path = cli.config.clone().or_else(default_config_path);
@@ -174,6 +202,19 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     if let Some(ref peers) = cli.peers {
         builder = builder.set_override("peers", peers.clone())?;
     }
+    // Cleanup CLI overrides
+    if cli.cleanup_disabled {
+        builder = builder.set_override("cleanup.enabled", false)?;
+    }
+    if let Some(interval) = cli.cleanup_interval {
+        builder = builder.set_override("cleanup.interval_secs", interval as i64)?;
+    }
+    if let Some(delay) = cli.cleanup_tombstone_delay {
+        builder = builder.set_override("cleanup.tombstone_delay_secs", delay as i64)?;
+    }
+    if let Some(delay) = cli.cleanup_orphan_delay {
+        builder = builder.set_override("cleanup.orphan_delay_secs", delay as i64)?;
+    }
 
     let config = builder.build()?;
 
@@ -193,6 +234,29 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         .get::<Vec<String>>("peers")
         .unwrap_or(defaults.peers);
 
+    // Extract cleanup config
+    let cleanup = CleanupConfig {
+        enabled: config
+            .get::<bool>("cleanup.enabled")
+            .unwrap_or(defaults.cleanup.enabled),
+        interval_secs: config
+            .get::<i64>("cleanup.interval_secs")
+            .map(|v| v as u64)
+            .unwrap_or(defaults.cleanup.interval_secs),
+        tombstone_delay_secs: config
+            .get::<i64>("cleanup.tombstone_delay_secs")
+            .map(|v| v as u64)
+            .unwrap_or(defaults.cleanup.tombstone_delay_secs),
+        orphan_delay_secs: config
+            .get::<i64>("cleanup.orphan_delay_secs")
+            .map(|v| v as u64)
+            .unwrap_or(defaults.cleanup.orphan_delay_secs),
+        rate_limit_delay_secs: config
+            .get::<i64>("cleanup.rate_limit_delay_secs")
+            .map(|v| v as u64)
+            .unwrap_or(defaults.cleanup.rate_limit_delay_secs),
+    };
+
     Ok(NodeConfig {
         bind_addr,
         max_messages,
@@ -200,6 +264,7 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         log_level,
         node_id,
         peers,
+        cleanup,
     })
 }
 
