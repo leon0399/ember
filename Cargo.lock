@@ -1817,7 +1817,9 @@ name = "reme-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
  "hex",
+ "node",
  "rand 0.9.2",
  "reme-encryption",
  "reme-identity",

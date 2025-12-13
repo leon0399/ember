@@ -3,6 +3,14 @@ name = "node"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "node"
+path = "src/lib.rs"
+
+[[bin]]
+name = "node"
+path = "src/main.rs"
+
 [dependencies]
 reme-message = { workspace = true }
 reme-prekeys = { workspace = true }

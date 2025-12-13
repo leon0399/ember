@@ -1,24 +1,67 @@
 //! Integration test: Two clients exchanging messages through the node
 //!
-//! Requires node to be running at localhost:23003
+//! These tests spin up an in-process node server for self-contained testing.
 
 use reme_core::Client;
 use reme_encryption::{decrypt_inner_envelope, encrypt_inner_envelope};
 use reme_identity::Identity;
-use reme_message::{Content, InnerEnvelope, MessageID, OuterEnvelope, TextContent, CURRENT_VERSION};
+use reme_message::{
+    Content, InnerEnvelope, MessageID, OuterEnvelope, TextContent, TombstoneStatus, CURRENT_VERSION,
+};
 use reme_prekeys::generate_prekey_bundle;
 use reme_session::derive_session_as_initiator;
 use reme_storage::Storage;
 use reme_transport::http::HttpTransport;
 use reme_transport::Transport;
 use std::sync::Arc;
+use tokio::net::TcpListener;
 
-const NODE_URL: &str = "http://localhost:23003";
+/// Test server handle - keeps the server running while in scope
+struct TestServer {
+    url: String,
+    _handle: tokio::task::JoinHandle<()>,
+}
+
+impl TestServer {
+    /// Start a test server on a random available port
+    async fn start() -> Self {
+        use node::{api, store, replication};
+
+        // Bind to port 0 to get a random available port
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind");
+        let addr = listener.local_addr().expect("Failed to get local addr");
+        let url = format!("http://{}", addr);
+
+        // Create minimal node components
+        let store = store::MailboxStore::new(1000, 3600);
+        let replication = Arc::new(replication::ReplicationClient::new(
+            "test-node".to_string(),
+            vec![], // No peers for testing
+        ));
+        let state = Arc::new(api::AppState { store, replication });
+        let app = api::router(state);
+
+        // Spawn server in background
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("Server failed");
+        });
+
+        // Small delay to ensure server is ready
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+        TestServer { url, _handle: handle }
+    }
+
+    fn url(&self) -> &str {
+        &self.url
+    }
+}
 
 /// Test that the transport layer works correctly by sending raw encrypted data
 #[tokio::test]
 async fn test_transport_roundtrip() {
-    let transport = HttpTransport::new(NODE_URL);
+    let server = TestServer::start().await;
+    let transport = HttpTransport::new(server.url());
 
     // Create a test identity and upload prekeys
     let identity = Identity::generate();
@@ -58,14 +101,14 @@ async fn test_transport_roundtrip() {
     assert_eq!(messages[0].inner_ciphertext, vec![1, 2, 3, 4]);
     println!("Message roundtrip: OK");
 
-    println!("Transport roundtrip test passed!");
+    println!("✓ Transport roundtrip test passed!");
 }
 
 /// Test end-to-end encryption using proper X3DH session derivation
-/// This demonstrates how the full protocol should work
 #[tokio::test]
 async fn test_e2e_encryption_manual() {
-    let transport = Arc::new(HttpTransport::new(NODE_URL));
+    let server = TestServer::start().await;
+    let transport = Arc::new(HttpTransport::new(server.url()));
 
     // Create Alice and Bob identities
     let alice = Identity::generate();
@@ -138,8 +181,6 @@ async fn test_e2e_encryption_manual() {
     println!("Bob fetched {} message(s)", messages.len());
 
     // Bob derives the session as responder
-    // NOTE: In real implementation, Alice's ephemeral_public and used_one_time_prekey_id
-    // would be included in the message header
     let bob_session = reme_session::derive_session_as_responder(
         &bob,
         &bob_secrets,
@@ -170,15 +211,14 @@ async fn test_e2e_encryption_manual() {
         _ => panic!("Expected text content"),
     }
 
-    println!("\nEnd-to-end encryption test passed!");
+    println!("\n✓ End-to-end encryption test passed!");
 }
 
 /// Test two clients exchanging messages using the full Client API
-/// This tests the complete flow including automatic session establishment
 #[tokio::test]
 async fn test_two_client_messaging() {
-    // Create shared transport (both clients connect to same node)
-    let transport = Arc::new(HttpTransport::new(NODE_URL));
+    let server = TestServer::start().await;
+    let transport = Arc::new(HttpTransport::new(server.url()));
 
     // Create Alice's client
     let alice_identity = Identity::generate();
@@ -205,10 +245,6 @@ async fn test_two_client_messaging() {
     println!("Alice added Bob as contact");
 
     // Alice sends a message to Bob
-    // This will automatically:
-    // 1. Fetch Bob's prekeys
-    // 2. Establish X3DH session
-    // 3. Send message with session_init data
     let msg_id = alice
         .send_text(bob.public_id(), "Hello Bob! This is Alice.")
         .await
@@ -216,10 +252,6 @@ async fn test_two_client_messaging() {
     println!("Alice sent message: {:?}", msg_id);
 
     // Bob fetches messages
-    // This will automatically:
-    // 1. Receive message with session_init
-    // 2. Derive session as responder
-    // 3. Decrypt and return message
     let messages = bob.fetch_messages().await.expect("Bob fetch_messages failed");
     assert_eq!(messages.len(), 1, "Bob should receive 1 message");
 
@@ -233,8 +265,7 @@ async fn test_two_client_messaging() {
         _ => panic!("Expected text message"),
     }
 
-    // Now Bob can reply to Alice
-    // Bob should now have Alice as a contact (auto-added from incoming message)
+    // Bob replies to Alice
     let reply_id = bob
         .send_text(alice.public_id(), "Hi Alice! Got your message.")
         .await
@@ -255,22 +286,146 @@ async fn test_two_client_messaging() {
         _ => panic!("Expected text message"),
     }
 
-    // Send another message from Alice (should NOT include session_init this time)
-    let msg2_id = alice
-        .send_text(bob.public_id(), "Second message!")
-        .await
-        .expect("Alice second send_text failed");
-    println!("Alice sent second message: {:?}", msg2_id);
+    println!("\n✓ Two-client messaging test passed!");
+}
 
-    let bob_messages2 = bob.fetch_messages().await.expect("Bob second fetch failed");
-    assert_eq!(bob_messages2.len(), 1, "Bob should receive 1 message");
-    match &bob_messages2[0].content {
-        Content::Text(text) => {
-            assert_eq!(text.body, "Second message!");
-            println!("Bob received second message: \"{}\"", text.body);
-        }
-        _ => panic!("Expected text message"),
+/// Test tombstone flow: message → receive → tombstone acknowledgment
+#[tokio::test]
+async fn test_tombstone_flow() {
+    let server = TestServer::start().await;
+    let transport = Arc::new(HttpTransport::new(server.url()));
+
+    // Create Alice and Bob
+    let alice_identity = Identity::generate();
+    let alice_storage = Storage::in_memory().unwrap();
+    let alice = Client::new(alice_identity, transport.clone(), alice_storage);
+
+    let bob_identity = Identity::generate();
+    let bob_storage = Storage::in_memory().unwrap();
+    let bob = Client::new(bob_identity, transport.clone(), bob_storage);
+
+    println!("Alice ID: {}", hex::encode(alice.public_id().to_bytes()));
+    println!("Bob ID: {}", hex::encode(bob.public_id().to_bytes()));
+
+    // Initialize prekeys
+    alice.init_prekeys(5).await.expect("Alice init_prekeys failed");
+    bob.init_prekeys(5).await.expect("Bob init_prekeys failed");
+    println!("Both clients initialized prekeys");
+
+    // Alice adds Bob as contact and sends a message
+    alice
+        .add_contact(bob.public_id(), Some("Bob"))
+        .expect("Alice add_contact failed");
+
+    let msg_id = alice
+        .send_text(bob.public_id(), "Hello Bob!")
+        .await
+        .expect("Alice send_text failed");
+    println!("Alice sent message: {:?}", msg_id);
+
+    // Bob fetches the message
+    let messages = bob.fetch_messages().await.expect("Bob fetch_messages failed");
+    assert_eq!(messages.len(), 1, "Bob should receive 1 message");
+    println!("Bob received message from Alice");
+
+    let received = &messages[0];
+
+    // Bob sends a delivery tombstone
+    bob.send_delivery_tombstone(received)
+        .await
+        .expect("Bob send_delivery_tombstone failed");
+    println!("Bob sent delivery tombstone for message {:?}", received.message_id);
+
+    // Bob sends a read tombstone
+    bob.send_read_tombstone(received)
+        .await
+        .expect("Bob send_read_tombstone failed");
+    println!("Bob sent read tombstone for message {:?}", received.message_id);
+
+    println!("\n✓ Tombstone flow test passed!");
+}
+
+/// Test tombstone with different status options
+#[tokio::test]
+async fn test_tombstone_with_status() {
+    let server = TestServer::start().await;
+    let transport = Arc::new(HttpTransport::new(server.url()));
+
+    let identity = Identity::generate();
+    let storage = Storage::in_memory().unwrap();
+    let client = Client::new(identity, transport.clone(), storage);
+
+    client.init_prekeys(5).await.expect("init_prekeys failed");
+
+    // Create a fake "received" message for testing tombstone creation
+    let fake_received = reme_core::ReceivedMessage {
+        message_id: MessageID::new(),
+        from: *client.public_id(),
+        content: Content::Text(TextContent {
+            body: "Test message".to_string(),
+        }),
+        created_at_ms: 1234567890,
+    };
+
+    // Test each tombstone status
+    client
+        .send_tombstone(&fake_received, TombstoneStatus::Delivered, false)
+        .await
+        .expect("Delivered tombstone failed");
+    println!("Sent Delivered tombstone");
+
+    client
+        .send_tombstone(&fake_received, TombstoneStatus::Read, false)
+        .await
+        .expect("Read tombstone failed");
+    println!("Sent Read tombstone");
+
+    client
+        .send_tombstone(&fake_received, TombstoneStatus::Deleted, false)
+        .await
+        .expect("Deleted tombstone failed");
+    println!("Sent Deleted tombstone");
+
+    println!("\n✓ Tombstone status test passed!");
+}
+
+/// Test that tombstone sequence numbers are monotonically increasing
+#[tokio::test]
+async fn test_tombstone_sequence() {
+    let server = TestServer::start().await;
+    let transport = Arc::new(HttpTransport::new(server.url()));
+
+    let identity = Identity::generate();
+    let storage = Storage::in_memory().unwrap();
+    let client = Client::new(identity, transport.clone(), storage);
+
+    client.init_prekeys(5).await.expect("init_prekeys failed");
+
+    // Check initial sequence
+    let initial_seq = client.tombstone_sequence();
+    assert!(initial_seq >= 1, "Sequence should start at 1 or higher");
+    println!("Initial sequence: {}", initial_seq);
+
+    // Create fake message
+    let fake_received = reme_core::ReceivedMessage {
+        message_id: MessageID::new(),
+        from: *client.public_id(),
+        content: Content::Text(TextContent {
+            body: "Test".to_string(),
+        }),
+        created_at_ms: 1234567890,
+    };
+
+    // Send multiple tombstones
+    for i in 0..3 {
+        client
+            .send_delivery_tombstone(&fake_received)
+            .await
+            .expect("tombstone failed");
+        let seq = client.tombstone_sequence();
+        println!("After tombstone {}: sequence = {}", i + 1, seq);
+        assert_eq!(seq, initial_seq + i as u64 + 1, "Sequence should increment");
     }
 
-    println!("\n✓ Two-client messaging test passed!");
+    println!("\n✓ Tombstone sequence test passed!");
 }

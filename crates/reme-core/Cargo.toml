@@ -21,5 +21,7 @@ x25519-dalek = { workspace = true }
 rand = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 hex = { workspace = true }
+node = { path = "../../apps/node" }
+axum = { workspace = true }
