@@ -17,7 +17,7 @@
 
 use crate::{MessageID, RoutingKey, Version, CURRENT_VERSION};
 use bincode::{Decode, Encode};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use xeddsa::{xed25519, Sign, Verify};
 
 /// Maximum age for tombstone validation (10 days in milliseconds)
 pub const TOMBSTONE_MAX_AGE_MS: i64 = 10 * 24 * 60 * 60 * 1000;
@@ -223,23 +223,24 @@ impl TombstoneEnvelope {
             .unwrap_or(0)
     }
 
-    /// Sign the tombstone with recipient's private key
+    /// Sign the tombstone with recipient's X25519 private key using XEdDSA
+    ///
+    /// XEdDSA produces Ed25519-compatible signatures from X25519 keys.
     fn sign(&self, secret_key: &[u8; 32]) -> [u8; 64] {
-        let signing_key = SigningKey::from_bytes(secret_key);
+        use rand_core::OsRng;
+        let xed_private = xed25519::PrivateKey(*secret_key);
         let message = self.signable_bytes();
-        signing_key.sign(&message).to_bytes()
+        xed_private.sign(&message, OsRng)
     }
 
-    /// Verify the tombstone signature
+    /// Verify the tombstone signature using XEdDSA
+    ///
+    /// The recipient_id_pub is an X25519 public key, which is converted
+    /// to Ed25519 internally for signature verification.
     pub fn verify_signature(&self) -> bool {
-        let Ok(verifying_key) = VerifyingKey::from_bytes(&self.recipient_id_pub) else {
-            return false;
-        };
-
-        let signature = Signature::from_bytes(&self.signature);
-
+        let xed_public = xed25519::PublicKey(self.recipient_id_pub);
         let message = self.signable_bytes();
-        verifying_key.verify(&message, &signature).is_ok()
+        xed_public.verify(&message, &self.signature).is_ok()
     }
 
     /// Full validation: signature + timestamp freshness
@@ -471,23 +472,23 @@ impl WirePayload {
 mod tests {
     use super::*;
     use rand::RngCore;
+    use x25519_dalek::{PublicKey, StaticSecret};
 
+    /// Generate an X25519 keypair for testing
+    ///
+    /// Returns (public_key, secret_key) where both are 32 bytes.
+    /// The secret key can be used with XEdDSA for signing.
     fn generate_test_keypair() -> ([u8; 32], [u8; 32]) {
-        let mut secret = [0u8; 32];
-        rand::rng().fill_bytes(&mut secret);
-        let signing_key = SigningKey::from_bytes(&secret);
-        let public = signing_key.verifying_key().to_bytes();
-        (public, secret)
-    }
-
-    fn generate_x25519_keypair() -> ([u8; 32], [u8; 32]) {
-        use x25519_dalek::{PublicKey, StaticSecret};
-
         let mut secret = [0u8; 32];
         rand::rng().fill_bytes(&mut secret);
         let static_secret = StaticSecret::from(secret);
         let public = PublicKey::from(&static_secret);
         (*public.as_bytes(), secret)
+    }
+
+    /// Alias for generate_test_keypair (both generate X25519 keypairs)
+    fn generate_x25519_keypair() -> ([u8; 32], [u8; 32]) {
+        generate_test_keypair()
     }
 
     #[test]

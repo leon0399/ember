@@ -10,14 +10,18 @@
 use reme_encryption::{decrypt_inner_envelope, encrypt_inner_envelope, EncryptionError};
 use reme_identity::{Identity, PublicID};
 use reme_message::{
-    Content, InnerEnvelope, MessageID, OuterEnvelope, ReceiptContent, ReceiptKind, RoutingKey,
-    SessionEstablishment, TextContent, CURRENT_VERSION,
+    Content, DeviceID, InnerEnvelope, MessageID, OuterEnvelope, ReceiptContent, ReceiptKind,
+    RoutingKey, SessionEstablishment, TextContent, TombstoneEnvelope, TombstoneStatus,
+    CURRENT_VERSION,
 };
 use reme_prekeys::{generate_prekey_bundle, LocalPrekeySecrets, SignedPrekeyID};
-use reme_session::{derive_session_as_initiator, derive_session_as_responder, Session, SessionError};
+use reme_session::{
+    derive_session_as_initiator, derive_session_as_responder, Session, SessionError,
+};
 use reme_storage::{Storage, StorageError};
 use reme_transport::{Transport, TransportError};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -75,6 +79,7 @@ pub struct ReceivedMessage {
 /// - Receiving and decrypting messages
 /// - Managing contacts
 /// - Managing prekeys
+/// - Sending tombstones for message acknowledgment
 pub struct Client<T: Transport> {
     identity: Identity,
     transport: Arc<T>,
@@ -83,18 +88,63 @@ pub struct Client<T: Transport> {
     sessions: RwLock<HashMap<PublicID, Session>>,
     /// Local prekey secrets (loaded from storage or generated)
     prekey_secrets: RwLock<Option<LocalPrekeySecrets>>,
+    /// Device ID for tombstone sequence management (unique per device)
+    device_id: DeviceID,
+    /// Monotonically increasing tombstone sequence counter
+    tombstone_sequence: AtomicU64,
 }
 
 impl<T: Transport> Client<T> {
     /// Create a new client with the given identity, transport, and storage
+    ///
+    /// Generates a random device ID for tombstone sequence management.
     pub fn new(identity: Identity, transport: Arc<T>, storage: Storage) -> Self {
+        // Generate random device ID
+        let mut device_id = [0u8; 16];
+        use rand::RngCore;
+        rand::rng().fill_bytes(&mut device_id);
+
         Self {
             identity,
             transport,
             storage,
             sessions: RwLock::new(HashMap::new()),
             prekey_secrets: RwLock::new(None),
+            device_id,
+            tombstone_sequence: AtomicU64::new(1), // Start at 1
         }
+    }
+
+    /// Create a new client with a specific device ID
+    ///
+    /// Use this when you need deterministic device IDs (e.g., for testing or
+    /// when restoring from storage).
+    pub fn with_device_id(
+        identity: Identity,
+        transport: Arc<T>,
+        storage: Storage,
+        device_id: DeviceID,
+        initial_sequence: u64,
+    ) -> Self {
+        Self {
+            identity,
+            transport,
+            storage,
+            sessions: RwLock::new(HashMap::new()),
+            prekey_secrets: RwLock::new(None),
+            device_id,
+            tombstone_sequence: AtomicU64::new(initial_sequence),
+        }
+    }
+
+    /// Get the device ID
+    pub fn device_id(&self) -> &DeviceID {
+        &self.device_id
+    }
+
+    /// Get the current tombstone sequence number (for persistence)
+    pub fn tombstone_sequence(&self) -> u64 {
+        self.tombstone_sequence.load(Ordering::SeqCst)
     }
 
     /// Get the client's public identity
@@ -542,6 +592,101 @@ impl<T: Transport> Client<T> {
         self.storage.mark_read(message_id)?;
         Ok(())
     }
+
+    // ========================================
+    // Tombstone Management
+    // ========================================
+
+    /// Send a tombstone to acknowledge message receipt
+    ///
+    /// Tombstones are cryptographically signed acknowledgments that enable:
+    /// - Cache clearing on relay nodes (network layer)
+    /// - Optional delivery/read receipts for the sender (application layer)
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - The received message to acknowledge
+    /// * `status` - How the message was processed (Delivered/Read/Deleted)
+    /// * `include_receipt` - Whether to include an encrypted receipt for the sender
+    pub async fn send_tombstone(
+        &self,
+        message: &ReceivedMessage,
+        status: TombstoneStatus,
+        include_receipt: bool,
+    ) -> Result<(), ClientError> {
+        // Get the routing key for this message (our mailbox where it was stored)
+        let routing_key = self.routing_key();
+
+        // Get next sequence number
+        let sequence = self.tombstone_sequence.fetch_add(1, Ordering::SeqCst);
+
+        // Get recipient's X25519 secret key for signing (XEdDSA)
+        let recipient_secret = self.identity.to_bytes();
+        let recipient_id_pub = self.identity.public_id().to_bytes();
+
+        // Optionally get sender's public key and session for encrypted receipt
+        let (sender_pub, session_recv_key, inner_ciphertext) = if include_receipt {
+            // Try to get session with sender
+            let sessions = self.sessions.read().await;
+            if let Some(session) = sessions.get(&message.from) {
+                // Get sender's X25519 public key (from session)
+                // For the receipt, we need the sender's public key
+                // The sender_id is an Ed25519 key, we need to use the session's ephemeral
+                // For simplicity in PoC, we skip the encrypted receipt if we can't get the key
+                // In a full implementation, we'd store the sender's X25519 public during session init
+                let recv_key = *session.recv_key();
+                (None, Some(recv_key), None::<&[u8]>)
+            } else {
+                (None, None, None)
+            }
+        } else {
+            (None, None, None)
+        };
+
+        // Create tombstone
+        let tombstone = TombstoneEnvelope::new(
+            message.message_id,
+            routing_key,
+            recipient_id_pub,
+            &recipient_secret,
+            self.device_id,
+            sequence,
+            status,
+            sender_pub.as_ref(),
+            session_recv_key.as_ref(),
+            inner_ciphertext,
+        );
+
+        // Submit to transport
+        self.transport.submit_tombstone(tombstone).await?;
+
+        debug!(
+            "Tombstone sent for message {:?} (status: {:?}, seq: {})",
+            message.message_id, status, sequence
+        );
+
+        Ok(())
+    }
+
+    /// Send a simple delivery tombstone (no encrypted receipt)
+    ///
+    /// This is the recommended method for acknowledging message delivery
+    /// when you don't need to send detailed receipt info to the sender.
+    pub async fn send_delivery_tombstone(
+        &self,
+        message: &ReceivedMessage,
+    ) -> Result<(), ClientError> {
+        self.send_tombstone(message, TombstoneStatus::Delivered, false)
+            .await
+    }
+
+    /// Send a read tombstone (no encrypted receipt)
+    ///
+    /// Use this when the user has opened/read the message.
+    pub async fn send_read_tombstone(&self, message: &ReceivedMessage) -> Result<(), ClientError> {
+        self.send_tombstone(message, TombstoneStatus::Read, false)
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -554,6 +699,7 @@ mod tests {
     /// Mock transport for testing
     struct MockTransport {
         messages: Mutex<Vec<OuterEnvelope>>,
+        tombstones: Mutex<Vec<TombstoneEnvelope>>,
         prekeys: Mutex<HashMap<RoutingKey, SignedPrekeyBundle>>,
     }
 
@@ -561,6 +707,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 messages: Mutex::new(Vec::new()),
+                tombstones: Mutex::new(Vec::new()),
                 prekeys: Mutex::new(HashMap::new()),
             }
         }
@@ -570,6 +717,14 @@ mod tests {
     impl Transport for MockTransport {
         async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
             self.messages.lock().unwrap().push(envelope);
+            Ok(())
+        }
+
+        async fn submit_tombstone(
+            &self,
+            tombstone: TombstoneEnvelope,
+        ) -> Result<(), TransportError> {
+            self.tombstones.lock().unwrap().push(tombstone);
             Ok(())
         }
 
