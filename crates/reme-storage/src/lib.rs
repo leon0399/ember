@@ -4,6 +4,7 @@ use reme_prekeys::{LocalPrekeySecrets, SignedPrekeyBundle};
 use reme_session::Session;
 use rusqlite::{params, Connection, OptionalExtension};
 use thiserror::Error;
+use tracing::{debug, trace, warn};
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -28,14 +29,17 @@ pub struct Storage {
 impl Storage {
     /// Open or create a storage database at the given path
     pub fn open(path: &str) -> Result<Self, StorageError> {
+        debug!(path = %path, "opening storage database");
         let conn = Connection::open(path)?;
         let storage = Self { conn };
         storage.init_schema()?;
+        debug!("storage database initialized");
         Ok(storage)
     }
 
     /// Create an in-memory database (for testing)
     pub fn in_memory() -> Result<Self, StorageError> {
+        trace!("creating in-memory storage database");
         let conn = Connection::open_in_memory()?;
         let storage = Self { conn };
         storage.init_schema()?;
@@ -96,6 +100,7 @@ impl Storage {
 
     /// Add a contact
     pub fn add_contact(&self, public_id: &PublicID, name: Option<&str>) -> Result<i64, StorageError> {
+        debug!(name = ?name, "adding contact");
         let public_id_bytes = public_id.to_bytes();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -107,7 +112,9 @@ impl Storage {
             params![&public_id_bytes[..], name, now],
         )?;
 
-        Ok(self.conn.last_insert_rowid())
+        let id = self.conn.last_insert_rowid();
+        trace!(contact_id = id, "contact added");
+        Ok(id)
     }
 
     /// Get contact ID by public ID
@@ -151,6 +158,7 @@ impl Storage {
 
     /// Store a session for a contact
     pub fn store_session(&self, contact_id: i64, session: &Session) -> Result<(), StorageError> {
+        debug!(contact_id = contact_id, "storing session");
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -174,6 +182,7 @@ impl Storage {
             ],
         )?;
 
+        trace!(contact_id = contact_id, "session stored");
         Ok(())
     }
 
@@ -239,6 +248,7 @@ impl Storage {
         message_id: MessageID,
         content: &Content,
     ) -> Result<(), StorageError> {
+        trace!(contact_id = contact_id, ?message_id, "storing sent message");
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -268,6 +278,7 @@ impl Storage {
         message_id: MessageID,
         content: &Content,
     ) -> Result<(), StorageError> {
+        trace!(contact_id = contact_id, ?message_id, "storing received message");
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -334,6 +345,7 @@ impl Storage {
         bundle: &SignedPrekeyBundle,
         secrets: &LocalPrekeySecrets,
     ) -> Result<(), StorageError> {
+        debug!("storing prekey bundle and secrets");
         let bundle_bytes = bincode::encode_to_vec(bundle, bincode::config::standard())
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
 
@@ -350,18 +362,23 @@ impl Storage {
             params![&bundle_bytes[..], &secrets_bytes[..], now],
         )?;
 
+        trace!("prekeys stored");
         Ok(())
     }
 
     /// Load local prekey bundle
     pub fn load_prekey_bundle(&self) -> Result<SignedPrekeyBundle, StorageError> {
+        trace!("loading prekey bundle");
         let bytes: Vec<u8> = self
             .conn
             .query_row("SELECT bundle FROM prekeys WHERE id = 1", [], |row| {
                 row.get(0)
             })
             .optional()?
-            .ok_or(StorageError::NotFound)?;
+            .ok_or_else(|| {
+                warn!("prekey bundle not found");
+                StorageError::NotFound
+            })?;
 
         let (bundle, _) = bincode::decode_from_slice(&bytes, bincode::config::standard())
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
@@ -371,13 +388,17 @@ impl Storage {
 
     /// Load local prekey secrets
     pub fn load_prekey_secrets(&self) -> Result<LocalPrekeySecrets, StorageError> {
+        trace!("loading prekey secrets");
         let bytes: Vec<u8> = self
             .conn
             .query_row("SELECT secrets FROM prekeys WHERE id = 1", [], |row| {
                 row.get(0)
             })
             .optional()?
-            .ok_or(StorageError::NotFound)?;
+            .ok_or_else(|| {
+                warn!("prekey secrets not found");
+                StorageError::NotFound
+            })?;
 
         let (secrets, _) = bincode::decode_from_slice(&bytes, bincode::config::standard())
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
@@ -387,6 +408,7 @@ impl Storage {
 
     /// Load both prekey bundle and secrets
     pub fn load_prekeys(&self) -> Result<(SignedPrekeyBundle, LocalPrekeySecrets), StorageError> {
+        debug!("loading prekeys");
         let bundle = self.load_prekey_bundle()?;
         let secrets = self.load_prekey_secrets()?;
         Ok((bundle, secrets))

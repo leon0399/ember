@@ -12,6 +12,7 @@ reme-session = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 thiserror = { workspace = true }
 bincode = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.13"
