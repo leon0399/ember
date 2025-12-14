@@ -1901,6 +1901,7 @@ dependencies = [
 name = "reme-session"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "hkdf",
  "rand_core 0.6.4",
  "reme-identity",
