@@ -25,9 +25,13 @@ serde_json = { workspace = true }
 # async
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
 
-# CLI
-rustyline = "15"
+# config
 clap = { workspace = true }
 config = { workspace = true }
 toml = { workspace = true }
 directories = { workspace = true }
+
+# TUI
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+tui-textarea = { workspace = true }

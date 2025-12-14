@@ -45,7 +45,7 @@ use std::path::PathBuf;
 /// CLI arguments for the client
 #[derive(Parser, Debug, Clone, Serialize)]
 #[command(name = "reme-client")]
-#[command(author, version, about = "Branch Messenger CLI Client")]
+#[command(author, version, about = "Branch Messenger Client")]
 pub struct CliArgs {
     /// URLs of the mailbox nodes (comma-separated for multiple nodes)
     ///

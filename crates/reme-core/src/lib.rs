@@ -253,11 +253,21 @@ impl<T: Transport> Client<T> {
     /// Get contact by public ID
     pub fn get_contact(&self, public_id: &PublicID) -> Result<Contact, ClientError> {
         let id = self.storage.get_contact_id(public_id)?;
+        let name = self.storage.get_contact_name(id).ok().flatten();
         Ok(Contact {
             id,
             public_id: *public_id,
-            name: None, // TODO: Add name retrieval to storage
+            name,
         })
+    }
+
+    /// List all contacts
+    pub fn list_contacts(&self) -> Result<Vec<Contact>, ClientError> {
+        let contacts = self.storage.list_contacts()?;
+        Ok(contacts
+            .into_iter()
+            .map(|(id, public_id, name)| Contact { id, public_id, name })
+            .collect())
     }
 
     // ========================================

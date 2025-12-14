@@ -152,6 +152,44 @@ impl Storage {
         Ok(PublicID::from_bytes(&public_id_bytes))
     }
 
+    /// Get contact name by contact ID
+    pub fn get_contact_name(&self, contact_id: i64) -> Result<Option<String>, StorageError> {
+        self.conn
+            .query_row(
+                "SELECT name FROM contacts WHERE id = ?",
+                params![contact_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(StorageError::NotFound)
+    }
+
+    /// List all contacts
+    pub fn list_contacts(&self) -> Result<Vec<(i64, PublicID, Option<String>)>, StorageError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, public_id, name FROM contacts ORDER BY name, id")?;
+
+        let rows = stmt.query_map([], |row| {
+            let id: i64 = row.get(0)?;
+            let public_id_bytes: Vec<u8> = row.get(1)?;
+            let name: Option<String> = row.get(2)?;
+            Ok((id, public_id_bytes, name))
+        })?;
+
+        let mut contacts = Vec::new();
+        for row in rows {
+            let (id, public_id_bytes, name) = row?;
+            if public_id_bytes.len() != 32 {
+                continue; // Skip invalid entries
+            }
+            let public_id_arr: [u8; 32] = public_id_bytes.try_into().unwrap();
+            contacts.push((id, PublicID::from_bytes(&public_id_arr), name));
+        }
+
+        Ok(contacts)
+    }
+
     // ============================================
     // Session operations
     // ============================================
