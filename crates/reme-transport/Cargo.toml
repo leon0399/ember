@@ -17,6 +17,7 @@ tracing = { workspace = true }
 # HTTP implementation
 reqwest = { workspace = true, features = ["json"] }
 tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true }
 futures = { workspace = true }
 
 # Optional: for server implementation

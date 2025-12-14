@@ -43,6 +43,7 @@ use tracing_subscriber::FmtSubscriber;
 
 struct App {
     client: Client<HttpTransport>,
+    transport: Arc<HttpTransport>,
     contacts_by_name: HashMap<String, PublicID>,
     config: AppConfig,
 }
@@ -74,10 +75,11 @@ impl App {
         let transport = Arc::new(HttpTransport::with_nodes(config.node_urls.clone()));
 
         // Create client
-        let client = Client::new(identity, transport, storage);
+        let client = Client::new(identity, transport.clone(), storage);
 
         Ok(Self {
             client,
+            transport,
             contacts_by_name: HashMap::new(),
             config,
         })
@@ -129,22 +131,32 @@ impl App {
     }
 
     async fn fetch_messages(&self) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
-        let messages = self.client.fetch_messages().await?;
+        // Fetch raw envelopes from nodes
+        let routing_key = self.client.routing_key();
+        let envelopes = self.transport.fetch_once(&routing_key).await?;
 
+        // Process each envelope
         let mut result = Vec::new();
-        for msg in messages {
-            let from = hex::encode(msg.from.to_bytes());
-            let from_short = &from[..8];
+        for envelope in envelopes {
+            match self.client.process_message(&envelope).await {
+                Ok(msg) => {
+                    let from = hex::encode(msg.from.to_bytes());
+                    let from_short = &from[..8];
 
-            let text = match msg.content {
-                reme_message::Content::Text(t) => t.body,
-                reme_message::Content::Receipt(r) => {
-                    format!("[Receipt: {:?}]", r.kind)
+                    let text = match msg.content {
+                        reme_message::Content::Text(t) => t.body,
+                        reme_message::Content::Receipt(r) => {
+                            format!("[Receipt: {:?}]", r.kind)
+                        }
+                        _ => "[Unknown content]".to_string(),
+                    };
+
+                    result.push((from_short.to_string(), text));
                 }
-                _ => "[Unknown content]".to_string(),
-            };
-
-            result.push((from_short.to_string(), text));
+                Err(e) => {
+                    tracing::warn!("Failed to process message: {}", e);
+                }
+            }
         }
 
         Ok(result)

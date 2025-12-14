@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
 use futures::future::join_all;
-use reme_message::{OuterEnvelope, RoutingKey, TombstoneEnvelope, WirePayload};
+use reme_message::{MessageID, OuterEnvelope, RoutingKey, TombstoneEnvelope, WirePayload};
 use reme_prekeys::SignedPrekeyBundle;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -215,6 +215,69 @@ impl HttpTransport {
         Ok(())
     }
 
+    /// Fetch messages once from all configured nodes and deduplicate
+    ///
+    /// This method performs a single fetch operation, useful for:
+    /// - Testing scenarios
+    /// - One-shot message retrieval
+    /// - Initial sync before starting push-based receiving
+    ///
+    /// For continuous message receiving, use `MessageReceiver` instead.
+    pub async fn fetch_once(
+        &self,
+        routing_key: &RoutingKey,
+    ) -> Result<Vec<OuterEnvelope>, TransportError> {
+        let routing_key_b64 = URL_SAFE_NO_PAD.encode(routing_key);
+
+        // Fetch from all nodes in parallel
+        let futures: Vec<_> = self
+            .base_urls
+            .iter()
+            .map(|url| self.fetch_from_node(url, &routing_key_b64))
+            .collect();
+
+        let results = join_all(futures).await;
+
+        // Aggregate and deduplicate by message_id
+        let mut messages_by_id: HashMap<MessageID, OuterEnvelope> = HashMap::new();
+        let mut last_error = None;
+        let mut success_count = 0;
+
+        for (i, result) in results.into_iter().enumerate() {
+            match result {
+                Ok(messages) => {
+                    debug!(
+                        "Fetched {} messages from node {}",
+                        messages.len(),
+                        self.base_urls[i]
+                    );
+                    success_count += 1;
+                    for msg in messages {
+                        messages_by_id.insert(msg.message_id, msg);
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to fetch from node {}: {}", self.base_urls[i], e);
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        // If we got messages from at least one node, return them
+        if success_count > 0 {
+            let messages: Vec<_> = messages_by_id.into_values().collect();
+            debug!(
+                "Fetched {} unique messages from {}/{} nodes",
+                messages.len(),
+                success_count,
+                self.base_urls.len()
+            );
+            Ok(messages)
+        } else {
+            Err(last_error.unwrap_or(TransportError::Network("All nodes failed".to_string())))
+        }
+    }
+
     /// Fetch prekeys from a single node
     async fn fetch_prekeys_from_node(
         &self,
@@ -352,64 +415,6 @@ impl Transport for HttpTransport {
                 self.base_urls.len()
             );
             Ok(())
-        } else {
-            Err(last_error.unwrap_or(TransportError::Network("All nodes failed".to_string())))
-        }
-    }
-
-    /// Fetch messages from all configured nodes and deduplicate
-    ///
-    /// Returns aggregated messages from all nodes, deduplicated by message_id.
-    async fn fetch_messages(
-        &self,
-        routing_key: RoutingKey,
-    ) -> Result<Vec<OuterEnvelope>, TransportError> {
-        let routing_key_b64 = URL_SAFE_NO_PAD.encode(&routing_key);
-
-        // Fetch from all nodes in parallel
-        let futures: Vec<_> = self
-            .base_urls
-            .iter()
-            .map(|url| self.fetch_from_node(url, &routing_key_b64))
-            .collect();
-
-        let results = join_all(futures).await;
-
-        // Aggregate and deduplicate by message_id
-        let mut messages_by_id: HashMap<_, OuterEnvelope> = HashMap::new();
-        let mut last_error = None;
-        let mut success_count = 0;
-
-        for (i, result) in results.into_iter().enumerate() {
-            match result {
-                Ok(messages) => {
-                    debug!(
-                        "Fetched {} messages from node {}",
-                        messages.len(),
-                        self.base_urls[i]
-                    );
-                    success_count += 1;
-                    for msg in messages {
-                        messages_by_id.insert(msg.message_id, msg);
-                    }
-                }
-                Err(e) => {
-                    warn!("Failed to fetch from node {}: {}", self.base_urls[i], e);
-                    last_error = Some(e);
-                }
-            }
-        }
-
-        // If we got messages from at least one node, return them
-        if success_count > 0 {
-            let messages: Vec<_> = messages_by_id.into_values().collect();
-            debug!(
-                "Fetched {} unique messages from {}/{} nodes",
-                messages.len(),
-                success_count,
-                self.base_urls.len()
-            );
-            Ok(messages)
         } else {
             Err(last_error.unwrap_or(TransportError::Network("All nodes failed".to_string())))
         }

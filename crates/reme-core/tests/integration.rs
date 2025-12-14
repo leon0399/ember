@@ -12,8 +12,9 @@ use reme_prekeys::generate_prekey_bundle;
 use reme_session::derive_session_as_initiator;
 use reme_storage::Storage;
 use reme_transport::http::HttpTransport;
-use reme_transport::Transport;
+use reme_transport::{MessageReceiver, ReceiverConfig, Transport, TransportEvent};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
 
 /// Test server handle - keeps the server running while in scope
@@ -91,11 +92,11 @@ async fn test_transport_roundtrip() {
         .await
         .expect("submit_message failed");
 
-    // Fetch messages
+    // Fetch messages (one-shot for testing)
     let messages = transport
-        .fetch_messages(routing_key)
+        .fetch_once(&routing_key)
         .await
-        .expect("fetch_messages failed");
+        .expect("fetch_once failed");
 
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].inner_ciphertext, vec![1, 2, 3, 4]);
@@ -171,11 +172,11 @@ async fn test_e2e_encryption_manual() {
         .expect("submit_message failed");
     println!("Alice sent encrypted message");
 
-    // Bob fetches messages
+    // Bob fetches messages (one-shot for testing)
     let messages = transport
-        .fetch_messages(bob_routing_key)
+        .fetch_once(&bob_routing_key)
         .await
-        .expect("fetch_messages failed");
+        .expect("fetch_once failed");
 
     assert_eq!(messages.len(), 1);
     println!("Bob fetched {} message(s)", messages.len());
@@ -251,11 +252,24 @@ async fn test_two_client_messaging() {
         .expect("Alice send_text failed");
     println!("Alice sent message: {:?}", msg_id);
 
-    // Bob fetches messages
-    let messages = bob.fetch_messages().await.expect("Bob fetch_messages failed");
-    assert_eq!(messages.len(), 1, "Bob should receive 1 message");
+    // Bob receives messages using push-based MessageReceiver
+    let receiver = MessageReceiver::new(transport.clone());
+    let config = ReceiverConfig::with_poll_interval(Duration::from_millis(50));
+    let (mut events, _handle) = receiver.subscribe(bob.routing_key(), config);
 
-    let received = &messages[0];
+    // Wait for Bob's message
+    let received = tokio::time::timeout(Duration::from_secs(2), async {
+        while let Some(event) = events.recv().await {
+            if let TransportEvent::Message(envelope) = event {
+                return bob.process_message(&envelope).await.ok();
+            }
+        }
+        None
+    })
+    .await
+    .expect("Timeout waiting for message")
+    .expect("No message received");
+
     assert_eq!(received.from, *alice.public_id());
     match &received.content {
         Content::Text(text) => {
@@ -272,11 +286,22 @@ async fn test_two_client_messaging() {
         .expect("Bob send_text failed");
     println!("Bob sent reply: {:?}", reply_id);
 
-    // Alice fetches messages
-    let alice_messages = alice.fetch_messages().await.expect("Alice fetch_messages failed");
-    assert_eq!(alice_messages.len(), 1, "Alice should receive 1 message");
+    // Alice receives messages using push-based MessageReceiver
+    let (mut alice_events, _alice_handle) = receiver.subscribe(alice.routing_key(), config);
 
-    let alice_received = &alice_messages[0];
+    // Wait for Alice's message
+    let alice_received = tokio::time::timeout(Duration::from_secs(2), async {
+        while let Some(event) = alice_events.recv().await {
+            if let TransportEvent::Message(envelope) = event {
+                return alice.process_message(&envelope).await.ok();
+            }
+        }
+        None
+    })
+    .await
+    .expect("Timeout waiting for reply")
+    .expect("No reply received");
+
     assert_eq!(alice_received.from, *bob.public_id());
     match &alice_received.content {
         Content::Text(text) => {
@@ -323,21 +348,32 @@ async fn test_tombstone_flow() {
         .expect("Alice send_text failed");
     println!("Alice sent message: {:?}", msg_id);
 
-    // Bob fetches the message
-    let messages = bob.fetch_messages().await.expect("Bob fetch_messages failed");
-    assert_eq!(messages.len(), 1, "Bob should receive 1 message");
+    // Bob receives the message using push-based MessageReceiver
+    let receiver = MessageReceiver::new(transport.clone());
+    let config = ReceiverConfig::with_poll_interval(Duration::from_millis(50));
+    let (mut events, _handle) = receiver.subscribe(bob.routing_key(), config);
+
+    let received = tokio::time::timeout(Duration::from_secs(2), async {
+        while let Some(event) = events.recv().await {
+            if let TransportEvent::Message(envelope) = event {
+                return bob.process_message(&envelope).await.ok();
+            }
+        }
+        None
+    })
+    .await
+    .expect("Timeout waiting for message")
+    .expect("No message received");
     println!("Bob received message from Alice");
 
-    let received = &messages[0];
-
     // Bob sends a delivery tombstone
-    bob.send_delivery_tombstone(received)
+    bob.send_delivery_tombstone(&received)
         .await
         .expect("Bob send_delivery_tombstone failed");
     println!("Bob sent delivery tombstone for message {:?}", received.message_id);
 
     // Bob sends a read tombstone
-    bob.send_read_tombstone(received)
+    bob.send_read_tombstone(&received)
         .await
         .expect("Bob send_read_tombstone failed");
     println!("Bob sent read tombstone for message {:?}", received.message_id);
@@ -473,11 +509,11 @@ async fn test_multi_node_replication() {
     // Wait for replication
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    // Fetch message from node 2
+    // Fetch message from node 2 (one-shot for testing)
     let messages_from_node2 = transport2
-        .fetch_messages(routing_key)
+        .fetch_once(&routing_key)
         .await
-        .expect("fetch_messages from node2 failed");
+        .expect("fetch_once from node2 failed");
     assert_eq!(messages_from_node2.len(), 1);
     assert_eq!(messages_from_node2[0].inner_ciphertext, vec![42, 43, 44, 45]);
     println!("Message replicated to node 2: OK");

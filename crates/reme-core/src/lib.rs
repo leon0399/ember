@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 use x25519_dalek::PublicKey as X25519PublicKey;
 
 #[derive(Debug, Error)]
@@ -439,28 +439,25 @@ impl<T: Transport> Client<T> {
     // Receiving Messages
     // ========================================
 
-    /// Fetch and decrypt pending messages from the mailbox
-    pub async fn fetch_messages(&self) -> Result<Vec<ReceivedMessage>, ClientError> {
-        let routing_key = self.routing_key();
-        let envelopes = self.transport.fetch_messages(routing_key).await?;
-
-        let mut messages = Vec::new();
-
-        for outer in envelopes {
-            match self.decrypt_message(&outer).await {
-                Ok(msg) => messages.push(msg),
-                Err(e) => {
-                    warn!("Failed to decrypt message: {}", e);
-                    // Continue processing other messages
-                }
-            }
-        }
-
-        Ok(messages)
-    }
-
-    /// Decrypt a single message
-    async fn decrypt_message(
+    /// Process a raw envelope into a decrypted message
+    ///
+    /// This is the primary method for handling incoming messages in a push-based
+    /// architecture. Use with `MessageReceiver` to receive messages:
+    ///
+    /// ```ignore
+    /// let receiver = MessageReceiver::new(transport.clone());
+    /// let (events, _handle) = receiver.subscribe(client.routing_key(), config);
+    ///
+    /// while let Some(event) = events.recv().await {
+    ///     if let TransportEvent::Message(envelope) = event {
+    ///         match client.process_message(&envelope).await {
+    ///             Ok(msg) => println!("Received: {:?}", msg),
+    ///             Err(e) => warn!("Failed to process: {}", e),
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    pub async fn process_message(
         &self,
         outer: &OuterEnvelope,
     ) -> Result<ReceivedMessage, ClientError> {
@@ -712,6 +709,12 @@ mod tests {
                 prekeys: Mutex::new(HashMap::new()),
             }
         }
+
+        /// Helper to get pending messages (simulates push-based delivery)
+        #[allow(dead_code)]
+        fn take_messages(&self) -> Vec<OuterEnvelope> {
+            self.messages.lock().unwrap().drain(..).collect()
+        }
     }
 
     #[async_trait]
@@ -727,13 +730,6 @@ mod tests {
         ) -> Result<(), TransportError> {
             self.tombstones.lock().unwrap().push(tombstone);
             Ok(())
-        }
-
-        async fn fetch_messages(
-            &self,
-            _routing_key: RoutingKey,
-        ) -> Result<Vec<OuterEnvelope>, TransportError> {
-            Ok(self.messages.lock().unwrap().drain(..).collect())
         }
 
         async fn upload_prekeys(
