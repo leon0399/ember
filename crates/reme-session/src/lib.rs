@@ -67,6 +67,23 @@ pub enum SessionError {
     OneTimePrekeyNotFound,
 }
 
+/// Build HKDF info parameter with identity binding.
+///
+/// Per Signal's X3DH specification, the info parameter should include
+/// identifying information for both parties to prevent Unknown Key Share (UKS) attacks.
+///
+/// The format is: protocol_name || initiator_identity || responder_identity
+///
+/// This ensures that even if DH outputs are somehow reused, different identity
+/// combinations will produce different session keys.
+fn build_hkdf_info(initiator_id: &[u8; 32], responder_id: &[u8; 32]) -> Vec<u8> {
+    let mut info = Vec::with_capacity(32 + 32 + 32);
+    info.extend_from_slice(b"ResilientMessenger-X3DH-v0.1");
+    info.extend_from_slice(initiator_id);
+    info.extend_from_slice(responder_id);
+    info
+}
+
 /// Initiator side: Alice creates a session with Bob's prekey bundle
 pub fn derive_session_as_initiator(
     alice_identity: &Identity,
@@ -117,10 +134,15 @@ pub fn derive_session_as_initiator(
         dh_concat.extend_from_slice(&dh4_bytes);
     }
 
-    // Derive keys using HKDF
+    // Derive keys using HKDF with identity binding
+    // Info includes both identities to prevent Unknown Key Share attacks
+    let info = build_hkdf_info(
+        &alice_identity.public_id().to_bytes(),
+        bob_bundle.id_pub(),
+    );
     let hkdf = Hkdf::<Sha256>::new(None, &dh_concat);
     let mut okm = [0u8; 64];
-    hkdf.expand(b"ResilientMessenger-X3DH-v0.1", &mut okm)
+    hkdf.expand(&info, &mut okm)
         .map_err(|_| SessionError::InvalidBundle)?;
 
     let send_key: [u8; 32] = okm[0..32].try_into().unwrap();
@@ -172,10 +194,16 @@ pub fn derive_session_as_responder(
         dh_concat.extend_from_slice(&dh4_bytes);
     }
 
-    // Derive keys using HKDF
+    // Derive keys using HKDF with identity binding
+    // Info includes both identities to prevent Unknown Key Share attacks
+    // Note: Order is (initiator, responder) = (alice, bob) - same as initiator side
+    let info = build_hkdf_info(
+        &alice_id.to_bytes(),
+        &bob_identity.public_id().to_bytes(),
+    );
     let hkdf = Hkdf::<Sha256>::new(None, &dh_concat);
     let mut okm = [0u8; 64];
-    hkdf.expand(b"ResilientMessenger-X3DH-v0.1", &mut okm)
+    hkdf.expand(&info, &mut okm)
         .map_err(|_| SessionError::InvalidBundle)?;
 
     // Note: Keys are swapped for responder (send/recv reversed)
@@ -242,5 +270,118 @@ mod tests {
         assert_eq!(alice_session.send_key(), bob_session.recv_key());
         assert_eq!(alice_session.recv_key(), bob_session.send_key());
         assert!(alice_session.used_one_time_prekey_id().is_none());
+    }
+
+    #[test]
+    fn test_identity_binding_info_format() {
+        // Test that the HKDF info is constructed correctly
+        let initiator_id = [1u8; 32];
+        let responder_id = [2u8; 32];
+
+        let info = build_hkdf_info(&initiator_id, &responder_id);
+
+        // Should be: protocol_name (28 bytes) + initiator (32 bytes) + responder (32 bytes)
+        assert_eq!(info.len(), 28 + 32 + 32);
+        assert_eq!(&info[0..28], b"ResilientMessenger-X3DH-v0.1");
+        assert_eq!(&info[28..60], &initiator_id);
+        assert_eq!(&info[60..92], &responder_id);
+    }
+
+    #[test]
+    fn test_identity_binding_different_initiator_different_keys() {
+        // When the initiator identity changes, session keys should be different
+        // This prevents Unknown Key Share attacks
+        let alice1 = Identity::generate();
+        let alice2 = Identity::generate();
+        let bob = Identity::generate();
+
+        let (bob_secrets, bob_bundle) = generate_prekey_bundle(&bob, 5);
+
+        // Alice1 initiates session with Bob
+        let session1 = derive_session_as_initiator(&alice1, &bob_bundle, false).unwrap();
+
+        // Alice2 initiates session with Bob (using same bundle)
+        let session2 = derive_session_as_initiator(&alice2, &bob_bundle, false).unwrap();
+
+        // Keys should be different due to identity binding
+        assert_ne!(session1.send_key(), session2.send_key());
+        assert_ne!(session1.recv_key(), session2.recv_key());
+
+        // But each should still work with proper responder derivation
+        let bob_session1 = derive_session_as_responder(
+            &bob,
+            &bob_secrets,
+            alice1.public_id(),
+            session1.ephemeral_public(),
+            None,
+        ).unwrap();
+
+        let bob_session2 = derive_session_as_responder(
+            &bob,
+            &bob_secrets,
+            alice2.public_id(),
+            session2.ephemeral_public(),
+            None,
+        ).unwrap();
+
+        assert_eq!(session1.send_key(), bob_session1.recv_key());
+        assert_eq!(session2.send_key(), bob_session2.recv_key());
+    }
+
+    #[test]
+    fn test_identity_binding_different_responder_different_keys() {
+        // When the responder identity changes, session keys should be different
+        let alice = Identity::generate();
+        let bob1 = Identity::generate();
+        let bob2 = Identity::generate();
+
+        let (_, bob1_bundle) = generate_prekey_bundle(&bob1, 5);
+        let (_, bob2_bundle) = generate_prekey_bundle(&bob2, 5);
+
+        // Alice initiates sessions with different Bobs
+        let session1 = derive_session_as_initiator(&alice, &bob1_bundle, false).unwrap();
+        let session2 = derive_session_as_initiator(&alice, &bob2_bundle, false).unwrap();
+
+        // Keys should be different due to different responder identities
+        assert_ne!(session1.send_key(), session2.send_key());
+        assert_ne!(session1.recv_key(), session2.recv_key());
+    }
+
+    #[test]
+    fn test_identity_binding_prevents_key_confusion() {
+        // This test verifies that if someone tries to use the wrong identity
+        // when deriving the responder session, the keys won't match
+        let alice = Identity::generate();
+        let bob = Identity::generate();
+        let mallory = Identity::generate();
+
+        let (bob_secrets, bob_bundle) = generate_prekey_bundle(&bob, 5);
+
+        // Alice initiates session with Bob
+        let alice_session = derive_session_as_initiator(&alice, &bob_bundle, true).unwrap();
+
+        // Bob correctly derives session using Alice's identity
+        let bob_session_correct = derive_session_as_responder(
+            &bob,
+            &bob_secrets,
+            alice.public_id(),
+            alice_session.ephemeral_public(),
+            alice_session.used_one_time_prekey_id(),
+        ).unwrap();
+
+        // If Bob (incorrectly) thinks he's talking to Mallory
+        let bob_session_wrong = derive_session_as_responder(
+            &bob,
+            &bob_secrets,
+            mallory.public_id(),  // Wrong identity!
+            alice_session.ephemeral_public(),
+            alice_session.used_one_time_prekey_id(),
+        ).unwrap();
+
+        // Correct derivation should match
+        assert_eq!(alice_session.send_key(), bob_session_correct.recv_key());
+
+        // Wrong identity should NOT match - this is the UKS attack prevention
+        assert_ne!(alice_session.send_key(), bob_session_wrong.recv_key());
     }
 }
