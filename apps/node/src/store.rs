@@ -616,7 +616,7 @@ mod tests {
             version: CURRENT_VERSION,
             flags: 0,
             routing_key,
-            created_at_ms: Some(1234567890),
+            coarse_timestamp: 1234567890000, // Coarse timestamp (hour boundary)
             ttl: Some(3600), // 1 hour
             message_id: MessageID::new(),
             session_init: None,

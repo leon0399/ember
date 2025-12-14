@@ -5,6 +5,29 @@ pub use reme_identity::PublicID;
 use uuid::Uuid;
 
 pub mod tombstone;
+
+// ============================================
+// Timestamp utilities (shared with tombstone)
+// ============================================
+
+/// One hour in milliseconds
+pub const HOUR_MS: i64 = 60 * 60 * 1000;
+
+/// Round timestamp to hour boundary (privacy protection)
+///
+/// Coarsening timestamps to hour granularity limits timing analysis
+/// by observers who can see the public envelope metadata.
+pub fn coarsen_timestamp(precise_ms: i64) -> i64 {
+    (precise_ms / HOUR_MS) * HOUR_MS
+}
+
+/// Get current time in milliseconds since Unix epoch
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
 pub use tombstone::{
     DetailedReceipt, DeviceID, TombstoneEnvelope, TombstoneStatus, TombstoneValidationError,
     WirePayload, WireType, CLOCK_SKEW_ALLOWANCE_MS, TOMBSTONE_MAX_AGE_MS,
@@ -91,7 +114,9 @@ pub struct OuterEnvelope {
 
     pub routing_key: RoutingKey,
 
-    pub created_at_ms: Option<u64>,
+    /// Coarse timestamp (rounded to hour) - limits timing analysis
+    /// This is publicly visible, so we use hour granularity for privacy.
+    pub coarse_timestamp: i64,
 
     pub ttl: Option<u32>,
 
@@ -110,10 +135,7 @@ impl OuterEnvelope {
             version: CURRENT_VERSION,
             flags: 0,
             routing_key,
-            created_at_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .ok()
-                .map(|d| d.as_millis() as u64),
+            coarse_timestamp: coarsen_timestamp(now_ms()),
             ttl,
             message_id: MessageID::new(),
             session_init: None,
@@ -132,10 +154,7 @@ impl OuterEnvelope {
             version: CURRENT_VERSION,
             flags: flags::SESSION_INIT,
             routing_key,
-            created_at_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .ok()
-                .map(|d| d.as_millis() as u64),
+            coarse_timestamp: coarsen_timestamp(now_ms()),
             ttl,
             message_id: MessageID::new(),
             session_init: Some(session_init),

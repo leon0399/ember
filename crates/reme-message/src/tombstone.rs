@@ -15,7 +15,7 @@
 //! - **Replay prevention**: Timestamp + sequence + device_id in signature
 //! - **Privacy**: Coarse timestamp (hour granularity), optional encrypted receipt
 
-use crate::{MessageID, RoutingKey, Version, CURRENT_VERSION};
+use crate::{coarsen_timestamp, now_ms, MessageID, RoutingKey, Version, CURRENT_VERSION};
 use bincode::{Decode, Encode};
 use xeddsa::{xed25519, Sign, Verify};
 
@@ -24,9 +24,6 @@ pub const TOMBSTONE_MAX_AGE_MS: i64 = 10 * 24 * 60 * 60 * 1000;
 
 /// Clock skew allowance (5 minutes in milliseconds)
 pub const CLOCK_SKEW_ALLOWANCE_MS: i64 = 5 * 60 * 1000;
-
-/// One hour in milliseconds
-const HOUR_MS: i64 = 60 * 60 * 1000;
 
 /// Device identifier for multi-device sequence management
 pub type DeviceID = [u8; 16];
@@ -150,8 +147,8 @@ impl TombstoneEnvelope {
         session_recv_key: Option<&[u8; 32]>,
         inner_ciphertext: Option<&[u8]>,
     ) -> Self {
-        let precise_timestamp = Self::now_ms();
-        let coarse_timestamp = Self::coarsen_timestamp(precise_timestamp);
+        let precise_timestamp = now_ms();
+        let coarse_ts = coarsen_timestamp(precise_timestamp);
 
         let mut tombstone = TombstoneEnvelope {
             version: CURRENT_VERSION,
@@ -159,7 +156,7 @@ impl TombstoneEnvelope {
             routing_key,
             recipient_id_pub,
             device_id,
-            coarse_timestamp,
+            coarse_timestamp: coarse_ts,
             sequence,
             signature: [0u8; 64],
             encrypted_receipt: None,
@@ -210,18 +207,6 @@ impl TombstoneEnvelope {
         )
     }
 
-    /// Round timestamp to hour boundary (privacy protection)
-    pub fn coarsen_timestamp(precise_ms: i64) -> i64 {
-        (precise_ms / HOUR_MS) * HOUR_MS
-    }
-
-    /// Get current time in milliseconds since Unix epoch
-    fn now_ms() -> i64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0)
-    }
 
     /// Sign the tombstone with recipient's X25519 private key using XEdDSA
     ///
@@ -253,7 +238,7 @@ impl TombstoneEnvelope {
         }
 
         // 2. Check timestamp freshness
-        let now = Self::now_ms();
+        let now = now_ms();
 
         if self.coarse_timestamp > now + CLOCK_SKEW_ALLOWANCE_MS {
             return Err(TombstoneValidationError::TimestampInFuture);
@@ -537,6 +522,8 @@ mod tests {
 
     #[test]
     fn test_tombstone_timestamp_validation() {
+        use crate::now_ms;
+
         let (pub_key, priv_key) = generate_test_keypair();
         let device_id = [0u8; 16];
 
@@ -558,7 +545,7 @@ mod tests {
             routing_key: [0u8; 16],
             recipient_id_pub: pub_key,
             device_id,
-            coarse_timestamp: TombstoneEnvelope::now_ms() - 11 * 24 * 60 * 60 * 1000, // 11 days ago
+            coarse_timestamp: now_ms() - 11 * 24 * 60 * 60 * 1000, // 11 days ago
             sequence: 1,
             signature: [0u8; 64],
             encrypted_receipt: None,
@@ -574,6 +561,8 @@ mod tests {
 
     #[test]
     fn test_tombstone_future_timestamp_rejected() {
+        use crate::now_ms;
+
         let (pub_key, priv_key) = generate_test_keypair();
         let device_id = [0u8; 16];
 
@@ -584,7 +573,7 @@ mod tests {
             routing_key: [0u8; 16],
             recipient_id_pub: pub_key,
             device_id,
-            coarse_timestamp: TombstoneEnvelope::now_ms() + 10 * 60 * 1000, // 10 mins in future
+            coarse_timestamp: now_ms() + 10 * 60 * 1000, // 10 mins in future
             sequence: 1,
             signature: [0u8; 64],
             encrypted_receipt: None,
@@ -654,8 +643,10 @@ mod tests {
 
     #[test]
     fn test_coarsen_timestamp() {
+        use crate::{coarsen_timestamp, HOUR_MS};
+
         let precise = 1700000000123i64; // Some arbitrary timestamp with ms precision
-        let coarse = TombstoneEnvelope::coarsen_timestamp(precise);
+        let coarse = coarsen_timestamp(precise);
 
         // Should be rounded down to hour boundary
         assert_eq!(coarse % HOUR_MS, 0);

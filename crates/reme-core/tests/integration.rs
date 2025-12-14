@@ -158,7 +158,7 @@ async fn test_e2e_encryption_manual() {
         version: CURRENT_VERSION,
         flags: 0,
         routing_key: bob_routing_key,
-        created_at_ms: Some(1234567890),
+        coarse_timestamp: 1234567890000, // Coarse timestamp (hour boundary)
         ttl: Some(3600),
         message_id,
         session_init: None,

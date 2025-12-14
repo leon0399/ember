@@ -361,12 +361,14 @@ impl<T: Transport> Client<T> {
         let routing_key = to.routing_key();
         let outer_message_id = MessageID::new();
 
-        // Create inner envelope
+        // Get precise timestamp for inner envelope and coarse for outer
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
+        let coarse_timestamp = reme_message::coarsen_timestamp(now_ms as i64);
 
+        // Create inner envelope (uses precise timestamp - encrypted)
         let inner = InnerEnvelope {
             version: CURRENT_VERSION,
             from: *self.identity.public_id(),
@@ -383,7 +385,7 @@ impl<T: Transport> Client<T> {
         // Encrypt inner envelope
         let ciphertext = encrypt_inner_envelope(&inner, session.send_key(), &outer_message_id)?;
 
-        // Create outer envelope (with or without session init)
+        // Create outer envelope (uses coarse timestamp for privacy)
         let outer = if needs_session_init {
             let session_init = SessionEstablishment {
                 sender_identity: self.identity.public_id().to_bytes(),
@@ -394,7 +396,7 @@ impl<T: Transport> Client<T> {
                 version: CURRENT_VERSION,
                 flags: reme_message::flags::SESSION_INIT,
                 routing_key,
-                created_at_ms: Some(now_ms),
+                coarse_timestamp,
                 ttl: Some(7 * 24 * 60 * 60), // 7 days default TTL
                 message_id: outer_message_id,
                 session_init: Some(session_init),
@@ -405,7 +407,7 @@ impl<T: Transport> Client<T> {
                 version: CURRENT_VERSION,
                 flags: 0,
                 routing_key,
-                created_at_ms: Some(now_ms),
+                coarse_timestamp,
                 ttl: Some(7 * 24 * 60 * 60), // 7 days default TTL
                 message_id: outer_message_id,
                 session_init: None,
