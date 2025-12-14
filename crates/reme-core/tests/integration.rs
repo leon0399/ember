@@ -85,7 +85,7 @@ async fn test_transport_roundtrip() {
     println!("Prekey roundtrip: OK");
 
     // Create and submit a test envelope
-    let test_envelope = OuterEnvelope::new(routing_key, vec![1, 2, 3, 4], Some(3600));
+    let test_envelope = OuterEnvelope::new(routing_key, vec![1, 2, 3, 4], Some(1)); // 1 hour TTL
     transport
         .submit_message(test_envelope)
         .await
@@ -158,8 +158,8 @@ async fn test_e2e_encryption_manual() {
         version: CURRENT_VERSION,
         flags: 0,
         routing_key: bob_routing_key,
-        coarse_timestamp: 1234567890000, // Coarse timestamp (hour boundary)
-        ttl: Some(3600),
+        timestamp_hours: reme_message::now_hours(),
+        ttl_hours: Some(1), // 1 hour TTL
         message_id,
         session_init: None,
         inner_ciphertext: ciphertext,
@@ -463,7 +463,7 @@ async fn test_multi_node_replication() {
     println!("Prekeys replicated to node 2: OK");
 
     // Send a message to node 1
-    let test_envelope = OuterEnvelope::new(routing_key, vec![42, 43, 44, 45], Some(3600));
+    let test_envelope = OuterEnvelope::new(routing_key, vec![42, 43, 44, 45], Some(1)); // 1 hour TTL
     transport1
         .submit_message(test_envelope)
         .await

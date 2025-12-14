@@ -15,15 +15,16 @@
 //! - **Replay prevention**: Timestamp + sequence + device_id in signature
 //! - **Privacy**: Coarse timestamp (hour granularity), optional encrypted receipt
 
-use crate::{coarsen_timestamp, now_ms, MessageID, RoutingKey, Version, CURRENT_VERSION};
+use crate::{now_hours, now_secs, MessageID, RoutingKey, Version, CURRENT_VERSION};
 use bincode::{Decode, Encode};
 use xeddsa::{xed25519, Sign, Verify};
 
-/// Maximum age for tombstone validation (10 days in milliseconds)
-pub const TOMBSTONE_MAX_AGE_MS: i64 = 10 * 24 * 60 * 60 * 1000;
+/// Maximum age for tombstone validation (10 days in hours)
+pub const TOMBSTONE_MAX_AGE_HOURS: u32 = 10 * 24;
 
-/// Clock skew allowance (5 minutes in milliseconds)
-pub const CLOCK_SKEW_ALLOWANCE_MS: i64 = 5 * 60 * 1000;
+/// Clock skew allowance (1 hour)
+/// Since we use hour granularity, 1 hour allowance handles clock drift.
+pub const CLOCK_SKEW_ALLOWANCE_HOURS: u32 = 1;
 
 /// Device identifier for multi-device sequence management
 pub type DeviceID = [u8; 16];
@@ -67,9 +68,10 @@ pub struct TombstoneEnvelope {
     /// Device identifier (enables per-device sequence numbers)
     pub device_id: DeviceID,
 
-    /// Coarse timestamp (rounded to hour) - limits timing analysis
-    /// Also included in signature to prevent replay attacks
-    pub coarse_timestamp: i64,
+    /// Timestamp as hours since Unix epoch (u32)
+    /// Hour granularity limits timing analysis while saving space.
+    /// Also included in signature to prevent replay attacks.
+    pub timestamp_hours: u32,
 
     /// Monotonically increasing sequence number per device
     pub sequence: u64,
@@ -84,8 +86,8 @@ pub struct TombstoneEnvelope {
 /// Decrypted content of encrypted_receipt (only sender can read)
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct DetailedReceipt {
-    /// Precise timestamp when message was processed
-    pub precise_timestamp: i64,
+    /// Precise timestamp in seconds when message was processed
+    pub precise_timestamp_secs: u64,
 
     /// Actual status (Delivered/Read/Deleted)
     pub status: TombstoneStatus,
@@ -147,8 +149,8 @@ impl TombstoneEnvelope {
         session_recv_key: Option<&[u8; 32]>,
         inner_ciphertext: Option<&[u8]>,
     ) -> Self {
-        let precise_timestamp = now_ms();
-        let coarse_ts = coarsen_timestamp(precise_timestamp);
+        let precise_secs = now_secs();
+        let timestamp_hours = now_hours();
 
         let mut tombstone = TombstoneEnvelope {
             version: CURRENT_VERSION,
@@ -156,7 +158,7 @@ impl TombstoneEnvelope {
             routing_key,
             recipient_id_pub,
             device_id,
-            coarse_timestamp: coarse_ts,
+            timestamp_hours,
             sequence,
             signature: [0u8; 64],
             encrypted_receipt: None,
@@ -170,7 +172,7 @@ impl TombstoneEnvelope {
             let proof = inner_ciphertext.map(|ct| Self::generate_proof_of_content(session_key, ct));
 
             let detailed = DetailedReceipt {
-                precise_timestamp,
+                precise_timestamp_secs: precise_secs,
                 status,
                 proof_of_content: proof,
             };
@@ -237,14 +239,14 @@ impl TombstoneEnvelope {
             return Err(TombstoneValidationError::InvalidSignature);
         }
 
-        // 2. Check timestamp freshness
-        let now = now_ms();
+        // 2. Check timestamp freshness (using hours)
+        let now = now_hours();
 
-        if self.coarse_timestamp > now + CLOCK_SKEW_ALLOWANCE_MS {
+        if self.timestamp_hours > now + CLOCK_SKEW_ALLOWANCE_HOURS {
             return Err(TombstoneValidationError::TimestampInFuture);
         }
 
-        if now - self.coarse_timestamp > TOMBSTONE_MAX_AGE_MS {
+        if now.saturating_sub(self.timestamp_hours) > TOMBSTONE_MAX_AGE_HOURS {
             return Err(TombstoneValidationError::TimestampTooOld);
         }
 
@@ -253,7 +255,7 @@ impl TombstoneEnvelope {
 
     /// Bytes that are signed
     ///
-    /// Format: version || target_message_id || routing_key || device_id || coarse_timestamp || sequence
+    /// Format: version || target_message_id || routing_key || device_id || timestamp_hours || sequence
     fn signable_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(64);
         bytes.extend_from_slice(&self.version.major.to_le_bytes());
@@ -261,7 +263,7 @@ impl TombstoneEnvelope {
         bytes.extend_from_slice(self.target_message_id.as_bytes());
         bytes.extend_from_slice(&self.routing_key);
         bytes.extend_from_slice(&self.device_id);
-        bytes.extend_from_slice(&self.coarse_timestamp.to_le_bytes());
+        bytes.extend_from_slice(&self.timestamp_hours.to_le_bytes());
         bytes.extend_from_slice(&self.sequence.to_le_bytes());
         bytes
     }
@@ -522,7 +524,7 @@ mod tests {
 
     #[test]
     fn test_tombstone_timestamp_validation() {
-        use crate::now_ms;
+        use crate::now_hours;
 
         let (pub_key, priv_key) = generate_test_keypair();
         let device_id = [0u8; 16];
@@ -538,14 +540,14 @@ mod tests {
         );
         assert!(tombstone.validate().is_ok());
 
-        // Manually create one with old timestamp
+        // Manually create one with old timestamp (11 days = 264 hours)
         let mut old_tombstone = TombstoneEnvelope {
             version: CURRENT_VERSION,
             target_message_id: MessageID::new(),
             routing_key: [0u8; 16],
             recipient_id_pub: pub_key,
             device_id,
-            coarse_timestamp: now_ms() - 11 * 24 * 60 * 60 * 1000, // 11 days ago
+            timestamp_hours: now_hours().saturating_sub(11 * 24), // 11 days ago
             sequence: 1,
             signature: [0u8; 64],
             encrypted_receipt: None,
@@ -561,7 +563,7 @@ mod tests {
 
     #[test]
     fn test_tombstone_future_timestamp_rejected() {
-        use crate::now_ms;
+        use crate::now_hours;
 
         let (pub_key, priv_key) = generate_test_keypair();
         let device_id = [0u8; 16];
@@ -573,7 +575,7 @@ mod tests {
             routing_key: [0u8; 16],
             recipient_id_pub: pub_key,
             device_id,
-            coarse_timestamp: now_ms() + 10 * 60 * 1000, // 10 mins in future
+            timestamp_hours: now_hours() + 2, // 2 hours in future (beyond 1 hour allowance)
             sequence: 1,
             signature: [0u8; 64],
             encrypted_receipt: None,
@@ -614,7 +616,7 @@ mod tests {
         let receipt = tombstone.decrypt_receipt(&sender_priv).unwrap();
         assert_eq!(receipt.status, TombstoneStatus::Read);
         assert!(receipt.proof_of_content.is_some());
-        assert!(receipt.precise_timestamp > 0);
+        assert!(receipt.precise_timestamp_secs > 0);
     }
 
     #[test]
@@ -642,16 +644,13 @@ mod tests {
     }
 
     #[test]
-    fn test_coarsen_timestamp() {
-        use crate::{coarsen_timestamp, HOUR_MS};
+    fn test_now_hours() {
+        use crate::now_hours;
 
-        let precise = 1700000000123i64; // Some arbitrary timestamp with ms precision
-        let coarse = coarsen_timestamp(precise);
-
-        // Should be rounded down to hour boundary
-        assert_eq!(coarse % HOUR_MS, 0);
-        assert!(coarse <= precise);
-        assert!(precise - coarse < HOUR_MS);
+        let hours = now_hours();
+        // Should be a reasonable value (at least year 2020 in hours)
+        // 2020 is approximately 50 years after 1970, which is ~438,000 hours
+        assert!(hours > 400_000);
     }
 
     #[test]

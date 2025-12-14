@@ -361,12 +361,11 @@ impl<T: Transport> Client<T> {
         let routing_key = to.routing_key();
         let outer_message_id = MessageID::new();
 
-        // Get precise timestamp for inner envelope and coarse for outer
+        // Get precise timestamp for inner envelope
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        let coarse_timestamp = reme_message::coarsen_timestamp(now_ms as i64);
 
         // Create inner envelope (uses precise timestamp - encrypted)
         let inner = InnerEnvelope {
@@ -396,8 +395,8 @@ impl<T: Transport> Client<T> {
                 version: CURRENT_VERSION,
                 flags: reme_message::flags::SESSION_INIT,
                 routing_key,
-                coarse_timestamp,
-                ttl: Some(7 * 24 * 60 * 60), // 7 days default TTL
+                timestamp_hours: reme_message::now_hours(),
+                ttl_hours: Some(7 * 24), // 7 days default TTL in hours
                 message_id: outer_message_id,
                 session_init: Some(session_init),
                 inner_ciphertext: ciphertext,
@@ -407,8 +406,8 @@ impl<T: Transport> Client<T> {
                 version: CURRENT_VERSION,
                 flags: 0,
                 routing_key,
-                coarse_timestamp,
-                ttl: Some(7 * 24 * 60 * 60), // 7 days default TTL
+                timestamp_hours: reme_message::now_hours(),
+                ttl_hours: Some(7 * 24), // 7 days default TTL in hours
                 message_id: outer_message_id,
                 session_init: None,
                 inner_ciphertext: ciphertext,

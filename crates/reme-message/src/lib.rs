@@ -10,27 +10,32 @@ pub mod tombstone;
 // Timestamp utilities (shared with tombstone)
 // ============================================
 
-/// One hour in milliseconds
-pub const HOUR_MS: i64 = 60 * 60 * 1000;
+/// One hour in seconds
+pub const HOUR_SECS: u64 = 60 * 60;
 
-/// Round timestamp to hour boundary (privacy protection)
+/// Get current time as hours since Unix epoch (u32)
 ///
-/// Coarsening timestamps to hour granularity limits timing analysis
-/// by observers who can see the public envelope metadata.
-pub fn coarsen_timestamp(precise_ms: i64) -> i64 {
-    (precise_ms / HOUR_MS) * HOUR_MS
-}
-
-/// Get current time in milliseconds since Unix epoch
-pub fn now_ms() -> i64 {
+/// Using hours instead of milliseconds:
+/// - Saves 4 bytes per timestamp (u32 vs i64)
+/// - Matches the hour-granularity privacy protection
+/// - Range: ~490,000 years from 1970 (sufficient)
+pub fn now_hours() -> u32 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
+        .map(|d| (d.as_secs() / HOUR_SECS) as u32)
+        .unwrap_or(0)
+}
+
+/// Get current time in seconds since Unix epoch
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
         .unwrap_or(0)
 }
 pub use tombstone::{
     DetailedReceipt, DeviceID, TombstoneEnvelope, TombstoneStatus, TombstoneValidationError,
-    WirePayload, WireType, CLOCK_SKEW_ALLOWANCE_MS, TOMBSTONE_MAX_AGE_MS,
+    WirePayload, WireType, CLOCK_SKEW_ALLOWANCE_HOURS, TOMBSTONE_MAX_AGE_HOURS,
 };
 
 /// Session establishment data included in the first message from initiator
@@ -114,11 +119,13 @@ pub struct OuterEnvelope {
 
     pub routing_key: RoutingKey,
 
-    /// Coarse timestamp (rounded to hour) - limits timing analysis
-    /// This is publicly visible, so we use hour granularity for privacy.
-    pub coarse_timestamp: i64,
+    /// Coarse timestamp as hours since Unix epoch (u32)
+    /// Hour granularity limits timing analysis while saving 4 bytes vs i64 ms.
+    pub timestamp_hours: u32,
 
-    pub ttl: Option<u32>,
+    /// Time-to-live in hours (u16, max ~7.5 years)
+    /// None means use server default.
+    pub ttl_hours: Option<u16>,
 
     pub message_id: MessageID,
 
@@ -130,13 +137,14 @@ pub struct OuterEnvelope {
 }
 
 impl OuterEnvelope {
-    pub fn new(routing_key: RoutingKey, inner_ciphertext: Vec<u8>, ttl: Option<u32>) -> Self {
+    /// Create a new envelope with TTL in hours
+    pub fn new(routing_key: RoutingKey, inner_ciphertext: Vec<u8>, ttl_hours: Option<u16>) -> Self {
         Self {
             version: CURRENT_VERSION,
             flags: 0,
             routing_key,
-            coarse_timestamp: coarsen_timestamp(now_ms()),
-            ttl,
+            timestamp_hours: now_hours(),
+            ttl_hours,
             message_id: MessageID::new(),
             session_init: None,
             inner_ciphertext,
@@ -147,15 +155,15 @@ impl OuterEnvelope {
     pub fn with_session_init(
         routing_key: RoutingKey,
         inner_ciphertext: Vec<u8>,
-        ttl: Option<u32>,
+        ttl_hours: Option<u16>,
         session_init: SessionEstablishment,
     ) -> Self {
         Self {
             version: CURRENT_VERSION,
             flags: flags::SESSION_INIT,
             routing_key,
-            coarse_timestamp: coarsen_timestamp(now_ms()),
-            ttl,
+            timestamp_hours: now_hours(),
+            ttl_hours,
             message_id: MessageID::new(),
             session_init: Some(session_init),
             inner_ciphertext,

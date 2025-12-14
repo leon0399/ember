@@ -143,8 +143,8 @@ impl MailboxStore {
     /// Enqueue a message for a routing key
     pub fn enqueue(&self, routing_key: RoutingKey, envelope: OuterEnvelope) -> Result<(), StoreError> {
         let ttl = envelope
-            .ttl
-            .map(|t| Duration::from_secs(t as u64))
+            .ttl_hours
+            .map(|h| Duration::from_secs(h as u64 * 3600)) // Convert hours to seconds
             .unwrap_or(self.default_ttl);
 
         let entry = MessageEntry {
@@ -616,8 +616,8 @@ mod tests {
             version: CURRENT_VERSION,
             flags: 0,
             routing_key,
-            coarse_timestamp: 1234567890000, // Coarse timestamp (hour boundary)
-            ttl: Some(3600), // 1 hour
+            timestamp_hours: 482253, // Hours since Unix epoch (approx 2025)
+            ttl_hours: Some(1), // 1 hour
             message_id: MessageID::new(),
             session_init: None,
             inner_ciphertext: vec![1, 2, 3, 4],
