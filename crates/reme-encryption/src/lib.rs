@@ -157,6 +157,33 @@ mod tests {
     use reme_identity::Identity;
     use reme_message::{Content, TextContent, CURRENT_VERSION};
 
+    /// Helper to create a signed InnerEnvelope
+    fn create_signed_inner(
+        sender: &Identity,
+        recipient_pub: &PublicID,
+        message_id: MessageID,
+        body: &str,
+        created_at_ms: u64,
+    ) -> InnerEnvelope {
+        // Create envelope without signature first
+        let mut inner = InnerEnvelope {
+            version: CURRENT_VERSION,
+            from: *sender.public_id(),
+            to: *recipient_pub,
+            created_at_ms,
+            outer_message_id: message_id,
+            content: Content::Text(TextContent {
+                body: body.to_string(),
+            }),
+            sender_signature: [0u8; 64], // Placeholder
+        };
+
+        // Sign it
+        let signable = inner.signable_bytes();
+        inner.sender_signature = InnerEnvelope::sign(&signable, &sender.to_bytes());
+        inner
+    }
+
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
         // Create recipient identity (Bob)
@@ -167,18 +194,9 @@ mod tests {
         // Create sender identity (Alice)
         let alice = Identity::generate();
 
-        // Create inner envelope
+        // Create signed inner envelope
         let message_id = MessageID::new();
-        let inner = InnerEnvelope {
-            version: CURRENT_VERSION,
-            from: *alice.public_id(),
-            to: bob_public,
-            created_at_ms: 1234567890,
-            outer_message_id: message_id,
-            content: Content::Text(TextContent {
-                body: "Hello Bob via MIK!".to_string(),
-            }),
-        };
+        let inner = create_signed_inner(&alice, &bob_public, message_id, "Hello Bob via MIK!", 1234567890);
 
         // Alice encrypts to Bob's MIK
         let (ephemeral_pub, ciphertext) = encrypt_to_mik(&inner, &bob_public, &message_id).unwrap();
@@ -189,6 +207,9 @@ mod tests {
         assert_eq!(inner.from, decrypted.from);
         assert_eq!(inner.to, decrypted.to);
         assert_eq!(inner.created_at_ms, decrypted.created_at_ms);
+
+        // Verify sender signature
+        assert!(decrypted.verify_sender_signature(), "Sender signature should be valid");
 
         match (inner.content, decrypted.content) {
             (Content::Text(orig), Content::Text(dec)) => {
@@ -210,18 +231,9 @@ mod tests {
         // Create sender
         let alice = Identity::generate();
 
-        // Create inner envelope
+        // Create signed inner envelope
         let message_id = MessageID::new();
-        let inner = InnerEnvelope {
-            version: CURRENT_VERSION,
-            from: *alice.public_id(),
-            to: bob_public,
-            created_at_ms: 1234567890,
-            outer_message_id: message_id,
-            content: Content::Text(TextContent {
-                body: "Secret message for Bob".to_string(),
-            }),
-        };
+        let inner = create_signed_inner(&alice, &bob_public, message_id, "Secret message for Bob", 1234567890);
 
         // Alice encrypts to Bob's MIK
         let (ephemeral_pub, ciphertext) = encrypt_to_mik(&inner, &bob_public, &message_id).unwrap();
@@ -239,26 +251,12 @@ mod tests {
 
         let alice = Identity::generate();
 
-        // Create two different messages
+        // Create two different signed messages
         let message_id1 = MessageID::new();
-        let inner1 = InnerEnvelope {
-            version: CURRENT_VERSION,
-            from: *alice.public_id(),
-            to: bob_public,
-            created_at_ms: 1234567890,
-            outer_message_id: message_id1,
-            content: Content::Text(TextContent { body: "Message 1".to_string() }),
-        };
+        let inner1 = create_signed_inner(&alice, &bob_public, message_id1, "Message 1", 1234567890);
 
         let message_id2 = MessageID::new();
-        let inner2 = InnerEnvelope {
-            version: CURRENT_VERSION,
-            from: *alice.public_id(),
-            to: bob_public,
-            created_at_ms: 1234567891,
-            outer_message_id: message_id2,
-            content: Content::Text(TextContent { body: "Message 2".to_string() }),
-        };
+        let inner2 = create_signed_inner(&alice, &bob_public, message_id2, "Message 2", 1234567891);
 
         // Encrypt both
         let (ephemeral1, _) = encrypt_to_mik(&inner1, &bob_public, &message_id1).unwrap();
@@ -266,5 +264,42 @@ mod tests {
 
         // Each message should have a different ephemeral key
         assert_ne!(ephemeral1, ephemeral2);
+    }
+
+    #[test]
+    fn test_invalid_sender_signature_detected() {
+        let bob = Identity::generate();
+        let bob_public = *bob.public_id();
+        let bob_private = bob.to_bytes();
+
+        let alice = Identity::generate();
+        let mallory = Identity::generate();
+
+        // Mallory creates a message claiming to be from Alice
+        let message_id = MessageID::new();
+        let mut inner = InnerEnvelope {
+            version: CURRENT_VERSION,
+            from: *alice.public_id(), // Claims to be Alice
+            to: bob_public,
+            created_at_ms: 1234567890,
+            outer_message_id: message_id,
+            content: Content::Text(TextContent {
+                body: "Fake message from Alice".to_string(),
+            }),
+            sender_signature: [0u8; 64],
+        };
+
+        // Mallory signs with her own key (not Alice's)
+        let signable = inner.signable_bytes();
+        inner.sender_signature = InnerEnvelope::sign(&signable, &mallory.to_bytes());
+
+        // Encrypt and send
+        let (ephemeral_pub, ciphertext) = encrypt_to_mik(&inner, &bob_public, &message_id).unwrap();
+
+        // Bob decrypts
+        let decrypted = decrypt_with_mik(&ephemeral_pub, &ciphertext, &bob_private, &message_id).unwrap();
+
+        // Signature verification should FAIL (Mallory signed, but `from` claims Alice)
+        assert!(!decrypted.verify_sender_signature(), "Forged signature should be invalid");
     }
 }

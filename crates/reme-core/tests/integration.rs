@@ -107,7 +107,7 @@ async fn test_e2e_encryption_mik_only() {
 
     // Alice creates and encrypts a message to Bob's MIK (stateless)
     let message_id = MessageID::new();
-    let inner = InnerEnvelope {
+    let mut inner = InnerEnvelope {
         version: CURRENT_VERSION,
         from: *alice.public_id(),
         to: *bob.public_id(),
@@ -116,7 +116,12 @@ async fn test_e2e_encryption_mik_only() {
         content: Content::Text(TextContent {
             body: "Hello Bob! This is Alice.".to_string(),
         }),
+        sender_signature: [0u8; 64], // Placeholder
     };
+
+    // Sign the message with Alice's private key
+    let signable = inner.signable_bytes();
+    inner.sender_signature = InnerEnvelope::sign(&signable, &alice.to_bytes());
 
     // Encrypt to Bob's MIK (returns ephemeral_key and ciphertext)
     let (ephemeral_key, ciphertext) = encrypt_to_mik(&inner, bob.public_id(), &message_id)
@@ -158,6 +163,13 @@ async fn test_e2e_encryption_mik_only() {
         &messages[0].message_id,
     )
     .expect("decrypt_with_mik failed");
+
+    // Verify sender signature (authentication)
+    assert!(
+        decrypted.verify_sender_signature(),
+        "Sender signature verification failed"
+    );
+    println!("Bob verified Alice's signature: OK");
 
     match decrypted.content {
         Content::Text(t) => {

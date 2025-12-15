@@ -170,6 +170,63 @@ pub struct InnerEnvelope {
     pub outer_message_id: MessageID,
 
     pub content: Content,
+
+    /// XEdDSA signature over all preceding fields, proving sender authenticity.
+    /// Signs: version || from || to || created_at_ms || outer_message_id || content
+    pub sender_signature: [u8; 64],
+}
+
+impl InnerEnvelope {
+    /// Returns the bytes that are covered by the sender signature.
+    /// This is all fields except the signature itself.
+    pub fn signable_bytes(&self) -> Vec<u8> {
+        // Manually serialize all fields except signature
+        let mut bytes = Vec::new();
+
+        // version (4 bytes)
+        bytes.extend_from_slice(&self.version.major.to_le_bytes());
+        bytes.extend_from_slice(&self.version.minor.to_le_bytes());
+
+        // from (32 bytes)
+        bytes.extend_from_slice(&self.from.to_bytes());
+
+        // to (32 bytes)
+        bytes.extend_from_slice(&self.to.to_bytes());
+
+        // created_at_ms (8 bytes)
+        bytes.extend_from_slice(&self.created_at_ms.to_le_bytes());
+
+        // outer_message_id (16 bytes)
+        bytes.extend_from_slice(self.outer_message_id.as_bytes());
+
+        // content - serialize with bincode for consistency
+        let content_bytes =
+            bincode::encode_to_vec(&self.content, bincode::config::standard()).unwrap();
+        bytes.extend_from_slice(&content_bytes);
+
+        bytes
+    }
+
+    /// Sign this envelope with the sender's private key.
+    /// Returns the signature bytes.
+    pub fn sign(signable_bytes: &[u8], sender_private: &[u8; 32]) -> [u8; 64] {
+        use rand_core::OsRng;
+        use xeddsa::{xed25519, Sign};
+
+        let private_key = xed25519::PrivateKey(*sender_private);
+        private_key.sign(signable_bytes, OsRng)
+    }
+
+    /// Verify that the sender_signature is valid for the from field.
+    /// Returns true if the signature is valid.
+    pub fn verify_sender_signature(&self) -> bool {
+        use xeddsa::{xed25519, Verify};
+
+        let public_key = xed25519::PublicKey(self.from.to_bytes());
+        let signable = self.signable_bytes();
+
+        public_key.verify(&signable, &self.sender_signature).is_ok()
+    }
 }
 
 #[derive(Debug, Clone, Encode, Decode)]

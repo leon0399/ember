@@ -35,6 +35,9 @@ pub enum ClientError {
 
     #[error("Message decryption failed: unknown sender or corrupted")]
     DecryptionFailed,
+
+    #[error("Invalid sender signature: message may be forged or tampered")]
+    InvalidSenderSignature,
 }
 
 /// Represents a contact in the messenger
@@ -229,15 +232,20 @@ impl<T: Transport> Client<T> {
             .unwrap()
             .as_millis() as u64;
 
-        // Create inner envelope (will be encrypted)
-        let inner = InnerEnvelope {
+        // Create inner envelope with placeholder signature
+        let mut inner = InnerEnvelope {
             version: CURRENT_VERSION,
             from: *self.identity.public_id(),
             to: *to,
             created_at_ms: now_ms,
             outer_message_id,
             content: content.clone(),
+            sender_signature: [0u8; 64], // Placeholder
         };
+
+        // Sign the envelope with sender's private key
+        let signable = inner.signable_bytes();
+        inner.sender_signature = InnerEnvelope::sign(&signable, &self.private_key());
 
         // Encrypt to recipient's MIK (stateless, returns ephemeral_key + ciphertext)
         let (ephemeral_key, ciphertext) = encrypt_to_mik(&inner, to, &outer_message_id)?;
@@ -275,6 +283,7 @@ impl<T: Transport> Client<T> {
     /// 1. The ephemeral public key from the envelope
     /// 2. Our MIK private key
     ///
+    /// After decryption, the sender signature is verified to prevent impersonation.
     /// No session state is needed - each message is independently decryptable.
     pub async fn process_message(
         &self,
@@ -287,6 +296,12 @@ impl<T: Transport> Client<T> {
             &self.private_key(),
             &outer.message_id,
         )?;
+
+        // Verify sender signature to prevent impersonation attacks
+        // This ensures the `from` field matches who actually signed the message
+        if !inner.verify_sender_signature() {
+            return Err(ClientError::InvalidSenderSignature);
+        }
 
         // Verify the message was intended for us
         if inner.to != *self.public_id() {
