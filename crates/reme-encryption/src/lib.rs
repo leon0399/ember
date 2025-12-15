@@ -13,10 +13,53 @@ pub enum EncryptionError {
     EncryptionFailed,
     #[error("Decryption failed")]
     DecryptionFailed,
+    #[error("Invalid recipient public key (low-order point)")]
+    InvalidRecipientKey,
     #[error("Serialization error: {0}")]
     SerializationError(#[from] bincode::error::EncodeError),
     #[error("Deserialization error: {0}")]
     DeserializationError(#[from] bincode::error::DecodeError),
+}
+
+/// Check if a public key is a small-order (weak) point on Curve25519.
+///
+/// Curve25519 has 8 small-order points that produce predictable shared secrets
+/// when used in ECDH. Messages encrypted to these keys have no confidentiality
+/// since anyone can derive the same encryption key.
+///
+/// The 8 small-order points (in their canonical byte representation):
+/// - Order 1: The identity point [0; 32]
+/// - Order 2: [1, 0, 0, ...]
+/// - Order 4: 2 points
+/// - Order 8: 4 points
+fn is_low_order_point(public_key: &[u8; 32]) -> bool {
+    // The 8 small-order points on Curve25519 (canonical representations)
+    const LOW_ORDER_POINTS: [[u8; 32]; 8] = [
+        // Order 1: identity (zero)
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        // Order 2
+        [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        // Order 4
+        [0xe0, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0xae, 0x16, 0x56, 0xe3, 0xfa, 0xf1, 0x9f, 0xc4, 0x6a,
+         0xda, 0x09, 0x8d, 0xeb, 0x9c, 0x32, 0xb1, 0xfd, 0x86, 0x62, 0x05, 0x16, 0x5f, 0x49, 0xb8, 0x00],
+        // Order 4
+        [0x5f, 0x9c, 0x95, 0xbc, 0xa3, 0x50, 0x8c, 0x24, 0xb1, 0xd0, 0xb1, 0x55, 0x9c, 0x83, 0xef, 0x5b,
+         0x04, 0x44, 0x5c, 0xc4, 0x58, 0x1c, 0x8e, 0x86, 0xd8, 0x22, 0x4e, 0xdd, 0xd0, 0x9f, 0x11, 0x57],
+        // Order 8
+        [0xec, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f],
+        // Order 8
+        [0xed, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f],
+        // Order 8
+        [0xee, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f],
+        // Order 8 (same as p-1 in some representations, but included for completeness)
+        [0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
+         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10],
+    ];
+
+    LOW_ORDER_POINTS.iter().any(|p| p == public_key)
 }
 
 /// Encrypt an InnerEnvelope to a recipient's MIK (stateless encryption)
@@ -38,6 +81,11 @@ pub fn encrypt_to_mik(
     recipient_mik: &PublicID,
     outer_message_id: &MessageID,
 ) -> Result<([u8; 32], Vec<u8>), EncryptionError> {
+    // Reject small-order (weak) public keys that would produce predictable shared secrets
+    if is_low_order_point(&recipient_mik.to_bytes()) {
+        return Err(EncryptionError::InvalidRecipientKey);
+    }
+
     // Generate ephemeral keypair
     let ephemeral_secret = EphemeralSecret::random_from_rng(OsRng);
     let ephemeral_public = X25519PublicKey::from(&ephemeral_secret);
@@ -341,23 +389,30 @@ mod tests {
     }
 
     #[test]
-    fn test_all_zero_mik_encryption() {
-        // Test encryption to an all-zero public key (edge case)
-        // This simulates a potentially malicious or malformed recipient key
-        let zero_mik = PublicID::from_bytes(&[0u8; 32]);
+    fn test_low_order_point_rejected() {
+        // Test that encryption to small-order (weak) public keys is rejected.
+        // These keys produce predictable shared secrets, providing no confidentiality.
         let alice = Identity::generate();
-
         let message_id = MessageID::new();
         let inner = create_signed_inner(&alice, &message_id, "Test message", 1234567890);
 
-        // Encryption should still succeed (ECDH with zero point produces zero shared secret)
-        // The security here relies on the KDF producing a valid key even from weak input
+        // Test zero point (order 1)
+        let zero_mik = PublicID::from_bytes(&[0u8; 32]);
         let result = encrypt_to_mik(&inner, &zero_mik, &message_id);
-        assert!(result.is_ok(), "Encryption to zero MIK should succeed");
+        assert!(
+            matches!(result, Err(EncryptionError::InvalidRecipientKey)),
+            "Zero MIK should be rejected"
+        );
 
-        let (ephemeral_pub, ciphertext) = result.unwrap();
-        assert_ne!(ephemeral_pub, [0u8; 32], "Ephemeral key should not be zero");
-        assert!(!ciphertext.is_empty(), "Ciphertext should not be empty");
+        // Test order-2 point
+        let mut order2 = [0u8; 32];
+        order2[0] = 1;
+        let order2_mik = PublicID::from_bytes(&order2);
+        let result = encrypt_to_mik(&inner, &order2_mik, &message_id);
+        assert!(
+            matches!(result, Err(EncryptionError::InvalidRecipientKey)),
+            "Order-2 point should be rejected"
+        );
     }
 
     #[test]
