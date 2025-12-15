@@ -38,18 +38,6 @@ pub use tombstone::{
     WirePayload, WireType, CLOCK_SKEW_ALLOWANCE_HOURS, TOMBSTONE_MAX_AGE_HOURS,
 };
 
-/// Session establishment data included in the first message from initiator
-/// This allows the recipient to derive the same session keys
-#[derive(Debug, Clone, Encode, Decode)]
-pub struct SessionEstablishment {
-    /// Sender's identity public key (32 bytes)
-    pub sender_identity: [u8; 32],
-    /// Sender's ephemeral public key used in X3DH (32 bytes)
-    pub ephemeral_public: [u8; 32],
-    /// ID of the one-time prekey used (if any)
-    pub used_one_time_prekey_id: Option<[u8; 16]>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MessageID(Uuid);
 
@@ -101,21 +89,23 @@ pub struct Version {
     pub minor: u16,
 }
 
-pub const CURRENT_VERSION: Version = Version { major: 0, minor: 1 };
+pub const CURRENT_VERSION: Version = Version { major: 0, minor: 2 };
 
-/// Flags for OuterEnvelope
-pub mod flags {
-    /// Message contains session establishment data
-    pub const SESSION_INIT: u8 = 0x01;
-}
-
+/// Outer envelope for MIK-only encryption (Session V1-style stateless)
+///
+/// Each message includes an ephemeral X25519 public key. The sender:
+/// 1. Generates ephemeral keypair (e, E)
+/// 2. Computes shared_secret = X25519(e, recipient_MIK)
+/// 3. Derives encryption key from shared_secret
+/// 4. Encrypts InnerEnvelope with derived key
+///
+/// The recipient:
+/// 1. Computes shared_secret = X25519(mik_private, ephemeral_key)
+/// 2. Derives same encryption key
+/// 3. Decrypts InnerEnvelope
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct OuterEnvelope {
     pub version: Version,
-
-    /// Flags indicating special message properties
-    /// - 0x01: SESSION_INIT - contains session establishment data
-    pub flags: u8,
 
     pub routing_key: RoutingKey,
 
@@ -129,50 +119,36 @@ pub struct OuterEnvelope {
 
     pub message_id: MessageID,
 
-    /// Session establishment data (present when flags & SESSION_INIT)
-    /// This is sent in the first message to allow recipient to derive session keys
-    pub session_init: Option<SessionEstablishment>,
+    /// Ephemeral X25519 public key for this message (32 bytes)
+    /// Used with recipient's MIK to derive the encryption key.
+    pub ephemeral_key: [u8; 32],
 
     pub inner_ciphertext: Vec<u8>,
 }
 
 impl OuterEnvelope {
-    /// Create a new envelope with TTL in hours
-    pub fn new(routing_key: RoutingKey, inner_ciphertext: Vec<u8>, ttl_hours: Option<u16>) -> Self {
-        Self {
-            version: CURRENT_VERSION,
-            flags: 0,
-            routing_key,
-            timestamp_hours: now_hours(),
-            ttl_hours,
-            message_id: MessageID::new(),
-            session_init: None,
-            inner_ciphertext,
-        }
-    }
-
-    /// Create an envelope with session establishment data (for first message)
-    pub fn with_session_init(
+    /// Create a new envelope for MIK-only encryption
+    ///
+    /// # Arguments
+    /// * `routing_key` - 16-byte routing key (truncated blake3 hash of recipient PublicID)
+    /// * `ephemeral_key` - 32-byte ephemeral X25519 public key used for ECDH
+    /// * `inner_ciphertext` - Encrypted InnerEnvelope bytes
+    /// * `ttl_hours` - Optional time-to-live in hours
+    pub fn new(
         routing_key: RoutingKey,
+        ephemeral_key: [u8; 32],
         inner_ciphertext: Vec<u8>,
         ttl_hours: Option<u16>,
-        session_init: SessionEstablishment,
     ) -> Self {
         Self {
             version: CURRENT_VERSION,
-            flags: flags::SESSION_INIT,
             routing_key,
             timestamp_hours: now_hours(),
             ttl_hours,
             message_id: MessageID::new(),
-            session_init: Some(session_init),
+            ephemeral_key,
             inner_ciphertext,
         }
-    }
-
-    /// Check if this message contains session establishment data
-    pub fn has_session_init(&self) -> bool {
-        self.flags & flags::SESSION_INIT != 0
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
