@@ -258,13 +258,14 @@ impl<T: Transport> Client<T> {
             inner_ciphertext: ciphertext,
         };
 
-        // Submit to transport
-        self.transport.submit_message(outer).await?;
+        // Store locally first - we require local message history before transmitting.
+        // This prepares for possible future support of DAG-based message history.
+        let contact_id = self.storage.get_contact_id(to)?;
+        self.storage
+            .store_sent_message(contact_id, outer_message_id, &content)?;
 
-        // Store sent message
-        if let Ok(contact_id) = self.storage.get_contact_id(to) {
-            let _ = self.storage.store_sent_message(contact_id, outer_message_id, &content);
-        }
+        // Only submit to transport after successful local storage
+        self.transport.submit_message(outer).await?;
 
         debug!("Message sent to contact (MIK-only encryption)");
         Ok(outer_message_id)
