@@ -99,7 +99,7 @@ impl PublicID {
   /// for untrusted input. This method is intended for:
   /// - Internal use where the source is trusted
   /// - Test code
-  /// - Cases where validation happens elsewhere (e.g., `encrypt_to_mik` validates)
+  /// - Cases where validation has already been performed elsewhere
   ///
   /// [`try_from_bytes`]: Self::try_from_bytes
   pub fn from_bytes(bytes: &[u8; 32]) -> Self {
