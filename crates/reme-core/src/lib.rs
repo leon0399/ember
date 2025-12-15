@@ -33,6 +33,9 @@ pub enum ClientError {
     #[error("Contact not found")]
     ContactNotFound,
 
+    #[error("Message not intended for this recipient (routing key mismatch)")]
+    WrongRecipient,
+
     #[error("Message decryption failed (wrong recipient, tampered, or corrupted)")]
     DecryptionFailed,
 
@@ -284,12 +287,19 @@ impl<T: Transport> Client<T> {
     /// After decryption, the sender signature is verified to prevent impersonation.
     /// No session state is needed - each message is independently decryptable.
     ///
-    /// The recipient binding is implicit: if decryption succeeds, the message was
-    /// intended for us (sealed box ECDH cryptographically binds to recipient).
+    /// The recipient binding is verified both explicitly (routing key check) and
+    /// cryptographically (sealed box ECDH binds to recipient).
     pub async fn process_message(
         &self,
         outer: &OuterEnvelope,
     ) -> Result<ReceivedMessage, ClientError> {
+        // Defense in depth: verify routing key matches our identity before decryption.
+        // This catches misrouted messages early without wasting crypto operations.
+        // The cryptographic binding (ECDH) is the actual security guarantee.
+        if outer.routing_key != self.routing_key() {
+            return Err(ClientError::WrongRecipient);
+        }
+
         // Decrypt using MIK (stateless decryption)
         // This also verifies AAD binding (message_id must match)
         let inner = decrypt_with_mik(
