@@ -368,8 +368,6 @@ dependencies = [
  "reme-encryption",
  "reme-identity",
  "reme-message",
- "reme-prekeys",
- "reme-session",
  "reme-storage",
  "reme-transport",
  "serde",
@@ -550,7 +548,6 @@ dependencies = [
  "digest",
  "fiat-crypto",
  "rustc_version",
- "serde",
  "subtle",
  "zeroize",
 ]
@@ -1532,7 +1529,6 @@ dependencies = [
  "directories",
  "reme-identity",
  "reme-message",
- "reme-prekeys",
  "reqwest",
  "serde",
  "serde_json",
@@ -1940,8 +1936,6 @@ dependencies = [
  "reme-encryption",
  "reme-identity",
  "reme-message",
- "reme-prekeys",
- "reme-session",
  "reme-storage",
  "reme-transport",
  "thiserror",
@@ -2000,42 +1994,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "reme-prekeys"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "blake3",
- "ed25519-dalek",
- "rand_core 0.6.4",
- "reme-identity",
- "serde",
- "uuid",
- "x25519-dalek",
-]
-
-[[package]]
-name = "reme-session"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "hkdf",
- "rand_core 0.6.4",
- "reme-identity",
- "reme-prekeys",
- "sha2",
- "thiserror",
- "x25519-dalek",
-]
-
-[[package]]
 name = "reme-storage"
 version = "0.1.0"
 dependencies = [
  "bincode",
  "reme-identity",
  "reme-message",
- "reme-prekeys",
- "reme-session",
  "rusqlite",
  "tempfile",
  "thiserror",
@@ -2052,7 +2016,6 @@ dependencies = [
  "bincode",
  "futures",
  "reme-message",
- "reme-prekeys",
  "reqwest",
  "serde",
  "thiserror",
@@ -2969,7 +2932,6 @@ checksum = "e2e054861b4bd027cd373e18e8d8d8e6548085000e41290d95ce0c373a654b4a"
 dependencies = [
  "getrandom 0.3.4",
  "js-sys",
- "serde_core",
  "wasm-bindgen",
 ]
 

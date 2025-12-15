@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 reme-message = { workspace = true }
-reme-prekeys = { workspace = true }
 
 thiserror = { workspace = true }
 async-trait = { workspace = true }

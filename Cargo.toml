@@ -7,9 +7,7 @@ members = [
 
 [workspace.dependencies]
 reme-identity = { path = "crates/reme-identity" }
-reme-prekeys = { path = "crates/reme-prekeys" }
 reme-message = { path = "crates/reme-message" }
-reme-session = { path = "crates/reme-session" }
 reme-encryption = { path = "crates/reme-encryption" }
 reme-transport = { path = "crates/reme-transport" }
 reme-storage = { path = "crates/reme-storage" }

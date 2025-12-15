@@ -5,9 +5,7 @@ edition = "2021"
 
 [dependencies]
 reme-identity = { workspace = true }
-reme-prekeys = { workspace = true }
 reme-message = { workspace = true }
-reme-session = { workspace = true }
 reme-encryption = { workspace = true }
 reme-transport = { workspace = true }
 reme-storage = { workspace = true }
