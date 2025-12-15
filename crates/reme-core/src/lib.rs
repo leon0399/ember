@@ -232,20 +232,17 @@ impl<T: Transport> Client<T> {
             .unwrap()
             .as_millis() as u64;
 
-        // Create inner envelope with placeholder signature
+        // Create inner envelope without signature first
         let mut inner = InnerEnvelope {
-            version: CURRENT_VERSION,
             from: *self.identity.public_id(),
-            to: *to,
             created_at_ms: now_ms,
-            outer_message_id,
             content: content.clone(),
-            sender_signature: [0u8; 64], // Placeholder
+            signature: None,
         };
 
-        // Sign the envelope with sender's private key
-        let signable = inner.signable_bytes();
-        inner.sender_signature = InnerEnvelope::sign(&signable, &self.private_key());
+        // Sign the envelope with sender's private key (message_id included in signable bytes)
+        let signable = inner.signable_bytes(&outer_message_id);
+        inner.signature = Some(InnerEnvelope::sign(&signable, &self.private_key()));
 
         // Encrypt to recipient's MIK (stateless, returns ephemeral_key + ciphertext)
         let (ephemeral_key, ciphertext) = encrypt_to_mik(&inner, to, &outer_message_id)?;
@@ -285,11 +282,15 @@ impl<T: Transport> Client<T> {
     ///
     /// After decryption, the sender signature is verified to prevent impersonation.
     /// No session state is needed - each message is independently decryptable.
+    ///
+    /// The recipient binding is implicit: if decryption succeeds, the message was
+    /// intended for us (sealed box ECDH cryptographically binds to recipient).
     pub async fn process_message(
         &self,
         outer: &OuterEnvelope,
     ) -> Result<ReceivedMessage, ClientError> {
         // Decrypt using MIK (stateless decryption)
+        // This also verifies AAD binding (message_id must match)
         let inner = decrypt_with_mik(
             &outer.ephemeral_key,
             &outer.inner_ciphertext,
@@ -299,14 +300,14 @@ impl<T: Transport> Client<T> {
 
         // Verify sender signature to prevent impersonation attacks
         // This ensures the `from` field matches who actually signed the message
-        if !inner.verify_sender_signature() {
+        // The signature also binds to message_id (triple binding)
+        if !inner.verify_signature(&outer.message_id) {
             return Err(ClientError::InvalidSenderSignature);
         }
 
-        // Verify the message was intended for us
-        if inner.to != *self.public_id() {
-            return Err(ClientError::DecryptionFailed);
-        }
+        // Note: Recipient binding is implicit via sealed box ECDH.
+        // If decryption succeeded, the message was intended for our MIK.
+        // The removed `to` field is cryptographically redundant.
 
         let sender_id = inner.from;
 
