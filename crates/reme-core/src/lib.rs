@@ -322,12 +322,12 @@ impl<T: Transport> Client<T> {
             Err(e) => return Err(e.into()),
         };
 
-        // Store received message
-        let _ = self.storage.store_received_message(
+        // Store received message - fail if storage fails to prevent data loss
+        self.storage.store_received_message(
             contact_id,
             outer.message_id,
             &inner.content,
-        );
+        )?;
 
         Ok(ReceivedMessage {
             message_id: outer.message_id,
