@@ -1,6 +1,6 @@
-//! Node-to-node replication
+//! Node-to-node replication (MIK-only, no prekeys)
 //!
-//! This module handles replicating payloads (messages/tombstones) and prekeys to peer nodes.
+//! This module handles replicating payloads (messages/tombstones) to peer nodes.
 //! Uses fire-and-forget pattern to avoid blocking the client response.
 
 use reqwest::Client;
@@ -69,59 +69,6 @@ impl ReplicationClient {
                     }
                     Err(e) => {
                         error!("Failed to replicate payload to {}: {}", peer_url, e);
-                    }
-                }
-            }
-        });
-    }
-
-    /// Replicate prekeys to all peer nodes (except the source)
-    ///
-    /// Uses fire-and-forget pattern - spawns tasks and returns immediately.
-    pub fn replicate_prekeys(
-        self: &Arc<Self>,
-        routing_key_b64: String,
-        bundle_b64: String,
-        from_node: Option<String>,
-    ) {
-        if self.peer_urls.is_empty() {
-            return;
-        }
-
-        let this = Arc::clone(self);
-        tokio::spawn(async move {
-            for peer_url in &this.peer_urls {
-                // Skip replicating back to the source node
-                if let Some(ref from) = from_node {
-                    if peer_url.contains(from) {
-                        debug!("Skipping prekey replication to source node: {}", peer_url);
-                        continue;
-                    }
-                }
-
-                let url = format!("{}/api/v1/prekeys/{}", peer_url, routing_key_b64);
-                let result = this
-                    .client
-                    .post(&url)
-                    .header(FROM_NODE_HEADER, &this.node_id)
-                    .header("Content-Type", "text/plain")
-                    .body(bundle_b64.clone())
-                    .send()
-                    .await;
-
-                match result {
-                    Ok(resp) if resp.status().is_success() => {
-                        debug!("Replicated prekeys to {}", peer_url);
-                    }
-                    Ok(resp) => {
-                        warn!(
-                            "Peer {} returned status {} for prekey replication",
-                            peer_url,
-                            resp.status()
-                        );
-                    }
-                    Err(e) => {
-                        error!("Failed to replicate prekeys to {}: {}", peer_url, e);
                     }
                 }
             }
