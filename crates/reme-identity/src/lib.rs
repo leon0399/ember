@@ -4,7 +4,7 @@ use rand_core::OsRng;
 use thiserror::Error;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
 use xeddsa::{xed25519, Sign, Verify};
-use bincode::{Encode, Decode};
+use bincode::{Encode, Decode, impl_borrow_decode};
 use bincode::enc::Encoder;
 use bincode::de::Decoder;
 use bincode::error::{EncodeError, DecodeError};
@@ -68,11 +68,6 @@ pub struct PublicID {
 }
 
 impl PublicID {
-  /// Create a new PublicID from X25519 public key
-  pub fn new(x25519_public: X25519PublicKey) -> Self {
-    Self { x25519_public }
-  }
-
   /// Serialize to 32 bytes (X25519 public key)
   pub fn to_bytes(&self) -> [u8; 32] {
     self.x25519_public.to_bytes()
@@ -95,14 +90,17 @@ impl PublicID {
 
   /// Deserialize from 32 bytes without validation.
   ///
-  /// **Warning**: This does not check for low-order points. Use [`try_from_bytes`]
-  /// for untrusted input. This method is intended for:
-  /// - Internal use where the source is trusted
-  /// - Test code
-  /// - Cases where validation has already been performed elsewhere
+  /// # Safety (Cryptographic)
+  ///
+  /// This does not check for low-order points, which produce predictable
+  /// shared secrets in ECDH. Use [`try_from_bytes`] for untrusted input.
+  ///
+  /// This method exists only for test code that intentionally uses invalid keys.
+  /// Production code should always use [`try_from_bytes`].
   ///
   /// [`try_from_bytes`]: Self::try_from_bytes
-  pub fn from_bytes(bytes: &[u8; 32]) -> Self {
+  #[doc(hidden)]
+  pub fn from_bytes_unchecked(bytes: &[u8; 32]) -> Self {
     Self {
       x25519_public: X25519PublicKey::from(*bytes),
     }
@@ -167,16 +165,7 @@ impl<Context> Decode<Context> for PublicID {
     }
 }
 
-impl<'de, Context> bincode::BorrowDecode<'de, Context> for PublicID {
-    fn borrow_decode<D: bincode::de::BorrowDecoder<'de>>(
-        decoder: &mut D,
-    ) -> Result<Self, DecodeError> {
-        let bytes: [u8; 32] = bincode::BorrowDecode::borrow_decode(decoder)?;
-        Self::try_from_bytes(&bytes).map_err(|_| {
-            DecodeError::OtherString("Invalid public key: low-order point".into())
-        })
-    }
-}
+impl_borrow_decode!(PublicID);
 
 #[derive(Getters)]
 pub struct Identity {
@@ -218,27 +207,40 @@ impl Identity {
     Self::from_bytes(&bytes)
   }
 
-  /// Create Identity from 32-byte secret key
+  /// Create Identity from 32-byte secret key with validation.
   ///
   /// Derives a single X25519 key that will be used for both:
   /// - X25519 DH operations (direct usage)
   /// - XEdDSA signatures (via birational map to Ed25519)
   ///
-  /// The XEdDSA signing implementation automatically enforces sign bit = 0
-  /// convention, ensuring unique Ed25519 representation.
-  pub fn from_bytes(bytes: &[u8; 32]) -> Self {
-    // Use bytes directly as X25519 private key
-    // XEdDSA signing/verification will handle sign bit normalization
+  /// Returns an error if the derived public key is a low-order point
+  /// (mathematically impossible with proper clamping, but checked for defense-in-depth).
+  pub fn try_from_bytes(bytes: &[u8; 32]) -> Result<Self, InvalidPublicKey> {
     let x25519_secret = X25519Secret::from(*bytes);
     let x25519_public = X25519PublicKey::from(&x25519_secret);
 
-    // PublicID stores only the 32-byte X25519 public key
-    let public_id = PublicID::new(x25519_public);
+    // Defense-in-depth: verify derived public key isn't low-order
+    // This should be mathematically impossible with X25519 clamping
+    if is_low_order_point(x25519_public.as_bytes()) {
+      return Err(InvalidPublicKey);
+    }
 
-    Self {
+    let public_id = PublicID { x25519_public };
+
+    Ok(Self {
       public_id,
       x25519_secret,
-    }
+    })
+  }
+
+  /// Create Identity from 32-byte secret key.
+  ///
+  /// # Panics
+  ///
+  /// Panics if the derived public key is a low-order point (mathematically
+  /// impossible with proper X25519 clamping - indicates a bug in crypto library).
+  pub fn from_bytes(bytes: &[u8; 32]) -> Self {
+    Self::try_from_bytes(bytes).expect("derived public key is low-order (crypto library bug)")
   }
 
   /// Return the 32-byte secret key for backup/serialization
@@ -332,8 +334,8 @@ mod tests {
     let bytes = public_id.to_bytes();
     assert_eq!(bytes.len(), 32);
 
-    // Deserialize from bytes
-    let restored = PublicID::from_bytes(&bytes);
+    // Deserialize from bytes (valid key, so unwrap is safe)
+    let restored = PublicID::try_from_bytes(&bytes).unwrap();
 
     // Should be equal
     assert_eq!(public_id, &restored);

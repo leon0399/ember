@@ -1,4 +1,4 @@
-use reme_identity::PublicID;
+use reme_identity::{InvalidPublicKey, PublicID};
 use reme_message::{Content, MessageID};
 use rusqlite::{params, Connection, OptionalExtension};
 use thiserror::Error;
@@ -11,6 +11,9 @@ pub enum StorageError {
 
     #[error("Serialization error: {0}")]
     Serialization(String),
+
+    #[error("Invalid public key: {0}")]
+    InvalidPublicKey(#[from] InvalidPublicKey),
 
     #[error("Not found")]
     NotFound,
@@ -133,7 +136,7 @@ impl Storage {
         }
 
         let public_id_bytes: [u8; 32] = bytes.try_into().unwrap();
-        Ok(PublicID::from_bytes(&public_id_bytes))
+        Ok(PublicID::try_from_bytes(&public_id_bytes)?)
     }
 
     /// Get contact name by contact ID
@@ -168,7 +171,10 @@ impl Storage {
                 continue; // Skip invalid entries
             }
             let public_id_arr: [u8; 32] = public_id_bytes.try_into().unwrap();
-            contacts.push((id, PublicID::from_bytes(&public_id_arr), name));
+            // Skip contacts with invalid (low-order) public keys
+            if let Ok(public_id) = PublicID::try_from_bytes(&public_id_arr) {
+                contacts.push((id, public_id, name));
+            }
         }
 
         Ok(contacts)

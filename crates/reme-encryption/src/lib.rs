@@ -380,7 +380,7 @@ mod tests {
         let inner = create_signed_inner(&alice, &message_id, "Test message", 1234567890);
 
         // Test zero point (order 1)
-        let zero_mik = PublicID::from_bytes(&[0u8; 32]);
+        let zero_mik = PublicID::from_bytes_unchecked(&[0u8; 32]);
         let result = encrypt_to_mik(&inner, &zero_mik, &message_id);
         assert!(
             matches!(result, Err(EncryptionError::InvalidRecipientKey)),
@@ -390,7 +390,7 @@ mod tests {
         // Test order-2 point
         let mut order2 = [0u8; 32];
         order2[0] = 1;
-        let order2_mik = PublicID::from_bytes(&order2);
+        let order2_mik = PublicID::from_bytes_unchecked(&order2);
         let result = encrypt_to_mik(&inner, &order2_mik, &message_id);
         assert!(
             matches!(result, Err(EncryptionError::InvalidRecipientKey)),
