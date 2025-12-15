@@ -23,43 +23,49 @@ pub enum EncryptionError {
 
 /// Check if a public key is a small-order (weak) point on Curve25519.
 ///
-/// Curve25519 has 8 small-order points that produce predictable shared secrets
-/// when used in ECDH. Messages encrypted to these keys have no confidentiality
-/// since anyone can derive the same encryption key.
+/// Curve25519 has a cofactor of 8, meaning there are points of small order
+/// that produce predictable shared secrets when used in ECDH. Messages
+/// encrypted to these keys have no confidentiality since anyone can derive
+/// the same encryption key.
 ///
-/// The 8 small-order points (in their canonical byte representation):
-/// - Order 1: The identity point [0; 32]
-/// - Order 2: [1, 0, 0, ...]
-/// - Order 4: 2 points
-/// - Order 8: 4 points
+/// Source: libsodium's x25519_ref10.c blocklist
+/// <https://github.com/jedisct1/libsodium/blob/master/src/libsodium/crypto_scalarmult/curve25519/ref10/x25519_ref10.c>
 fn is_low_order_point(public_key: &[u8; 32]) -> bool {
-    // The 8 small-order points on Curve25519 (canonical representations)
-    const LOW_ORDER_POINTS: [[u8; 32]; 8] = [
-        // Order 1: identity (zero)
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        // Order 2
-        [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        // Order 4
+    // The 7 small-order points on Curve25519 (from libsodium's blocklist)
+    // These are the canonical x-coordinate representations that cause issues.
+    const LOW_ORDER_POINTS: [[u8; 32]; 7] = [
+        // 0 (order 4)
+        [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        // 1 (order 1)
+        [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        // 325606250916557431795983626356110631294008115727848805560023387167927233504 (order 8)
         [0xe0, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0xae, 0x16, 0x56, 0xe3, 0xfa, 0xf1, 0x9f, 0xc4, 0x6a,
          0xda, 0x09, 0x8d, 0xeb, 0x9c, 0x32, 0xb1, 0xfd, 0x86, 0x62, 0x05, 0x16, 0x5f, 0x49, 0xb8, 0x00],
-        // Order 4
+        // 39382357235489614581723060781553021112529911719440698176882885853963445705823 (order 8)
         [0x5f, 0x9c, 0x95, 0xbc, 0xa3, 0x50, 0x8c, 0x24, 0xb1, 0xd0, 0xb1, 0x55, 0x9c, 0x83, 0xef, 0x5b,
          0x04, 0x44, 0x5c, 0xc4, 0x58, 0x1c, 0x8e, 0x86, 0xd8, 0x22, 0x4e, 0xdd, 0xd0, 0x9f, 0x11, 0x57],
-        // Order 8
+        // p-1 (order 2)
         [0xec, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
          0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f],
-        // Order 8
+        // p (order 4) - equivalent to 0 mod p
         [0xed, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
          0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f],
-        // Order 8
+        // p+1 (order 1) - equivalent to 1 mod p
         [0xee, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
          0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f],
-        // Order 8 (same as p-1 in some representations, but included for completeness)
-        [0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
-         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10],
     ];
 
     LOW_ORDER_POINTS.iter().any(|p| p == public_key)
+}
+
+/// Check if a shared secret is all zeros (indicates small-order input).
+///
+/// Per RFC 7748, implementations should check for all-zero output after
+/// scalar multiplication as defense-in-depth against small-order points.
+fn is_zero_shared_secret(shared_secret: &[u8; 32]) -> bool {
+    shared_secret == &[0u8; 32]
 }
 
 /// Encrypt an InnerEnvelope to a recipient's MIK (stateless encryption)
@@ -95,6 +101,12 @@ pub fn encrypt_to_mik(
 
     // Compute shared secret via ECDH
     let shared_secret = ephemeral_secret.diffie_hellman(&recipient_x25519);
+
+    // Defense-in-depth: reject all-zero shared secrets (indicates small-order input)
+    // Per RFC 7748, implementations should check for all-zero output after scalar multiplication
+    if is_zero_shared_secret(shared_secret.as_bytes()) {
+        return Err(EncryptionError::InvalidRecipientKey);
+    }
 
     // Derive encryption key binding both public keys (prevents key confusion attacks)
     let encryption_key = derive_key_from_shared(
@@ -141,6 +153,11 @@ pub fn decrypt_with_mik(
     mik_private: &[u8; 32],
     outer_message_id: &MessageID,
 ) -> Result<InnerEnvelope, EncryptionError> {
+    // Reject small-order ephemeral keys (attacker could send malicious keys)
+    if is_low_order_point(ephemeral_public) {
+        return Err(EncryptionError::DecryptionFailed);
+    }
+
     // Parse ephemeral public key
     let ephemeral_x25519 = X25519PublicKey::from(*ephemeral_public);
 
@@ -152,6 +169,11 @@ pub fn decrypt_with_mik(
 
     // Compute shared secret via ECDH
     let shared_secret = mik_secret.diffie_hellman(&ephemeral_x25519);
+
+    // Defense-in-depth: reject all-zero shared secrets (indicates small-order input)
+    if is_zero_shared_secret(shared_secret.as_bytes()) {
+        return Err(EncryptionError::DecryptionFailed);
+    }
 
     // Derive encryption key binding both public keys (prevents key confusion attacks)
     let encryption_key = derive_key_from_shared(
@@ -416,6 +438,35 @@ mod tests {
     }
 
     #[test]
+    fn test_malicious_ephemeral_key_rejected() {
+        // Test that decryption rejects small-order ephemeral keys
+        // An attacker could craft a message with a malicious ephemeral key
+        let bob = Identity::generate();
+        let bob_private = bob.to_bytes();
+        let message_id = MessageID::new();
+
+        // Fake ciphertext (doesn't matter, should reject before decryption attempt)
+        let fake_ciphertext = vec![0u8; 64];
+
+        // Test zero ephemeral key
+        let zero_ephemeral = [0u8; 32];
+        let result = decrypt_with_mik(&zero_ephemeral, &fake_ciphertext, &bob_private, &message_id);
+        assert!(
+            matches!(result, Err(EncryptionError::DecryptionFailed)),
+            "Zero ephemeral key should be rejected"
+        );
+
+        // Test order-1 ephemeral key (identity point)
+        let mut order1_ephemeral = [0u8; 32];
+        order1_ephemeral[0] = 1;
+        let result = decrypt_with_mik(&order1_ephemeral, &fake_ciphertext, &bob_private, &message_id);
+        assert!(
+            matches!(result, Err(EncryptionError::DecryptionFailed)),
+            "Order-1 ephemeral key should be rejected"
+        );
+    }
+
+    #[test]
     fn test_large_message_encryption() {
         // Test encryption of messages larger than typical sizes
         let bob = Identity::generate();
@@ -532,5 +583,27 @@ mod tests {
             Content::Text(text) => assert_eq!(text.body, "", "Decrypted body should be empty"),
             _ => panic!("Expected text content"),
         }
+    }
+
+    #[test]
+    fn test_is_zero_shared_secret() {
+        // Test that zero shared secret is detected
+        let zero_secret = [0u8; 32];
+        assert!(is_zero_shared_secret(&zero_secret), "All-zero secret should be detected as zero");
+
+        // Test that non-zero shared secrets are not flagged as zero
+        let mut non_zero_secret = [0u8; 32];
+        non_zero_secret[0] = 1;
+        assert!(!is_zero_shared_secret(&non_zero_secret), "Non-zero secret should not be detected as zero");
+
+        // Test with random non-zero secret
+        let mut random_secret = [0u8; 32];
+        random_secret[15] = 255;
+        random_secret[31] = 128;
+        assert!(!is_zero_shared_secret(&random_secret), "Random non-zero secret should not be detected as zero");
+
+        // Test with secret that's all 0xFF (maximum non-zero)
+        let max_secret = [0xFFu8; 32];
+        assert!(!is_zero_shared_secret(&max_secret), "All-max secret should not be detected as zero");
     }
 }
