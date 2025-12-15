@@ -297,7 +297,11 @@ impl<T: Transport> Client<T> {
             &outer.inner_ciphertext,
             &self.private_key(),
             &outer.message_id,
-        )?;
+        )
+        .map_err(|e| match e {
+            EncryptionError::DecryptionFailed => ClientError::DecryptionFailed,
+            other => other.into(),
+        })?;
 
         // Verify sender signature to prevent impersonation attacks
         // This ensures the `from` field matches who actually signed the message
