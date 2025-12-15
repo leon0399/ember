@@ -68,8 +68,6 @@ pub struct App<'a> {
     client: Client<HttpTransport>,
     /// Transport for message receiving
     transport: Arc<HttpTransport>,
-    /// Config
-    config: AppConfig,
     /// Contacts by name (for reverse lookup)
     contacts_by_id: HashMap<PublicID, String>,
 }
@@ -118,7 +116,6 @@ impl<'a> App<'a> {
             status: "Press 'h' for help".to_string(),
             client,
             transport,
-            config,
             contacts_by_id: HashMap::new(),
         };
 
@@ -305,24 +302,8 @@ impl<'a> App<'a> {
             KeyCode::Char('a') => {
                 self.status = "Add contact: Use CLI mode (press 'q' to exit TUI)".to_string();
             }
-            KeyCode::Char('i') => {
-                // Initialize prekeys
-                self.status = "Initializing prekeys...".to_string();
-                match self.client.init_prekeys(self.config.num_prekeys as usize).await {
-                    Ok(_) => self.status = "Prekeys initialized!".to_string(),
-                    Err(e) => self.status = format!("Error: {}", e),
-                }
-            }
-            KeyCode::Char('u') => {
-                // Upload prekeys
-                self.status = "Uploading prekeys...".to_string();
-                match self.client.upload_prekeys().await {
-                    Ok(_) => self.status = "Prekeys uploaded!".to_string(),
-                    Err(e) => self.status = format!("Error: {}", e),
-                }
-            }
             KeyCode::Char('h') => {
-                self.status = "j/k: navigate | Enter: select | Tab: switch pane | i: init prekeys | u: upload | Esc/Ctrl+C: quit".to_string();
+                self.status = "j/k: navigate | Enter: select | Tab: switch pane | Esc/Ctrl+C: quit".to_string();
             }
             _ => {}
         }
@@ -374,12 +355,7 @@ impl<'a> App<'a> {
                                 self.status = "Message sent!".to_string();
                             }
                             Err(e) => {
-                                let err_str = e.to_string();
-                                if err_str.contains("Not found") {
-                                    self.status = "Send failed: no prekeys found".to_string();
-                                } else {
-                                    self.status = format!("Send failed: {}", e);
-                                }
+                                self.status = format!("Send failed: {}", e);
                             }
                         }
                     }

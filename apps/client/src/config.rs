@@ -14,7 +14,6 @@
 //! - `REME_NODE_URLS` - Comma-separated list of node URLs
 //! - `REME_DATA_DIR` - Directory for storing identity, keys, and messages
 //! - `REME_LOG_LEVEL` - Log level (trace, debug, info, warn, error)
-//! - `REME_NUM_PREKEYS` - Number of one-time prekeys to generate
 //!
 //! ## Config File
 //!
@@ -33,7 +32,6 @@
 //!
 //! data_dir = "~/.local/share/reme"
 //! log_level = "info"
-//! num_prekeys = 10
 //! ```
 
 use clap::Parser;
@@ -68,11 +66,6 @@ pub struct CliArgs {
     #[arg(short = 'l', long, env = "REME_LOG_LEVEL")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub log_level: Option<String>,
-
-    /// Number of one-time prekeys to generate
-    #[arg(long, env = "REME_NUM_PREKEYS")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub num_prekeys: Option<u32>,
 }
 
 /// Final resolved configuration
@@ -87,9 +80,6 @@ pub struct AppConfig {
 
     /// Log level
     pub log_level: String,
-
-    /// Number of one-time prekeys to generate
-    pub num_prekeys: u32,
 }
 
 fn default_node_urls() -> Vec<String> {
@@ -102,7 +92,6 @@ impl Default for AppConfig {
             node_urls: default_node_urls(),
             data_dir: default_data_dir(),
             log_level: "info".to_string(),
-            num_prekeys: 10,
         }
     }
 }
@@ -147,8 +136,7 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
     let mut builder = Config::builder()
         // Layer 1: Built-in defaults (lowest priority)
         .set_default("data_dir", defaults.data_dir.to_string_lossy().to_string())?
-        .set_default("log_level", defaults.log_level)?
-        .set_default("num_prekeys", defaults.num_prekeys as i64)?;
+        .set_default("log_level", defaults.log_level)?;
 
     // Layer 2: Config file
     // Try custom config path from CLI, then default location
@@ -174,9 +162,6 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
     if let Some(ref log_level) = cli.log_level {
         builder = builder.set_override("log_level", log_level.clone())?;
     }
-    if let Some(num_prekeys) = cli.num_prekeys {
-        builder = builder.set_override("num_prekeys", num_prekeys as i64)?;
-    }
 
     let config = builder.build()?;
 
@@ -185,10 +170,6 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
         defaults.data_dir.to_string_lossy().to_string()
     });
     let log_level: String = config.get("log_level").unwrap_or_else(|_| "info".to_string());
-    let num_prekeys: u32 = config
-        .get::<i64>("num_prekeys")
-        .map(|v| v as u32)
-        .unwrap_or(defaults.num_prekeys);
 
     // Deserialize raw config to handle node_url vs node_urls
     let raw: RawConfig = config.try_deserialize().unwrap_or_default();
@@ -215,7 +196,6 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
         node_urls,
         data_dir,
         log_level,
-        num_prekeys,
     })
 }
 
@@ -238,7 +218,7 @@ fn dirs_home() -> Option<PathBuf> {
 pub fn default_config_toml() -> String {
     let defaults = AppConfig::default();
     format!(
-        r#"# Branch Messenger Client Configuration
+        r#"# Resilient Messenger Client Configuration
 #
 # This file is loaded from:
 #   Linux/macOS: ~/.config/reme/config.toml
@@ -262,14 +242,10 @@ data_dir = "{}"
 
 # Log level: trace, debug, info, warn, error
 log_level = "{}"
-
-# Number of one-time prekeys to generate
-num_prekeys = {}
 "#,
         defaults.node_urls[0],
         defaults.data_dir.to_string_lossy(),
         defaults.log_level,
-        defaults.num_prekeys
     )
 }
 
@@ -282,7 +258,6 @@ mod tests {
         let config = AppConfig::default();
         assert_eq!(config.node_urls, vec!["http://localhost:23003"]);
         assert_eq!(config.log_level, "info");
-        assert_eq!(config.num_prekeys, 10);
     }
 
     #[test]
@@ -301,7 +276,6 @@ mod tests {
         assert!(toml.contains("node_urls"));
         assert!(toml.contains("data_dir"));
         assert!(toml.contains("log_level"));
-        assert!(toml.contains("num_prekeys"));
     }
 
     #[test]
