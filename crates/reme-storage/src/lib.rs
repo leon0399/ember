@@ -1,10 +1,8 @@
 use reme_identity::PublicID;
 use reme_message::{Content, MessageID};
-use reme_prekeys::{LocalPrekeySecrets, SignedPrekeyBundle};
-use reme_session::Session;
 use rusqlite::{params, Connection, OptionalExtension};
 use thiserror::Error;
-use tracing::{debug, trace, warn};
+use tracing::{debug, trace};
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -47,6 +45,9 @@ impl Storage {
     }
 
     /// Initialize database schema
+    ///
+    /// MIK-only storage: no sessions table, no prekeys table.
+    /// Each message is encrypted with a fresh ephemeral key directly to the recipient's MIK.
     fn init_schema(&self) -> Result<(), StorageError> {
         self.conn.execute_batch(
             r#"
@@ -55,16 +56,6 @@ impl Storage {
                 public_id BLOB NOT NULL UNIQUE,
                 name TEXT,
                 created_at INTEGER NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS sessions (
-                contact_id INTEGER PRIMARY KEY,
-                send_key BLOB NOT NULL,
-                recv_key BLOB NOT NULL,
-                ephemeral_public BLOB NOT NULL,
-                used_one_time_prekey_id BLOB,
-                created_at INTEGER NOT NULL,
-                FOREIGN KEY (contact_id) REFERENCES contacts(id)
             );
 
             CREATE TABLE IF NOT EXISTS messages (
@@ -78,13 +69,6 @@ impl Storage {
                 delivered_at INTEGER,
                 read_at INTEGER,
                 FOREIGN KEY (contact_id) REFERENCES contacts(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS prekeys (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                bundle BLOB NOT NULL,
-                secrets BLOB NOT NULL,
-                created_at INTEGER NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_messages_contact ON messages(contact_id);
@@ -191,91 +175,6 @@ impl Storage {
     }
 
     // ============================================
-    // Session operations
-    // ============================================
-
-    /// Store a session for a contact
-    pub fn store_session(&self, contact_id: i64, session: &Session) -> Result<(), StorageError> {
-        debug!(contact_id = contact_id, "storing session");
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-
-        let ephemeral_public_bytes = session.ephemeral_public().to_bytes();
-        let used_otp_id_bytes = session
-            .used_one_time_prekey_id()
-            .map(|id| bincode::encode_to_vec(&id, bincode::config::standard()).unwrap());
-
-        self.conn.execute(
-            "INSERT OR REPLACE INTO sessions (contact_id, send_key, recv_key, ephemeral_public, used_one_time_prekey_id, created_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
-            params![
-                contact_id,
-                &session.send_key()[..],
-                &session.recv_key()[..],
-                &ephemeral_public_bytes[..],
-                used_otp_id_bytes.as_deref(),
-                now,
-            ],
-        )?;
-
-        trace!(contact_id = contact_id, "session stored");
-        Ok(())
-    }
-
-    /// Load a session for a contact
-    pub fn load_session(&self, contact_id: i64) -> Result<Session, StorageError> {
-        let row: Option<(Vec<u8>, Vec<u8>, Vec<u8>, Option<Vec<u8>>)> = self
-            .conn
-            .query_row(
-                "SELECT send_key, recv_key, ephemeral_public, used_one_time_prekey_id FROM sessions WHERE contact_id = ?",
-                params![contact_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .optional()?;
-
-        let (send_key, recv_key, ephemeral_public, used_otp_id_bytes) =
-            row.ok_or(StorageError::NotFound)?;
-
-        let send_key: [u8; 32] = send_key
-            .try_into()
-            .map_err(|_| StorageError::Serialization("Invalid send_key length".to_string()))?;
-        let recv_key: [u8; 32] = recv_key
-            .try_into()
-            .map_err(|_| StorageError::Serialization("Invalid recv_key length".to_string()))?;
-        let ephemeral_public: [u8; 32] = ephemeral_public
-            .try_into()
-            .map_err(|_| StorageError::Serialization("Invalid ephemeral_public length".to_string()))?;
-
-        let used_one_time_prekey_id = if let Some(bytes) = used_otp_id_bytes {
-            let (id, _): (reme_prekeys::SignedPrekeyID, usize) =
-                bincode::decode_from_slice(&bytes, bincode::config::standard())
-                    .map_err(|e| StorageError::Serialization(e.to_string()))?;
-            Some(id)
-        } else {
-            None
-        };
-
-        Ok(Session::from_keys(
-            send_key,
-            recv_key,
-            ephemeral_public,
-            used_one_time_prekey_id,
-        ))
-    }
-
-    /// Check if a session exists for a contact
-    pub fn has_session(&self, contact_id: i64) -> Result<bool, StorageError> {
-        let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM sessions WHERE contact_id = ?",
-            params![contact_id],
-            |row| row.get(0),
-        )?;
-        Ok(count > 0)
-    }
-
-    // ============================================
     // Message operations
     // ============================================
 
@@ -373,84 +272,6 @@ impl Storage {
         Ok(())
     }
 
-    // ============================================
-    // Prekey operations
-    // ============================================
-
-    /// Store local prekey bundle and secrets
-    pub fn store_prekeys(
-        &self,
-        bundle: &SignedPrekeyBundle,
-        secrets: &LocalPrekeySecrets,
-    ) -> Result<(), StorageError> {
-        debug!("storing prekey bundle and secrets");
-        let bundle_bytes = bincode::encode_to_vec(bundle, bincode::config::standard())
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
-
-        let secrets_bytes = bincode::encode_to_vec(secrets, bincode::config::standard())
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-
-        self.conn.execute(
-            "INSERT OR REPLACE INTO prekeys (id, bundle, secrets, created_at) VALUES (1, ?, ?, ?)",
-            params![&bundle_bytes[..], &secrets_bytes[..], now],
-        )?;
-
-        trace!("prekeys stored");
-        Ok(())
-    }
-
-    /// Load local prekey bundle
-    pub fn load_prekey_bundle(&self) -> Result<SignedPrekeyBundle, StorageError> {
-        trace!("loading prekey bundle");
-        let bytes: Vec<u8> = self
-            .conn
-            .query_row("SELECT bundle FROM prekeys WHERE id = 1", [], |row| {
-                row.get(0)
-            })
-            .optional()?
-            .ok_or_else(|| {
-                warn!("prekey bundle not found");
-                StorageError::NotFound
-            })?;
-
-        let (bundle, _) = bincode::decode_from_slice(&bytes, bincode::config::standard())
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
-
-        Ok(bundle)
-    }
-
-    /// Load local prekey secrets
-    pub fn load_prekey_secrets(&self) -> Result<LocalPrekeySecrets, StorageError> {
-        trace!("loading prekey secrets");
-        let bytes: Vec<u8> = self
-            .conn
-            .query_row("SELECT secrets FROM prekeys WHERE id = 1", [], |row| {
-                row.get(0)
-            })
-            .optional()?
-            .ok_or_else(|| {
-                warn!("prekey secrets not found");
-                StorageError::NotFound
-            })?;
-
-        let (secrets, _) = bincode::decode_from_slice(&bytes, bincode::config::standard())
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
-
-        Ok(secrets)
-    }
-
-    /// Load both prekey bundle and secrets
-    pub fn load_prekeys(&self) -> Result<(SignedPrekeyBundle, LocalPrekeySecrets), StorageError> {
-        debug!("loading prekeys");
-        let bundle = self.load_prekey_bundle()?;
-        let secrets = self.load_prekey_secrets()?;
-        Ok((bundle, secrets))
-    }
 }
 
 #[cfg(test)]
