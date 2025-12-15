@@ -1,32 +1,23 @@
-//! reme-core: Client business logic for Branch Messenger
+//! reme-core: Client business logic for Resilient Messenger
 //!
 //! This crate provides the high-level client API for:
 //! - Identity management
-//! - Session establishment (X3DH)
+//! - MIK-only stateless encryption (Session V1-style)
 //! - Sending and receiving encrypted messages
 //! - Contact management
-//! - Prekey management
 
-use reme_encryption::{decrypt_inner_envelope, encrypt_inner_envelope, EncryptionError};
+use reme_encryption::{decrypt_with_mik, encrypt_to_mik, EncryptionError};
 use reme_identity::{Identity, PublicID};
 use reme_message::{
     Content, DeviceID, InnerEnvelope, MessageID, OuterEnvelope, ReceiptContent, ReceiptKind,
-    RoutingKey, SessionEstablishment, TextContent, TombstoneEnvelope, TombstoneStatus,
-    CURRENT_VERSION,
-};
-use reme_prekeys::{generate_prekey_bundle, LocalPrekeySecrets, SignedPrekeyID};
-use reme_session::{
-    derive_session_as_initiator, derive_session_as_responder, Session, SessionError,
+    RoutingKey, TextContent, TombstoneEnvelope, TombstoneStatus, CURRENT_VERSION,
 };
 use reme_storage::{Storage, StorageError};
 use reme_transport::{Transport, TransportError};
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::RwLock;
 use tracing::{debug, info};
-use x25519_dalek::PublicKey as X25519PublicKey;
 
 #[derive(Debug, Error)]
 pub enum ClientError {
@@ -36,23 +27,14 @@ pub enum ClientError {
     #[error("Storage error: {0}")]
     Storage(#[from] StorageError),
 
-    #[error("Session error: {0}")]
-    Session(#[from] SessionError),
-
     #[error("Encryption error: {0}")]
     Encryption(#[from] EncryptionError),
 
     #[error("Contact not found")]
     ContactNotFound,
 
-    #[error("Session not established with contact")]
-    NoSession,
-
-    #[error("Prekeys not initialized")]
-    NoPrekeys,
-
-    #[error("Message decryption failed: unknown sender")]
-    UnknownSender,
+    #[error("Message decryption failed: unknown sender or corrupted")]
+    DecryptionFailed,
 }
 
 /// Represents a contact in the messenger
@@ -72,22 +54,20 @@ pub struct ReceivedMessage {
     pub created_at_ms: u64,
 }
 
-/// The main client for Branch Messenger
+/// The main client for Resilient Messenger (MIK-only stateless encryption)
 ///
 /// Provides high-level API for:
-/// - Sending messages to contacts
+/// - Sending messages to contacts (stateless, no session establishment needed)
 /// - Receiving and decrypting messages
 /// - Managing contacts
-/// - Managing prekeys
 /// - Sending tombstones for message acknowledgment
+///
+/// With MIK-only encryption, each message includes an ephemeral key for
+/// stateless ECDH. No session state is maintained between messages.
 pub struct Client<T: Transport> {
     identity: Identity,
     transport: Arc<T>,
     storage: Storage,
-    /// In-memory session cache (sessions keyed by contact's PublicID)
-    sessions: RwLock<HashMap<PublicID, Session>>,
-    /// Local prekey secrets (loaded from storage or generated)
-    prekey_secrets: RwLock<Option<LocalPrekeySecrets>>,
     /// Device ID for tombstone sequence management (unique per device)
     device_id: DeviceID,
     /// Monotonically increasing tombstone sequence counter
@@ -101,15 +81,13 @@ impl<T: Transport> Client<T> {
     pub fn new(identity: Identity, transport: Arc<T>, storage: Storage) -> Self {
         // Generate random device ID
         let mut device_id = [0u8; 16];
-        use rand::RngCore;
-        rand::rng().fill_bytes(&mut device_id);
+        use rand_core::{OsRng, RngCore};
+        OsRng.fill_bytes(&mut device_id);
 
         Self {
             identity,
             transport,
             storage,
-            sessions: RwLock::new(HashMap::new()),
-            prekey_secrets: RwLock::new(None),
             device_id,
             tombstone_sequence: AtomicU64::new(1), // Start at 1
         }
@@ -130,8 +108,6 @@ impl<T: Transport> Client<T> {
             identity,
             transport,
             storage,
-            sessions: RwLock::new(HashMap::new()),
-            prekey_secrets: RwLock::new(None),
             device_id,
             tombstone_sequence: AtomicU64::new(initial_sequence),
         }
@@ -147,7 +123,7 @@ impl<T: Transport> Client<T> {
         self.tombstone_sequence.load(Ordering::SeqCst)
     }
 
-    /// Get the client's public identity
+    /// Get the client's public identity (MIK)
     pub fn public_id(&self) -> &PublicID {
         self.identity.public_id()
     }
@@ -157,79 +133,9 @@ impl<T: Transport> Client<T> {
         self.identity.public_id().routing_key()
     }
 
-    // ========================================
-    // Prekey Management
-    // ========================================
-
-    /// Initialize prekeys: load from storage or generate new ones
-    pub async fn init_prekeys(&self, num_one_time_prekeys: usize) -> Result<(), ClientError> {
-        // Try loading from storage first
-        match self.storage.load_prekey_secrets() {
-            Ok(secrets) => {
-                info!("Loaded prekey secrets from storage");
-                let mut prekey_secrets = self.prekey_secrets.write().await;
-                *prekey_secrets = Some(secrets);
-                Ok(())
-            }
-            Err(StorageError::NotFound) => {
-                // Generate new prekeys
-                info!("Generating new prekey bundle");
-                let (secrets, bundle) = generate_prekey_bundle(&self.identity, num_one_time_prekeys);
-
-                // Store locally
-                self.storage.store_prekeys(&bundle, &secrets)?;
-
-                // Upload to server
-                self.transport
-                    .upload_prekeys(self.routing_key(), bundle)
-                    .await?;
-
-                let mut prekey_secrets = self.prekey_secrets.write().await;
-                *prekey_secrets = Some(secrets);
-
-                info!("Prekeys generated and uploaded");
-                Ok(())
-            }
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    /// Force regenerate and upload new prekeys
-    pub async fn regenerate_prekeys(&self, num_one_time_prekeys: usize) -> Result<(), ClientError> {
-        info!("Regenerating prekey bundle");
-        let (secrets, bundle) = generate_prekey_bundle(&self.identity, num_one_time_prekeys);
-
-        // Store locally
-        self.storage.store_prekeys(&bundle, &secrets)?;
-
-        // Upload to server
-        self.transport
-            .upload_prekeys(self.routing_key(), bundle)
-            .await?;
-
-        let mut prekey_secrets = self.prekey_secrets.write().await;
-        *prekey_secrets = Some(secrets);
-
-        info!("Prekeys regenerated and uploaded");
-        Ok(())
-    }
-
-    /// Upload existing prekeys to server (useful for multi-node sync)
-    pub async fn upload_prekeys(&self) -> Result<(), ClientError> {
-        // Load prekeys from storage
-        let (bundle, secrets) = self.storage.load_prekeys()?;
-
-        // Upload to server
-        self.transport
-            .upload_prekeys(self.routing_key(), bundle)
-            .await?;
-
-        // Update in-memory cache
-        let mut prekey_secrets = self.prekey_secrets.write().await;
-        *prekey_secrets = Some(secrets);
-
-        info!("Prekeys uploaded to server");
-        Ok(())
+    /// Get the identity's private key bytes (for decryption)
+    fn private_key(&self) -> [u8; 32] {
+        self.identity.to_bytes()
     }
 
     // ========================================
@@ -271,55 +177,13 @@ impl<T: Transport> Client<T> {
     }
 
     // ========================================
-    // Session Management
-    // ========================================
-
-    /// Establish a session with a contact by fetching their prekeys
-    pub async fn establish_session(&self, contact: &PublicID) -> Result<(), ClientError> {
-        // Check if we already have a session
-        {
-            let sessions = self.sessions.read().await;
-            if sessions.contains_key(contact) {
-                debug!("Session already exists with contact");
-                return Ok(());
-            }
-        }
-
-        // Fetch contact's prekey bundle from server
-        let contact_routing_key = contact.routing_key();
-        let bundle = self.transport.fetch_prekeys(contact_routing_key).await?;
-
-        // Derive session as initiator
-        let session = derive_session_as_initiator(&self.identity, &bundle, true)?;
-
-        // Store session in memory
-        {
-            let mut sessions = self.sessions.write().await;
-            sessions.insert(*contact, session);
-        }
-
-        // Store session in database
-        let contact_id = self.storage.get_contact_id(contact)?;
-        let sessions = self.sessions.read().await;
-        if let Some(session) = sessions.get(contact) {
-            self.storage.store_session(contact_id, session)?;
-        }
-
-        info!("Session established with contact");
-        Ok(())
-    }
-
-    /// Check if a session exists with a contact
-    pub async fn has_session(&self, contact: &PublicID) -> bool {
-        let sessions = self.sessions.read().await;
-        sessions.contains_key(contact)
-    }
-
-    // ========================================
-    // Sending Messages
+    // Sending Messages (MIK-only, stateless)
     // ========================================
 
     /// Send a text message to a contact
+    ///
+    /// With MIK-only encryption, no session establishment is needed.
+    /// Each message is encrypted directly to the recipient's public MIK.
     pub async fn send_text(&self, to: &PublicID, text: &str) -> Result<MessageID, ClientError> {
         let content = Content::Text(TextContent {
             body: text.to_string(),
@@ -353,23 +217,11 @@ impl<T: Transport> Client<T> {
         self.send_message(to, content).await
     }
 
-    /// Send a message with arbitrary content
+    /// Send a message with arbitrary content (MIK-only encryption)
     async fn send_message(&self, to: &PublicID, content: Content) -> Result<MessageID, ClientError> {
-        // Ensure session exists
-        if !self.has_session(to).await {
-            self.establish_session(to).await?;
-        }
-
-        // Get session and check if we need to include session init data
-        let needs_session_init = {
-            let sessions = self.sessions.read().await;
-            let session = sessions.get(to).ok_or(ClientError::NoSession)?;
-            !session.is_confirmed()
-        };
-
-        // Create outer envelope first to get message ID
-        let routing_key = to.routing_key();
+        // Generate message ID
         let outer_message_id = MessageID::new();
+        let routing_key = to.routing_key();
 
         // Get precise timestamp for inner envelope
         let now_ms = std::time::SystemTime::now()
@@ -377,7 +229,7 @@ impl<T: Transport> Client<T> {
             .unwrap()
             .as_millis() as u64;
 
-        // Create inner envelope (uses precise timestamp - encrypted)
+        // Create inner envelope (will be encrypted)
         let inner = InnerEnvelope {
             version: CURRENT_VERSION,
             from: *self.identity.public_id(),
@@ -387,171 +239,61 @@ impl<T: Transport> Client<T> {
             content: content.clone(),
         };
 
-        // Get session for encryption
-        let sessions = self.sessions.read().await;
-        let session = sessions.get(to).ok_or(ClientError::NoSession)?;
+        // Encrypt to recipient's MIK (stateless, returns ephemeral_key + ciphertext)
+        let (ephemeral_key, ciphertext) = encrypt_to_mik(&inner, to, &outer_message_id)?;
 
-        // Encrypt inner envelope
-        let ciphertext = encrypt_inner_envelope(&inner, session.send_key(), &outer_message_id)?;
-
-        // Create outer envelope (uses coarse timestamp for privacy)
-        let outer = if needs_session_init {
-            let session_init = SessionEstablishment {
-                sender_identity: self.identity.public_id().to_bytes(),
-                ephemeral_public: session.ephemeral_public().to_bytes(),
-                used_one_time_prekey_id: session.used_one_time_prekey_id().map(|id| id.to_bytes()),
-            };
-            OuterEnvelope {
-                version: CURRENT_VERSION,
-                flags: reme_message::flags::SESSION_INIT,
-                routing_key,
-                timestamp_hours: reme_message::now_hours(),
-                ttl_hours: Some(7 * 24), // 7 days default TTL in hours
-                message_id: outer_message_id,
-                session_init: Some(session_init),
-                inner_ciphertext: ciphertext,
-            }
-        } else {
-            OuterEnvelope {
-                version: CURRENT_VERSION,
-                flags: 0,
-                routing_key,
-                timestamp_hours: reme_message::now_hours(),
-                ttl_hours: Some(7 * 24), // 7 days default TTL in hours
-                message_id: outer_message_id,
-                session_init: None,
-                inner_ciphertext: ciphertext,
-            }
+        // Create outer envelope (must use same message_id as encryption!)
+        let outer = OuterEnvelope {
+            version: CURRENT_VERSION,
+            routing_key,
+            timestamp_hours: reme_message::now_hours(),
+            ttl_hours: Some(7 * 24), // 7 days default TTL in hours
+            message_id: outer_message_id, // Must match the ID used for encryption
+            ephemeral_key,
+            inner_ciphertext: ciphertext,
         };
-        drop(sessions);
 
         // Submit to transport
         self.transport.submit_message(outer).await?;
 
-        // Mark session as confirmed after first message sent
-        if needs_session_init {
-            let mut sessions = self.sessions.write().await;
-            if let Some(session) = sessions.get_mut(to) {
-                session.set_confirmed();
-            }
+        // Store sent message
+        if let Ok(contact_id) = self.storage.get_contact_id(to) {
+            let _ = self.storage.store_sent_message(contact_id, outer_message_id, &content);
         }
 
-        // Store sent message
-        let contact_id = self.storage.get_contact_id(to)?;
-        self.storage
-            .store_sent_message(contact_id, outer_message_id, &content)?;
-
-        debug!("Message sent to contact (session_init: {})", needs_session_init);
+        debug!("Message sent to contact (MIK-only encryption)");
         Ok(outer_message_id)
     }
 
     // ========================================
-    // Receiving Messages
+    // Receiving Messages (MIK-only, stateless)
     // ========================================
 
     /// Process a raw envelope into a decrypted message
     ///
-    /// This is the primary method for handling incoming messages in a push-based
-    /// architecture. Use with `MessageReceiver` to receive messages:
+    /// With MIK-only encryption, each message is decrypted using:
+    /// 1. The ephemeral public key from the envelope
+    /// 2. Our MIK private key
     ///
-    /// ```ignore
-    /// let receiver = MessageReceiver::new(transport.clone());
-    /// let (events, _handle) = receiver.subscribe(client.routing_key(), config);
-    ///
-    /// while let Some(event) = events.recv().await {
-    ///     if let TransportEvent::Message(envelope) = event {
-    ///         match client.process_message(&envelope).await {
-    ///             Ok(msg) => println!("Received: {:?}", msg),
-    ///             Err(e) => warn!("Failed to process: {}", e),
-    ///         }
-    ///     }
-    /// }
-    /// ```
+    /// No session state is needed - each message is independently decryptable.
     pub async fn process_message(
         &self,
         outer: &OuterEnvelope,
     ) -> Result<ReceivedMessage, ClientError> {
-        // First, check if this is a session establishment message
-        if outer.has_session_init() {
-            if let Some(ref session_init) = outer.session_init {
-                return self.handle_session_init_message(outer, session_init).await;
-            }
-        }
-
-        // Try to decrypt with known sessions
-        let sessions = self.sessions.read().await;
-        for (sender_id, session) in sessions.iter() {
-            match decrypt_inner_envelope(
-                &outer.inner_ciphertext,
-                session.recv_key(),
-                &outer.message_id,
-            ) {
-                Ok(inner) => {
-                    // Verify sender matches
-                    if &inner.from != sender_id {
-                        continue;
-                    }
-
-                    // Store received message
-                    if let Ok(contact_id) = self.storage.get_contact_id(sender_id) {
-                        let _ = self.storage.store_received_message(
-                            contact_id,
-                            outer.message_id,
-                            &inner.content,
-                        );
-                    }
-
-                    return Ok(ReceivedMessage {
-                        message_id: outer.message_id,
-                        from: inner.from,
-                        content: inner.content,
-                        created_at_ms: inner.created_at_ms,
-                    });
-                }
-                Err(_) => continue,
-            }
-        }
-
-        Err(ClientError::UnknownSender)
-    }
-
-    /// Handle an incoming message with session establishment data
-    async fn handle_session_init_message(
-        &self,
-        outer: &OuterEnvelope,
-        session_init: &SessionEstablishment,
-    ) -> Result<ReceivedMessage, ClientError> {
-        // Get our prekey secrets
-        let prekey_secrets = self.prekey_secrets.read().await;
-        let secrets = prekey_secrets.as_ref().ok_or(ClientError::NoPrekeys)?;
-
-        // Parse sender's identity and ephemeral key
-        let sender_id = PublicID::from_bytes(&session_init.sender_identity);
-        let ephemeral_public = X25519PublicKey::from(session_init.ephemeral_public);
-        let used_otp_id = session_init
-            .used_one_time_prekey_id
-            .map(SignedPrekeyID::from_bytes);
-
-        // Derive the session as responder
-        let session = derive_session_as_responder(
-            &self.identity,
-            secrets,
-            &sender_id,
-            &ephemeral_public,
-            used_otp_id,
-        )?;
-
-        // Try to decrypt the message
-        let inner = decrypt_inner_envelope(
+        // Decrypt using MIK (stateless decryption)
+        let inner = decrypt_with_mik(
+            &outer.ephemeral_key,
             &outer.inner_ciphertext,
-            session.recv_key(),
+            &self.private_key(),
             &outer.message_id,
         )?;
 
-        // Verify the sender matches
-        if inner.from != sender_id {
-            return Err(ClientError::UnknownSender);
+        // Verify the message was intended for us
+        if inner.to != *self.public_id() {
+            return Err(ClientError::DecryptionFailed);
         }
+
+        let sender_id = inner.from;
 
         // Ensure contact exists (add if not)
         let contact_id = match self.storage.get_contact_id(&sender_id) {
@@ -563,23 +305,12 @@ impl<T: Transport> Client<T> {
             Err(e) => return Err(e.into()),
         };
 
-        // Store the session
-        self.storage.store_session(contact_id, &session)?;
-
-        // Add session to memory cache
-        {
-            let mut sessions = self.sessions.write().await;
-            sessions.insert(sender_id, session);
-        }
-
         // Store received message
         let _ = self.storage.store_received_message(
             contact_id,
             outer.message_id,
             &inner.content,
         );
-
-        info!("Session established from incoming message");
 
         Ok(ReceivedMessage {
             message_id: outer.message_id,
@@ -632,24 +363,9 @@ impl<T: Transport> Client<T> {
         let recipient_secret = self.identity.to_bytes();
         let recipient_id_pub = self.identity.public_id().to_bytes();
 
-        // Optionally get sender's public key and session for encrypted receipt
-        let (sender_pub, session_recv_key, inner_ciphertext) = if include_receipt {
-            // Try to get session with sender
-            let sessions = self.sessions.read().await;
-            if let Some(session) = sessions.get(&message.from) {
-                // Get sender's X25519 public key (from session)
-                // For the receipt, we need the sender's public key
-                // The sender_id is an Ed25519 key, we need to use the session's ephemeral
-                // For simplicity in PoC, we skip the encrypted receipt if we can't get the key
-                // In a full implementation, we'd store the sender's X25519 public during session init
-                let recv_key = *session.recv_key();
-                (None, Some(recv_key), None::<&[u8]>)
-            } else {
-                (None, None, None)
-            }
-        } else {
-            (None, None, None)
-        };
+        // For MIK-only mode, we don't include encrypted receipt payloads in v0.2
+        // (would require knowing sender's MIK which we have from inner.from)
+        let _ = include_receipt; // Reserved for future use
 
         // Create tombstone
         let tombstone = TombstoneEnvelope::new(
@@ -660,9 +376,9 @@ impl<T: Transport> Client<T> {
             self.device_id,
             sequence,
             status,
-            sender_pub.as_ref(),
-            session_recv_key.as_ref(),
-            inner_ciphertext,
+            None, // sender_pub - not used in MIK-only v0.2
+            None, // session_recv_key - not used in MIK-only v0.2
+            None::<&[u8]>, // inner_ciphertext - not used in MIK-only v0.2
         );
 
         // Submit to transport
@@ -678,8 +394,7 @@ impl<T: Transport> Client<T> {
 
     /// Send a simple delivery tombstone (no encrypted receipt)
     ///
-    /// This is the recommended method for acknowledging message delivery
-    /// when you don't need to send detailed receipt info to the sender.
+    /// This is the recommended method for acknowledging message delivery.
     pub async fn send_delivery_tombstone(
         &self,
         message: &ReceivedMessage,
@@ -701,14 +416,12 @@ impl<T: Transport> Client<T> {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use reme_prekeys::SignedPrekeyBundle;
     use std::sync::Mutex;
 
-    /// Mock transport for testing
+    /// Mock transport for testing (MIK-only, no prekeys)
     struct MockTransport {
         messages: Mutex<Vec<OuterEnvelope>>,
         tombstones: Mutex<Vec<TombstoneEnvelope>>,
-        prekeys: Mutex<HashMap<RoutingKey, SignedPrekeyBundle>>,
     }
 
     impl MockTransport {
@@ -716,12 +429,10 @@ mod tests {
             Self {
                 messages: Mutex::new(Vec::new()),
                 tombstones: Mutex::new(Vec::new()),
-                prekeys: Mutex::new(HashMap::new()),
             }
         }
 
         /// Helper to get pending messages (simulates push-based delivery)
-        #[allow(dead_code)]
         fn take_messages(&self) -> Vec<OuterEnvelope> {
             self.messages.lock().unwrap().drain(..).collect()
         }
@@ -741,44 +452,6 @@ mod tests {
             self.tombstones.lock().unwrap().push(tombstone);
             Ok(())
         }
-
-        async fn upload_prekeys(
-            &self,
-            routing_key: RoutingKey,
-            bundle: SignedPrekeyBundle,
-        ) -> Result<(), TransportError> {
-            self.prekeys.lock().unwrap().insert(routing_key, bundle);
-            Ok(())
-        }
-
-        async fn fetch_prekeys(
-            &self,
-            routing_key: RoutingKey,
-        ) -> Result<SignedPrekeyBundle, TransportError> {
-            self.prekeys
-                .lock()
-                .unwrap()
-                .get(&routing_key)
-                .cloned()
-                .ok_or(TransportError::NotFound)
-        }
-    }
-
-    #[tokio::test]
-    async fn test_client_init_prekeys() {
-        let identity = Identity::generate();
-        let transport = Arc::new(MockTransport::new());
-        let storage = Storage::in_memory().unwrap();
-
-        let client = Client::new(identity, transport.clone(), storage);
-
-        // Initialize prekeys
-        client.init_prekeys(5).await.unwrap();
-
-        // Verify prekeys were uploaded
-        let routing_key = client.routing_key();
-        let prekeys = transport.prekeys.lock().unwrap();
-        assert!(prekeys.contains_key(&routing_key));
     }
 
     #[tokio::test]
@@ -799,37 +472,116 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_session_establishment_and_messaging() {
+    async fn test_send_message_mik_only() {
         // Create Alice
         let alice_identity = Identity::generate();
         let alice_transport = Arc::new(MockTransport::new());
         let alice_storage = Storage::in_memory().unwrap();
         let alice = Client::new(alice_identity, alice_transport.clone(), alice_storage);
 
-        // Create Bob
+        // Create Bob identity (no need to initialize prekeys!)
         let bob_identity = Identity::generate();
-        let bob_transport = alice_transport.clone(); // Share transport for testing
-        let bob_storage = Storage::in_memory().unwrap();
-        let bob = Client::new(bob_identity, bob_transport, bob_storage);
 
-        // Bob initializes prekeys (so Alice can establish session)
-        bob.init_prekeys(5).await.unwrap();
-
-        // Alice adds Bob as contact and establishes session
+        // Alice adds Bob as contact
         alice
-            .add_contact(bob.public_id(), Some("Bob"))
+            .add_contact(bob_identity.public_id(), Some("Bob"))
             .unwrap();
-        alice.establish_session(bob.public_id()).await.unwrap();
 
-        // Verify session exists
-        assert!(alice.has_session(bob.public_id()).await);
-
-        // Alice sends a message
-        let msg_id = alice.send_text(bob.public_id(), "Hello Bob!").await.unwrap();
+        // Alice sends a message (no session establishment needed!)
+        let msg_id = alice.send_text(bob_identity.public_id(), "Hello Bob!").await.unwrap();
         assert!(msg_id.as_bytes().len() > 0);
 
         // Verify message was submitted
         let messages = alice_transport.messages.lock().unwrap();
         assert_eq!(messages.len(), 1);
+
+        // Verify ephemeral key is present
+        assert_ne!(messages[0].ephemeral_key, [0u8; 32]);
+    }
+
+    #[tokio::test]
+    async fn test_send_receive_roundtrip() {
+        // Create Alice and Bob with shared transport
+        let shared_transport = Arc::new(MockTransport::new());
+
+        let alice_identity = Identity::generate();
+        let alice_storage = Storage::in_memory().unwrap();
+        let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
+
+        let bob_identity = Identity::generate();
+        let bob_storage = Storage::in_memory().unwrap();
+        let bob = Client::new(bob_identity, shared_transport.clone(), bob_storage);
+
+        // Alice adds Bob as contact and sends a message
+        alice.add_contact(bob.public_id(), Some("Bob")).unwrap();
+        let _msg_id = alice.send_text(bob.public_id(), "Hello Bob!").await.unwrap();
+
+        // Bob receives and decrypts the message
+        let messages = shared_transport.take_messages();
+        assert_eq!(messages.len(), 1);
+
+        let received = bob.process_message(&messages[0]).await.unwrap();
+        assert_eq!(received.from, *alice.public_id());
+
+        match received.content {
+            Content::Text(text) => assert_eq!(text.body, "Hello Bob!"),
+            _ => panic!("Expected text content"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_wrong_recipient_fails() {
+        let shared_transport = Arc::new(MockTransport::new());
+
+        let alice_identity = Identity::generate();
+        let alice_storage = Storage::in_memory().unwrap();
+        let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
+
+        let bob_identity = Identity::generate();
+        let bob_storage = Storage::in_memory().unwrap();
+        let bob = Client::new(bob_identity, shared_transport.clone(), bob_storage);
+
+        // Create Eve (wrong recipient)
+        let eve_identity = Identity::generate();
+        let eve_storage = Storage::in_memory().unwrap();
+        let eve = Client::new(eve_identity, shared_transport.clone(), eve_storage);
+
+        // Alice sends to Bob
+        alice.add_contact(bob.public_id(), Some("Bob")).unwrap();
+        alice.send_text(bob.public_id(), "Secret message").await.unwrap();
+
+        // Eve tries to decrypt (should fail)
+        let messages = shared_transport.take_messages();
+        let result = eve.process_message(&messages[0]).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_tombstone_sent() {
+        let shared_transport = Arc::new(MockTransport::new());
+
+        let alice_identity = Identity::generate();
+        let alice_storage = Storage::in_memory().unwrap();
+        let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
+
+        let bob_identity = Identity::generate();
+        let bob_storage = Storage::in_memory().unwrap();
+        let bob = Client::new(bob_identity, shared_transport.clone(), bob_storage);
+
+        // Alice sends to Bob
+        alice.add_contact(bob.public_id(), Some("Bob")).unwrap();
+        alice.send_text(bob.public_id(), "Hello!").await.unwrap();
+
+        // Bob receives
+        let messages = shared_transport.take_messages();
+        let received = bob.process_message(&messages[0]).await.unwrap();
+
+        // Bob sends tombstone
+        bob.send_delivery_tombstone(&received).await.unwrap();
+
+        // Verify tombstone was submitted
+        let tombstones = shared_transport.tombstones.lock().unwrap();
+        assert_eq!(tombstones.len(), 1);
+        assert_eq!(tombstones[0].target_message_id, received.message_id);
     }
 }

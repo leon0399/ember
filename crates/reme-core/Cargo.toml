@@ -15,8 +15,7 @@ tracing = { workspace = true }
 
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
-x25519-dalek = { workspace = true }
-rand = { workspace = true }
+rand_core = { version = "0.6.4", features = ["getrandom"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
