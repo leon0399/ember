@@ -169,7 +169,8 @@ pub fn decrypt_with_mik(
 ///
 /// Binding both public keys prevents key confusion attacks where an attacker
 /// might try to claim a ciphertext was intended for a different recipient.
-/// This follows the standard practice used in NaCl's crypto_box_seal.
+/// This construction is inspired by the principles of NaCl's crypto_box_seal,
+/// but uses BLAKE3 KDF and does not follow the exact same nonce derivation.
 ///
 /// Key = BLAKE3_KDF("reme-encryption-key-v0", ephemeral_pub || recipient_pub || shared_secret)
 fn derive_key_from_shared(
