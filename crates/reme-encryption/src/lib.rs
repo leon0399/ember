@@ -43,8 +43,12 @@ pub fn encrypt_to_mik(
     // Compute shared secret via ECDH
     let shared_secret = ephemeral_secret.diffie_hellman(&recipient_x25519);
 
-    // Derive encryption key from shared secret using blake3
-    let encryption_key = derive_key_from_shared(shared_secret.as_bytes());
+    // Derive encryption key binding both public keys (prevents key confusion attacks)
+    let encryption_key = derive_key_from_shared(
+        ephemeral_public.as_bytes(),
+        &recipient_mik.to_bytes(),
+        shared_secret.as_bytes(),
+    );
 
     // Serialize the inner envelope
     let plaintext = bincode::encode_to_vec(inner_envelope, bincode::config::standard())?;
@@ -66,7 +70,7 @@ pub fn encrypt_to_mik(
 ///
 /// This is the receiver side of MIK encryption:
 /// 1. Computes shared_secret = X25519(mik_private, ephemeral_public)
-/// 2. Derives encryption key from shared_secret using blake3
+/// 2. Derives encryption key from shared_secret + both public keys
 /// 3. Decrypts the ciphertext with ChaCha20Poly1305
 pub fn decrypt_with_mik(
     ephemeral_public: &[u8; 32],
@@ -80,11 +84,18 @@ pub fn decrypt_with_mik(
     // Our MIK private key as StaticSecret
     let mik_secret = StaticSecret::from(*mik_private);
 
+    // Derive our public key from private key
+    let mik_public = X25519PublicKey::from(&mik_secret);
+
     // Compute shared secret via ECDH
     let shared_secret = mik_secret.diffie_hellman(&ephemeral_x25519);
 
-    // Derive encryption key from shared secret
-    let encryption_key = derive_key_from_shared(shared_secret.as_bytes());
+    // Derive encryption key binding both public keys (prevents key confusion attacks)
+    let encryption_key = derive_key_from_shared(
+        ephemeral_public,
+        mik_public.as_bytes(),
+        shared_secret.as_bytes(),
+    );
 
     // Derive nonce from message_id
     let nonce_bytes = derive_nonce_from_message_id(outer_message_id);
@@ -102,11 +113,21 @@ pub fn decrypt_with_mik(
     Ok(inner_envelope)
 }
 
-/// Derive a 32-byte encryption key from a shared secret
+/// Derive a 32-byte encryption key from ECDH shared secret and both public keys
 ///
-/// Uses blake3 KDF with a domain separator for key derivation.
-fn derive_key_from_shared(shared_secret: &[u8]) -> [u8; 32] {
+/// Binding both public keys prevents key confusion attacks where an attacker
+/// might try to claim a ciphertext was intended for a different recipient.
+/// This follows the standard practice used in NaCl's crypto_box_seal.
+///
+/// Key = BLAKE3_KDF("reme-mik-encryption-key-v1", ephemeral_pub || recipient_pub || shared_secret)
+fn derive_key_from_shared(
+    ephemeral_public: &[u8; 32],
+    recipient_public: &[u8; 32],
+    shared_secret: &[u8],
+) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new_derive_key("reme-mik-encryption-key-v1");
+    hasher.update(ephemeral_public);
+    hasher.update(recipient_public);
     hasher.update(shared_secret);
     let hash = hasher.finalize();
     *hash.as_bytes()
