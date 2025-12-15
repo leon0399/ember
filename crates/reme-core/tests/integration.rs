@@ -67,9 +67,11 @@ async fn test_transport_roundtrip() {
     let identity = Identity::generate();
     let routing_key = identity.public_id().routing_key();
 
-    // Create and submit a test envelope with ephemeral key
-    let ephemeral_key = [42u8; 32]; // Fake ephemeral key for testing
-    let test_envelope = OuterEnvelope::new(routing_key, ephemeral_key, vec![1, 2, 3, 4], Some(1)); // 1 hour TTL
+    // Create and submit a test envelope with ephemeral key.
+    // NOTE: This test validates transport mechanics only, not cryptographic properties.
+    // Actual encryption/decryption is tested in test_e2e_encryption_mik_only.
+    let ephemeral_key = [42u8; 32];
+    let test_envelope = OuterEnvelope::new(routing_key, Some(1), ephemeral_key, vec![1, 2, 3, 4]); // 1 hour TTL
     transport
         .submit_message(test_envelope)
         .await
@@ -358,19 +360,19 @@ async fn test_tombstone_with_status() {
 
     // Test each tombstone status
     client
-        .send_tombstone(&fake_received, TombstoneStatus::Delivered, false)
+        .send_tombstone(&fake_received, TombstoneStatus::Delivered)
         .await
         .expect("Delivered tombstone failed");
     println!("Sent Delivered tombstone");
 
     client
-        .send_tombstone(&fake_received, TombstoneStatus::Read, false)
+        .send_tombstone(&fake_received, TombstoneStatus::Read)
         .await
         .expect("Read tombstone failed");
     println!("Sent Read tombstone");
 
     client
-        .send_tombstone(&fake_received, TombstoneStatus::Deleted, false)
+        .send_tombstone(&fake_received, TombstoneStatus::Deleted)
         .await
         .expect("Deleted tombstone failed");
     println!("Sent Deleted tombstone");
@@ -432,9 +434,10 @@ async fn test_multi_node_replication() {
     let identity = Identity::generate();
     let routing_key = identity.public_id().routing_key();
 
-    // Send a message to node 1 (with ephemeral key)
-    let ephemeral_key = [99u8; 32]; // Fake ephemeral key for testing
-    let test_envelope = OuterEnvelope::new(routing_key, ephemeral_key, vec![42, 43, 44, 45], Some(1));
+    // Send a message to node 1.
+    // NOTE: Using fake ephemeral key - this test validates replication, not crypto.
+    let ephemeral_key = [99u8; 32];
+    let test_envelope = OuterEnvelope::new(routing_key, Some(1), ephemeral_key, vec![42, 43, 44, 45]);
     transport1
         .submit_message(test_envelope)
         .await

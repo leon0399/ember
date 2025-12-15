@@ -33,7 +33,7 @@ pub enum ClientError {
     #[error("Contact not found")]
     ContactNotFound,
 
-    #[error("Message decryption failed: unknown sender or corrupted")]
+    #[error("Message decryption failed (wrong recipient, tampered, or corrupted)")]
     DecryptionFailed,
 
     #[error("Invalid sender signature: message may be forged or tampered")]
@@ -357,18 +357,16 @@ impl<T: Transport> Client<T> {
     ///
     /// Tombstones are cryptographically signed acknowledgments that enable:
     /// - Cache clearing on relay nodes (network layer)
-    /// - Optional delivery/read receipts for the sender (application layer)
+    /// - Optional delivery/read receipts for the sender (application layer, future)
     ///
     /// # Arguments
     ///
     /// * `message` - The received message to acknowledge
     /// * `status` - How the message was processed (Delivered/Read/Deleted)
-    /// * `include_receipt` - Whether to include an encrypted receipt for the sender
     pub async fn send_tombstone(
         &self,
         message: &ReceivedMessage,
         status: TombstoneStatus,
-        include_receipt: bool,
     ) -> Result<(), ClientError> {
         // Get the routing key for this message (our mailbox where it was stored)
         let routing_key = self.routing_key();
@@ -379,10 +377,6 @@ impl<T: Transport> Client<T> {
         // Get recipient's X25519 secret key for signing (XEdDSA)
         let recipient_secret = self.identity.to_bytes();
         let recipient_id_pub = self.identity.public_id().to_bytes();
-
-        // For MIK-only mode, we don't include encrypted receipt payloads in v0.2
-        // (would require knowing sender's MIK which we have from inner.from)
-        let _ = include_receipt; // Reserved for future use
 
         // Create tombstone
         let tombstone = TombstoneEnvelope::new(
@@ -409,23 +403,22 @@ impl<T: Transport> Client<T> {
         Ok(())
     }
 
-    /// Send a simple delivery tombstone (no encrypted receipt)
+    /// Send a delivery tombstone
     ///
     /// This is the recommended method for acknowledging message delivery.
     pub async fn send_delivery_tombstone(
         &self,
         message: &ReceivedMessage,
     ) -> Result<(), ClientError> {
-        self.send_tombstone(message, TombstoneStatus::Delivered, false)
+        self.send_tombstone(message, TombstoneStatus::Delivered)
             .await
     }
 
-    /// Send a read tombstone (no encrypted receipt)
+    /// Send a read tombstone
     ///
     /// Use this when the user has opened/read the message.
     pub async fn send_read_tombstone(&self, message: &ReceivedMessage) -> Result<(), ClientError> {
-        self.send_tombstone(message, TombstoneStatus::Read, false)
-            .await
+        self.send_tombstone(message, TombstoneStatus::Read).await
     }
 }
 

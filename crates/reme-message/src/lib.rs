@@ -133,14 +133,14 @@ impl OuterEnvelope {
     ///
     /// # Arguments
     /// * `routing_key` - 16-byte routing key (truncated blake3 hash of recipient PublicID)
+    /// * `ttl_hours` - Optional time-to-live in hours
     /// * `ephemeral_key` - 32-byte ephemeral X25519 public key used for ECDH
     /// * `inner_ciphertext` - Encrypted InnerEnvelope bytes
-    /// * `ttl_hours` - Optional time-to-live in hours
     pub fn new(
         routing_key: RoutingKey,
+        ttl_hours: Option<u16>,
         ephemeral_key: [u8; 32],
         inner_ciphertext: Vec<u8>,
-        ttl_hours: Option<u16>,
     ) -> Self {
         Self {
             version: CURRENT_VERSION,
