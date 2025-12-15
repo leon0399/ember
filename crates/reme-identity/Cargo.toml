@@ -8,6 +8,7 @@ derivative = { workspace = true }
 derive_more = { workspace = true, features = ["display"] }
 getset = { workspace = true }
 strum = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
 
 rand_chacha = { version = "0.3.1" }
 rand_core = { version = "0.6.4", features = ["getrandom"] }

@@ -1,6 +1,5 @@
 use async_trait::async_trait;
-use reme_message::{OuterEnvelope, RoutingKey, TombstoneEnvelope};
-use reme_prekeys::SignedPrekeyBundle;
+use reme_message::{OuterEnvelope, TombstoneEnvelope};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
@@ -30,11 +29,14 @@ pub enum TransportError {
     ChannelClosed,
 }
 
-/// Transport trait for sending messages and managing prekeys
+/// Transport trait for sending messages (MIK-only, no prekeys)
 ///
 /// This trait abstracts the underlying transport mechanism (HTTP, LoRa, BLE, etc.)
 /// for outgoing operations. Incoming messages are handled separately via
 /// `MessageReceiver` which provides push-based delivery.
+///
+/// With MIK-only encryption, there are no prekeys to upload or fetch.
+/// Each message includes an ephemeral key for stateless ECDH.
 #[async_trait]
 pub trait Transport: Send + Sync {
     /// Submit an OuterEnvelope to the mailbox
@@ -45,19 +47,6 @@ pub trait Transport: Send + Sync {
     /// Tombstones enable cache clearing and prevent duplicate delivery.
     /// They are cryptographically signed by the recipient.
     async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError>;
-
-    /// Upload a prekey bundle for an identity
-    async fn upload_prekeys(
-        &self,
-        routing_key: RoutingKey,
-        bundle: SignedPrekeyBundle,
-    ) -> Result<(), TransportError>;
-
-    /// Fetch a prekey bundle for an identity
-    async fn fetch_prekeys(
-        &self,
-        routing_key: RoutingKey,
-    ) -> Result<SignedPrekeyBundle, TransportError>;
 }
 
 /// Event delivered by the message receiver

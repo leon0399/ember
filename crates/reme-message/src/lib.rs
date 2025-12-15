@@ -38,18 +38,6 @@ pub use tombstone::{
     WirePayload, WireType, CLOCK_SKEW_ALLOWANCE_HOURS, TOMBSTONE_MAX_AGE_HOURS,
 };
 
-/// Session establishment data included in the first message from initiator
-/// This allows the recipient to derive the same session keys
-#[derive(Debug, Clone, Encode, Decode)]
-pub struct SessionEstablishment {
-    /// Sender's identity public key (32 bytes)
-    pub sender_identity: [u8; 32],
-    /// Sender's ephemeral public key used in X3DH (32 bytes)
-    pub ephemeral_public: [u8; 32],
-    /// ID of the one-time prekey used (if any)
-    pub used_one_time_prekey_id: Option<[u8; 16]>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MessageID(Uuid);
 
@@ -97,25 +85,29 @@ pub type RoutingKey = [u8; 16];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
 pub struct Version {
-    pub major: u16,
-    pub minor: u16,
+    pub major: u8,
+    pub minor: u8,
 }
 
-pub const CURRENT_VERSION: Version = Version { major: 0, minor: 1 };
+/// Current protocol version (0.0 - PoC)
+/// Using u8 for major/minor: max version 255.255, saves 2 bytes per envelope
+pub const CURRENT_VERSION: Version = Version { major: 0, minor: 0 };
 
-/// Flags for OuterEnvelope
-pub mod flags {
-    /// Message contains session establishment data
-    pub const SESSION_INIT: u8 = 0x01;
-}
-
+/// Outer envelope for MIK-only encryption (Session V1-style stateless)
+///
+/// Each message includes an ephemeral X25519 public key. The sender:
+/// 1. Generates ephemeral keypair (e, E)
+/// 2. Computes shared_secret = X25519(e, recipient_MIK)
+/// 3. Derives encryption key from shared_secret
+/// 4. Encrypts InnerEnvelope with derived key
+///
+/// The recipient:
+/// 1. Computes shared_secret = X25519(mik_private, ephemeral_key)
+/// 2. Derives same encryption key
+/// 3. Decrypts InnerEnvelope
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct OuterEnvelope {
     pub version: Version,
-
-    /// Flags indicating special message properties
-    /// - 0x01: SESSION_INIT - contains session establishment data
-    pub flags: u8,
 
     pub routing_key: RoutingKey,
 
@@ -129,50 +121,36 @@ pub struct OuterEnvelope {
 
     pub message_id: MessageID,
 
-    /// Session establishment data (present when flags & SESSION_INIT)
-    /// This is sent in the first message to allow recipient to derive session keys
-    pub session_init: Option<SessionEstablishment>,
+    /// Ephemeral X25519 public key for this message (32 bytes)
+    /// Used with recipient's MIK to derive the encryption key.
+    pub ephemeral_key: [u8; 32],
 
     pub inner_ciphertext: Vec<u8>,
 }
 
 impl OuterEnvelope {
-    /// Create a new envelope with TTL in hours
-    pub fn new(routing_key: RoutingKey, inner_ciphertext: Vec<u8>, ttl_hours: Option<u16>) -> Self {
-        Self {
-            version: CURRENT_VERSION,
-            flags: 0,
-            routing_key,
-            timestamp_hours: now_hours(),
-            ttl_hours,
-            message_id: MessageID::new(),
-            session_init: None,
-            inner_ciphertext,
-        }
-    }
-
-    /// Create an envelope with session establishment data (for first message)
-    pub fn with_session_init(
+    /// Create a new envelope for MIK-only encryption
+    ///
+    /// # Arguments
+    /// * `routing_key` - 16-byte routing key (truncated blake3 hash of recipient PublicID)
+    /// * `ttl_hours` - Optional time-to-live in hours
+    /// * `ephemeral_key` - 32-byte ephemeral X25519 public key used for ECDH
+    /// * `inner_ciphertext` - Encrypted InnerEnvelope bytes
+    pub fn new(
         routing_key: RoutingKey,
-        inner_ciphertext: Vec<u8>,
         ttl_hours: Option<u16>,
-        session_init: SessionEstablishment,
+        ephemeral_key: [u8; 32],
+        inner_ciphertext: Vec<u8>,
     ) -> Self {
         Self {
             version: CURRENT_VERSION,
-            flags: flags::SESSION_INIT,
             routing_key,
             timestamp_hours: now_hours(),
             ttl_hours,
             message_id: MessageID::new(),
-            session_init: Some(session_init),
+            ephemeral_key,
             inner_ciphertext,
         }
-    }
-
-    /// Check if this message contains session establishment data
-    pub fn has_session_init(&self) -> bool {
-        self.flags & flags::SESSION_INIT != 0
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -180,20 +158,93 @@ impl OuterEnvelope {
     }
 }
 
+/// Signature type alias for clarity
+pub type Signature = [u8; 64];
+
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct InnerEnvelope {
-    pub version: Version,
-
+    /// Sender's public identity (32 bytes)
     pub from: PublicID,
 
-    pub to: PublicID,
-
+    /// Precise timestamp in milliseconds since Unix epoch
+    /// (outer envelope has coarse hour-granularity for metadata privacy)
     pub created_at_ms: u64,
 
-    /// Echo of the message ID of the outer envelope.
-    pub outer_message_id: MessageID,
-
+    /// Message content
     pub content: Content,
+
+    /// XEdDSA signature proving sender authenticity (optional for future session messages)
+    /// Signs: from || created_at_ms || content || outer_message_id (from outer envelope)
+    ///
+    /// Currently always Some (MIK-only encryption requires signature).
+    /// Will be None for session-encrypted messages where ECDH provides authentication.
+    pub signature: Option<Signature>,
+}
+
+// Removed fields (per envelope optimization design):
+// - version: Use outer envelope version
+// - to: Cryptographically bound via sealed box ECDH (only intended recipient can decrypt)
+// - outer_message_id: Bound via AAD + nonce derivation (triple binding)
+
+impl InnerEnvelope {
+    /// Returns the bytes that are covered by the sender signature.
+    ///
+    /// The outer_message_id is passed as a parameter (not stored in InnerEnvelope)
+    /// to enable triple binding: the signature binds the inner content to the outer
+    /// message_id without duplicating it in the wire format.
+    pub fn signable_bytes(&self, outer_message_id: &MessageID) -> Vec<u8> {
+        let mut bytes = Vec::new();
+
+        // from (32 bytes)
+        bytes.extend_from_slice(&self.from.to_bytes());
+
+        // created_at_ms (8 bytes)
+        bytes.extend_from_slice(&self.created_at_ms.to_le_bytes());
+
+        // content - serialize with bincode for consistency
+        let content_bytes =
+            bincode::encode_to_vec(&self.content, bincode::config::standard()).unwrap();
+        bytes.extend_from_slice(&content_bytes);
+
+        // outer_message_id (16 bytes) - binds signature to outer envelope
+        bytes.extend_from_slice(outer_message_id.as_bytes());
+
+        bytes
+    }
+
+    /// Sign this envelope with the sender's private key.
+    /// Returns the signature bytes.
+    pub fn sign(signable_bytes: &[u8], sender_private: &[u8; 32]) -> Signature {
+        use rand_core::OsRng;
+        use xeddsa::{xed25519, Sign};
+
+        let private_key = xed25519::PrivateKey(*sender_private);
+        private_key.sign(signable_bytes, OsRng)
+    }
+
+    /// Verify that the signature is valid for the sender (from field).
+    ///
+    /// The outer_message_id must be provided to verify the binding between
+    /// inner content and outer envelope.
+    ///
+    /// Returns true if signature is present and valid, false otherwise.
+    pub fn verify_signature(&self, outer_message_id: &MessageID) -> bool {
+        use xeddsa::{xed25519, Verify};
+
+        match &self.signature {
+            Some(sig) => {
+                let public_key = xed25519::PublicKey(self.from.to_bytes());
+                let signable = self.signable_bytes(outer_message_id);
+                public_key.verify(&signable, sig).is_ok()
+            }
+            None => false, // No signature present
+        }
+    }
+
+    /// Check if this envelope has a signature.
+    pub fn has_signature(&self) -> bool {
+        self.signature.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Encode, Decode)]

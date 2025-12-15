@@ -13,7 +13,6 @@ path = "src/main.rs"
 
 [dependencies]
 reme-message = { workspace = true }
-reme-prekeys = { workspace = true }
 
 thiserror = { workspace = true }
 tracing = { workspace = true }

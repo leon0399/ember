@@ -1,6 +1,6 @@
-//! In-memory mailbox storage
+//! In-memory mailbox storage (MIK-only, no prekeys)
 //!
-//! This module provides storage for message envelopes, prekey bundles, and tombstones.
+//! This module provides storage for message envelopes and tombstones.
 //! Currently in-memory only; designed for future distributed storage.
 //!
 //! ## Tombstone Security Mitigations
@@ -10,7 +10,6 @@
 //! - **Orphan cache**: Handles tombstones that arrive before their target message
 
 use reme_message::{DeviceID, MessageID, OuterEnvelope, RoutingKey, TombstoneEnvelope};
-use reme_prekeys::SignedPrekeyBundle;
 use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
@@ -33,9 +32,6 @@ const DEFAULT_TOMBSTONE_TTL_SECS: u64 = 10 * 24 * 60 * 60;
 pub enum StoreError {
     #[error("Mailbox full")]
     MailboxFull,
-
-    #[error("Prekeys not found")]
-    PrekeysNotFound,
 
     #[error("Lock poisoned: {0}")]
     LockPoisoned(String),
@@ -80,16 +76,13 @@ struct RateLimitState {
 /// Key for sequence tracking: (recipient_id_pub, device_id)
 type SequenceKey = ([u8; 32], DeviceID);
 
-/// In-memory mailbox store
+/// In-memory mailbox store (MIK-only, no prekeys)
 ///
-/// Thread-safe storage for messages, prekeys, and tombstones.
+/// Thread-safe storage for messages and tombstones.
 /// Messages are automatically expired based on TTL.
 pub struct MailboxStore {
     /// Messages indexed by routing key
     messages: RwLock<HashMap<RoutingKey, Vec<MessageEntry>>>,
-
-    /// Prekey bundles indexed by routing key
-    prekeys: RwLock<HashMap<RoutingKey, SignedPrekeyBundle>>,
 
     /// Tombstones indexed by target message ID
     tombstones: RwLock<HashMap<MessageID, TombstoneEntry>>,
@@ -126,7 +119,6 @@ impl MailboxStore {
     pub fn new(max_messages: usize, default_ttl_secs: u32) -> Self {
         Self {
             messages: RwLock::new(HashMap::new()),
-            prekeys: RwLock::new(HashMap::new()),
             tombstones: RwLock::new(HashMap::new()),
             orphan_tombstones: RwLock::new(HashMap::new()),
             rate_limits: RwLock::new(HashMap::new()),
@@ -207,36 +199,9 @@ impl MailboxStore {
         }
     }
 
-    /// Store a prekey bundle
-    pub fn store_prekeys(
-        &self,
-        routing_key: RoutingKey,
-        bundle: SignedPrekeyBundle,
-    ) -> Result<(), StoreError> {
-        let mut prekeys = self.prekeys.write().map_err(|e| {
-            StoreError::LockPoisoned(e.to_string())
-        })?;
-
-        prekeys.insert(routing_key, bundle);
-        Ok(())
-    }
-
-    /// Fetch a prekey bundle
-    pub fn fetch_prekeys(&self, routing_key: &RoutingKey) -> Result<SignedPrekeyBundle, StoreError> {
-        let prekeys = self.prekeys.read().map_err(|e| {
-            StoreError::LockPoisoned(e.to_string())
-        })?;
-
-        prekeys
-            .get(routing_key)
-            .cloned()
-            .ok_or(StoreError::PrekeysNotFound)
-    }
-
     /// Get statistics about the store
     pub fn stats(&self) -> StoreStats {
         let messages = self.messages.read().unwrap();
-        let prekeys = self.prekeys.read().unwrap();
         let tombstones = self.tombstones.read().unwrap();
         let orphans = self.orphan_tombstones.read().unwrap();
 
@@ -245,7 +210,6 @@ impl MailboxStore {
         StoreStats {
             mailbox_count: messages.len(),
             total_messages,
-            prekey_bundles: prekeys.len(),
             tombstone_count: tombstones.len(),
             orphan_tombstone_count: orphans.len(),
         }
@@ -601,7 +565,6 @@ impl MailboxStore {
 pub struct StoreStats {
     pub mailbox_count: usize,
     pub total_messages: usize,
-    pub prekey_bundles: usize,
     pub tombstone_count: usize,
     pub orphan_tombstone_count: usize,
 }
@@ -614,12 +577,11 @@ mod tests {
     fn create_test_envelope(routing_key: RoutingKey) -> OuterEnvelope {
         OuterEnvelope {
             version: CURRENT_VERSION,
-            flags: 0,
             routing_key,
             timestamp_hours: 482253, // Hours since Unix epoch (approx 2025)
             ttl_hours: Some(1), // 1 hour
             message_id: MessageID::new(),
-            session_init: None,
+            ephemeral_key: [0u8; 32], // Test ephemeral key
             inner_ciphertext: vec![1, 2, 3, 4],
         }
     }
@@ -638,23 +600,6 @@ mod tests {
         // Should be empty after fetch
         let fetched_again = store.fetch(&routing_key).unwrap();
         assert!(fetched_again.is_empty());
-    }
-
-    #[test]
-    fn test_prekeys() {
-        use reme_identity::Identity;
-        use reme_prekeys::generate_prekey_bundle;
-
-        let store = MailboxStore::new(100, 3600);
-        let routing_key = [3u8; 16];
-
-        let identity = Identity::generate();
-        let (_, bundle) = generate_prekey_bundle(&identity, 5);
-
-        store.store_prekeys(routing_key, bundle.clone()).unwrap();
-
-        let fetched = store.fetch_prekeys(&routing_key).unwrap();
-        assert_eq!(fetched.id_pub(), bundle.id_pub());
     }
 
     #[test]

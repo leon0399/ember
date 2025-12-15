@@ -1,15 +1,14 @@
 //! Integration test: Two clients exchanging messages through the node
 //!
 //! These tests spin up an in-process node server for self-contained testing.
+//! Uses MIK-only stateless encryption (no session establishment, no prekeys).
 
 use reme_core::Client;
-use reme_encryption::{decrypt_inner_envelope, encrypt_inner_envelope};
+use reme_encryption::{decrypt_with_mik, encrypt_to_mik};
 use reme_identity::Identity;
 use reme_message::{
     Content, InnerEnvelope, MessageID, OuterEnvelope, TextContent, TombstoneStatus, CURRENT_VERSION,
 };
-use reme_prekeys::generate_prekey_bundle;
-use reme_session::derive_session_as_initiator;
 use reme_storage::Storage;
 use reme_transport::http::HttpTransport;
 use reme_transport::{MessageReceiver, ReceiverConfig, Transport, TransportEvent};
@@ -64,29 +63,15 @@ async fn test_transport_roundtrip() {
     let server = TestServer::start().await;
     let transport = HttpTransport::new(server.url());
 
-    // Create a test identity and upload prekeys
+    // Create a test identity
     let identity = Identity::generate();
     let routing_key = identity.public_id().routing_key();
 
-    let (_, bundle) = generate_prekey_bundle(&identity, 5);
-
-    // Upload prekeys
-    transport
-        .upload_prekeys(routing_key, bundle.clone())
-        .await
-        .expect("upload_prekeys failed");
-
-    // Fetch prekeys back
-    let fetched_bundle = transport
-        .fetch_prekeys(routing_key)
-        .await
-        .expect("fetch_prekeys failed");
-
-    assert_eq!(fetched_bundle.id_pub(), bundle.id_pub());
-    println!("Prekey roundtrip: OK");
-
-    // Create and submit a test envelope
-    let test_envelope = OuterEnvelope::new(routing_key, vec![1, 2, 3, 4], Some(1)); // 1 hour TTL
+    // Create and submit a test envelope with ephemeral key.
+    // NOTE: This test validates transport mechanics only, not cryptographic properties.
+    // Actual encryption/decryption is tested in test_e2e_encryption_mik_only.
+    let ephemeral_key = [42u8; 32];
+    let test_envelope = OuterEnvelope::new(routing_key, Some(1), ephemeral_key, vec![1, 2, 3, 4]); // 1 hour TTL
     transport
         .submit_message(test_envelope)
         .await
@@ -100,14 +85,15 @@ async fn test_transport_roundtrip() {
 
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].inner_ciphertext, vec![1, 2, 3, 4]);
+    assert_eq!(messages[0].ephemeral_key, ephemeral_key);
     println!("Message roundtrip: OK");
 
     println!("✓ Transport roundtrip test passed!");
 }
 
-/// Test end-to-end encryption using proper X3DH session derivation
+/// Test end-to-end encryption using MIK-only stateless encryption
 #[tokio::test]
-async fn test_e2e_encryption_manual() {
+async fn test_e2e_encryption_mik_only() {
     let server = TestServer::start().await;
     let transport = Arc::new(HttpTransport::new(server.url()));
 
@@ -118,51 +104,37 @@ async fn test_e2e_encryption_manual() {
     println!("Alice ID: {}", hex::encode(alice.public_id().to_bytes()));
     println!("Bob ID: {}", hex::encode(bob.public_id().to_bytes()));
 
-    // Bob generates and uploads prekeys
+    // Bob's routing key
     let bob_routing_key = bob.public_id().routing_key();
-    let (bob_secrets, bob_bundle) = generate_prekey_bundle(&bob, 5);
 
-    transport
-        .upload_prekeys(bob_routing_key, bob_bundle.clone())
-        .await
-        .expect("Bob upload_prekeys failed");
-    println!("Bob's prekeys uploaded");
-
-    // Alice fetches Bob's prekeys and establishes session
-    let fetched_bundle = transport
-        .fetch_prekeys(bob_routing_key)
-        .await
-        .expect("fetch Bob's prekeys failed");
-
-    let alice_session = derive_session_as_initiator(&alice, &fetched_bundle, true)
-        .expect("Alice derive_session failed");
-    println!("Alice established session with Bob");
-
-    // Alice creates and encrypts a message
+    // Alice creates and encrypts a message to Bob's MIK (stateless)
     let message_id = MessageID::new();
-    let inner = InnerEnvelope {
-        version: CURRENT_VERSION,
+    let mut inner = InnerEnvelope {
         from: *alice.public_id(),
-        to: *bob.public_id(),
         created_at_ms: 1234567890,
-        outer_message_id: message_id,
         content: Content::Text(TextContent {
             body: "Hello Bob! This is Alice.".to_string(),
         }),
+        signature: None,
     };
 
-    let ciphertext = encrypt_inner_envelope(&inner, alice_session.send_key(), &message_id)
-        .expect("encrypt failed");
+    // Sign the message with Alice's private key (including message_id in signable bytes)
+    let signable = inner.signable_bytes(&message_id);
+    inner.signature = Some(InnerEnvelope::sign(&signable, &alice.to_bytes()));
+
+    // Encrypt to Bob's MIK (returns ephemeral_key and ciphertext)
+    let (ephemeral_key, ciphertext) = encrypt_to_mik(&inner, bob.public_id(), &message_id)
+        .expect("encrypt_to_mik failed");
+    println!("Alice encrypted message to Bob's MIK");
 
     // Alice sends the message
     let outer = OuterEnvelope {
         version: CURRENT_VERSION,
-        flags: 0,
         routing_key: bob_routing_key,
         timestamp_hours: reme_message::now_hours(),
         ttl_hours: Some(1), // 1 hour TTL
         message_id,
-        session_init: None,
+        ephemeral_key,
         inner_ciphertext: ciphertext,
     };
 
@@ -181,28 +153,22 @@ async fn test_e2e_encryption_manual() {
     assert_eq!(messages.len(), 1);
     println!("Bob fetched {} message(s)", messages.len());
 
-    // Bob derives the session as responder
-    let bob_session = reme_session::derive_session_as_responder(
-        &bob,
-        &bob_secrets,
-        alice.public_id(),
-        alice_session.ephemeral_public(),
-        alice_session.used_one_time_prekey_id(),
-    )
-    .expect("Bob derive_session failed");
-
-    // Verify the keys match
-    assert_eq!(alice_session.send_key(), bob_session.recv_key());
-    assert_eq!(alice_session.recv_key(), bob_session.send_key());
-    println!("Session keys verified: Alice.send == Bob.recv, Alice.recv == Bob.send");
-
-    // Bob decrypts the message
-    let decrypted = decrypt_inner_envelope(
+    // Bob decrypts using his MIK private key (stateless)
+    let bob_private = bob.to_bytes();
+    let decrypted = decrypt_with_mik(
+        &messages[0].ephemeral_key,
         &messages[0].inner_ciphertext,
-        bob_session.recv_key(),
+        &bob_private,
         &messages[0].message_id,
     )
-    .expect("decrypt failed");
+    .expect("decrypt_with_mik failed");
+
+    // Verify sender signature (authentication) - must pass message_id for triple binding
+    assert!(
+        decrypted.verify_signature(&messages[0].message_id),
+        "Sender signature verification failed"
+    );
+    println!("Bob verified Alice's signature: OK");
 
     match decrypted.content {
         Content::Text(t) => {
@@ -212,21 +178,21 @@ async fn test_e2e_encryption_manual() {
         _ => panic!("Expected text content"),
     }
 
-    println!("\n✓ End-to-end encryption test passed!");
+    println!("\n✓ End-to-end MIK-only encryption test passed!");
 }
 
-/// Test two clients exchanging messages using the full Client API
+/// Test two clients exchanging messages using the full Client API (MIK-only)
 #[tokio::test]
 async fn test_two_client_messaging() {
     let server = TestServer::start().await;
     let transport = Arc::new(HttpTransport::new(server.url()));
 
-    // Create Alice's client
+    // Create Alice's client (no prekey initialization needed!)
     let alice_identity = Identity::generate();
     let alice_storage = Storage::in_memory().unwrap();
     let alice = Client::new(alice_identity, transport.clone(), alice_storage);
 
-    // Create Bob's client
+    // Create Bob's client (no prekey initialization needed!)
     let bob_identity = Identity::generate();
     let bob_storage = Storage::in_memory().unwrap();
     let bob = Client::new(bob_identity, transport.clone(), bob_storage);
@@ -234,18 +200,13 @@ async fn test_two_client_messaging() {
     println!("Alice ID: {}", hex::encode(alice.public_id().to_bytes()));
     println!("Bob ID: {}", hex::encode(bob.public_id().to_bytes()));
 
-    // Both clients initialize prekeys
-    alice.init_prekeys(5).await.expect("Alice init_prekeys failed");
-    bob.init_prekeys(5).await.expect("Bob init_prekeys failed");
-    println!("Both clients initialized prekeys");
-
     // Alice adds Bob as a contact
     alice
         .add_contact(bob.public_id(), Some("Bob"))
         .expect("Alice add_contact failed");
     println!("Alice added Bob as contact");
 
-    // Alice sends a message to Bob
+    // Alice sends a message to Bob (no session establishment needed!)
     let msg_id = alice
         .send_text(bob.public_id(), "Hello Bob! This is Alice.")
         .await
@@ -279,7 +240,8 @@ async fn test_two_client_messaging() {
         _ => panic!("Expected text message"),
     }
 
-    // Bob replies to Alice
+    // Bob replies to Alice (no session establishment needed!)
+    // Note: Alice is auto-added as contact during process_message
     let reply_id = bob
         .send_text(alice.public_id(), "Hi Alice! Got your message.")
         .await
@@ -320,7 +282,7 @@ async fn test_tombstone_flow() {
     let server = TestServer::start().await;
     let transport = Arc::new(HttpTransport::new(server.url()));
 
-    // Create Alice and Bob
+    // Create Alice and Bob (no prekey initialization needed!)
     let alice_identity = Identity::generate();
     let alice_storage = Storage::in_memory().unwrap();
     let alice = Client::new(alice_identity, transport.clone(), alice_storage);
@@ -331,11 +293,6 @@ async fn test_tombstone_flow() {
 
     println!("Alice ID: {}", hex::encode(alice.public_id().to_bytes()));
     println!("Bob ID: {}", hex::encode(bob.public_id().to_bytes()));
-
-    // Initialize prekeys
-    alice.init_prekeys(5).await.expect("Alice init_prekeys failed");
-    bob.init_prekeys(5).await.expect("Bob init_prekeys failed");
-    println!("Both clients initialized prekeys");
 
     // Alice adds Bob as contact and sends a message
     alice
@@ -391,8 +348,6 @@ async fn test_tombstone_with_status() {
     let storage = Storage::in_memory().unwrap();
     let client = Client::new(identity, transport.clone(), storage);
 
-    client.init_prekeys(5).await.expect("init_prekeys failed");
-
     // Create a fake "received" message for testing tombstone creation
     let fake_received = reme_core::ReceivedMessage {
         message_id: MessageID::new(),
@@ -405,19 +360,19 @@ async fn test_tombstone_with_status() {
 
     // Test each tombstone status
     client
-        .send_tombstone(&fake_received, TombstoneStatus::Delivered, false)
+        .send_tombstone(&fake_received, TombstoneStatus::Delivered)
         .await
         .expect("Delivered tombstone failed");
     println!("Sent Delivered tombstone");
 
     client
-        .send_tombstone(&fake_received, TombstoneStatus::Read, false)
+        .send_tombstone(&fake_received, TombstoneStatus::Read)
         .await
         .expect("Read tombstone failed");
     println!("Sent Read tombstone");
 
     client
-        .send_tombstone(&fake_received, TombstoneStatus::Deleted, false)
+        .send_tombstone(&fake_received, TombstoneStatus::Deleted)
         .await
         .expect("Deleted tombstone failed");
     println!("Sent Deleted tombstone");
@@ -479,27 +434,10 @@ async fn test_multi_node_replication() {
     let identity = Identity::generate();
     let routing_key = identity.public_id().routing_key();
 
-    // Upload prekeys to node 1
-    let (_, bundle) = generate_prekey_bundle(&identity, 5);
-    transport1
-        .upload_prekeys(routing_key, bundle.clone())
-        .await
-        .expect("upload_prekeys to node1 failed");
-    println!("Uploaded prekeys to node 1");
-
-    // Wait for replication
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-    // Verify prekeys are available on node 2
-    let fetched_from_node2 = transport2
-        .fetch_prekeys(routing_key)
-        .await
-        .expect("fetch_prekeys from node2 failed");
-    assert_eq!(fetched_from_node2.id_pub(), bundle.id_pub());
-    println!("Prekeys replicated to node 2: OK");
-
-    // Send a message to node 1
-    let test_envelope = OuterEnvelope::new(routing_key, vec![42, 43, 44, 45], Some(1)); // 1 hour TTL
+    // Send a message to node 1.
+    // NOTE: Using fake ephemeral key - this test validates replication, not crypto.
+    let ephemeral_key = [99u8; 32];
+    let test_envelope = OuterEnvelope::new(routing_key, Some(1), ephemeral_key, vec![42, 43, 44, 45]);
     transport1
         .submit_message(test_envelope)
         .await
@@ -516,6 +454,7 @@ async fn test_multi_node_replication() {
         .expect("fetch_once from node2 failed");
     assert_eq!(messages_from_node2.len(), 1);
     assert_eq!(messages_from_node2[0].inner_ciphertext, vec![42, 43, 44, 45]);
+    assert_eq!(messages_from_node2[0].ephemeral_key, ephemeral_key);
     println!("Message replicated to node 2: OK");
 
     println!("\n✓ Multi-node replication test passed!");
@@ -530,8 +469,6 @@ async fn test_tombstone_sequence() {
     let identity = Identity::generate();
     let storage = Storage::in_memory().unwrap();
     let client = Client::new(identity, transport.clone(), storage);
-
-    client.init_prekeys(5).await.expect("init_prekeys failed");
 
     // Check initial sequence
     let initial_seq = client.tombstone_sequence();

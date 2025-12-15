@@ -1,6 +1,7 @@
-//! Branch Messenger Client
+//! Resilient Messenger Client
 //!
 //! A terminal-based messenger client with a Telegram/WhatsApp-style interface.
+//! Uses MIK-only stateless encryption (no session establishment needed).
 //!
 //! ## Configuration
 //!
@@ -19,8 +20,6 @@
 //! - `Tab` / `Shift+Tab` - Switch between panels
 //! - `j` / `k` or Arrow keys - Navigate
 //! - `Enter` - Select conversation / Send message
-//! - `i` - Initialize prekeys
-//! - `u` - Upload prekeys
 //! - `h` - Show help
 //! - `Esc` / `Ctrl+C` - Quit
 

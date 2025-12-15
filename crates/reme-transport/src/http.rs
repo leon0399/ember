@@ -5,20 +5,17 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
 use futures::future::join_all;
 use reme_message::{MessageID, OuterEnvelope, RoutingKey, TombstoneEnvelope, WirePayload};
-use reme_prekeys::SignedPrekeyBundle;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tracing::{debug, warn};
 
 use crate::{Transport, TransportError};
 
-/// HTTP transport client for communicating with mailbox nodes
+/// HTTP transport client for communicating with mailbox nodes (MIK-only, no prekeys)
 ///
 /// Supports multiple nodes for redundancy. When multiple nodes are configured:
 /// - Payloads (messages/tombstones) are sent to ALL nodes (broadcast)
 /// - Messages are fetched from ALL nodes and deduplicated
-/// - Prekeys are uploaded to ALL nodes
-/// - Prekey fetches try all nodes and return first success
 pub struct HttpTransport {
     base_urls: Vec<String>,
     client: Client,
@@ -33,22 +30,6 @@ struct SubmitResponse {
 #[derive(Debug, Deserialize)]
 struct FetchResponse {
     payloads: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct UploadPrekeysRequest {
-    /// Base64-encoded SignedPrekeyBundle
-    bundle: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct UploadPrekeysResponse {
-    status: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct FetchPrekeysResponse {
-    bundle: String,
 }
 
 impl HttpTransport {
@@ -175,46 +156,6 @@ impl HttpTransport {
         Ok(envelopes)
     }
 
-    /// Upload prekeys to a single node
-    async fn upload_prekeys_to_node(
-        &self,
-        base_url: &str,
-        routing_key_b64: &str,
-        bundle_b64: &str,
-    ) -> Result<(), TransportError> {
-        let request = UploadPrekeysRequest {
-            bundle: bundle_b64.to_string(),
-        };
-
-        let url = format!("{}/api/v1/prekeys/{}", base_url, routing_key_b64);
-        let response = self
-            .client
-            .post(&url)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| TransportError::Network(e.to_string()))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".to_string());
-            return Err(TransportError::ServerError(format!(
-                "HTTP {}: {}",
-                status, body
-            )));
-        }
-
-        let _result: UploadPrekeysResponse = response
-            .json()
-            .await
-            .map_err(|e| TransportError::Serialization(e.to_string()))?;
-
-        Ok(())
-    }
-
     /// Fetch messages once from all configured nodes and deduplicate
     ///
     /// This method performs a single fetch operation, useful for:
@@ -278,46 +219,6 @@ impl HttpTransport {
         }
     }
 
-    /// Fetch prekeys from a single node
-    async fn fetch_prekeys_from_node(
-        &self,
-        base_url: &str,
-        routing_key_b64: &str,
-    ) -> Result<SignedPrekeyBundle, TransportError> {
-        let url = format!("{}/api/v1/prekeys/{}", base_url, routing_key_b64);
-
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| TransportError::Network(e.to_string()))?;
-
-        if response.status() == 404 {
-            return Err(TransportError::NotFound);
-        }
-
-        if !response.status().is_success() {
-            let status = response.status();
-            return Err(TransportError::ServerError(format!("HTTP {}", status)));
-        }
-
-        let result: FetchPrekeysResponse = response
-            .json()
-            .await
-            .map_err(|e| TransportError::Serialization(e.to_string()))?;
-
-        // Decode and deserialize bundle
-        let bundle_bytes = BASE64_STANDARD
-            .decode(&result.bundle)
-            .map_err(|e| TransportError::Serialization(format!("base64 decode: {}", e)))?;
-
-        let (bundle, _): (SignedPrekeyBundle, usize) =
-            bincode::decode_from_slice(&bundle_bytes, bincode::config::standard())
-                .map_err(|e| TransportError::Serialization(format!("bincode decode: {}", e)))?;
-
-        Ok(bundle)
-    }
 }
 
 #[async_trait]
@@ -418,98 +319,6 @@ impl Transport for HttpTransport {
         } else {
             Err(last_error.unwrap_or(TransportError::Network("All nodes failed".to_string())))
         }
-    }
-
-    /// Upload prekeys to all configured nodes (broadcast)
-    ///
-    /// Returns success if ANY node accepts the prekeys.
-    async fn upload_prekeys(
-        &self,
-        routing_key: RoutingKey,
-        bundle: SignedPrekeyBundle,
-    ) -> Result<(), TransportError> {
-        // Serialize bundle to bytes
-        let bundle_bytes = bincode::encode_to_vec(&bundle, bincode::config::standard())
-            .map_err(|e| TransportError::Serialization(e.to_string()))?;
-
-        // Base64 encode
-        let bundle_b64 = BASE64_STANDARD.encode(&bundle_bytes);
-        let routing_key_b64 = URL_SAFE_NO_PAD.encode(&routing_key);
-
-        // Upload to all nodes in parallel
-        let futures: Vec<_> = self
-            .base_urls
-            .iter()
-            .map(|url| self.upload_prekeys_to_node(url, &routing_key_b64, &bundle_b64))
-            .collect();
-
-        let results = join_all(futures).await;
-
-        // Check results - succeed if ANY node succeeded
-        let mut last_error = None;
-        let mut success_count = 0;
-
-        for (i, result) in results.into_iter().enumerate() {
-            match result {
-                Ok(()) => {
-                    debug!("Prekeys uploaded to node {}", self.base_urls[i]);
-                    success_count += 1;
-                }
-                Err(e) => {
-                    warn!("Failed to upload prekeys to node {}: {}", self.base_urls[i], e);
-                    last_error = Some(e);
-                }
-            }
-        }
-
-        if success_count > 0 {
-            debug!(
-                "Prekeys uploaded to {}/{} nodes",
-                success_count,
-                self.base_urls.len()
-            );
-            Ok(())
-        } else {
-            Err(last_error.unwrap_or(TransportError::Network("All nodes failed".to_string())))
-        }
-    }
-
-    /// Fetch prekeys from any configured node
-    ///
-    /// Tries all nodes in parallel and returns the first successful response.
-    async fn fetch_prekeys(
-        &self,
-        routing_key: RoutingKey,
-    ) -> Result<SignedPrekeyBundle, TransportError> {
-        let routing_key_b64 = URL_SAFE_NO_PAD.encode(&routing_key);
-
-        // Fetch from all nodes in parallel
-        let futures: Vec<_> = self
-            .base_urls
-            .iter()
-            .map(|url| self.fetch_prekeys_from_node(url, &routing_key_b64))
-            .collect();
-
-        let results = join_all(futures).await;
-
-        // Return first successful result
-        let mut last_error = None;
-
-        for (i, result) in results.into_iter().enumerate() {
-            match result {
-                Ok(bundle) => {
-                    debug!("Fetched prekeys from node {}", self.base_urls[i]);
-                    return Ok(bundle);
-                }
-                Err(e) => {
-                    debug!("Failed to fetch prekeys from node {}: {}", self.base_urls[i], e);
-                    last_error = Some(e);
-                }
-            }
-        }
-
-        // All failed - return last error or NotFound
-        Err(last_error.unwrap_or(TransportError::NotFound))
     }
 }
 
