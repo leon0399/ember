@@ -339,4 +339,143 @@ mod tests {
         assert!(result.is_err(), "Decryption with wrong message_id should fail");
         assert!(matches!(result.unwrap_err(), EncryptionError::DecryptionFailed));
     }
+
+    #[test]
+    fn test_all_zero_mik_encryption() {
+        // Test encryption to an all-zero public key (edge case)
+        // This simulates a potentially malicious or malformed recipient key
+        let zero_mik = PublicID::from_bytes(&[0u8; 32]);
+        let alice = Identity::generate();
+
+        let message_id = MessageID::new();
+        let inner = create_signed_inner(&alice, &message_id, "Test message", 1234567890);
+
+        // Encryption should still succeed (ECDH with zero point produces zero shared secret)
+        // The security here relies on the KDF producing a valid key even from weak input
+        let result = encrypt_to_mik(&inner, &zero_mik, &message_id);
+        assert!(result.is_ok(), "Encryption to zero MIK should succeed");
+
+        let (ephemeral_pub, ciphertext) = result.unwrap();
+        assert_ne!(ephemeral_pub, [0u8; 32], "Ephemeral key should not be zero");
+        assert!(!ciphertext.is_empty(), "Ciphertext should not be empty");
+    }
+
+    #[test]
+    fn test_large_message_encryption() {
+        // Test encryption of messages larger than typical sizes
+        let bob = Identity::generate();
+        let bob_public = *bob.public_id();
+        let bob_private = bob.to_bytes();
+
+        let alice = Identity::generate();
+
+        // Create a large message (~10KB)
+        let large_body = "X".repeat(10 * 1024);
+        let message_id = MessageID::new();
+        let inner = create_signed_inner(&alice, &message_id, &large_body, 1234567890);
+
+        // Encrypt
+        let (ephemeral_pub, ciphertext) = encrypt_to_mik(&inner, &bob_public, &message_id)
+            .expect("Large message encryption should succeed");
+
+        // Ciphertext should be larger than plaintext (due to serialization + tag)
+        assert!(ciphertext.len() > large_body.len(), "Ciphertext should include overhead");
+
+        // Decrypt and verify
+        let decrypted = decrypt_with_mik(&ephemeral_pub, &ciphertext, &bob_private, &message_id)
+            .expect("Large message decryption should succeed");
+
+        match decrypted.content {
+            Content::Text(text) => {
+                assert_eq!(text.body.len(), large_body.len(), "Decrypted body length should match");
+                assert_eq!(text.body, large_body, "Decrypted body should match original");
+            }
+            _ => panic!("Expected text content"),
+        }
+    }
+
+    #[test]
+    fn test_different_senders_same_recipient_different_ciphertext() {
+        // Verify that different senders to the same recipient produce different ciphertexts
+        // This ensures proper key isolation between senders
+        let bob = Identity::generate();
+        let bob_public = *bob.public_id();
+
+        let alice = Identity::generate();
+        let charlie = Identity::generate();
+
+        // Same message content and message_id, but different senders
+        let message_id = MessageID::new();
+        let inner_alice = create_signed_inner(&alice, &message_id, "Hello Bob!", 1234567890);
+        let inner_charlie = create_signed_inner(&charlie, &message_id, "Hello Bob!", 1234567890);
+
+        // Encrypt both
+        let (ephemeral_alice, ciphertext_alice) = encrypt_to_mik(&inner_alice, &bob_public, &message_id).unwrap();
+        let (ephemeral_charlie, ciphertext_charlie) = encrypt_to_mik(&inner_charlie, &bob_public, &message_id).unwrap();
+
+        // Ephemeral keys should be different (random)
+        assert_ne!(ephemeral_alice, ephemeral_charlie, "Ephemeral keys should differ");
+
+        // Ciphertexts should be different (different ephemeral keys = different shared secrets)
+        assert_ne!(ciphertext_alice, ciphertext_charlie, "Ciphertexts should differ");
+
+        // Both should still decrypt correctly
+        let bob_private = bob.to_bytes();
+        let decrypted_alice = decrypt_with_mik(&ephemeral_alice, &ciphertext_alice, &bob_private, &message_id).unwrap();
+        let decrypted_charlie = decrypt_with_mik(&ephemeral_charlie, &ciphertext_charlie, &bob_private, &message_id).unwrap();
+
+        assert_eq!(decrypted_alice.from, *alice.public_id());
+        assert_eq!(decrypted_charlie.from, *charlie.public_id());
+    }
+
+    #[test]
+    fn test_same_sender_same_content_different_ciphertext() {
+        // Even with same sender, recipient, and content, each encryption should produce
+        // different ciphertext due to fresh ephemeral keys
+        let bob = Identity::generate();
+        let bob_public = *bob.public_id();
+
+        let alice = Identity::generate();
+
+        let message_id1 = MessageID::new();
+        let message_id2 = MessageID::new();
+
+        let inner1 = create_signed_inner(&alice, &message_id1, "Same content", 1234567890);
+        let inner2 = create_signed_inner(&alice, &message_id2, "Same content", 1234567890);
+
+        let (ephemeral1, ciphertext1) = encrypt_to_mik(&inner1, &bob_public, &message_id1).unwrap();
+        let (ephemeral2, ciphertext2) = encrypt_to_mik(&inner2, &bob_public, &message_id2).unwrap();
+
+        // Different ephemeral keys
+        assert_ne!(ephemeral1, ephemeral2, "Ephemeral keys should differ");
+
+        // Different ciphertexts (even with same content)
+        assert_ne!(ciphertext1, ciphertext2, "Ciphertexts should differ even with same content");
+    }
+
+    #[test]
+    fn test_empty_message_content() {
+        // Test encryption of empty message body
+        let bob = Identity::generate();
+        let bob_public = *bob.public_id();
+        let bob_private = bob.to_bytes();
+
+        let alice = Identity::generate();
+
+        let message_id = MessageID::new();
+        let inner = create_signed_inner(&alice, &message_id, "", 1234567890);
+
+        // Encrypt empty message
+        let (ephemeral_pub, ciphertext) = encrypt_to_mik(&inner, &bob_public, &message_id)
+            .expect("Empty message encryption should succeed");
+
+        // Decrypt and verify
+        let decrypted = decrypt_with_mik(&ephemeral_pub, &ciphertext, &bob_private, &message_id)
+            .expect("Empty message decryption should succeed");
+
+        match decrypted.content {
+            Content::Text(text) => assert_eq!(text.body, "", "Decrypted body should be empty"),
+            _ => panic!("Expected text content"),
+        }
+    }
 }
