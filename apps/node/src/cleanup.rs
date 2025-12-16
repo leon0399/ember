@@ -1,16 +1,13 @@
 //! Background cleanup task for expired data
 //!
 //! This module provides a background task that periodically cleans up:
-//! - Expired tombstones (after tombstone_delay_secs)
-//! - Expired orphan tombstones (after orphan_delay_secs)
-//! - Stale rate limit entries (after rate_limit_delay_secs)
-//! - Expired messages (implicit via TTL checks on access)
+//! - Expired messages (based on TTL)
 //!
-//! **Important**: Cleanup is NOT triggered on message enqueue to avoid
-//! latency impact on the hot path. Instead, this background task runs
-//! periodically.
+//! **Note**: The `enqueue` operation performs lightweight per-mailbox cleanup
+//! of expired messages for self-healing. This background task handles global
+//! cleanup across all mailboxes periodically.
 
-use crate::store::MailboxStore;
+use crate::persistent_store::PersistentMailboxStore;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,18 +28,21 @@ pub struct CleanupConfig {
     /// Delay before cleaning tombstones after they're stored (in seconds)
     /// This allows time for replication and client retrieval.
     /// Default: 3600 (1 hour)
+    /// Note: Currently unused - tombstones pending refactor
     #[serde(default = "default_tombstone_delay_secs")]
     pub tombstone_delay_secs: u64,
 
     /// Delay before cleaning orphan tombstones (in seconds)
     /// Orphan tombstones wait for their target message to arrive.
     /// Default: 86400 (24 hours)
+    /// Note: Currently unused - tombstones pending refactor
     #[serde(default = "default_orphan_delay_secs")]
     pub orphan_delay_secs: u64,
 
     /// Delay before cleaning stale rate limit entries (in seconds)
     /// Rate limit windows reset after this period.
     /// Default: 3600 (1 hour)
+    /// Note: Currently unused - rate limiting pending implementation
     #[serde(default = "default_rate_limit_delay_secs")]
     pub rate_limit_delay_secs: u64,
 }
@@ -85,9 +85,6 @@ impl CleanupConfig {
         if self.enabled {
             info!("Cleanup: enabled");
             info!("  Interval: {}s", self.interval_secs);
-            info!("  Tombstone delay: {}s", self.tombstone_delay_secs);
-            info!("  Orphan delay: {}s", self.orphan_delay_secs);
-            info!("  Rate limit delay: {}s", self.rate_limit_delay_secs);
         } else {
             info!("Cleanup: disabled");
         }
@@ -102,11 +99,11 @@ impl CleanupConfig {
 /// # Example
 ///
 /// ```ignore
-/// let store = Arc::new(MailboxStore::new(1000, 3600));
+/// let store = Arc::new(PersistentMailboxStore::open("mailbox.db", config)?);
 /// let config = CleanupConfig::default();
 /// tokio::spawn(run_cleanup_task(store, config));
 /// ```
-pub async fn run_cleanup_task(store: Arc<MailboxStore>, config: CleanupConfig) {
+pub async fn run_cleanup_task(store: Arc<PersistentMailboxStore>, config: CleanupConfig) {
     if !config.enabled {
         info!("Cleanup task disabled, exiting");
         return;
@@ -121,25 +118,16 @@ pub async fn run_cleanup_task(store: Arc<MailboxStore>, config: CleanupConfig) {
     loop {
         tokio::time::sleep(interval).await;
 
-        // Cleanup tombstones and orphans
-        match store.cleanup_tombstones() {
-            Ok(n) if n > 0 => info!("Cleaned {} tombstones/orphans", n),
-            Ok(_) => debug!("Tombstone cleanup: nothing to clean"),
-            Err(e) => warn!("Tombstone cleanup failed: {}", e),
-        }
-
-        // Cleanup rate limits
-        match store.cleanup_rate_limits() {
-            Ok(n) if n > 0 => debug!("Cleaned {} rate limit entries", n),
-            Ok(_) => {}
-            Err(e) => warn!("Rate limit cleanup failed: {}", e),
-        }
-
-        // Cleanup expired messages (explicit sweep)
-        match store.cleanup_expired_messages() {
+        // Cleanup expired messages
+        match store.cleanup_expired() {
             Ok(n) if n > 0 => info!("Cleaned {} expired messages", n),
             Ok(_) => debug!("Message cleanup: nothing to clean"),
             Err(e) => warn!("Message cleanup failed: {}", e),
+        }
+
+        // Checkpoint WAL periodically
+        if let Err(e) = store.checkpoint() {
+            warn!("WAL checkpoint failed: {}", e);
         }
     }
 }

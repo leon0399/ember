@@ -4,8 +4,8 @@
 //!
 //! ## Features
 //! - Store and forward encrypted message envelopes
-//! - Store and serve prekey bundles for X3DH key exchange
 //! - Message TTL and automatic expiration
+//! - SQLite-based storage (file or in-memory)
 //! - P2P-ready architecture (future Iroh integration)
 //!
 //! ## Configuration
@@ -21,25 +21,24 @@
 //! See `--help` for all CLI options.
 //!
 //! ## API Endpoints
-//! - POST /api/v1/enqueue - Submit a message
+//! - POST /api/v1/submit - Submit a message
 //! - GET /api/v1/fetch/:routing_key - Fetch messages
-//! - POST /api/v1/prekeys/:routing_key - Upload prekeys
-//! - GET /api/v1/prekeys/:routing_key - Fetch prekeys
 //! - GET /api/v1/health - Health check
 //! - GET /api/v1/stats - Store statistics
 
 mod api;
 mod cleanup;
 mod config;
+mod persistent_store;
 mod replication;
-mod store;
 
 use api::AppState;
 use cleanup::run_cleanup_task;
 use config::{load_config, NodeConfig};
+use persistent_store::{PersistentMailboxStore, PersistentStoreConfig};
 use replication::ReplicationClient;
 use std::sync::Arc;
-use tracing::{info, Level};
+use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 /// Parse log level from string
@@ -76,11 +75,37 @@ async fn main() {
     info!("Max messages per mailbox: {}", config.max_messages);
     info!("Default TTL: {} seconds", config.default_ttl);
 
-    // Create store with configured TTLs
-    let mut store = store::MailboxStore::new(config.max_messages, config.default_ttl);
-    store.set_tombstone_ttl(config.cleanup.tombstone_delay_secs);
-    store.set_orphan_ttl(config.cleanup.orphan_delay_secs);
-    let store = Arc::new(store);
+    // Determine storage path (default: :memory:)
+    let storage_path = config.storage_path.clone().unwrap_or_else(|| ":memory:".to_string());
+
+    if storage_path == ":memory:" {
+        info!("Using in-memory storage (data will not persist across restarts)");
+    } else {
+        // Create parent directory if needed for file-based storage
+        if let Some(parent) = std::path::Path::new(&storage_path).parent() {
+            if !parent.as_os_str().is_empty() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    error!("Failed to create storage directory: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        info!("Using persistent storage: {}", storage_path);
+    }
+
+    // Create store
+    let store_config = PersistentStoreConfig {
+        max_messages_per_mailbox: config.max_messages,
+        default_ttl_secs: config.default_ttl as u64,
+    };
+
+    let store = match PersistentMailboxStore::open(&storage_path, store_config) {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            error!("Failed to create storage: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     // Create replication client
     let replication = Arc::new(ReplicationClient::new(config.node_id, config.peers));

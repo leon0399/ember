@@ -1530,6 +1530,7 @@ dependencies = [
  "reme-identity",
  "reme-message",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "thiserror",
