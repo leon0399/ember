@@ -587,5 +587,133 @@ mod tests {
             dag.set_peer_head(id2);
             assert_eq!(dag.observed_heads(), vec![id2]);
         }
+
+        #[test]
+        fn test_detached_messages_always_complete() {
+            let mut dag = ConversationDag::new();
+            let id1 = make_id(1);
+            let id2 = make_id(2);
+            let id3 = make_id(3);
+
+            // First linked message chain
+            dag.receiver.on_receive(id1, None, 1000);
+            dag.receiver.on_receive(id2, Some(id1), 2000);
+
+            // Detached message (prev_self=None) arriving later - should be Complete
+            let result = dag.receiver.on_receive(id3, None, 3000);
+            assert_eq!(result, GapResult::Complete);
+            assert!(dag.receiver.is_complete(&id3));
+        }
+
+        #[test]
+        fn test_multiple_detached_messages() {
+            let mut dag = ConversationDag::new();
+            let id1 = make_id(1);
+            let id2 = make_id(2);
+            let id3 = make_id(3);
+
+            // All detached messages (simulating constrained transport)
+            let result1 = dag.receiver.on_receive(id1, None, 1000);
+            let result2 = dag.receiver.on_receive(id2, None, 2000);
+            let result3 = dag.receiver.on_receive(id3, None, 3000);
+
+            // All should be complete - no gaps for detached messages
+            assert_eq!(result1, GapResult::Complete);
+            assert_eq!(result2, GapResult::Complete);
+            assert_eq!(result3, GapResult::Complete);
+            assert_eq!(dag.receiver.complete_count(), 3);
+            assert_eq!(dag.receiver.orphan_count(), 0);
+        }
+
+        #[test]
+        fn test_detached_interleaved_with_linked() {
+            let mut dag = ConversationDag::new();
+            let linked1 = make_id(1);
+            let linked2 = make_id(2);
+            let detached1 = make_id(10);
+            let detached2 = make_id(11);
+
+            // Linked chain
+            dag.receiver.on_receive(linked1, None, 1000);
+
+            // Detached message interleaved
+            let result = dag.receiver.on_receive(detached1, None, 1500);
+            assert_eq!(result, GapResult::Complete);
+
+            // Continue linked chain
+            dag.receiver.on_receive(linked2, Some(linked1), 2000);
+
+            // Another detached message
+            let result = dag.receiver.on_receive(detached2, None, 2500);
+            assert_eq!(result, GapResult::Complete);
+
+            // All should be complete
+            assert!(dag.receiver.is_complete(&linked1));
+            assert!(dag.receiver.is_complete(&linked2));
+            assert!(dag.receiver.is_complete(&detached1));
+            assert!(dag.receiver.is_complete(&detached2));
+        }
+
+        #[test]
+        fn test_epoch_reset_allows_fresh_chain() {
+            let mut dag = ConversationDag::with_epoch(0);
+            let id1 = make_id(1);
+            let id2 = make_id(2);
+            let new_id1 = make_id(10);
+            let new_id2 = make_id(11);
+
+            // Build chain in epoch 0
+            dag.receiver.on_receive(id1, None, 1000);
+            dag.receiver.on_receive(id2, Some(id1), 2000);
+            dag.sender.on_send(id1, None);
+            dag.sender.on_send(id2, Some(id1));
+
+            assert_eq!(dag.receiver.complete_count(), 2);
+            assert_eq!(dag.sender.sent_count(), 2);
+
+            // Increment epoch (simulating history clear)
+            dag.increment_epoch();
+            assert_eq!(dag.epoch, 1);
+
+            // State should be cleared
+            assert_eq!(dag.receiver.complete_count(), 0);
+            assert_eq!(dag.sender.sent_count(), 0);
+            assert!(dag.observed_heads().is_empty());
+
+            // Old IDs should not be known
+            assert!(!dag.receiver.is_complete(&id1));
+            assert!(!dag.receiver.is_complete(&id2));
+
+            // New chain in epoch 1 starts fresh
+            let result = dag.receiver.on_receive(new_id1, None, 3000);
+            assert_eq!(result, GapResult::Complete);
+
+            let result = dag.receiver.on_receive(new_id2, Some(new_id1), 4000);
+            assert_eq!(result, GapResult::Complete);
+        }
+
+        #[test]
+        fn test_cross_epoch_message_creates_gap() {
+            let mut dag = ConversationDag::with_epoch(0);
+            let epoch0_id = make_id(1);
+            let epoch1_id = make_id(2);
+
+            // Message in epoch 0
+            dag.receiver.on_receive(epoch0_id, None, 1000);
+
+            // Increment epoch
+            dag.increment_epoch();
+
+            // Message referencing old epoch's message creates a gap
+            // (because epoch0_id is no longer known after epoch increment)
+            let result = dag.receiver.on_receive(epoch1_id, Some(epoch0_id), 2000);
+            assert_eq!(
+                result,
+                GapResult::Gap {
+                    missing: vec![epoch0_id]
+                }
+            );
+            assert!(dag.receiver.is_orphan(&epoch1_id));
+        }
     }
 }
