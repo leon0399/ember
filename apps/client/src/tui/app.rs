@@ -162,6 +162,8 @@ pub struct App<'a> {
     transport: Arc<HttpTransport>,
     /// Contacts by name (for reverse lookup)
     contacts_by_id: HashMap<PublicID, String>,
+    /// In-memory message cache per contact (until storage retrieval is implemented)
+    message_cache: HashMap<PublicID, Vec<Message>>,
     /// Whether the add contact popup is visible
     pub show_add_contact_popup: bool,
     /// Add contact popup state
@@ -215,6 +217,7 @@ impl<'a> App<'a> {
             client,
             transport,
             contacts_by_id: HashMap::new(),
+            message_cache: HashMap::new(),
             show_add_contact_popup: false,
             add_contact_popup: AddContactPopup::default(),
             show_my_id_popup: false,
@@ -306,34 +309,71 @@ impl<'a> App<'a> {
         Ok(())
     }
 
+    /// Get or create a conversation for a contact, returns the index
+    fn get_or_create_conversation(&mut self, public_id: PublicID) -> usize {
+        // Check if conversation exists
+        if let Some(idx) = self.conversations.iter().position(|c| c.public_id == public_id) {
+            return idx;
+        }
+
+        // Create display name
+        let display_name = self.client.get_contact(&public_id)
+            .ok()
+            .and_then(|c| c.name)
+            .unwrap_or_else(|| {
+                let hex = hex::encode(public_id.to_bytes());
+                format!("{}...", &hex[..8])
+            });
+
+        // Get contact ID from storage (reme-core auto-adds on message receive)
+        let contact_id = self.client.get_contact(&public_id)
+            .map(|c| c.id)
+            .unwrap_or(0);
+
+        // Add to tracking
+        self.contacts_by_id.insert(public_id, display_name.clone());
+        self.conversations.push(Conversation {
+            id: contact_id,
+            public_id,
+            name: display_name,
+            last_message: None,
+            unread_count: 0,
+        });
+
+        self.conversations.len() - 1
+    }
+
     /// Handle incoming message
     fn handle_incoming_message(&mut self, from: PublicID, content: String) {
-        // Find conversation
-        let conv_idx = self.conversations.iter().position(|c| c.public_id == from);
+        // Get or create conversation
+        let conv_idx = self.get_or_create_conversation(from);
+        let sender_name = self.contacts_by_id.get(&from).cloned().unwrap_or_default();
 
-        if let Some(idx) = conv_idx {
-            // Update last message
-            self.conversations[idx].last_message = Some(content.clone());
+        // Create message
+        let message = Message {
+            from_me: false,
+            sender_name,
+            content: content.clone(),
+            timestamp: chrono_lite_now(),
+        };
 
-            // If this is the selected conversation, add to messages
-            if idx == self.selected_conversation {
-                let sender_name = self.contacts_by_id.get(&from)
-                    .cloned()
-                    .unwrap_or_else(|| "Unknown".to_string());
+        // Cache message
+        self.message_cache
+            .entry(from)
+            .or_insert_with(Vec::new)
+            .push(message.clone());
 
-                self.messages.push(Message {
-                    from_me: false,
-                    sender_name,
-                    content,
-                    timestamp: chrono_lite_now(),
-                });
-            } else {
-                // Increment unread count
-                self.conversations[idx].unread_count += 1;
-            }
+        // Update conversation
+        self.conversations[conv_idx].last_message = Some(content);
 
-            self.status = "New message received".to_string();
+        // Update UI
+        if conv_idx == self.selected_conversation {
+            self.messages.push(message);
+        } else {
+            self.conversations[conv_idx].unread_count += 1;
         }
+
+        self.status = "New message received".to_string();
     }
 
     /// Handle key events
@@ -464,13 +504,23 @@ impl<'a> App<'a> {
                         let public_id = conv.public_id;
                         match self.client.send_text(&public_id, &text).await {
                             Ok(_) => {
-                                // Add to local messages
-                                self.messages.push(Message {
+                                // Create message object
+                                let message = Message {
                                     from_me: true,
                                     sender_name: "You".to_string(),
                                     content: text,
                                     timestamp: chrono_lite_now(),
-                                });
+                                };
+
+                                // Cache the message
+                                self.message_cache
+                                    .entry(public_id)
+                                    .or_insert_with(Vec::new)
+                                    .push(message.clone());
+
+                                // Add to visible messages
+                                self.messages.push(message);
+
                                 self.input = TextArea::default();
                                 self.input.set_placeholder_text("Type a message...");
                                 self.status = "Message sent!".to_string();
@@ -495,8 +545,14 @@ impl<'a> App<'a> {
     fn load_conversation_messages(&mut self) {
         self.messages.clear();
         self.message_scroll = 0;
-        // TODO: Load from storage
-        // For now, just show a placeholder
+
+        // Load from in-memory cache
+        if let Some(conv) = self.conversations.get(self.selected_conversation) {
+            if let Some(cached) = self.message_cache.get(&conv.public_id) {
+                self.messages = cached.clone();
+            }
+        }
+        // TODO: Also load from storage when retrieval API is implemented
     }
 
     /// Handle key events when add contact popup is visible
