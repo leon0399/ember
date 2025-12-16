@@ -236,11 +236,15 @@ impl<T: Transport> Client<T> {
             .as_millis() as u64;
 
         // Create inner envelope without signature first
+        // DAG fields are initialized as detached (will be populated when DAG tracking is implemented)
         let mut inner = InnerEnvelope {
             from: *self.identity.public_id(),
             created_at_ms: now_ms,
             content: content.clone(),
             signature: None,
+            prev_self: None,
+            observed_heads: Vec::new(),
+            epoch: 0,
         };
 
         // Sign the envelope with sender's private key (message_id included in signable bytes)

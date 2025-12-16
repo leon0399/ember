@@ -120,6 +120,9 @@ async fn test_e2e_encryption_mik_only() {
             body: "Hello Bob! This is Alice.".to_string(),
         }),
         signature: None,
+        prev_self: None,
+        observed_heads: Vec::new(),
+        epoch: 0,
     };
 
     // Sign the message with Alice's private key (including message_id in signable bytes)
