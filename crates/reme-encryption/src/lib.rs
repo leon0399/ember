@@ -226,6 +226,10 @@ mod tests {
                 body: body.to_string(),
             }),
             signature: None,
+            prev_self: None,
+            observed_heads: Vec::new(),
+            epoch: 0,
+            flags: 0,
         };
 
         // Sign it (including message_id in signable bytes)
@@ -333,6 +337,10 @@ mod tests {
                 body: "Fake message from Alice".to_string(),
             }),
             signature: None,
+            prev_self: None,
+            observed_heads: Vec::new(),
+            epoch: 0,
+            flags: 0,
         };
 
         // Mallory signs with her own key (not Alice's)
