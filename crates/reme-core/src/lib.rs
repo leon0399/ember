@@ -485,11 +485,11 @@ impl<T: Transport> Client<T> {
 
             let gaps = matches!(gap_result, reme_message::GapResult::Gap { .. });
 
-            // Only update peer's head for complete messages (not orphans)
+            // Only update peer heads for complete messages (not orphans)
             // Otherwise we'd advertise orphans in observed_heads, causing sender
             // to think we have their ancestors when we don't
             if !gaps {
-                dag.set_peer_head(content_id);
+                dag.update_peer_heads(content_id, inner.prev_self);
             }
             (gaps, sender_reset, local_behind)
         };

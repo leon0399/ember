@@ -174,24 +174,24 @@ impl ReceiverGapDetector {
 /// what they've seen from us. We can compare this to our sent messages
 /// to determine what needs to be retransmitted.
 ///
-/// # Design Note: Linear Chain (v0.1)
+/// # Multi-Head Support
 ///
-/// This implementation tracks a single `head` (latest message), assuming
-/// the sender creates a linear chain where each message links to the previous.
-/// This is correct for 1:1 messaging where:
-/// - Messages are sent sequentially (no concurrent sends)
-/// - UI always links to the most recent message (no "reply to older")
+/// This implementation tracks multiple heads (leaf nodes) to support:
+/// - Multi-device: same user sending from phone + laptop creates forks
+/// - Concurrent sends: race conditions can create parallel branches
 ///
-/// For future multi-head DAG support (multi-device, group chat), `head`
-/// would need to become `HashSet<ContentId>` to track multiple leaf nodes.
+/// Each head represents a leaf node in our sent message DAG. When a new
+/// message is sent, its parent is removed from heads (no longer a leaf)
+/// and the new message becomes a head.
 #[derive(Debug, Default)]
 pub struct SenderGapDetector {
     /// Messages we've sent, keyed by content_id.
     /// Value is the previous message's content_id (for chain traversal).
     sent: HashMap<ContentId, Option<ContentId>>,
 
-    /// Our latest sent message's content_id (single head for linear chain).
-    head: Option<ContentId>,
+    /// Current leaf nodes (heads) of our sent message DAG.
+    /// Multiple heads occur with multi-device or concurrent sends.
+    heads: HashSet<ContentId>,
 }
 
 impl SenderGapDetector {
@@ -207,12 +207,25 @@ impl SenderGapDetector {
     /// * `prev_self` - Our previous message's content ID (if any)
     pub fn on_send(&mut self, content_id: ContentId, prev_self: Option<ContentId>) {
         self.sent.insert(content_id, prev_self);
-        self.head = Some(content_id);
+        // Remove parent from heads (it's no longer a leaf node)
+        if let Some(parent) = prev_self {
+            self.heads.remove(&parent);
+        }
+        // Add new message as a head (leaf node)
+        self.heads.insert(content_id);
     }
 
-    /// Get our current head (latest sent message).
+    /// Get one of our current heads (for use as prev_self in next message).
+    ///
+    /// Returns an arbitrary head if multiple exist. For single-device
+    /// sequential sends, there's always exactly one head.
     pub fn head(&self) -> Option<ContentId> {
-        self.head
+        self.heads.iter().next().copied()
+    }
+
+    /// Get all current heads (leaf nodes of our sent DAG).
+    pub fn heads(&self) -> &HashSet<ContentId> {
+        &self.heads
     }
 
     /// Determine which messages the peer is missing based on their observed_heads.
@@ -221,88 +234,79 @@ impl SenderGapDetector {
     /// * `peer_observed` - The content IDs the peer has observed from us
     ///
     /// # Returns
-    /// List of content IDs that need to be retransmitted, in order from
-    /// oldest to newest.
+    /// List of content IDs that need to be retransmitted, sorted for consistency.
     pub fn find_missing(&self, peer_observed: &[ContentId]) -> Vec<ContentId> {
         // If peer hasn't observed anything from us, they're missing everything
         if peer_observed.is_empty() {
             return self.all_sent_ordered();
         }
 
-        // Find the most recent message the peer has seen
-        let mut latest_seen: Option<ContentId> = None;
-        for &observed in peer_observed {
-            if self.sent.contains_key(&observed) {
-                // Check if this is more recent than our current latest_seen
-                match latest_seen {
-                    None => {
-                        latest_seen = Some(observed);
-                    }
-                    Some(seen) => {
-                        if self.is_ancestor(seen, observed) {
-                            latest_seen = Some(observed);
-                        }
-                    }
+        // Filter to only messages we know about
+        let seen: HashSet<ContentId> = peer_observed
+            .iter()
+            .filter(|id| self.sent.contains_key(*id))
+            .copied()
+            .collect();
+
+        if seen.is_empty() {
+            // Peer hasn't seen any of our messages
+            return self.all_sent_ordered();
+        }
+
+        // Get all messages not seen by peer (accounting for ancestor chains)
+        self.messages_not_seen(&seen)
+    }
+
+    /// Get all sent messages (traversing from all heads).
+    ///
+    /// Note: With multiple heads (forks), order is not strictly defined.
+    /// Messages are collected via BFS from all heads.
+    fn all_sent_ordered(&self) -> Vec<ContentId> {
+        let mut result = Vec::new();
+        let mut visited = HashSet::new();
+        let mut queue: Vec<ContentId> = self.heads.iter().copied().collect();
+
+        // BFS from all heads
+        while let Some(id) = queue.pop() {
+            if visited.insert(id) {
+                result.push(id);
+                if let Some(Some(parent)) = self.sent.get(&id) {
+                    queue.push(*parent);
                 }
             }
         }
 
-        match latest_seen {
-            None => {
-                // Peer hasn't seen any of our messages
-                self.all_sent_ordered()
-            }
-            Some(seen_id) => {
-                // Return all messages after the one they've seen
-                self.messages_after(seen_id)
-            }
-        }
-    }
-
-    /// Check if `ancestor` is an ancestor of `descendant` in our chain.
-    fn is_ancestor(&self, ancestor: ContentId, descendant: ContentId) -> bool {
-        let mut current = Some(descendant);
-        while let Some(id) = current {
-            if id == ancestor {
-                return true;
-            }
-            current = self.sent.get(&id).and_then(|prev| *prev);
-        }
-        false
-    }
-
-    /// Get all sent messages in order (oldest first).
-    fn all_sent_ordered(&self) -> Vec<ContentId> {
-        let mut result = Vec::new();
-        let mut current = self.head;
-
-        // Walk back from head to collect all messages
-        while let Some(id) = current {
-            result.push(id);
-            current = self.sent.get(&id).and_then(|prev| *prev);
-        }
-
-        // Reverse to get oldest-first order
+        // Reverse to get roughly oldest-first order
         result.reverse();
         result
     }
 
-    /// Get messages sent after a given message ID.
-    fn messages_after(&self, after_id: ContentId) -> Vec<ContentId> {
-        let mut result = Vec::new();
-        let mut current = self.head;
+    /// Get messages the peer is missing given what they've seen.
+    ///
+    /// Returns all messages that are NOT ancestors of (or equal to) any seen message.
+    fn messages_not_seen(&self, seen: &HashSet<ContentId>) -> Vec<ContentId> {
+        // First, find all ancestors of seen messages (including seen themselves)
+        let mut known_to_peer = seen.clone();
+        let mut queue: Vec<ContentId> = seen.iter().copied().collect();
 
-        // Walk back from head until we hit the seen message
-        while let Some(id) = current {
-            if id == after_id {
-                break;
+        while let Some(id) = queue.pop() {
+            if let Some(Some(parent)) = self.sent.get(&id) {
+                if known_to_peer.insert(*parent) {
+                    queue.push(*parent);
+                }
             }
-            result.push(id);
-            current = self.sent.get(&id).and_then(|prev| *prev);
         }
 
-        // Reverse to get oldest-first order
-        result.reverse();
+        // Now collect all messages NOT known to peer
+        let mut result: Vec<ContentId> = self
+            .sent
+            .keys()
+            .filter(|id| !known_to_peer.contains(*id))
+            .copied()
+            .collect();
+
+        // Sort for consistent ordering (by byte value)
+        result.sort();
         result
     }
 
@@ -322,7 +326,7 @@ impl SenderGapDetector {
     /// Clear all tracking data.
     pub fn clear(&mut self) {
         self.sent.clear();
-        self.head = None;
+        self.heads.clear();
     }
 }
 
@@ -335,9 +339,10 @@ pub struct ConversationDag {
     pub sender: SenderGapDetector,
     /// Current epoch for this conversation.
     pub epoch: u16,
-    /// The peer's latest received message content_id (for observed_heads).
-    /// In 1:1 conversations, this is the single head from our peer.
-    peer_head: Option<ContentId>,
+    /// The peer's current heads (leaf nodes of their sent DAG).
+    /// Used to construct observed_heads when we send messages.
+    /// Multiple heads occur with multi-device peers.
+    peer_heads: HashSet<ContentId>,
 }
 
 impl ConversationDag {
@@ -352,7 +357,7 @@ impl ConversationDag {
             receiver: ReceiverGapDetector::new(),
             sender: SenderGapDetector::new(),
             epoch,
-            peer_head: None,
+            peer_heads: HashSet::new(),
         }
     }
 
@@ -361,30 +366,39 @@ impl ConversationDag {
         self.epoch = self.epoch.wrapping_add(1);
         self.receiver.clear();
         self.sender.clear();
-        self.peer_head = None;
+        self.peer_heads.clear();
     }
 
-    /// Update the peer's head (latest message from peer).
+    /// Update peer heads when receiving a message.
     ///
-    /// Call this when receiving a message from the peer to track
-    /// the latest content_id for observed_heads.
-    pub fn set_peer_head(&mut self, content_id: ContentId) {
-        self.peer_head = Some(content_id);
+    /// Call this when receiving a complete (non-orphan) message from the peer.
+    /// Removes the parent from heads (no longer a leaf) and adds the new message.
+    ///
+    /// # Arguments
+    /// * `content_id` - The content ID of the received message
+    /// * `prev_self` - The message's prev_self (peer's parent reference)
+    pub fn update_peer_heads(&mut self, content_id: ContentId, prev_self: Option<ContentId>) {
+        // Remove parent from heads (it's no longer a leaf node)
+        if let Some(parent) = prev_self {
+            self.peer_heads.remove(&parent);
+        }
+        // Add new message as a head
+        self.peer_heads.insert(content_id);
     }
 
-    /// Get the peer's head for observed_heads.
+    /// Get all peer heads for observed_heads.
     ///
-    /// Returns a vector containing the peer's latest message content_id,
-    /// or an empty vector if no messages have been received.
+    /// Returns a vector of the peer's current head content_ids
+    /// to include in our outgoing messages.
     pub fn observed_heads(&self) -> Vec<ContentId> {
-        self.peer_head.into_iter().collect()
+        self.peer_heads.iter().copied().collect()
     }
 
     /// Check if we have received any messages from the peer.
     ///
-    /// Returns true if peer_head is set (we've seen at least one message).
+    /// Returns true if we've seen at least one message from them.
     pub fn has_peer_history(&self) -> bool {
-        self.peer_head.is_some()
+        !self.peer_heads.is_empty()
     }
 
     /// Check if any of the given content_ids are unknown to our sender tracker.
@@ -584,6 +598,58 @@ mod tests {
             let missing = detector.find_missing(&[unknown]);
             assert_eq!(missing, vec![id1, id2]);
         }
+
+        #[test]
+        fn test_multi_head_tracking() {
+            let mut detector = SenderGapDetector::new();
+            let id1 = make_id(1);
+            let id2 = make_id(2);
+            let id3 = make_id(3);
+
+            // First message - single head
+            detector.on_send(id1, None);
+            assert_eq!(detector.heads().len(), 1);
+            assert!(detector.heads().contains(&id1));
+
+            // Fork: id2 and id3 both link to id1 (multi-device scenario)
+            detector.on_send(id2, Some(id1));
+            assert_eq!(detector.heads().len(), 1); // id1 removed, id2 added
+            assert!(detector.heads().contains(&id2));
+
+            detector.on_send(id3, Some(id1)); // Another child of id1
+            // Note: id1 already removed, so this just adds id3
+            assert_eq!(detector.heads().len(), 2); // Both id2 and id3 are heads
+            assert!(detector.heads().contains(&id2));
+            assert!(detector.heads().contains(&id3));
+        }
+
+        #[test]
+        fn test_multi_head_find_missing() {
+            let mut detector = SenderGapDetector::new();
+            let id1 = make_id(1);
+            let id2 = make_id(2);
+            let id3 = make_id(3);
+
+            // Create fork: id1 -> id2, id1 -> id3
+            detector.on_send(id1, None);
+            detector.on_send(id2, Some(id1));
+            detector.on_send(id3, Some(id1));
+
+            // Peer has seen id1 only - should get both branches
+            let missing = detector.find_missing(&[id1]);
+            assert_eq!(missing.len(), 2);
+            assert!(missing.contains(&id2));
+            assert!(missing.contains(&id3));
+
+            // Peer has seen id2 - should only get id3
+            let missing = detector.find_missing(&[id2]);
+            assert_eq!(missing.len(), 1);
+            assert!(missing.contains(&id3));
+
+            // Peer has seen both heads - nothing missing
+            let missing = detector.find_missing(&[id2, id3]);
+            assert!(missing.is_empty());
+        }
     }
 
     mod conversation_dag_tests {
@@ -605,11 +671,11 @@ mod tests {
 
             dag.receiver.on_receive(id, None, 1000);
             dag.sender.on_send(id, None);
-            dag.set_peer_head(id);
+            dag.update_peer_heads(id, None);
 
             assert_eq!(dag.receiver.complete_count(), 1);
             assert_eq!(dag.sender.sent_count(), 1);
-            assert_eq!(dag.observed_heads(), vec![id]);
+            assert_eq!(dag.observed_heads().len(), 1);
 
             dag.increment_epoch();
 
@@ -623,17 +689,28 @@ mod tests {
             let mut dag = ConversationDag::new();
             let id1 = make_id(1);
             let id2 = make_id(2);
+            let id3 = make_id(3);
 
-            // Initially no peer head
+            // Initially no peer heads
             assert!(dag.observed_heads().is_empty());
 
-            // Set first peer head
-            dag.set_peer_head(id1);
-            assert_eq!(dag.observed_heads(), vec![id1]);
+            // First message from peer (no parent)
+            dag.update_peer_heads(id1, None);
+            assert_eq!(dag.observed_heads().len(), 1);
+            assert!(dag.observed_heads().contains(&id1));
 
-            // Update to newer peer head
-            dag.set_peer_head(id2);
-            assert_eq!(dag.observed_heads(), vec![id2]);
+            // Second message links to first (linear chain)
+            dag.update_peer_heads(id2, Some(id1));
+            assert_eq!(dag.observed_heads().len(), 1);
+            assert!(dag.observed_heads().contains(&id2));
+            assert!(!dag.observed_heads().contains(&id1)); // id1 no longer a head
+
+            // Third message also links to id1 (fork! multi-device scenario)
+            dag.update_peer_heads(id3, Some(id1));
+            // Now we have two heads: id2 and id3
+            assert_eq!(dag.observed_heads().len(), 2);
+            assert!(dag.observed_heads().contains(&id2));
+            assert!(dag.observed_heads().contains(&id3));
         }
 
         #[test]
