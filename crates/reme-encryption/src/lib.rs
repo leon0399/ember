@@ -229,6 +229,7 @@ mod tests {
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
+            flags: 0,
         };
 
         // Sign it (including message_id in signable bytes)
@@ -339,6 +340,7 @@ mod tests {
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
+            flags: 0,
         };
 
         // Mallory signs with her own key (not Alice's)

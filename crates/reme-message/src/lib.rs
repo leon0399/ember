@@ -219,7 +219,18 @@ pub struct InnerEnvelope {
     /// Allows breaking DAG cleanly when history is deleted.
     /// u16 = 65K clears, sufficient for any realistic usage.
     pub epoch: u16,
+
+    /// Message flags (1 byte, extensible).
+    /// See FLAG_* constants for bit definitions.
+    pub flags: u8,
 }
+
+/// Flag: Message is intentionally detached (no DAG linkage).
+/// Used for constrained transports (LoRa, BLE) where bandwidth is limited.
+/// When set, prev_self=None and observed_heads=[] is intentional, not state loss.
+pub const FLAG_DETACHED: u8 = 0x01;
+
+// Bits 1-7 reserved for future use
 
 // Removed fields (per envelope optimization design):
 // - version: Use outer envelope version
@@ -258,13 +269,16 @@ impl InnerEnvelope {
         hash.as_bytes()[..8].try_into().unwrap()
     }
 
-    /// Check if this is a detached (unlinked) message.
+    /// Check if this is an intentionally detached (unlinked) message.
     ///
-    /// Detached messages have no DAG references and are used on constrained
-    /// transports (LoRa). They can be linked into the DAG later when a
-    /// subsequent message references them via prev_self.
+    /// Detached messages have the FLAG_DETACHED flag set and are used on
+    /// constrained transports (LoRa, BLE). They can be linked into the DAG
+    /// later when a subsequent message references them via prev_self.
+    ///
+    /// Note: This checks the explicit flag, not just empty DAG fields.
+    /// A message with empty DAG fields but no flag may indicate state loss.
     pub fn is_detached(&self) -> bool {
-        self.prev_self.is_none() && self.observed_heads.is_empty()
+        (self.flags & FLAG_DETACHED) != 0
     }
 
     /// Returns the bytes that are covered by the sender signature.
@@ -303,6 +317,9 @@ impl InnerEnvelope {
         }
 
         bytes.extend_from_slice(&self.epoch.to_le_bytes());
+
+        // flags (1 byte)
+        bytes.push(self.flags);
 
         // outer_message_id (16 bytes) - binds signature to outer envelope
         bytes.extend_from_slice(outer_message_id.as_bytes());
@@ -388,6 +405,7 @@ mod tests {
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
+            flags: 0,
         }
     }
 
@@ -411,6 +429,7 @@ mod tests {
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
+            flags: 0,
         };
         let inner2 = InnerEnvelope {
             from: *sender.public_id(),
@@ -422,6 +441,7 @@ mod tests {
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
+            flags: 0,
         };
         assert_eq!(inner1.content_id(), inner2.content_id());
     }
@@ -439,6 +459,7 @@ mod tests {
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
+            flags: 0,
         };
         let inner2 = InnerEnvelope {
             from: *sender.public_id(),
@@ -450,6 +471,7 @@ mod tests {
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
+            flags: 0,
         };
         assert_ne!(inner1.content_id(), inner2.content_id());
     }
@@ -467,6 +489,7 @@ mod tests {
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
+            flags: 0,
         };
         let inner2 = InnerEnvelope {
             from: *sender.public_id(),
@@ -478,6 +501,7 @@ mod tests {
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
+            flags: 0,
         };
         // Same content, different timestamp = different content_id
         assert_ne!(inner1.content_id(), inner2.content_id());
@@ -497,6 +521,7 @@ mod tests {
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
+            flags: 0,
         };
         let inner2 = InnerEnvelope {
             from: *sender2.public_id(),
@@ -508,6 +533,7 @@ mod tests {
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
+            flags: 0,
         };
         // Same content, different sender = different content_id
         assert_ne!(inner1.content_id(), inner2.content_id());
@@ -529,6 +555,7 @@ mod tests {
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
+            flags: 0,
         };
         let inner2 = InnerEnvelope {
             from: *sender.public_id(),
@@ -540,6 +567,7 @@ mod tests {
             prev_self: Some(prev_id),
             observed_heads: vec![observed],
             epoch: 5,
+            flags: 0,
         };
         // DAG fields should NOT affect content_id
         assert_eq!(inner1.content_id(), inner2.content_id());
@@ -547,24 +575,10 @@ mod tests {
 
     #[test]
     fn test_is_detached() {
-        let inner1 = create_test_inner("Hello", 1234567890);
-        assert!(inner1.is_detached());
-
         let sender = Identity::generate();
-        let inner2 = InnerEnvelope {
-            from: *sender.public_id(),
-            created_at_ms: 1234567890,
-            content: Content::Text(TextContent {
-                body: "Hello".to_string(),
-            }),
-            signature: None,
-            prev_self: Some([1, 2, 3, 4, 5, 6, 7, 8]),
-            observed_heads: Vec::new(),
-            epoch: 0,
-        };
-        assert!(!inner2.is_detached());
 
-        let inner3 = InnerEnvelope {
+        // Message with FLAG_DETACHED set is detached
+        let inner1 = InnerEnvelope {
             from: *sender.public_id(),
             created_at_ms: 1234567890,
             content: Content::Text(TextContent {
@@ -572,10 +586,42 @@ mod tests {
             }),
             signature: None,
             prev_self: None,
-            observed_heads: vec![[1, 2, 3, 4, 5, 6, 7, 8]],
+            observed_heads: Vec::new(),
             epoch: 0,
+            flags: FLAG_DETACHED,
         };
-        assert!(!inner3.is_detached());
+        assert!(inner1.is_detached());
+
+        // Message without FLAG_DETACHED is not detached (even with empty DAG fields)
+        let inner2 = InnerEnvelope {
+            from: *sender.public_id(),
+            created_at_ms: 1234567890,
+            content: Content::Text(TextContent {
+                body: "Hello".to_string(),
+            }),
+            signature: None,
+            prev_self: None,
+            observed_heads: Vec::new(),
+            epoch: 0,
+            flags: 0,
+        };
+        assert!(!inner2.is_detached());
+
+        // Message with DAG fields and FLAG_DETACHED is still detached
+        // (flag takes precedence - unusual but valid)
+        let inner3 = InnerEnvelope {
+            from: *sender.public_id(),
+            created_at_ms: 1234567890,
+            content: Content::Text(TextContent {
+                body: "Hello".to_string(),
+            }),
+            signature: None,
+            prev_self: Some([1, 2, 3, 4, 5, 6, 7, 8]),
+            observed_heads: vec![[9, 10, 11, 12, 13, 14, 15, 16]],
+            epoch: 0,
+            flags: FLAG_DETACHED,
+        };
+        assert!(inner3.is_detached());
     }
 
     #[test]
@@ -593,6 +639,7 @@ mod tests {
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
+            flags: 0,
         };
         let inner2 = InnerEnvelope {
             from: *sender.public_id(),
@@ -604,6 +651,7 @@ mod tests {
             prev_self: Some([1, 2, 3, 4, 5, 6, 7, 8]),
             observed_heads: vec![[9, 10, 11, 12, 13, 14, 15, 16]],
             epoch: 5,
+            flags: 0,
         };
 
         // Different DAG fields should produce different signable bytes
@@ -629,6 +677,7 @@ mod tests {
             prev_self: Some(prev_id),
             observed_heads: vec![observed],
             epoch: 42,
+            flags: 0,
         };
 
         // Serialize and deserialize

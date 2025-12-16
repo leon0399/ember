@@ -286,6 +286,14 @@ impl SenderGapDetector {
         self.sent.len()
     }
 
+    /// Check if a content_id is known (we have record of sending it).
+    ///
+    /// Used to detect if peer saw messages we don't remember sending
+    /// (indicates we lost state).
+    pub fn is_known(&self, content_id: &ContentId) -> bool {
+        self.sent.contains_key(content_id)
+    }
+
     /// Clear all tracking data.
     pub fn clear(&mut self) {
         self.sent.clear();
@@ -345,6 +353,21 @@ impl ConversationDag {
     /// or an empty vector if no messages have been received.
     pub fn observed_heads(&self) -> Vec<ContentId> {
         self.peer_head.into_iter().collect()
+    }
+
+    /// Check if we have received any messages from the peer.
+    ///
+    /// Returns true if peer_head is set (we've seen at least one message).
+    pub fn has_peer_history(&self) -> bool {
+        self.peer_head.is_some()
+    }
+
+    /// Check if any of the given content_ids are unknown to our sender tracker.
+    ///
+    /// This detects if the peer has seen messages from us that we don't remember
+    /// sending (indicates we lost state).
+    pub fn has_unknown_observed(&self, observed: &[ContentId]) -> bool {
+        observed.iter().any(|id| !self.sender.is_known(id))
     }
 }
 

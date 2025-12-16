@@ -11,7 +11,7 @@ use reme_identity::{Identity, PublicID};
 use reme_message::{
     Content, ContentId, ConversationDag, DeviceID, InnerEnvelope, MessageID, OuterEnvelope,
     ReceiptContent, ReceiptKind, RoutingKey, TextContent, TombstoneEnvelope, TombstoneStatus,
-    CURRENT_VERSION,
+    CURRENT_VERSION, FLAG_DETACHED,
 };
 use reme_storage::{Storage, StorageError};
 use reme_transport::{Transport, TransportError};
@@ -68,6 +68,12 @@ pub struct ReceivedMessage {
     pub content_id: ContentId,
     /// Whether this message has gaps in the DAG (missing parents)
     pub has_gaps: bool,
+    /// Sender likely lost state: we have history from them but they sent prev_self=None
+    /// (not including intentionally detached messages)
+    pub sender_state_reset: bool,
+    /// We likely lost state: sender's observed_heads contains IDs we don't recognize
+    /// This means the peer saw messages from us that we have no record of sending
+    pub local_state_behind: bool,
 }
 
 /// The main client for Resilient Messenger (MIK-only stateless encryption)
@@ -338,6 +344,7 @@ impl<T: Transport> Client<T> {
             prev_self,
             observed_heads,
             epoch,
+            flags: if detached { FLAG_DETACHED } else { 0 },
         };
 
         // Compute content_id before signing (we need it for DAG tracking)
@@ -453,16 +460,26 @@ impl<T: Transport> Client<T> {
             &inner.content,
         )?;
 
-        // Update DAG tracking
+        // Update DAG tracking and detect state anomalies
         let contact_key = sender_id.to_bytes();
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
 
-        let has_gaps = {
+        let (has_gaps, sender_state_reset, local_state_behind) = {
             let mut dag_state = self.dag_state.lock().unwrap();
             let dag = dag_state.entry(contact_key).or_insert_with(ConversationDag::new);
+
+            // Detect sender state reset:
+            // We have history from sender, but they sent prev_self=None without DETACHED flag
+            let sender_reset = dag.has_peer_history()
+                && inner.prev_self.is_none()
+                && !inner.is_detached();
+
+            // Detect local state behind:
+            // Sender's observed_heads contains IDs we don't remember sending
+            let local_behind = dag.has_unknown_observed(&inner.observed_heads);
 
             // Track this message in the receiver
             let gap_result = dag.receiver.on_receive(content_id, inner.prev_self, now_ms);
@@ -470,12 +487,13 @@ impl<T: Transport> Client<T> {
             // Update peer's head for observed_heads in our next message
             dag.set_peer_head(content_id);
 
-            matches!(gap_result, reme_message::GapResult::Gap { .. })
+            let gaps = matches!(gap_result, reme_message::GapResult::Gap { .. });
+            (gaps, sender_reset, local_behind)
         };
 
         debug!(
-            "Message received (content_id: {:?}, has_gaps: {})",
-            content_id, has_gaps
+            "Message received (content_id: {:?}, has_gaps: {}, sender_reset: {}, local_behind: {})",
+            content_id, has_gaps, sender_state_reset, local_state_behind
         );
 
         Ok(ReceivedMessage {
@@ -485,6 +503,8 @@ impl<T: Transport> Client<T> {
             created_at_ms: inner.created_at_ms,
             content_id,
             has_gaps,
+            sender_state_reset,
+            local_state_behind,
         })
     }
 
@@ -909,5 +929,254 @@ mod tests {
 
         // Third message (Linked 2) should link to first (Linked 1), skipping detached
         assert_eq!(inner3.prev_self.unwrap(), inner1.content_id());
+    }
+
+    #[tokio::test]
+    async fn test_sender_state_reset_detection() {
+        // Scenario: Alice sends messages to Bob, then Alice loses state and sends
+        // a new message with prev_self=None (but not flagged as detached).
+        // Bob should detect this as a sender state reset.
+        use reme_encryption::encrypt_to_mik;
+        use reme_message::{InnerEnvelope, TextContent};
+
+        let shared_transport = Arc::new(MockTransport::new());
+
+        let alice_identity = Identity::generate();
+        let alice_private_key = alice_identity.to_bytes(); // Capture before move
+        let alice_storage = Storage::in_memory().unwrap();
+        let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
+
+        let bob_identity = Identity::generate();
+        let bob_storage = Storage::in_memory().unwrap();
+        let bob = Client::new(bob_identity, shared_transport.clone(), bob_storage);
+
+        // Alice adds Bob, Bob adds Alice
+        alice.add_contact(bob.public_id(), Some("Bob")).unwrap();
+        bob.add_contact(alice.public_id(), Some("Alice")).unwrap();
+
+        // Alice sends first message (establishes history)
+        alice.send_text(bob.public_id(), "Hello Bob!").await.unwrap();
+        let messages = shared_transport.take_messages();
+        let received1 = bob.process_message(&messages[0]).await.unwrap();
+
+        // First message should not trigger state reset detection
+        assert!(!received1.sender_state_reset);
+        assert!(!received1.local_state_behind);
+
+        // Alice sends second message (with valid prev_self chain)
+        alice.send_text(bob.public_id(), "How are you?").await.unwrap();
+        let messages = shared_transport.take_messages();
+        let received2 = bob.process_message(&messages[0]).await.unwrap();
+
+        // Second message should not trigger state reset
+        assert!(!received2.sender_state_reset);
+        assert!(!received2.local_state_behind);
+
+        // Now simulate Alice losing state: create a message with prev_self=None
+        // but WITHOUT the DETACHED flag (signaling unintentional state loss)
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let message_id = MessageID::new();
+        let mut inner = InnerEnvelope {
+            from: *alice.public_id(),
+            created_at_ms: now_ms,
+            content: Content::Text(TextContent {
+                body: "I lost my state!".to_string(),
+            }),
+            signature: None,
+            prev_self: None,           // No previous message (state lost)
+            observed_heads: Vec::new(),
+            epoch: 0,                  // Fresh epoch
+            flags: 0,                  // NOT detached - this indicates state loss
+        };
+
+        // Sign the message
+        let signable = inner.signable_bytes(&message_id);
+        inner.signature = Some(InnerEnvelope::sign(&signable, &alice_private_key));
+
+        // Encrypt and create outer envelope
+        let bob_routing_key = bob.public_id().routing_key();
+        let (ephemeral_key, ciphertext) =
+            encrypt_to_mik(&inner, bob.public_id(), &message_id).unwrap();
+        let outer = OuterEnvelope {
+            version: reme_message::CURRENT_VERSION,
+            routing_key: bob_routing_key,
+            timestamp_hours: reme_message::now_hours(),
+            ttl_hours: None,
+            message_id,
+            ephemeral_key,
+            inner_ciphertext: ciphertext,
+        };
+
+        // Bob processes this message
+        let received3 = bob.process_message(&outer).await.unwrap();
+
+        // Bob should detect sender state reset!
+        // We had history from Alice (received1, received2), but she sent prev_self=None
+        // without the DETACHED flag
+        assert!(
+            received3.sender_state_reset,
+            "Bob should detect that Alice lost her state"
+        );
+        assert!(!received3.local_state_behind);
+    }
+
+    #[tokio::test]
+    async fn test_detached_message_not_detected_as_state_reset() {
+        // Scenario: Alice sends a detached message (with FLAG_DETACHED set).
+        // Bob should NOT detect this as a state reset.
+        use reme_encryption::encrypt_to_mik;
+        use reme_message::{InnerEnvelope, TextContent, FLAG_DETACHED};
+
+        let shared_transport = Arc::new(MockTransport::new());
+
+        let alice_identity = Identity::generate();
+        let alice_private_key = alice_identity.to_bytes(); // Capture before move
+        let alice_storage = Storage::in_memory().unwrap();
+        let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
+
+        let bob_identity = Identity::generate();
+        let bob_storage = Storage::in_memory().unwrap();
+        let bob = Client::new(bob_identity, shared_transport.clone(), bob_storage);
+
+        // Alice adds Bob, Bob adds Alice
+        alice.add_contact(bob.public_id(), Some("Bob")).unwrap();
+        bob.add_contact(alice.public_id(), Some("Alice")).unwrap();
+
+        // Alice sends first message (establishes history)
+        alice.send_text(bob.public_id(), "Hello Bob!").await.unwrap();
+        let messages = shared_transport.take_messages();
+        bob.process_message(&messages[0]).await.unwrap();
+
+        // Now Alice sends a detached message (intentionally, e.g., via LoRa)
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let message_id = MessageID::new();
+        let mut inner = InnerEnvelope {
+            from: *alice.public_id(),
+            created_at_ms: now_ms,
+            content: Content::Text(TextContent {
+                body: "Detached via LoRa".to_string(),
+            }),
+            signature: None,
+            prev_self: None,
+            observed_heads: Vec::new(),
+            epoch: 0,
+            flags: FLAG_DETACHED,  // Intentionally detached!
+        };
+
+        // Sign the message
+        let signable = inner.signable_bytes(&message_id);
+        inner.signature = Some(InnerEnvelope::sign(&signable, &alice_private_key));
+
+        // Encrypt and create outer envelope
+        let bob_routing_key = bob.public_id().routing_key();
+        let (ephemeral_key, ciphertext) =
+            encrypt_to_mik(&inner, bob.public_id(), &message_id).unwrap();
+        let outer = OuterEnvelope {
+            version: reme_message::CURRENT_VERSION,
+            routing_key: bob_routing_key,
+            timestamp_hours: reme_message::now_hours(),
+            ttl_hours: None,
+            message_id,
+            ephemeral_key,
+            inner_ciphertext: ciphertext,
+        };
+
+        // Bob processes this detached message
+        let received = bob.process_message(&outer).await.unwrap();
+
+        // Bob should NOT detect state reset (it's intentionally detached)
+        assert!(
+            !received.sender_state_reset,
+            "Detached messages should not trigger state reset detection"
+        );
+        assert!(!received.local_state_behind);
+    }
+
+    #[tokio::test]
+    async fn test_local_state_behind_detection() {
+        // Scenario: Bob sends a message to Alice with observed_heads containing
+        // content IDs that Alice doesn't recognize (e.g., Alice lost some state).
+        // Alice should detect that she's behind.
+        use reme_encryption::encrypt_to_mik;
+        use reme_message::{ContentId, InnerEnvelope, TextContent};
+
+        let shared_transport = Arc::new(MockTransport::new());
+
+        let alice_identity = Identity::generate();
+        let alice_storage = Storage::in_memory().unwrap();
+        let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
+
+        let bob_identity = Identity::generate();
+        let bob_private_key = bob_identity.to_bytes(); // Capture before move
+        let bob_storage = Storage::in_memory().unwrap();
+        let bob = Client::new(bob_identity, shared_transport.clone(), bob_storage);
+
+        // Alice adds Bob, Bob adds Alice
+        alice.add_contact(bob.public_id(), Some("Bob")).unwrap();
+        bob.add_contact(alice.public_id(), Some("Alice")).unwrap();
+
+        // Alice sends a message (this will be tracked in her DAG)
+        alice.send_text(bob.public_id(), "Hello!").await.unwrap();
+        let messages = shared_transport.take_messages();
+        bob.process_message(&messages[0]).await.unwrap();
+
+        // Now Bob sends a message with observed_heads containing an unknown content ID.
+        // This simulates Bob having received messages from Alice that Alice's
+        // current state doesn't know about (perhaps Alice restored from old backup).
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let message_id = MessageID::new();
+
+        // Create a fake observed_head that Alice won't recognize
+        let unknown_content_id: ContentId = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE];
+
+        let mut inner = InnerEnvelope {
+            from: *bob.public_id(),
+            created_at_ms: now_ms,
+            content: Content::Text(TextContent {
+                body: "I saw your messages!".to_string(),
+            }),
+            signature: None,
+            prev_self: None,  // Bob's first message
+            observed_heads: vec![unknown_content_id],  // Claims to have seen this from Alice
+            epoch: 0,
+            flags: 0,
+        };
+
+        // Sign with Bob's key
+        let signable = inner.signable_bytes(&message_id);
+        inner.signature = Some(InnerEnvelope::sign(&signable, &bob_private_key));
+
+        // Encrypt for Alice
+        let alice_routing_key = alice.public_id().routing_key();
+        let (ephemeral_key, ciphertext) =
+            encrypt_to_mik(&inner, alice.public_id(), &message_id).unwrap();
+        let outer = OuterEnvelope {
+            version: reme_message::CURRENT_VERSION,
+            routing_key: alice_routing_key,
+            timestamp_hours: reme_message::now_hours(),
+            ttl_hours: None,
+            message_id,
+            ephemeral_key,
+            inner_ciphertext: ciphertext,
+        };
+
+        // Alice processes this message
+        let received = alice.process_message(&outer).await.unwrap();
+
+        // Alice should detect that she's behind (Bob references unknown content_id)
+        assert!(!received.sender_state_reset);
+        assert!(
+            received.local_state_behind,
+            "Alice should detect she's missing messages Bob claims to have seen"
+        );
     }
 }

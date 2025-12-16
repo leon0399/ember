@@ -123,6 +123,7 @@ async fn test_e2e_encryption_mik_only() {
         prev_self: None,
         observed_heads: Vec::new(),
         epoch: 0,
+        flags: 0,
     };
 
     // Sign the message with Alice's private key (including message_id in signable bytes)
@@ -367,6 +368,8 @@ async fn test_tombstone_with_status() {
         created_at_ms: 1234567890,
         content_id: [0u8; 8], // Dummy content_id for testing
         has_gaps: false,
+        sender_state_reset: false,
+        local_state_behind: false,
     };
 
     // Test each tombstone status
@@ -503,6 +506,8 @@ async fn test_tombstone_sequence() {
         created_at_ms: 1234567890,
         content_id: [0u8; 8], // Dummy content_id for testing
         has_gaps: false,
+        sender_state_reset: false,
+        local_state_behind: false,
     };
 
     // Send multiple tombstones
