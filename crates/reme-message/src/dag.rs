@@ -302,6 +302,9 @@ pub struct ConversationDag {
     pub sender: SenderGapDetector,
     /// Current epoch for this conversation.
     pub epoch: u16,
+    /// The peer's latest received message content_id (for observed_heads).
+    /// In 1:1 conversations, this is the single head from our peer.
+    peer_head: Option<ContentId>,
 }
 
 impl ConversationDag {
@@ -316,6 +319,7 @@ impl ConversationDag {
             receiver: ReceiverGapDetector::new(),
             sender: SenderGapDetector::new(),
             epoch,
+            peer_head: None,
         }
     }
 
@@ -324,6 +328,23 @@ impl ConversationDag {
         self.epoch = self.epoch.wrapping_add(1);
         self.receiver.clear();
         self.sender.clear();
+        self.peer_head = None;
+    }
+
+    /// Update the peer's head (latest message from peer).
+    ///
+    /// Call this when receiving a message from the peer to track
+    /// the latest content_id for observed_heads.
+    pub fn set_peer_head(&mut self, content_id: ContentId) {
+        self.peer_head = Some(content_id);
+    }
+
+    /// Get the peer's head for observed_heads.
+    ///
+    /// Returns a vector containing the peer's latest message content_id,
+    /// or an empty vector if no messages have been received.
+    pub fn observed_heads(&self) -> Vec<ContentId> {
+        self.peer_head.into_iter().collect()
     }
 }
 
@@ -536,14 +557,35 @@ mod tests {
 
             dag.receiver.on_receive(id, None, 1000);
             dag.sender.on_send(id, None);
+            dag.set_peer_head(id);
 
             assert_eq!(dag.receiver.complete_count(), 1);
             assert_eq!(dag.sender.sent_count(), 1);
+            assert_eq!(dag.observed_heads(), vec![id]);
 
             dag.increment_epoch();
 
             assert_eq!(dag.receiver.complete_count(), 0);
             assert_eq!(dag.sender.sent_count(), 0);
+            assert!(dag.observed_heads().is_empty());
+        }
+
+        #[test]
+        fn test_peer_head_tracking() {
+            let mut dag = ConversationDag::new();
+            let id1 = make_id(1);
+            let id2 = make_id(2);
+
+            // Initially no peer head
+            assert!(dag.observed_heads().is_empty());
+
+            // Set first peer head
+            dag.set_peer_head(id1);
+            assert_eq!(dag.observed_heads(), vec![id1]);
+
+            // Update to newer peer head
+            dag.set_peer_head(id2);
+            assert_eq!(dag.observed_heads(), vec![id2]);
         }
     }
 }

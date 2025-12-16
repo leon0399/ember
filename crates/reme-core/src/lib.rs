@@ -160,14 +160,12 @@ impl<T: Transport> Client<T> {
         self.identity.to_bytes()
     }
 
-    /// Get the latest observed heads from the receiver tracker for a contact
-    /// Returns the single most recent message from the peer (if any)
-    fn get_observed_heads(&self, _dag: &ConversationDag) -> Vec<ContentId> {
-        // In 1:1 chat, we typically observe only one head (the peer's latest message)
-        // If there are multiple (fork scenarios), we'd return all of them
-        // For now, just use the most recent complete message from receiver
-        // This is a simplification - full implementation would track peer's head separately
-        Vec::new() // TODO: Track peer's latest content_id
+    /// Get the latest observed heads from the receiver tracker for a contact.
+    ///
+    /// Returns the content_ids of messages we've received from the peer.
+    /// In 1:1 chat, this is typically just the peer's latest message.
+    fn get_observed_heads(&self, dag: &ConversationDag) -> Vec<ContentId> {
+        dag.observed_heads()
     }
 
     // ========================================
@@ -408,6 +406,10 @@ impl<T: Transport> Client<T> {
 
             // Track this message in the receiver
             let gap_result = dag.receiver.on_receive(content_id, inner.prev_self, now_ms);
+
+            // Update peer's head for observed_heads in our next message
+            dag.set_peer_head(content_id);
+
             matches!(gap_result, reme_message::GapResult::Gap { .. })
         };
 
