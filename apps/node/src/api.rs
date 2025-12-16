@@ -1,11 +1,11 @@
 //! HTTP API for the mailbox node (MIK-only, no prekeys)
 //!
 //! Provides REST endpoints for:
-//! - POST /api/v1/submit - Submit a message or tombstone (unified wire format)
+//! - POST /api/v1/submit - Submit a message (tombstones temporarily disabled)
 //! - GET /api/v1/fetch/:routing_key - Fetch messages
 
+use crate::persistent_store::{PersistentMailboxStore, PersistentStoreError};
 use crate::replication::{ReplicationClient, FROM_NODE_HEADER};
-use crate::store::{MailboxStore, StoreError};
 use axum::{
     body::Bytes,
     extract::{Path, State},
@@ -16,14 +16,14 @@ use axum::{
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
-use reme_message::{OuterEnvelope, TombstoneEnvelope, WirePayload};
+use reme_message::{OuterEnvelope, WirePayload};
 use serde::Serialize;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 /// Shared application state
 pub struct AppState {
-    pub store: Arc<MailboxStore>,
+    pub store: Arc<PersistentMailboxStore>,
     pub replication: Arc<ReplicationClient>,
 }
 
@@ -62,8 +62,7 @@ pub struct HealthResponse {
 pub struct StatsResponse {
     pub mailbox_count: usize,
     pub total_messages: usize,
-    pub tombstone_count: usize,
-    pub orphan_tombstone_count: usize,
+    pub backend: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -92,11 +91,11 @@ fn parse_wire_payload(body: &Bytes) -> Result<(String, WirePayload), String> {
     Ok((body_str.to_string(), payload))
 }
 
-/// Unified submit endpoint for messages and tombstones
+/// Unified submit endpoint for messages
 ///
 /// Accepts base64-encoded wire format: `[type: u8][payload: bincode bytes]`
 /// - type 0x00: Message (OuterEnvelope)
-/// - type 0x01: Tombstone (TombstoneEnvelope)
+/// - type 0x01: Tombstone (TombstoneEnvelope) - TEMPORARILY DISABLED
 async fn submit_payload(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -125,8 +124,16 @@ async fn submit_payload(
         WirePayload::Message(envelope) => {
             handle_message(state, envelope, payload_b64, from_node).await
         }
-        WirePayload::Tombstone(tombstone) => {
-            handle_tombstone(state, tombstone, payload_b64, from_node).await
+        WirePayload::Tombstone(_) => {
+            // Tombstones temporarily disabled pending refactor
+            warn!("Tombstones are temporarily disabled");
+            (
+                StatusCode::NOT_IMPLEMENTED,
+                Json(ErrorResponse {
+                    error: "Tombstones temporarily disabled".to_string(),
+                }),
+            )
+                .into_response()
         }
     }
 }
@@ -171,85 +178,10 @@ async fn handle_message(
         Err(e) => {
             error!("Failed to enqueue message: {}", e);
             let status = match e {
-                StoreError::MailboxFull => StatusCode::INSUFFICIENT_STORAGE,
+                PersistentStoreError::MailboxFull => StatusCode::INSUFFICIENT_STORAGE,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
             (status, Json(ErrorResponse { error: e.to_string() })).into_response()
-        }
-    }
-}
-
-async fn handle_tombstone(
-    state: Arc<AppState>,
-    tombstone: TombstoneEnvelope,
-    payload_b64: String,
-    from_node: Option<String>,
-) -> axum::response::Response {
-    let message_id = tombstone.target_message_id;
-
-    // Check if we already have this tombstone (idempotent operation)
-    match state.store.has_tombstone(&message_id) {
-        Ok(true) => {
-            debug!("Duplicate tombstone for {:?}, skipping", message_id);
-            return (StatusCode::OK, Json(SubmitResponse { status: "ok".to_string() }))
-                .into_response();
-        }
-        Ok(false) => {}
-        Err(e) => {
-            error!("Failed to check tombstone existence: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse { error: e.to_string() }),
-            )
-                .into_response();
-        }
-    }
-
-    // Store tombstone (includes validation)
-    match state.store.store_tombstone(tombstone.clone()) {
-        Ok(_) => {
-            info!("Tombstone stored for message {:?}", message_id);
-
-            // Trigger replication to peers (fire-and-forget)
-            state.replication.replicate_payload(payload_b64, from_node);
-
-            (StatusCode::OK, Json(SubmitResponse { status: "ok".to_string() })).into_response()
-        }
-        Err(StoreError::RateLimitExceeded) => {
-            warn!("Tombstone rate limit exceeded for {:?}", &tombstone.recipient_id_pub[..4]);
-            (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(ErrorResponse {
-                    error: "Rate limit exceeded".to_string(),
-                }),
-            )
-                .into_response()
-        }
-        Err(StoreError::ValidationError(e)) => {
-            warn!("Tombstone validation failed: {}", e);
-            (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse { error: e }),
-            )
-                .into_response()
-        }
-        Err(StoreError::SequenceNotMonotonic) => {
-            warn!("Tombstone sequence not monotonic");
-            (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Sequence number not monotonic".to_string(),
-                }),
-            )
-                .into_response()
-        }
-        Err(e) => {
-            error!("Failed to store tombstone: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse { error: e.to_string() }),
-            )
-                .into_response()
         }
     }
 }
@@ -326,11 +258,19 @@ async fn health_check() -> impl IntoResponse {
 }
 
 async fn get_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let stats = state.store.stats();
-    Json(StatsResponse {
-        mailbox_count: stats.mailbox_count,
-        total_messages: stats.total_messages,
-        tombstone_count: stats.tombstone_count,
-        orphan_tombstone_count: stats.orphan_tombstone_count,
-    })
+    match state.store.stats() {
+        Ok(stats) => Json(StatsResponse {
+            mailbox_count: stats.mailbox_count,
+            total_messages: stats.total_messages,
+            backend: "sqlite".to_string(),
+        })
+        .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
 }

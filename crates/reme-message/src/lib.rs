@@ -46,6 +46,10 @@ impl MessageID {
         MessageID(Uuid::new_v4())
     }
 
+    pub fn from_bytes(bytes: [u8; 16]) -> Self {
+        MessageID(Uuid::from_bytes(bytes))
+    }
+
     pub fn as_bytes(&self) -> &[u8; 16] {
         self.0.as_bytes()
     }

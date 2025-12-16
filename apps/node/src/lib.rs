@@ -5,5 +5,5 @@
 pub mod api;
 pub mod cleanup;
 pub mod config;
+pub mod persistent_store;
 pub mod replication;
-pub mod store;

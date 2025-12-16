@@ -15,6 +15,7 @@
 //! - `REME_NODE_MAX_MESSAGES` - Maximum messages per mailbox
 //! - `REME_NODE_DEFAULT_TTL` - Default message TTL in seconds
 //! - `REME_NODE_LOG_LEVEL` - Log level (trace, debug, info, warn, error)
+//! - `REME_NODE_STORAGE_PATH` - Path to SQLite database file (`:memory:` for in-memory)
 //!
 //! ## Config File
 //!
@@ -26,6 +27,7 @@
 //! max_messages = 1000
 //! default_ttl = 604800
 //! log_level = "info"
+//! storage_path = "/var/lib/reme/mailbox.db"  # Optional: enables persistent storage
 //! ```
 
 use crate::cleanup::CleanupConfig;
@@ -87,6 +89,11 @@ pub struct CliArgs {
     /// Orphan tombstone cleanup delay in seconds (default: 86400)
     #[arg(long, env = "REME_NODE_CLEANUP_ORPHAN_DELAY")]
     pub cleanup_orphan_delay: Option<u64>,
+
+    /// Path to SQLite database file (default: :memory:)
+    /// Use ":memory:" for in-memory storage, or a file path for persistence
+    #[arg(long, env = "REME_NODE_STORAGE_PATH")]
+    pub storage_path: Option<String>,
 }
 
 /// Final resolved configuration
@@ -114,6 +121,11 @@ pub struct NodeConfig {
     /// Cleanup task configuration
     #[serde(default)]
     pub cleanup: CleanupConfig,
+
+    /// Path to SQLite database file (default: :memory:)
+    /// Use ":memory:" for in-memory storage, or a file path for persistence
+    #[serde(default)]
+    pub storage_path: Option<String>,
 }
 
 impl Default for NodeConfig {
@@ -127,6 +139,7 @@ impl Default for NodeConfig {
             node_id: uuid::Uuid::new_v4().to_string(),
             peers: Vec::new(),
             cleanup: CleanupConfig::default(),
+            storage_path: None, // None means :memory:
         }
     }
 }
@@ -257,6 +270,12 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
             .unwrap_or(defaults.cleanup.rate_limit_delay_secs),
     };
 
+    // Extract storage config
+    let storage_path: Option<String> = config.get("storage_path").ok();
+
+    // Override from CLI if provided
+    let storage_path = cli.storage_path.or(storage_path);
+
     Ok(NodeConfig {
         bind_addr,
         max_messages,
@@ -265,6 +284,7 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         node_id,
         peers,
         cleanup,
+        storage_path,
     })
 }
 
