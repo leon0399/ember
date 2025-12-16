@@ -166,6 +166,8 @@ pub struct App<'a> {
     pub show_add_contact_popup: bool,
     /// Add contact popup state
     pub add_contact_popup: AddContactPopup<'a>,
+    /// Whether the "my identity" popup is visible
+    pub show_my_id_popup: bool,
 }
 
 impl<'a> App<'a> {
@@ -215,6 +217,7 @@ impl<'a> App<'a> {
             contacts_by_id: HashMap::new(),
             show_add_contact_popup: false,
             add_contact_popup: AddContactPopup::default(),
+            show_my_id_popup: false,
         };
 
         // Load contacts
@@ -258,6 +261,11 @@ impl<'a> App<'a> {
     pub fn my_short_id(&self) -> String {
         let hex = hex::encode(self.my_public_id().to_bytes());
         format!("{}...", &hex[..8])
+    }
+
+    /// Get full ID as hex string
+    pub fn my_full_id(&self) -> String {
+        hex::encode(self.my_public_id().to_bytes())
     }
 
     /// Run the application main loop
@@ -330,9 +338,12 @@ impl<'a> App<'a> {
 
     /// Handle key events
     async fn handle_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
-        // Handle popup input first if visible
+        // Handle popups first if visible
         if self.show_add_contact_popup {
             return self.handle_popup_key_event(key);
+        }
+        if self.show_my_id_popup {
+            return self.handle_my_id_popup_key_event(key);
         }
 
         // Global shortcuts
@@ -408,8 +419,12 @@ impl<'a> App<'a> {
                 self.add_contact_popup.reset();
                 self.status = "Popup opened - Tab to switch, Enter to confirm, Esc to cancel".to_string();
             }
+            KeyCode::Char('i') => {
+                // Show my identity popup
+                self.show_my_id_popup = true;
+            }
             KeyCode::Char('h') => {
-                self.status = "j/k: navigate | Enter: select | a: add contact | Tab: switch pane | Esc/Ctrl+C: quit".to_string();
+                self.status = "j/k: navigate | Enter: select | a: add | i: my ID | Tab: switch | Esc: quit".to_string();
             }
             _ => {}
         }
@@ -578,6 +593,18 @@ impl<'a> App<'a> {
             }
         }
 
+        Ok(())
+    }
+
+    /// Handle key events when my ID popup is visible
+    fn handle_my_id_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('i') => {
+                // Close popup
+                self.show_my_id_popup = false;
+            }
+            _ => {}
+        }
         Ok(())
     }
 }

@@ -48,9 +48,12 @@ pub fn render(frame: &mut Frame, app: &App) {
     // Status bar at the very bottom
     render_status(frame, app);
 
-    // Render popup on top if visible (covers status bar too)
+    // Render popups on top if visible (covers status bar too)
     if app.show_add_contact_popup {
         render_add_contact_popup(frame, app);
+    }
+    if app.show_my_id_popup {
+        render_my_id_popup(frame, app);
     }
 }
 
@@ -316,4 +319,58 @@ fn render_add_contact_popup(frame: &mut Frame, app: &App) {
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
     frame.render_widget(hints, chunks[4]);
+}
+
+/// Render the "My Identity" popup
+fn render_my_id_popup(frame: &mut Frame, app: &App) {
+    // Calculate popup area (70% width, 35% height, centered)
+    let area = popup_area(frame.area(), 70, 35);
+
+    // Clear the background
+    frame.render_widget(Clear, area);
+
+    // Popup container block
+    let popup_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" My Identity ");
+
+    let inner = popup_block.inner(area);
+    frame.render_widget(popup_block, area);
+
+    // Layout inside popup
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(2), // Label
+            Constraint::Length(3), // Public ID (with border)
+            Constraint::Length(1), // Spacer
+            Constraint::Length(1), // Hints
+        ])
+        .split(inner);
+
+    // Label
+    let label = Paragraph::new("Your Public ID (share this with others to receive messages):")
+        .style(Style::default().fg(Color::White));
+    frame.render_widget(label, chunks[0]);
+
+    // Full Public ID in a bordered box for easy copying
+    let full_id = app.my_full_id();
+    let id_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let id_inner = id_block.inner(chunks[1]);
+    frame.render_widget(id_block, chunks[1]);
+
+    let id_text = Paragraph::new(full_id)
+        .style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+        .alignment(Alignment::Center);
+    frame.render_widget(id_text, id_inner);
+
+    // Hints
+    let hints = Paragraph::new("Press Esc, Enter, or 'i' to close")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    frame.render_widget(hints, chunks[3]);
 }
