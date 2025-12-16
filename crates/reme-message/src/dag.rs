@@ -1,0 +1,549 @@
+//! Merkle DAG gap detection for message ordering.
+//!
+//! This module provides tools for detecting missing messages in the DAG
+//! using content-addressed IDs (ContentId).
+
+use std::collections::{HashMap, HashSet};
+
+use crate::ContentId;
+
+/// Result of processing an incoming message for DAG ordering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GapResult {
+    /// Message has complete ancestry (all parents known).
+    Complete,
+    /// Message is missing one or more parents.
+    Gap {
+        /// Content IDs of missing parent messages.
+        missing: Vec<ContentId>,
+    },
+}
+
+/// Information about an orphaned message (missing parent).
+#[derive(Debug, Clone)]
+pub struct OrphanInfo {
+    /// The content_id of the missing parent.
+    pub missing_parent: ContentId,
+    /// Timestamp (ms) when this orphan was received.
+    pub received_at_ms: u64,
+}
+
+/// Detects gaps in the message DAG from the receiver's perspective.
+///
+/// Tracks which messages have complete ancestry and which are "orphans"
+/// waiting for their parent messages to arrive.
+#[derive(Debug, Default)]
+pub struct ReceiverGapDetector {
+    /// Messages received with complete ancestry (all parents known).
+    complete: HashSet<ContentId>,
+
+    /// Messages missing their parent (content_id -> orphan info).
+    orphans: HashMap<ContentId, OrphanInfo>,
+}
+
+impl ReceiverGapDetector {
+    /// Create a new gap detector.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Process an incoming message and determine if there are gaps.
+    ///
+    /// # Arguments
+    /// * `content_id` - The content ID of the received message
+    /// * `prev_self` - The sender's previous message (if any)
+    /// * `received_at_ms` - Current timestamp in milliseconds
+    ///
+    /// # Returns
+    /// `GapResult::Complete` if all parents are known, or `GapResult::Gap`
+    /// with the list of missing parent IDs.
+    pub fn on_receive(
+        &mut self,
+        content_id: ContentId,
+        prev_self: Option<ContentId>,
+        received_at_ms: u64,
+    ) -> GapResult {
+        match prev_self {
+            None => {
+                // First message from this sender, no parent needed
+                self.complete.insert(content_id);
+                self.try_resolve_orphans(content_id);
+                GapResult::Complete
+            }
+            Some(parent_id) => {
+                if self.complete.contains(&parent_id) {
+                    // Parent exists and is complete
+                    self.complete.insert(content_id);
+                    self.try_resolve_orphans(content_id);
+                    GapResult::Complete
+                } else {
+                    // Parent missing - this is an orphan
+                    self.orphans.insert(
+                        content_id,
+                        OrphanInfo {
+                            missing_parent: parent_id,
+                            received_at_ms,
+                        },
+                    );
+                    GapResult::Gap {
+                        missing: vec![parent_id],
+                    }
+                }
+            }
+        }
+    }
+
+    /// Mark a content_id as complete without checking parents.
+    ///
+    /// Use this for messages received through alternative means (e.g., resync)
+    /// where we know the content is valid but don't have the parent chain.
+    pub fn mark_complete(&mut self, content_id: ContentId) {
+        self.complete.insert(content_id);
+        self.try_resolve_orphans(content_id);
+    }
+
+    /// Check if a message is complete (has known ancestry).
+    pub fn is_complete(&self, content_id: &ContentId) -> bool {
+        self.complete.contains(content_id)
+    }
+
+    /// Check if a message is an orphan (missing parent).
+    pub fn is_orphan(&self, content_id: &ContentId) -> bool {
+        self.orphans.contains_key(content_id)
+    }
+
+    /// Get all orphaned messages.
+    pub fn orphans(&self) -> impl Iterator<Item = (&ContentId, &OrphanInfo)> {
+        self.orphans.iter()
+    }
+
+    /// Get the number of complete messages.
+    pub fn complete_count(&self) -> usize {
+        self.complete.len()
+    }
+
+    /// Get the number of orphaned messages.
+    pub fn orphan_count(&self) -> usize {
+        self.orphans.len()
+    }
+
+    /// Get all missing parent IDs (for requesting retransmission).
+    pub fn missing_parents(&self) -> HashSet<ContentId> {
+        self.orphans
+            .values()
+            .map(|info| info.missing_parent)
+            .collect()
+    }
+
+    /// Try to resolve orphans when a new message becomes complete.
+    fn try_resolve_orphans(&mut self, new_complete_id: ContentId) {
+        // Find all orphans waiting for this message
+        let resolved: Vec<ContentId> = self
+            .orphans
+            .iter()
+            .filter(|(_, info)| info.missing_parent == new_complete_id)
+            .map(|(id, _)| *id)
+            .collect();
+
+        // Resolve them (mark complete and recursively check their children)
+        for id in resolved {
+            self.orphans.remove(&id);
+            self.complete.insert(id);
+            // Recursively resolve (orphan's children might now be complete)
+            self.try_resolve_orphans(id);
+        }
+    }
+
+    /// Clear all tracking data.
+    pub fn clear(&mut self) {
+        self.complete.clear();
+        self.orphans.clear();
+    }
+}
+
+/// Tracks sent messages and detects what the peer is missing.
+///
+/// When we receive a message from a peer, their `observed_heads` tells us
+/// what they've seen from us. We can compare this to our sent messages
+/// to determine what needs to be retransmitted.
+#[derive(Debug, Default)]
+pub struct SenderGapDetector {
+    /// Messages we've sent, keyed by content_id.
+    /// Value is the previous message's content_id (for chain traversal).
+    sent: HashMap<ContentId, Option<ContentId>>,
+
+    /// Our latest sent message's content_id.
+    head: Option<ContentId>,
+}
+
+impl SenderGapDetector {
+    /// Create a new sender gap detector.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record that we sent a message.
+    ///
+    /// # Arguments
+    /// * `content_id` - The content ID of the sent message
+    /// * `prev_self` - Our previous message's content ID (if any)
+    pub fn on_send(&mut self, content_id: ContentId, prev_self: Option<ContentId>) {
+        self.sent.insert(content_id, prev_self);
+        self.head = Some(content_id);
+    }
+
+    /// Get our current head (latest sent message).
+    pub fn head(&self) -> Option<ContentId> {
+        self.head
+    }
+
+    /// Determine which messages the peer is missing based on their observed_heads.
+    ///
+    /// # Arguments
+    /// * `peer_observed` - The content IDs the peer has observed from us
+    ///
+    /// # Returns
+    /// List of content IDs that need to be retransmitted, in order from
+    /// oldest to newest.
+    pub fn find_missing(&self, peer_observed: &[ContentId]) -> Vec<ContentId> {
+        // If peer hasn't observed anything from us, they're missing everything
+        if peer_observed.is_empty() {
+            return self.all_sent_ordered();
+        }
+
+        // Find the most recent message the peer has seen
+        let mut latest_seen: Option<ContentId> = None;
+        for &observed in peer_observed {
+            if self.sent.contains_key(&observed) {
+                // Check if this is more recent than our current latest_seen
+                if latest_seen.is_none() || self.is_ancestor(latest_seen.unwrap(), observed) {
+                    latest_seen = Some(observed);
+                }
+            }
+        }
+
+        match latest_seen {
+            None => {
+                // Peer hasn't seen any of our messages
+                self.all_sent_ordered()
+            }
+            Some(seen_id) => {
+                // Return all messages after the one they've seen
+                self.messages_after(seen_id)
+            }
+        }
+    }
+
+    /// Check if `ancestor` is an ancestor of `descendant` in our chain.
+    fn is_ancestor(&self, ancestor: ContentId, descendant: ContentId) -> bool {
+        let mut current = Some(descendant);
+        while let Some(id) = current {
+            if id == ancestor {
+                return true;
+            }
+            current = self.sent.get(&id).and_then(|prev| *prev);
+        }
+        false
+    }
+
+    /// Get all sent messages in order (oldest first).
+    fn all_sent_ordered(&self) -> Vec<ContentId> {
+        let mut result = Vec::new();
+        let mut current = self.head;
+
+        // Walk back from head to collect all messages
+        while let Some(id) = current {
+            result.push(id);
+            current = self.sent.get(&id).and_then(|prev| *prev);
+        }
+
+        // Reverse to get oldest-first order
+        result.reverse();
+        result
+    }
+
+    /// Get messages sent after a given message ID.
+    fn messages_after(&self, after_id: ContentId) -> Vec<ContentId> {
+        let mut result = Vec::new();
+        let mut current = self.head;
+
+        // Walk back from head until we hit the seen message
+        while let Some(id) = current {
+            if id == after_id {
+                break;
+            }
+            result.push(id);
+            current = self.sent.get(&id).and_then(|prev| *prev);
+        }
+
+        // Reverse to get oldest-first order
+        result.reverse();
+        result
+    }
+
+    /// Get the number of sent messages being tracked.
+    pub fn sent_count(&self) -> usize {
+        self.sent.len()
+    }
+
+    /// Clear all tracking data.
+    pub fn clear(&mut self) {
+        self.sent.clear();
+        self.head = None;
+    }
+}
+
+/// Per-conversation DAG state combining receiver and sender detection.
+#[derive(Debug, Default)]
+pub struct ConversationDag {
+    /// Tracks gaps in messages we receive.
+    pub receiver: ReceiverGapDetector,
+    /// Tracks what peer is missing from us.
+    pub sender: SenderGapDetector,
+    /// Current epoch for this conversation.
+    pub epoch: u16,
+}
+
+impl ConversationDag {
+    /// Create a new conversation DAG tracker.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create with a specific epoch.
+    pub fn with_epoch(epoch: u16) -> Self {
+        Self {
+            receiver: ReceiverGapDetector::new(),
+            sender: SenderGapDetector::new(),
+            epoch,
+        }
+    }
+
+    /// Increment the epoch (e.g., when clearing history).
+    pub fn increment_epoch(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
+        self.receiver.clear();
+        self.sender.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_id(n: u8) -> ContentId {
+        [n, 0, 0, 0, 0, 0, 0, 0]
+    }
+
+    mod receiver_tests {
+        use super::*;
+
+        #[test]
+        fn test_first_message_complete() {
+            let mut detector = ReceiverGapDetector::new();
+            let id = make_id(1);
+
+            let result = detector.on_receive(id, None, 1000);
+
+            assert_eq!(result, GapResult::Complete);
+            assert!(detector.is_complete(&id));
+            assert!(!detector.is_orphan(&id));
+        }
+
+        #[test]
+        fn test_message_with_known_parent() {
+            let mut detector = ReceiverGapDetector::new();
+            let id1 = make_id(1);
+            let id2 = make_id(2);
+
+            detector.on_receive(id1, None, 1000);
+            let result = detector.on_receive(id2, Some(id1), 2000);
+
+            assert_eq!(result, GapResult::Complete);
+            assert!(detector.is_complete(&id2));
+        }
+
+        #[test]
+        fn test_message_with_missing_parent() {
+            let mut detector = ReceiverGapDetector::new();
+            let id1 = make_id(1);
+            let id2 = make_id(2);
+
+            // Receive id2 without id1
+            let result = detector.on_receive(id2, Some(id1), 2000);
+
+            assert_eq!(
+                result,
+                GapResult::Gap {
+                    missing: vec![id1]
+                }
+            );
+            assert!(detector.is_orphan(&id2));
+            assert!(!detector.is_complete(&id2));
+        }
+
+        #[test]
+        fn test_orphan_resolved_when_parent_arrives() {
+            let mut detector = ReceiverGapDetector::new();
+            let id1 = make_id(1);
+            let id2 = make_id(2);
+
+            // Receive id2 first (orphan)
+            detector.on_receive(id2, Some(id1), 2000);
+            assert!(detector.is_orphan(&id2));
+
+            // Now receive id1
+            detector.on_receive(id1, None, 1000);
+
+            // id2 should now be complete
+            assert!(detector.is_complete(&id1));
+            assert!(detector.is_complete(&id2));
+            assert!(!detector.is_orphan(&id2));
+        }
+
+        #[test]
+        fn test_chain_of_orphans_resolved() {
+            let mut detector = ReceiverGapDetector::new();
+            let id1 = make_id(1);
+            let id2 = make_id(2);
+            let id3 = make_id(3);
+
+            // Receive in reverse order
+            detector.on_receive(id3, Some(id2), 3000);
+            detector.on_receive(id2, Some(id1), 2000);
+
+            assert!(detector.is_orphan(&id3));
+            assert!(detector.is_orphan(&id2));
+
+            // Receive the root
+            detector.on_receive(id1, None, 1000);
+
+            // All should be complete now
+            assert!(detector.is_complete(&id1));
+            assert!(detector.is_complete(&id2));
+            assert!(detector.is_complete(&id3));
+            assert_eq!(detector.orphan_count(), 0);
+        }
+
+        #[test]
+        fn test_missing_parents() {
+            let mut detector = ReceiverGapDetector::new();
+            let id1 = make_id(1);
+            let id2 = make_id(2);
+            let id3 = make_id(3);
+
+            detector.on_receive(id2, Some(id1), 2000);
+            detector.on_receive(id3, Some(id1), 3000);
+
+            let missing = detector.missing_parents();
+            assert_eq!(missing.len(), 1);
+            assert!(missing.contains(&id1));
+        }
+    }
+
+    mod sender_tests {
+        use super::*;
+
+        #[test]
+        fn test_send_tracking() {
+            let mut detector = SenderGapDetector::new();
+            let id1 = make_id(1);
+            let id2 = make_id(2);
+
+            detector.on_send(id1, None);
+            detector.on_send(id2, Some(id1));
+
+            assert_eq!(detector.head(), Some(id2));
+            assert_eq!(detector.sent_count(), 2);
+        }
+
+        #[test]
+        fn test_find_missing_all() {
+            let mut detector = SenderGapDetector::new();
+            let id1 = make_id(1);
+            let id2 = make_id(2);
+
+            detector.on_send(id1, None);
+            detector.on_send(id2, Some(id1));
+
+            // Peer has seen nothing
+            let missing = detector.find_missing(&[]);
+            assert_eq!(missing, vec![id1, id2]);
+        }
+
+        #[test]
+        fn test_find_missing_partial() {
+            let mut detector = SenderGapDetector::new();
+            let id1 = make_id(1);
+            let id2 = make_id(2);
+            let id3 = make_id(3);
+
+            detector.on_send(id1, None);
+            detector.on_send(id2, Some(id1));
+            detector.on_send(id3, Some(id2));
+
+            // Peer has seen id1
+            let missing = detector.find_missing(&[id1]);
+            assert_eq!(missing, vec![id2, id3]);
+        }
+
+        #[test]
+        fn test_find_missing_up_to_date() {
+            let mut detector = SenderGapDetector::new();
+            let id1 = make_id(1);
+            let id2 = make_id(2);
+
+            detector.on_send(id1, None);
+            detector.on_send(id2, Some(id1));
+
+            // Peer has seen our latest
+            let missing = detector.find_missing(&[id2]);
+            assert!(missing.is_empty());
+        }
+
+        #[test]
+        fn test_find_missing_with_unknown_observed() {
+            let mut detector = SenderGapDetector::new();
+            let id1 = make_id(1);
+            let id2 = make_id(2);
+            let unknown = make_id(99);
+
+            detector.on_send(id1, None);
+            detector.on_send(id2, Some(id1));
+
+            // Peer reports unknown ID (maybe from different conversation)
+            let missing = detector.find_missing(&[unknown]);
+            assert_eq!(missing, vec![id1, id2]);
+        }
+    }
+
+    mod conversation_dag_tests {
+        use super::*;
+
+        #[test]
+        fn test_epoch_increment() {
+            let mut dag = ConversationDag::new();
+            assert_eq!(dag.epoch, 0);
+
+            dag.increment_epoch();
+            assert_eq!(dag.epoch, 1);
+        }
+
+        #[test]
+        fn test_epoch_clears_state() {
+            let mut dag = ConversationDag::new();
+            let id = make_id(1);
+
+            dag.receiver.on_receive(id, None, 1000);
+            dag.sender.on_send(id, None);
+
+            assert_eq!(dag.receiver.complete_count(), 1);
+            assert_eq!(dag.sender.sent_count(), 1);
+
+            dag.increment_epoch();
+
+            assert_eq!(dag.receiver.complete_count(), 0);
+            assert_eq!(dag.sender.sent_count(), 0);
+        }
+    }
+}

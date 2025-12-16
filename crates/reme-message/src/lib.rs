@@ -4,7 +4,10 @@ use bincode::{impl_borrow_decode, Decode, Encode};
 pub use reme_identity::PublicID;
 use uuid::Uuid;
 
+pub mod dag;
 pub mod tombstone;
+
+pub use dag::{ConversationDag, GapResult, ReceiverGapDetector, SenderGapDetector};
 
 // ============================================
 // Timestamp utilities (shared with tombstone)
