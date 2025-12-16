@@ -207,6 +207,34 @@ impl<T: Transport> Client<T> {
     }
 
     // ========================================
+    // Conversation History Management
+    // ========================================
+
+    /// Clear conversation history with a contact and increment epoch.
+    ///
+    /// This increments the DAG epoch for this conversation, which:
+    /// - Clears all DAG tracking state (sender chain, receiver state, peer head)
+    /// - Future messages will start fresh chains
+    /// - Messages referencing pre-epoch content_ids will be detected as gaps
+    ///
+    /// Note: This does NOT delete stored messages from local storage.
+    /// Use this when both parties agree to clear history.
+    pub fn clear_conversation_dag(&self, contact: &PublicID) -> u16 {
+        let contact_key = contact.to_bytes();
+        let mut dag_state = self.dag_state.lock().unwrap();
+        let dag = dag_state.entry(contact_key).or_insert_with(ConversationDag::new);
+        dag.increment_epoch();
+        dag.epoch
+    }
+
+    /// Get the current epoch for a conversation.
+    pub fn get_conversation_epoch(&self, contact: &PublicID) -> u16 {
+        let contact_key = contact.to_bytes();
+        let dag_state = self.dag_state.lock().unwrap();
+        dag_state.get(&contact_key).map(|d| d.epoch).unwrap_or(0)
+    }
+
+    // ========================================
     // Sending Messages (MIK-only, stateless)
     // ========================================
 
@@ -218,7 +246,23 @@ impl<T: Transport> Client<T> {
         let content = Content::Text(TextContent {
             body: text.to_string(),
         });
-        self.send_message(to, content).await
+        self.send_message_internal(to, content, false).await
+    }
+
+    /// Send a detached text message (no DAG linkage).
+    ///
+    /// Use this for constrained transports (LoRa, BLE) where bandwidth is limited
+    /// and DAG overhead should be avoided. Detached messages have no prev_self
+    /// or observed_heads, making them "floating" in the message history.
+    pub async fn send_text_detached(
+        &self,
+        to: &PublicID,
+        text: &str,
+    ) -> Result<MessageID, ClientError> {
+        let content = Content::Text(TextContent {
+            body: text.to_string(),
+        });
+        self.send_message_internal(to, content, true).await
     }
 
     /// Send a delivery receipt for a received message
@@ -231,7 +275,7 @@ impl<T: Transport> Client<T> {
             target_message_id: for_message_id,
             kind: ReceiptKind::Delivered,
         });
-        self.send_message(to, content).await
+        self.send_message_internal(to, content, false).await
     }
 
     /// Send a read receipt for a received message
@@ -244,11 +288,21 @@ impl<T: Transport> Client<T> {
             target_message_id: for_message_id,
             kind: ReceiptKind::Read,
         });
-        self.send_message(to, content).await
+        self.send_message_internal(to, content, false).await
     }
 
     /// Send a message with arbitrary content (MIK-only encryption)
-    async fn send_message(&self, to: &PublicID, content: Content) -> Result<MessageID, ClientError> {
+    ///
+    /// # Arguments
+    /// * `to` - Recipient's public ID
+    /// * `content` - Message content
+    /// * `detached` - If true, send without DAG linkage (for constrained transports)
+    async fn send_message_internal(
+        &self,
+        to: &PublicID,
+        content: Content,
+        detached: bool,
+    ) -> Result<MessageID, ClientError> {
         // Generate message ID
         let outer_message_id = MessageID::new();
         let routing_key = to.routing_key();
@@ -261,7 +315,12 @@ impl<T: Transport> Client<T> {
 
         // Get DAG fields from conversation state
         let contact_key = to.to_bytes();
-        let (prev_self, observed_heads, epoch) = {
+        let (prev_self, observed_heads, epoch) = if detached {
+            // Detached messages have no DAG linkage
+            let dag_state = self.dag_state.lock().unwrap();
+            let epoch = dag_state.get(&contact_key).map(|d| d.epoch).unwrap_or(0);
+            (None, Vec::new(), epoch)
+        } else {
             let dag_state = self.dag_state.lock().unwrap();
             if let Some(dag) = dag_state.get(&contact_key) {
                 (dag.sender.head(), self.get_observed_heads(dag), dag.epoch)
@@ -308,7 +367,8 @@ impl<T: Transport> Client<T> {
             .store_sent_message(contact_id, outer_message_id, &content)?;
 
         // Update DAG tracking after successful storage
-        {
+        // Skip tracking for detached messages - they're not part of the chain
+        if !detached {
             let mut dag_state = self.dag_state.lock().unwrap();
             let dag = dag_state.entry(contact_key).or_insert_with(ConversationDag::new);
             dag.sender.on_send(content_id, prev_self);
@@ -684,5 +744,170 @@ mod tests {
         let tombstones = shared_transport.tombstones.lock().unwrap();
         assert_eq!(tombstones.len(), 1);
         assert_eq!(tombstones[0].target_message_id, received.message_id);
+    }
+
+    #[tokio::test]
+    async fn test_detached_message_has_no_dag_fields() {
+        use reme_encryption::decrypt_with_mik;
+
+        let shared_transport = Arc::new(MockTransport::new());
+
+        let alice_identity = Identity::generate();
+        let alice_storage = Storage::in_memory().unwrap();
+        let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
+
+        let bob_identity = Identity::generate();
+        let bob_private_key = bob_identity.to_bytes();
+
+        alice.add_contact(bob_identity.public_id(), Some("Bob")).unwrap();
+
+        // Send a detached message
+        alice
+            .send_text_detached(bob_identity.public_id(), "Detached!")
+            .await
+            .unwrap();
+
+        let messages = shared_transport.take_messages();
+        assert_eq!(messages.len(), 1);
+
+        // Decrypt and verify it's detached
+        let inner = decrypt_with_mik(
+            &messages[0].ephemeral_key,
+            &messages[0].inner_ciphertext,
+            &bob_private_key,
+            &messages[0].message_id,
+        )
+        .unwrap();
+
+        assert!(inner.is_detached());
+        assert!(inner.prev_self.is_none());
+        assert!(inner.observed_heads.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_linked_messages_have_dag_chain() {
+        use reme_encryption::decrypt_with_mik;
+
+        let shared_transport = Arc::new(MockTransport::new());
+
+        let alice_identity = Identity::generate();
+        let alice_storage = Storage::in_memory().unwrap();
+        let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
+
+        let bob_identity = Identity::generate();
+        let bob_private_key = bob_identity.to_bytes();
+
+        alice.add_contact(bob_identity.public_id(), Some("Bob")).unwrap();
+
+        // Send first linked message
+        alice.send_text(bob_identity.public_id(), "First").await.unwrap();
+
+        // Send second linked message
+        alice.send_text(bob_identity.public_id(), "Second").await.unwrap();
+
+        let messages = shared_transport.take_messages();
+        assert_eq!(messages.len(), 2);
+
+        // Decrypt both
+        let inner1 = decrypt_with_mik(
+            &messages[0].ephemeral_key,
+            &messages[0].inner_ciphertext,
+            &bob_private_key,
+            &messages[0].message_id,
+        )
+        .unwrap();
+
+        let inner2 = decrypt_with_mik(
+            &messages[1].ephemeral_key,
+            &messages[1].inner_ciphertext,
+            &bob_private_key,
+            &messages[1].message_id,
+        )
+        .unwrap();
+
+        // First message has no prev_self (but may have observed_heads if we received from Bob)
+        assert!(inner1.prev_self.is_none());
+
+        // Second message should link to first
+        assert!(inner2.prev_self.is_some());
+        assert_eq!(inner2.prev_self.unwrap(), inner1.content_id());
+    }
+
+    #[tokio::test]
+    async fn test_epoch_management() {
+        let shared_transport = Arc::new(MockTransport::new());
+
+        let alice_identity = Identity::generate();
+        let alice_storage = Storage::in_memory().unwrap();
+        let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
+
+        let bob_identity = Identity::generate();
+
+        alice.add_contact(bob_identity.public_id(), Some("Bob")).unwrap();
+
+        // Initial epoch is 0
+        assert_eq!(alice.get_conversation_epoch(bob_identity.public_id()), 0);
+
+        // Send a message to establish state
+        alice.send_text(bob_identity.public_id(), "Hello").await.unwrap();
+
+        // Clear conversation DAG
+        let new_epoch = alice.clear_conversation_dag(bob_identity.public_id());
+        assert_eq!(new_epoch, 1);
+        assert_eq!(alice.get_conversation_epoch(bob_identity.public_id()), 1);
+
+        // Clear again
+        let newer_epoch = alice.clear_conversation_dag(bob_identity.public_id());
+        assert_eq!(newer_epoch, 2);
+    }
+
+    #[tokio::test]
+    async fn test_detached_doesnt_update_dag_chain() {
+        use reme_encryption::decrypt_with_mik;
+
+        let shared_transport = Arc::new(MockTransport::new());
+
+        let alice_identity = Identity::generate();
+        let alice_storage = Storage::in_memory().unwrap();
+        let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
+
+        let bob_identity = Identity::generate();
+        let bob_private_key = bob_identity.to_bytes();
+
+        alice.add_contact(bob_identity.public_id(), Some("Bob")).unwrap();
+
+        // Send linked message
+        alice.send_text(bob_identity.public_id(), "Linked 1").await.unwrap();
+
+        // Send detached message (should NOT update chain)
+        alice
+            .send_text_detached(bob_identity.public_id(), "Detached")
+            .await
+            .unwrap();
+
+        // Send another linked message (should link to "Linked 1", not "Detached")
+        alice.send_text(bob_identity.public_id(), "Linked 2").await.unwrap();
+
+        let messages = shared_transport.take_messages();
+        assert_eq!(messages.len(), 3);
+
+        let inner1 = decrypt_with_mik(
+            &messages[0].ephemeral_key,
+            &messages[0].inner_ciphertext,
+            &bob_private_key,
+            &messages[0].message_id,
+        )
+        .unwrap();
+
+        let inner3 = decrypt_with_mik(
+            &messages[2].ephemeral_key,
+            &messages[2].inner_ciphertext,
+            &bob_private_key,
+            &messages[2].message_id,
+        )
+        .unwrap();
+
+        // Third message (Linked 2) should link to first (Linked 1), skipping detached
+        assert_eq!(inner3.prev_self.unwrap(), inner1.content_id());
     }
 }
