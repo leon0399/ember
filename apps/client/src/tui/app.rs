@@ -27,6 +27,98 @@ pub enum Focus {
     Input,
 }
 
+/// Which field is focused in the add contact popup
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AddContactField {
+    #[default]
+    PublicId,
+    Name,
+}
+
+/// State for the add contact popup
+pub struct AddContactPopup<'a> {
+    /// Currently focused field
+    pub focused_field: AddContactField,
+    /// Public ID input (64-char hex)
+    pub public_id_input: TextArea<'a>,
+    /// Name input (optional)
+    pub name_input: TextArea<'a>,
+    /// Error message to display
+    pub error: Option<String>,
+}
+
+impl<'a> Default for AddContactPopup<'a> {
+    fn default() -> Self {
+        let mut public_id_input = TextArea::default();
+        public_id_input.set_placeholder_text("64-character hex string");
+        public_id_input.set_cursor_line_style(Style::default());
+
+        let mut name_input = TextArea::default();
+        name_input.set_placeholder_text("Display name (optional)");
+        name_input.set_cursor_line_style(Style::default());
+
+        Self {
+            focused_field: AddContactField::PublicId,
+            public_id_input,
+            name_input,
+            error: None,
+        }
+    }
+}
+
+impl<'a> AddContactPopup<'a> {
+    /// Reset the popup to initial state
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Toggle focus between fields
+    pub fn toggle_field(&mut self) {
+        self.focused_field = match self.focused_field {
+            AddContactField::PublicId => AddContactField::Name,
+            AddContactField::Name => AddContactField::PublicId,
+        };
+    }
+
+    /// Validate the public ID input
+    pub fn validate_public_id(&self) -> Result<PublicID, String> {
+        let hex_str: String = self.public_id_input.lines().join("");
+        let hex_str = hex_str.trim();
+
+        if hex_str.is_empty() {
+            return Err("Public ID is required".to_string());
+        }
+
+        if hex_str.len() != 64 {
+            return Err(format!(
+                "Public ID must be 64 hex characters (got {})",
+                hex_str.len()
+            ));
+        }
+
+        let bytes = hex::decode(hex_str)
+            .map_err(|_| "Invalid hex characters in Public ID".to_string())?;
+
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| "Internal error: wrong byte length".to_string())?;
+
+        PublicID::try_from_bytes(&bytes)
+            .map_err(|_| "Invalid Public ID: rejected by curve validation".to_string())
+    }
+
+    /// Get the name input (None if empty)
+    pub fn get_name(&self) -> Option<String> {
+        let name: String = self.name_input.lines().join("");
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            None
+        } else {
+            Some(name)
+        }
+    }
+}
+
 /// A conversation/contact entry
 #[derive(Debug, Clone)]
 pub struct Conversation {
@@ -70,6 +162,10 @@ pub struct App<'a> {
     transport: Arc<HttpTransport>,
     /// Contacts by name (for reverse lookup)
     contacts_by_id: HashMap<PublicID, String>,
+    /// Whether the add contact popup is visible
+    pub show_add_contact_popup: bool,
+    /// Add contact popup state
+    pub add_contact_popup: AddContactPopup<'a>,
 }
 
 impl<'a> App<'a> {
@@ -117,6 +213,8 @@ impl<'a> App<'a> {
             client,
             transport,
             contacts_by_id: HashMap::new(),
+            show_add_contact_popup: false,
+            add_contact_popup: AddContactPopup::default(),
         };
 
         // Load contacts
@@ -232,6 +330,11 @@ impl<'a> App<'a> {
 
     /// Handle key events
     async fn handle_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
+        // Handle popup input first if visible
+        if self.show_add_contact_popup {
+            return self.handle_popup_key_event(key);
+        }
+
         // Global shortcuts
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
@@ -300,10 +403,13 @@ impl<'a> App<'a> {
                 }
             }
             KeyCode::Char('a') => {
-                self.status = "Add contact: Use CLI mode (press 'q' to exit TUI)".to_string();
+                // Open add contact popup
+                self.show_add_contact_popup = true;
+                self.add_contact_popup.reset();
+                self.status = "Popup opened - Tab to switch, Enter to confirm, Esc to cancel".to_string();
             }
             KeyCode::Char('h') => {
-                self.status = "j/k: navigate | Enter: select | Tab: switch pane | Esc/Ctrl+C: quit".to_string();
+                self.status = "j/k: navigate | Enter: select | a: add contact | Tab: switch pane | Esc/Ctrl+C: quit".to_string();
             }
             _ => {}
         }
@@ -376,6 +482,103 @@ impl<'a> App<'a> {
         self.message_scroll = 0;
         // TODO: Load from storage
         // For now, just show a placeholder
+    }
+
+    /// Handle key events when add contact popup is visible
+    fn handle_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
+        match key.code {
+            KeyCode::Esc => {
+                // Cancel and close popup
+                self.show_add_contact_popup = false;
+                self.add_contact_popup.reset();
+                self.status = "Add contact cancelled".to_string();
+            }
+            KeyCode::Tab | KeyCode::BackTab => {
+                // Switch between fields
+                self.add_contact_popup.toggle_field();
+                let field_name = match self.add_contact_popup.focused_field {
+                    AddContactField::PublicId => "Public ID",
+                    AddContactField::Name => "Name",
+                };
+                self.status = format!("Focus: {} field", field_name);
+            }
+            KeyCode::Enter => {
+                // Attempt to add contact
+                self.try_add_contact()?;
+            }
+            _ => {
+                // Forward to appropriate textarea
+                let input = Input::from(key);
+                match self.add_contact_popup.focused_field {
+                    AddContactField::PublicId => {
+                        self.add_contact_popup.public_id_input.input(input);
+                    }
+                    AddContactField::Name => {
+                        self.add_contact_popup.name_input.input(input);
+                    }
+                }
+                // Clear error when user starts typing
+                self.add_contact_popup.error = None;
+            }
+        }
+        Ok(())
+    }
+
+    /// Attempt to add contact from popup data
+    fn try_add_contact(&mut self) -> AppResult<()> {
+        // Validate public ID
+        let public_id = match self.add_contact_popup.validate_public_id() {
+            Ok(id) => id,
+            Err(e) => {
+                self.add_contact_popup.error = Some(e);
+                return Ok(());
+            }
+        };
+
+        // Get optional name
+        let name = self.add_contact_popup.get_name();
+
+        // Check if contact already exists
+        if self.client.get_contact(&public_id).is_ok() {
+            self.add_contact_popup.error = Some("Contact already exists".to_string());
+            return Ok(());
+        }
+
+        // Add contact via client API
+        match self.client.add_contact(&public_id, name.as_deref()) {
+            Ok(contact) => {
+                let display_name = contact.name.clone().unwrap_or_else(|| {
+                    let hex = hex::encode(contact.public_id.to_bytes());
+                    format!("{}...", &hex[..8])
+                });
+
+                // Add to local contacts list
+                self.contacts_by_id
+                    .insert(contact.public_id, display_name.clone());
+                self.conversations.push(Conversation {
+                    id: contact.id,
+                    public_id: contact.public_id,
+                    name: display_name.clone(),
+                    last_message: None,
+                    unread_count: 0,
+                });
+
+                // Select the new contact and move to input
+                self.selected_conversation = self.conversations.len() - 1;
+                self.load_conversation_messages();
+                self.focus = Focus::Input;
+
+                // Close popup and show success
+                self.show_add_contact_popup = false;
+                self.add_contact_popup.reset();
+                self.status = format!("Added contact: {}", display_name);
+            }
+            Err(e) => {
+                self.add_contact_popup.error = Some(format!("Failed to add contact: {}", e));
+            }
+        }
+
+        Ok(())
     }
 }
 

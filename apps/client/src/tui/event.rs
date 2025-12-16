@@ -35,8 +35,11 @@ impl EventHandler {
                 if event::poll(tick_rate).unwrap_or(false) {
                     match event::read() {
                         Ok(CrosstermEvent::Key(key)) => {
-                            if tx.send(Event::Key(key)).is_err() {
-                                break;
+                            // Only handle key press events, ignore release
+                            if key.kind == crossterm::event::KeyEventKind::Press {
+                                if tx.send(Event::Key(key)).is_err() {
+                                    break;
+                                }
                             }
                         }
                         Ok(CrosstermEvent::Resize(w, h)) => {
