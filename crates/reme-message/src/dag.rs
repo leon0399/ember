@@ -136,21 +136,28 @@ impl ReceiverGapDetector {
     }
 
     /// Try to resolve orphans when a new message becomes complete.
+    ///
+    /// Uses iterative approach with work queue to avoid stack overflow
+    /// when resolving long chains of orphaned messages.
     fn try_resolve_orphans(&mut self, new_complete_id: ContentId) {
-        // Find all orphans waiting for this message
-        let resolved: Vec<ContentId> = self
-            .orphans
-            .iter()
-            .filter(|(_, info)| info.missing_parent == new_complete_id)
-            .map(|(id, _)| *id)
-            .collect();
+        let mut work_queue = vec![new_complete_id];
 
-        // Resolve them (mark complete and recursively check their children)
-        for id in resolved {
-            self.orphans.remove(&id);
-            self.complete.insert(id);
-            // Recursively resolve (orphan's children might now be complete)
-            self.try_resolve_orphans(id);
+        while let Some(complete_id) = work_queue.pop() {
+            // Find all orphans waiting for this message
+            let resolved: Vec<ContentId> = self
+                .orphans
+                .iter()
+                .filter(|(_, info)| info.missing_parent == complete_id)
+                .map(|(id, _)| *id)
+                .collect();
+
+            // Resolve them and queue for further resolution
+            for id in resolved {
+                if self.orphans.remove(&id).is_some() {
+                    self.complete.insert(id);
+                    work_queue.push(id);
+                }
+            }
         }
     }
 
@@ -166,13 +173,24 @@ impl ReceiverGapDetector {
 /// When we receive a message from a peer, their `observed_heads` tells us
 /// what they've seen from us. We can compare this to our sent messages
 /// to determine what needs to be retransmitted.
+///
+/// # Design Note: Linear Chain (v0.1)
+///
+/// This implementation tracks a single `head` (latest message), assuming
+/// the sender creates a linear chain where each message links to the previous.
+/// This is correct for 1:1 messaging where:
+/// - Messages are sent sequentially (no concurrent sends)
+/// - UI always links to the most recent message (no "reply to older")
+///
+/// For future multi-head DAG support (multi-device, group chat), `head`
+/// would need to become `HashSet<ContentId>` to track multiple leaf nodes.
 #[derive(Debug, Default)]
 pub struct SenderGapDetector {
     /// Messages we've sent, keyed by content_id.
     /// Value is the previous message's content_id (for chain traversal).
     sent: HashMap<ContentId, Option<ContentId>>,
 
-    /// Our latest sent message's content_id.
+    /// Our latest sent message's content_id (single head for linear chain).
     head: Option<ContentId>,
 }
 
@@ -216,8 +234,15 @@ impl SenderGapDetector {
         for &observed in peer_observed {
             if self.sent.contains_key(&observed) {
                 // Check if this is more recent than our current latest_seen
-                if latest_seen.is_none() || self.is_ancestor(latest_seen.unwrap(), observed) {
-                    latest_seen = Some(observed);
+                match latest_seen {
+                    None => {
+                        latest_seen = Some(observed);
+                    }
+                    Some(seen) => {
+                        if self.is_ancestor(seen, observed) {
+                            latest_seen = Some(observed);
+                        }
+                    }
                 }
             }
         }

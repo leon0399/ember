@@ -316,19 +316,18 @@ impl<T: Transport> Client<T> {
         // Get precise timestamp for inner envelope
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
 
         // Get DAG fields from conversation state
         let contact_key = to.to_bytes();
-        let (prev_self, observed_heads, epoch) = if detached {
-            // Detached messages have no DAG linkage
+        let (prev_self, observed_heads, epoch) = {
             let dag_state = self.dag_state.lock().unwrap();
-            let epoch = dag_state.get(&contact_key).map(|d| d.epoch).unwrap_or(0);
-            (None, Vec::new(), epoch)
-        } else {
-            let dag_state = self.dag_state.lock().unwrap();
-            if let Some(dag) = dag_state.get(&contact_key) {
+            if detached {
+                // Detached messages have no DAG linkage
+                let epoch = dag_state.get(&contact_key).map(|d| d.epoch).unwrap_or(0);
+                (None, Vec::new(), epoch)
+            } else if let Some(dag) = dag_state.get(&contact_key) {
                 (dag.sender.head(), self.get_observed_heads(dag), dag.epoch)
             } else {
                 (None, Vec::new(), 0)
@@ -464,8 +463,8 @@ impl<T: Transport> Client<T> {
         let contact_key = sender_id.to_bytes();
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
 
         let (has_gaps, sender_state_reset, local_state_behind) = {
             let mut dag_state = self.dag_state.lock().unwrap();
@@ -484,10 +483,14 @@ impl<T: Transport> Client<T> {
             // Track this message in the receiver
             let gap_result = dag.receiver.on_receive(content_id, inner.prev_self, now_ms);
 
-            // Update peer's head for observed_heads in our next message
-            dag.set_peer_head(content_id);
-
             let gaps = matches!(gap_result, reme_message::GapResult::Gap { .. });
+
+            // Only update peer's head for complete messages (not orphans)
+            // Otherwise we'd advertise orphans in observed_heads, causing sender
+            // to think we have their ancestors when we don't
+            if !gaps {
+                dag.set_peer_head(content_id);
+            }
             (gaps, sender_reset, local_behind)
         };
 
@@ -976,8 +979,8 @@ mod tests {
         // but WITHOUT the DETACHED flag (signaling unintentional state loss)
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
         let message_id = MessageID::new();
         let mut inner = InnerEnvelope {
             from: *alice.public_id(),
@@ -1053,8 +1056,8 @@ mod tests {
         // Now Alice sends a detached message (intentionally, e.g., via LoRa)
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
         let message_id = MessageID::new();
         let mut inner = InnerEnvelope {
             from: *alice.public_id(),
@@ -1131,8 +1134,8 @@ mod tests {
         // current state doesn't know about (perhaps Alice restored from old backup).
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
         let message_id = MessageID::new();
 
         // Create a fake observed_head that Alice won't recognize
