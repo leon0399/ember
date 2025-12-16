@@ -13,11 +13,15 @@ use reme_transport::http::HttpTransport;
 use reme_transport::{MessageReceiver, ReceiverConfig, TransportEvent};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 use tui_textarea::{Input, TextArea};
 
 pub type AppResult<T> = Result<T, Box<dyn std::error::Error>>;
+
+/// Length of a PublicID when encoded as hexadecimal (32 bytes = 64 hex chars)
+const PUBLIC_ID_HEX_LENGTH: usize = 64;
 
 /// Focus area in the UI
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +54,7 @@ pub struct AddContactPopup<'a> {
 impl<'a> Default for AddContactPopup<'a> {
     fn default() -> Self {
         let mut public_id_input = TextArea::default();
-        public_id_input.set_placeholder_text("64-character hex string");
+        public_id_input.set_placeholder_text(&format!("{}-character hex string", PUBLIC_ID_HEX_LENGTH));
         public_id_input.set_cursor_line_style(Style::default());
 
         let mut name_input = TextArea::default();
@@ -89,9 +93,10 @@ impl<'a> AddContactPopup<'a> {
             return Err("Public ID is required".to_string());
         }
 
-        if hex_str.len() != 64 {
+        if hex_str.len() != PUBLIC_ID_HEX_LENGTH {
             return Err(format!(
-                "Public ID must be 64 hex characters (got {})",
+                "Public ID must be {} hex characters (got {})",
+                PUBLIC_ID_HEX_LENGTH,
                 hex_str.len()
             ));
         }
@@ -109,12 +114,12 @@ impl<'a> AddContactPopup<'a> {
 
     /// Get the name input (None if empty)
     pub fn get_name(&self) -> Option<String> {
-        let name: String = self.name_input.lines().join("");
-        let name = name.trim().to_string();
+        let name_str = self.name_input.lines().join("");
+        let name = name_str.trim();
         if name.is_empty() {
             None
         } else {
-            Some(name)
+            Some(name.to_string())
         }
     }
 }
@@ -236,10 +241,7 @@ impl<'a> App<'a> {
         self.contacts_by_id.clear();
 
         for contact in contacts {
-            let name = contact.name.clone().unwrap_or_else(|| {
-                let hex = hex::encode(contact.public_id.to_bytes());
-                format!("{}...", &hex[..8])
-            });
+            let name = format_display_name(contact.name.as_deref(), &contact.public_id);
 
             self.contacts_by_id.insert(contact.public_id, name.clone());
 
@@ -316,19 +318,15 @@ impl<'a> App<'a> {
             return idx;
         }
 
-        // Create display name
-        let display_name = self.client.get_contact(&public_id)
-            .ok()
-            .and_then(|c| c.name)
-            .unwrap_or_else(|| {
-                let hex = hex::encode(public_id.to_bytes());
-                format!("{}...", &hex[..8])
-            });
-
-        // Get contact ID from storage (reme-core auto-adds on message receive)
-        let contact_id = self.client.get_contact(&public_id)
-            .map(|c| c.id)
-            .unwrap_or(0);
+        // Get contact info from storage (reme-core auto-adds on message receive)
+        // Single call to avoid duplicate lookups
+        let (contact_id, display_name) = match self.client.get_contact(&public_id) {
+            Ok(contact) => {
+                let name = format_display_name(contact.name.as_deref(), &public_id);
+                (contact.id, name)
+            }
+            Err(_) => (0, format_display_name(None, &public_id)),
+        };
 
         // Add to tracking
         self.contacts_by_id.insert(public_id, display_name.clone());
@@ -354,7 +352,7 @@ impl<'a> App<'a> {
             from_me: false,
             sender_name,
             content: content.clone(),
-            timestamp: chrono_lite_now(),
+            timestamp: utc_time_now(),
         };
 
         // Cache message
@@ -376,7 +374,6 @@ impl<'a> App<'a> {
         self.status = "New message received".to_string();
 
         // Ring terminal bell for notification
-        use std::io::Write;
         print!("\x07");
         let _ = std::io::stdout().flush();
     }
@@ -514,7 +511,7 @@ impl<'a> App<'a> {
                                     from_me: true,
                                     sender_name: "You".to_string(),
                                     content: text,
-                                    timestamp: chrono_lite_now(),
+                                    timestamp: utc_time_now(),
                                 };
 
                                 // Cache the message
@@ -622,25 +619,13 @@ impl<'a> App<'a> {
 
         // Add contact via client API
         match self.client.add_contact(&public_id, name.as_deref()) {
-            Ok(contact) => {
-                let display_name = contact.name.clone().unwrap_or_else(|| {
-                    let hex = hex::encode(contact.public_id.to_bytes());
-                    format!("{}...", &hex[..8])
-                });
-
-                // Add to local contacts list
-                self.contacts_by_id
-                    .insert(contact.public_id, display_name.clone());
-                self.conversations.push(Conversation {
-                    id: contact.id,
-                    public_id: contact.public_id,
-                    name: display_name.clone(),
-                    last_message: None,
-                    unread_count: 0,
-                });
+            Ok(_) => {
+                // Reuse get_or_create_conversation to add to UI (avoids duplication)
+                let conv_idx = self.get_or_create_conversation(public_id);
+                let display_name = self.conversations[conv_idx].name.clone();
 
                 // Select the new contact and move to input
-                self.selected_conversation = self.conversations.len() - 1;
+                self.selected_conversation = conv_idx;
                 self.load_conversation_messages();
                 self.focus = Focus::Input;
 
@@ -670,8 +655,8 @@ impl<'a> App<'a> {
     }
 }
 
-/// Simple timestamp function (avoid chrono dependency)
-fn chrono_lite_now() -> String {
+/// Get current UTC time as HH:MM string (avoids chrono dependency)
+fn utc_time_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -681,4 +666,14 @@ fn chrono_lite_now() -> String {
     let hours = (secs % 86400) / 3600;
     let mins = (secs % 3600) / 60;
     format!("{:02}:{:02}", hours, mins)
+}
+
+/// Format a display name from optional name and public ID
+///
+/// Uses the provided name if available, otherwise returns truncated hex of the public ID.
+fn format_display_name(name: Option<&str>, public_id: &PublicID) -> String {
+    name.map(String::from).unwrap_or_else(|| {
+        let hex = hex::encode(public_id.to_bytes());
+        format!("{}...", &hex[..8])
+    })
 }
