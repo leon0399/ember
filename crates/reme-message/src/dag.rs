@@ -11,12 +11,23 @@ use crate::ContentId;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GapResult {
     /// Message has complete ancestry (all parents known).
-    Complete,
+    Complete {
+        /// Orphans that were resolved as a result of this message arriving.
+        /// Each tuple is (content_id, prev_self) for proper head tracking.
+        resolved_orphans: Vec<(ContentId, ContentId)>,
+    },
     /// Message is missing one or more parents.
     Gap {
         /// Content IDs of missing parent messages.
         missing: Vec<ContentId>,
     },
+}
+
+impl GapResult {
+    /// Returns true if this result indicates no gaps (complete ancestry).
+    pub fn is_complete(&self) -> bool {
+        matches!(self, GapResult::Complete { .. })
+    }
 }
 
 /// Information about an orphaned message (missing parent).
@@ -71,15 +82,15 @@ impl ReceiverGapDetector {
             None => {
                 // First message from this sender, no parent needed
                 self.complete.insert(content_id);
-                self.try_resolve_orphans(content_id);
-                GapResult::Complete
+                let resolved_orphans = self.try_resolve_orphans(content_id);
+                GapResult::Complete { resolved_orphans }
             }
             Some(parent_id) => {
                 if self.complete.contains(&parent_id) {
                     // Parent exists and is complete
                     self.complete.insert(content_id);
-                    self.try_resolve_orphans(content_id);
-                    GapResult::Complete
+                    let resolved_orphans = self.try_resolve_orphans(content_id);
+                    GapResult::Complete { resolved_orphans }
                 } else {
                     // Parent missing - this is an orphan
                     self.orphans.insert(
@@ -103,9 +114,12 @@ impl ReceiverGapDetector {
     ///
     /// Use this for messages received through alternative means (e.g., resync)
     /// where we know the content is valid but don't have the parent chain.
-    pub fn mark_complete(&mut self, content_id: ContentId) {
+    ///
+    /// Returns list of (content_id, prev_self) for any orphans that were
+    /// resolved as a result of marking this message complete.
+    pub fn mark_complete(&mut self, content_id: ContentId) -> Vec<(ContentId, ContentId)> {
         self.complete.insert(content_id);
-        self.try_resolve_orphans(content_id);
+        self.try_resolve_orphans(content_id)
     }
 
     /// Check if a message is complete (has known ancestry).
@@ -146,20 +160,28 @@ impl ReceiverGapDetector {
     /// Uses iterative approach with work queue to avoid stack overflow
     /// when resolving long chains of orphaned messages.
     /// Uses `waiting_on` index for O(1) lookup per resolution.
-    fn try_resolve_orphans(&mut self, new_complete_id: ContentId) {
+    ///
+    /// Returns list of (content_id, prev_self) for all resolved orphans,
+    /// so caller can update peer_heads tracking.
+    fn try_resolve_orphans(&mut self, new_complete_id: ContentId) -> Vec<(ContentId, ContentId)> {
         let mut work_queue = vec![new_complete_id];
+        let mut resolved = Vec::new();
 
         while let Some(complete_id) = work_queue.pop() {
             // O(1) lookup: get orphans waiting for this message
             if let Some(waiting) = self.waiting_on.remove(&complete_id) {
                 for child_id in waiting {
-                    if self.orphans.remove(&child_id).is_some() {
+                    if let Some(info) = self.orphans.remove(&child_id) {
                         self.complete.insert(child_id);
+                        // Record (content_id, prev_self) for peer_heads update
+                        resolved.push((child_id, info.missing_parent));
                         work_queue.push(child_id);
                     }
                 }
             }
         }
+
+        resolved
     }
 
     /// Clear all tracking data.
@@ -261,8 +283,10 @@ impl SenderGapDetector {
 
     /// Get all sent messages (traversing from all heads).
     ///
-    /// Note: With multiple heads (forks), order is not strictly defined.
-    /// Messages are collected via DFS from all heads, then reversed.
+    /// Note: With multiple heads (forks), the exact order is non-deterministic.
+    /// Within each fork, messages appear in roughly oldest-first order after
+    /// the final reverse. The interleaving of messages from different forks
+    /// depends on DFS traversal order and head iteration order.
     fn all_sent_ordered(&self) -> Vec<ContentId> {
         let mut result = Vec::new();
         let mut visited = HashSet::new();
@@ -371,12 +395,21 @@ impl ConversationDag {
         self.peer_heads.clear();
     }
 
-    /// Reset peer tracking state when peer has advanced their epoch.
+    /// Advance to peer's epoch when they've intentionally cleared history.
     ///
     /// Call this when receiving a message with a higher epoch than tracked.
     /// This indicates the peer intentionally cleared their history, so we
     /// reset our receiver and peer_heads without affecting our sender state.
-    pub fn reset_for_peer_epoch(&mut self, new_epoch: u16) {
+    ///
+    /// # Panics
+    /// Debug-asserts that `new_epoch > self.epoch` to catch misuse.
+    pub fn advance_to_peer_epoch(&mut self, new_epoch: u16) {
+        debug_assert!(
+            new_epoch > self.epoch,
+            "advance_to_peer_epoch called with non-advancing epoch: {} <= {}",
+            new_epoch,
+            self.epoch
+        );
         self.epoch = new_epoch;
         self.receiver.clear();
         self.peer_heads.clear();
@@ -441,7 +474,7 @@ mod tests {
 
             let result = detector.on_receive(id, None, 1000);
 
-            assert_eq!(result, GapResult::Complete);
+            assert!(result.is_complete());
             assert!(detector.is_complete(&id));
             assert!(!detector.is_orphan(&id));
         }
@@ -455,7 +488,7 @@ mod tests {
             detector.on_receive(id1, None, 1000);
             let result = detector.on_receive(id2, Some(id1), 2000);
 
-            assert_eq!(result, GapResult::Complete);
+            assert!(result.is_complete());
             assert!(detector.is_complete(&id2));
         }
 
@@ -739,7 +772,7 @@ mod tests {
 
             // Detached message (prev_self=None) arriving later - should be Complete
             let result = dag.receiver.on_receive(id3, None, 3000);
-            assert_eq!(result, GapResult::Complete);
+            assert!(result.is_complete());
             assert!(dag.receiver.is_complete(&id3));
         }
 
@@ -756,9 +789,9 @@ mod tests {
             let result3 = dag.receiver.on_receive(id3, None, 3000);
 
             // All should be complete - no gaps for detached messages
-            assert_eq!(result1, GapResult::Complete);
-            assert_eq!(result2, GapResult::Complete);
-            assert_eq!(result3, GapResult::Complete);
+            assert!(result1.is_complete());
+            assert!(result2.is_complete());
+            assert!(result3.is_complete());
             assert_eq!(dag.receiver.complete_count(), 3);
             assert_eq!(dag.receiver.orphan_count(), 0);
         }
@@ -776,14 +809,14 @@ mod tests {
 
             // Detached message interleaved
             let result = dag.receiver.on_receive(detached1, None, 1500);
-            assert_eq!(result, GapResult::Complete);
+            assert!(result.is_complete());
 
             // Continue linked chain
             dag.receiver.on_receive(linked2, Some(linked1), 2000);
 
             // Another detached message
             let result = dag.receiver.on_receive(detached2, None, 2500);
-            assert_eq!(result, GapResult::Complete);
+            assert!(result.is_complete());
 
             // All should be complete
             assert!(dag.receiver.is_complete(&linked1));
@@ -824,10 +857,10 @@ mod tests {
 
             // New chain in epoch 1 starts fresh
             let result = dag.receiver.on_receive(new_id1, None, 3000);
-            assert_eq!(result, GapResult::Complete);
+            assert!(result.is_complete());
 
             let result = dag.receiver.on_receive(new_id2, Some(new_id1), 4000);
-            assert_eq!(result, GapResult::Complete);
+            assert!(result.is_complete());
         }
 
         #[test]

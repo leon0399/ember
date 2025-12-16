@@ -474,8 +474,8 @@ impl<T: Transport> Client<T> {
             // If so, reset our tracking to match their new epoch
             let peer_epoch_advanced = inner.epoch > dag.epoch;
             if peer_epoch_advanced {
-                // Peer intentionally cleared - reset our peer tracking state
-                dag.reset_for_peer_epoch(inner.epoch);
+                // Peer intentionally cleared - advance to their epoch
+                dag.advance_to_peer_epoch(inner.epoch);
             }
 
             // Detect sender state reset:
@@ -498,8 +498,13 @@ impl<T: Transport> Client<T> {
             // Only update peer heads for complete messages (not orphans)
             // Otherwise we'd advertise orphans in observed_heads, causing sender
             // to think we have their ancestors when we don't
-            if !gaps {
+            if let reme_message::GapResult::Complete { resolved_orphans } = gap_result {
+                // Update peer_heads for this message
                 dag.update_peer_heads(content_id, inner.prev_self);
+                // Also update peer_heads for any orphans that were just resolved
+                for (orphan_id, orphan_prev_self) in resolved_orphans {
+                    dag.update_peer_heads(orphan_id, Some(orphan_prev_self));
+                }
             }
             (gaps, sender_reset, local_behind)
         };
