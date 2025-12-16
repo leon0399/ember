@@ -470,11 +470,21 @@ impl<T: Transport> Client<T> {
             let mut dag_state = self.dag_state.lock().unwrap();
             let dag = dag_state.entry(contact_key).or_insert_with(ConversationDag::new);
 
+            // Check if peer has advanced their epoch (intentional history clear)
+            // If so, reset our tracking to match their new epoch
+            let peer_epoch_advanced = inner.epoch > dag.epoch;
+            if peer_epoch_advanced {
+                // Peer intentionally cleared - reset our peer tracking state
+                dag.reset_for_peer_epoch(inner.epoch);
+            }
+
             // Detect sender state reset:
             // We have history from sender, but they sent prev_self=None without DETACHED flag
+            // AND their epoch hasn't advanced (epoch advance = intentional clear, not state loss)
             let sender_reset = dag.has_peer_history()
                 && inner.prev_self.is_none()
-                && !inner.is_detached();
+                && !inner.is_detached()
+                && !peer_epoch_advanced;
 
             // Detect local state behind:
             // Sender's observed_heads contains IDs we don't remember sending

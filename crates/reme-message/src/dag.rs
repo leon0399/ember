@@ -39,6 +39,10 @@ pub struct ReceiverGapDetector {
 
     /// Messages missing their parent (content_id -> orphan info).
     orphans: HashMap<ContentId, OrphanInfo>,
+
+    /// Index: missing parent -> orphans waiting for it.
+    /// Enables O(1) lookup when resolving orphans instead of O(N) scan.
+    waiting_on: HashMap<ContentId, Vec<ContentId>>,
 }
 
 impl ReceiverGapDetector {
@@ -85,6 +89,8 @@ impl ReceiverGapDetector {
                             received_at_ms,
                         },
                     );
+                    // Index for O(1) lookup when parent arrives
+                    self.waiting_on.entry(parent_id).or_default().push(content_id);
                     GapResult::Gap {
                         missing: vec![parent_id],
                     }
@@ -139,23 +145,18 @@ impl ReceiverGapDetector {
     ///
     /// Uses iterative approach with work queue to avoid stack overflow
     /// when resolving long chains of orphaned messages.
+    /// Uses `waiting_on` index for O(1) lookup per resolution.
     fn try_resolve_orphans(&mut self, new_complete_id: ContentId) {
         let mut work_queue = vec![new_complete_id];
 
         while let Some(complete_id) = work_queue.pop() {
-            // Find all orphans waiting for this message
-            let resolved: Vec<ContentId> = self
-                .orphans
-                .iter()
-                .filter(|(_, info)| info.missing_parent == complete_id)
-                .map(|(id, _)| *id)
-                .collect();
-
-            // Resolve them and queue for further resolution
-            for id in resolved {
-                if self.orphans.remove(&id).is_some() {
-                    self.complete.insert(id);
-                    work_queue.push(id);
+            // O(1) lookup: get orphans waiting for this message
+            if let Some(waiting) = self.waiting_on.remove(&complete_id) {
+                for child_id in waiting {
+                    if self.orphans.remove(&child_id).is_some() {
+                        self.complete.insert(child_id);
+                        work_queue.push(child_id);
+                    }
                 }
             }
         }
@@ -165,6 +166,7 @@ impl ReceiverGapDetector {
     pub fn clear(&mut self) {
         self.complete.clear();
         self.orphans.clear();
+        self.waiting_on.clear();
     }
 }
 
@@ -260,18 +262,18 @@ impl SenderGapDetector {
     /// Get all sent messages (traversing from all heads).
     ///
     /// Note: With multiple heads (forks), order is not strictly defined.
-    /// Messages are collected via BFS from all heads.
+    /// Messages are collected via DFS from all heads, then reversed.
     fn all_sent_ordered(&self) -> Vec<ContentId> {
         let mut result = Vec::new();
         let mut visited = HashSet::new();
-        let mut queue: Vec<ContentId> = self.heads.iter().copied().collect();
+        let mut stack: Vec<ContentId> = self.heads.iter().copied().collect();
 
-        // BFS from all heads
-        while let Some(id) = queue.pop() {
+        // DFS from all heads (using stack with pop)
+        while let Some(id) = stack.pop() {
             if visited.insert(id) {
                 result.push(id);
                 if let Some(Some(parent)) = self.sent.get(&id) {
-                    queue.push(*parent);
+                    stack.push(*parent);
                 }
             }
         }
@@ -366,6 +368,17 @@ impl ConversationDag {
         self.epoch = self.epoch.wrapping_add(1);
         self.receiver.clear();
         self.sender.clear();
+        self.peer_heads.clear();
+    }
+
+    /// Reset peer tracking state when peer has advanced their epoch.
+    ///
+    /// Call this when receiving a message with a higher epoch than tracked.
+    /// This indicates the peer intentionally cleared their history, so we
+    /// reset our receiver and peer_heads without affecting our sender state.
+    pub fn reset_for_peer_epoch(&mut self, new_epoch: u16) {
+        self.epoch = new_epoch;
+        self.receiver.clear();
         self.peer_heads.clear();
     }
 
