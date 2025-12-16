@@ -9,13 +9,15 @@
 use reme_encryption::{decrypt_with_mik, encrypt_to_mik, EncryptionError};
 use reme_identity::{Identity, PublicID};
 use reme_message::{
-    Content, DeviceID, InnerEnvelope, MessageID, OuterEnvelope, ReceiptContent, ReceiptKind,
-    RoutingKey, TextContent, TombstoneEnvelope, TombstoneStatus, CURRENT_VERSION,
+    Content, ContentId, ConversationDag, DeviceID, InnerEnvelope, MessageID, OuterEnvelope,
+    ReceiptContent, ReceiptKind, RoutingKey, TextContent, TombstoneEnvelope, TombstoneStatus,
+    CURRENT_VERSION,
 };
 use reme_storage::{Storage, StorageError};
 use reme_transport::{Transport, TransportError};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tracing::{debug, info};
 
@@ -54,10 +56,18 @@ pub struct Contact {
 /// Represents a decrypted received message
 #[derive(Debug, Clone)]
 pub struct ReceivedMessage {
+    /// Wire message ID (for network operations, tombstones)
     pub message_id: MessageID,
+    /// Sender's public ID
     pub from: PublicID,
+    /// Message content
     pub content: Content,
+    /// When the message was created (milliseconds since epoch)
     pub created_at_ms: u64,
+    /// Content-addressed ID (for DAG references)
+    pub content_id: ContentId,
+    /// Whether this message has gaps in the DAG (missing parents)
+    pub has_gaps: bool,
 }
 
 /// The main client for Resilient Messenger (MIK-only stateless encryption)
@@ -67,6 +77,7 @@ pub struct ReceivedMessage {
 /// - Receiving and decrypting messages
 /// - Managing contacts
 /// - Sending tombstones for message acknowledgment
+/// - Merkle DAG tracking for message ordering and gap detection
 ///
 /// With MIK-only encryption, each message includes an ephemeral key for
 /// stateless ECDH. No session state is maintained between messages.
@@ -78,6 +89,9 @@ pub struct Client<T: Transport> {
     device_id: DeviceID,
     /// Monotonically increasing tombstone sequence counter
     tombstone_sequence: AtomicU64,
+    /// DAG state per contact (keyed by PublicID bytes)
+    /// Tracks message ordering for gap detection
+    dag_state: Mutex<HashMap<[u8; 32], ConversationDag>>,
 }
 
 impl<T: Transport> Client<T> {
@@ -96,6 +110,7 @@ impl<T: Transport> Client<T> {
             storage,
             device_id,
             tombstone_sequence: AtomicU64::new(1), // Start at 1
+            dag_state: Mutex::new(HashMap::new()),
         }
     }
 
@@ -116,6 +131,7 @@ impl<T: Transport> Client<T> {
             storage,
             device_id,
             tombstone_sequence: AtomicU64::new(initial_sequence),
+            dag_state: Mutex::new(HashMap::new()),
         }
     }
 
@@ -142,6 +158,16 @@ impl<T: Transport> Client<T> {
     /// Get the identity's private key bytes (for decryption)
     fn private_key(&self) -> [u8; 32] {
         self.identity.to_bytes()
+    }
+
+    /// Get the latest observed heads from the receiver tracker for a contact
+    /// Returns the single most recent message from the peer (if any)
+    fn get_observed_heads(&self, _dag: &ConversationDag) -> Vec<ContentId> {
+        // In 1:1 chat, we typically observe only one head (the peer's latest message)
+        // If there are multiple (fork scenarios), we'd return all of them
+        // For now, just use the most recent complete message from receiver
+        // This is a simplification - full implementation would track peer's head separately
+        Vec::new() // TODO: Track peer's latest content_id
     }
 
     // ========================================
@@ -235,17 +261,30 @@ impl<T: Transport> Client<T> {
             .unwrap()
             .as_millis() as u64;
 
-        // Create inner envelope without signature first
-        // DAG fields are initialized as detached (will be populated when DAG tracking is implemented)
+        // Get DAG fields from conversation state
+        let contact_key = to.to_bytes();
+        let (prev_self, observed_heads, epoch) = {
+            let dag_state = self.dag_state.lock().unwrap();
+            if let Some(dag) = dag_state.get(&contact_key) {
+                (dag.sender.head(), self.get_observed_heads(dag), dag.epoch)
+            } else {
+                (None, Vec::new(), 0)
+            }
+        };
+
+        // Create inner envelope with DAG fields
         let mut inner = InnerEnvelope {
             from: *self.identity.public_id(),
             created_at_ms: now_ms,
             content: content.clone(),
             signature: None,
-            prev_self: None,
-            observed_heads: Vec::new(),
-            epoch: 0,
+            prev_self,
+            observed_heads,
+            epoch,
         };
+
+        // Compute content_id before signing (we need it for DAG tracking)
+        let content_id = inner.content_id();
 
         // Sign the envelope with sender's private key (message_id included in signable bytes)
         let signable = inner.signable_bytes(&outer_message_id);
@@ -266,15 +305,21 @@ impl<T: Transport> Client<T> {
         };
 
         // Store locally first - we require local message history before transmitting.
-        // This prepares for possible future support of DAG-based message history.
         let contact_id = self.storage.get_contact_id(to)?;
         self.storage
             .store_sent_message(contact_id, outer_message_id, &content)?;
 
+        // Update DAG tracking after successful storage
+        {
+            let mut dag_state = self.dag_state.lock().unwrap();
+            let dag = dag_state.entry(contact_key).or_insert_with(ConversationDag::new);
+            dag.sender.on_send(content_id, prev_self);
+        }
+
         // Only submit to transport after successful local storage
         self.transport.submit_message(outer).await?;
 
-        debug!("Message sent to contact (MIK-only encryption)");
+        debug!("Message sent to contact (MIK-only encryption, content_id: {:?})", content_id);
         Ok(outer_message_id)
     }
 
@@ -340,6 +385,9 @@ impl<T: Transport> Client<T> {
             Err(e) => return Err(e.into()),
         };
 
+        // Compute content_id for DAG tracking
+        let content_id = inner.content_id();
+
         // Store received message - fail if storage fails to prevent data loss
         self.storage.store_received_message(
             contact_id,
@@ -347,11 +395,34 @@ impl<T: Transport> Client<T> {
             &inner.content,
         )?;
 
+        // Update DAG tracking
+        let contact_key = sender_id.to_bytes();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let has_gaps = {
+            let mut dag_state = self.dag_state.lock().unwrap();
+            let dag = dag_state.entry(contact_key).or_insert_with(ConversationDag::new);
+
+            // Track this message in the receiver
+            let gap_result = dag.receiver.on_receive(content_id, inner.prev_self, now_ms);
+            matches!(gap_result, reme_message::GapResult::Gap { .. })
+        };
+
+        debug!(
+            "Message received (content_id: {:?}, has_gaps: {})",
+            content_id, has_gaps
+        );
+
         Ok(ReceivedMessage {
             message_id: outer.message_id,
             from: inner.from,
             content: inner.content,
             created_at_ms: inner.created_at_ms,
+            content_id,
+            has_gaps,
         })
     }
 

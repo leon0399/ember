@@ -365,6 +365,8 @@ async fn test_tombstone_with_status() {
             body: "Test message".to_string(),
         }),
         created_at_ms: 1234567890,
+        content_id: [0u8; 8], // Dummy content_id for testing
+        has_gaps: false,
     };
 
     // Test each tombstone status
@@ -499,6 +501,8 @@ async fn test_tombstone_sequence() {
             body: "Test".to_string(),
         }),
         created_at_ms: 1234567890,
+        content_id: [0u8; 8], // Dummy content_id for testing
+        has_gaps: false,
     };
 
     // Send multiple tombstones
