@@ -374,6 +374,11 @@ impl<'a> App<'a> {
         }
 
         self.status = "New message received".to_string();
+
+        // Ring terminal bell for notification
+        use std::io::Write;
+        print!("\x07");
+        let _ = std::io::stdout().flush();
     }
 
     /// Handle key events
