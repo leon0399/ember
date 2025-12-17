@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 reme-identity = { workspace = true }
 reme-message = { workspace = true }
+reme-outbox = { workspace = true }
 
 rusqlite = { version = "0.32", features = ["bundled"] }
 thiserror = { workspace = true }
