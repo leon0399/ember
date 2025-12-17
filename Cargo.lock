@@ -368,6 +368,7 @@ dependencies = [
  "reme-encryption",
  "reme-identity",
  "reme-message",
+ "reme-outbox",
  "reme-storage",
  "reme-transport",
  "serde",

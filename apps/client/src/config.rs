@@ -66,6 +66,73 @@ pub struct CliArgs {
     #[arg(short = 'l', long, env = "REME_LOG_LEVEL")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub log_level: Option<String>,
+
+    /// Outbox retry check interval in seconds
+    #[arg(long, env = "REME_OUTBOX_TICK_INTERVAL")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outbox_tick_interval: Option<u64>,
+
+    /// Message TTL in days (0 = never expire)
+    #[arg(long, env = "REME_OUTBOX_TTL_DAYS")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outbox_ttl_days: Option<u64>,
+
+    /// Attempt timeout in seconds (how long before retry)
+    #[arg(long, env = "REME_OUTBOX_ATTEMPT_TIMEOUT")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outbox_attempt_timeout: Option<u64>,
+
+    /// Initial retry delay in seconds
+    #[arg(long, env = "REME_OUTBOX_RETRY_INITIAL_DELAY")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outbox_retry_initial_delay: Option<u64>,
+
+    /// Maximum retry delay in seconds
+    #[arg(long, env = "REME_OUTBOX_RETRY_MAX_DELAY")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outbox_retry_max_delay: Option<u64>,
+}
+
+/// Outbox configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OutboxAppConfig {
+    /// How often to check for pending retries (seconds)
+    #[serde(default = "default_outbox_tick_interval")]
+    pub tick_interval_secs: u64,
+
+    /// Default message TTL in days (0 = never expire)
+    #[serde(default = "default_outbox_ttl_days")]
+    pub ttl_days: u64,
+
+    /// How long a "sent" attempt stays in-flight before timing out (seconds)
+    #[serde(default = "default_outbox_attempt_timeout")]
+    pub attempt_timeout_secs: u64,
+
+    /// Initial retry delay (seconds)
+    #[serde(default = "default_outbox_retry_initial_delay")]
+    pub retry_initial_delay_secs: u64,
+
+    /// Maximum retry delay (seconds)
+    #[serde(default = "default_outbox_retry_max_delay")]
+    pub retry_max_delay_secs: u64,
+}
+
+fn default_outbox_tick_interval() -> u64 { 5 }
+fn default_outbox_ttl_days() -> u64 { 7 }
+fn default_outbox_attempt_timeout() -> u64 { 60 }
+fn default_outbox_retry_initial_delay() -> u64 { 5 }
+fn default_outbox_retry_max_delay() -> u64 { 300 }
+
+impl Default for OutboxAppConfig {
+    fn default() -> Self {
+        Self {
+            tick_interval_secs: default_outbox_tick_interval(),
+            ttl_days: default_outbox_ttl_days(),
+            attempt_timeout_secs: default_outbox_attempt_timeout(),
+            retry_initial_delay_secs: default_outbox_retry_initial_delay(),
+            retry_max_delay_secs: default_outbox_retry_max_delay(),
+        }
+    }
 }
 
 /// Final resolved configuration
@@ -80,6 +147,10 @@ pub struct AppConfig {
 
     /// Log level
     pub log_level: String,
+
+    /// Outbox configuration
+    #[serde(default)]
+    pub outbox: OutboxAppConfig,
 }
 
 fn default_node_urls() -> Vec<String> {
@@ -92,6 +163,7 @@ impl Default for AppConfig {
             node_urls: default_node_urls(),
             data_dir: default_data_dir(),
             log_level: "info".to_string(),
+            outbox: OutboxAppConfig::default(),
         }
     }
 }
@@ -118,6 +190,19 @@ struct RawConfig {
     node_url: Option<String>,
     /// Multiple node URLs
     node_urls: Option<Vec<String>>,
+    /// Outbox config section
+    #[serde(default)]
+    outbox: RawOutboxConfig,
+}
+
+/// Raw outbox config from file/env
+#[derive(Debug, Clone, Deserialize, Default)]
+struct RawOutboxConfig {
+    tick_interval_secs: Option<u64>,
+    ttl_days: Option<u64>,
+    attempt_timeout_secs: Option<u64>,
+    retry_initial_delay_secs: Option<u64>,
+    retry_max_delay_secs: Option<u64>,
 }
 
 /// Load configuration from all sources with proper layering
@@ -192,10 +277,31 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
     // Expand ~ in data_dir path
     let data_dir = expand_tilde(&data_dir_str);
 
+    // Build outbox config with priority: CLI > config file > defaults
+    let outbox_defaults = OutboxAppConfig::default();
+    let outbox = OutboxAppConfig {
+        tick_interval_secs: cli.outbox_tick_interval
+            .or(raw.outbox.tick_interval_secs)
+            .unwrap_or(outbox_defaults.tick_interval_secs),
+        ttl_days: cli.outbox_ttl_days
+            .or(raw.outbox.ttl_days)
+            .unwrap_or(outbox_defaults.ttl_days),
+        attempt_timeout_secs: cli.outbox_attempt_timeout
+            .or(raw.outbox.attempt_timeout_secs)
+            .unwrap_or(outbox_defaults.attempt_timeout_secs),
+        retry_initial_delay_secs: cli.outbox_retry_initial_delay
+            .or(raw.outbox.retry_initial_delay_secs)
+            .unwrap_or(outbox_defaults.retry_initial_delay_secs),
+        retry_max_delay_secs: cli.outbox_retry_max_delay
+            .or(raw.outbox.retry_max_delay_secs)
+            .unwrap_or(outbox_defaults.retry_max_delay_secs),
+    };
+
     Ok(AppConfig {
         node_urls,
         data_dir,
         log_level,
+        outbox,
     })
 }
 
@@ -242,10 +348,30 @@ data_dir = "{}"
 
 # Log level: trace, debug, info, warn, error
 log_level = "{}"
+
+# Outbox configuration for message delivery tracking and retries
+[outbox]
+# How often to check for pending retries (seconds)
+tick_interval_secs = {}
+
+# Message TTL in days (0 = never expire)
+ttl_days = {}
+
+# How long a "sent" attempt stays in-flight before timing out (seconds)
+attempt_timeout_secs = {}
+
+# Retry backoff settings
+retry_initial_delay_secs = {}
+retry_max_delay_secs = {}
 "#,
         defaults.node_urls[0],
         defaults.data_dir.to_string_lossy(),
         defaults.log_level,
+        defaults.outbox.tick_interval_secs,
+        defaults.outbox.ttl_days,
+        defaults.outbox.attempt_timeout_secs,
+        defaults.outbox.retry_initial_delay_secs,
+        defaults.outbox.retry_max_delay_secs,
     )
 }
 
@@ -276,6 +402,9 @@ mod tests {
         assert!(toml.contains("node_urls"));
         assert!(toml.contains("data_dir"));
         assert!(toml.contains("log_level"));
+        assert!(toml.contains("[outbox]"));
+        assert!(toml.contains("tick_interval_secs"));
+        assert!(toml.contains("ttl_days"));
     }
 
     #[test]
