@@ -218,7 +218,7 @@ impl<'a> App<'a> {
             messages: Vec::new(),
             message_scroll: 0,
             input,
-            status: "Press 'h' for help".to_string(),
+            status: "Alt+H for help | Alt+A: add contact | Alt+I: identity".to_string(),
             client,
             transport,
             contacts_by_id: HashMap::new(),
@@ -388,11 +388,35 @@ impl<'a> App<'a> {
             return self.handle_my_id_popup_key_event(key);
         }
 
-        // Global shortcuts
+        // Global shortcuts (Ctrl+key)
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('c') | KeyCode::Char('q') => {
                     self.running = false;
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
+        // Global shortcuts (Alt+key) - work from any focus
+        if key.modifiers.contains(KeyModifiers::ALT) {
+            match key.code {
+                KeyCode::Char('a') => {
+                    // Alt+A: Add contact
+                    self.show_add_contact_popup = true;
+                    self.add_contact_popup.reset();
+                    self.status = "Add Contact (Tab: switch, Enter: confirm, Esc: cancel)".to_string();
+                    return Ok(());
+                }
+                KeyCode::Char('i') => {
+                    // Alt+I: Show identity
+                    self.show_my_id_popup = true;
+                    return Ok(());
+                }
+                KeyCode::Char('h') => {
+                    // Alt+H: Show help
+                    self.status = "Alt+A: add | Alt+I: identity | Alt+H: help | Tab: switch | Ctrl+Q: quit".to_string();
                     return Ok(());
                 }
                 _ => {}
@@ -466,7 +490,7 @@ impl<'a> App<'a> {
                 self.show_my_id_popup = true;
             }
             KeyCode::Char('h') => {
-                self.status = "j/k: navigate | Enter: select | a: add | i: my ID | Tab: switch | Esc: quit".to_string();
+                self.status = "j/k: navigate | Enter: select | a/Alt+A: add | i/Alt+I: ID | Tab: switch | Alt+H: help".to_string();
             }
             _ => {}
         }
