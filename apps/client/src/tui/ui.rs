@@ -369,7 +369,7 @@ fn render_my_id_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(id_text, id_inner);
 
     // Hints
-    let hints = Paragraph::new("Press Esc, Enter, or 'i' to close")
+    let hints = Paragraph::new("Press Esc, Enter, 'q', or 'i' to close")
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
     frame.render_widget(hints, chunks[3]);

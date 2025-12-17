@@ -122,7 +122,7 @@ impl<'a> AddContactPopup<'a> {
             .expect("hex::decode of 64-char hex produces 32 bytes");
 
         PublicID::try_from_bytes(&bytes)
-            .map_err(|_| "Invalid Public ID: rejected by curve validation".to_string())
+            .map_err(|_| "Invalid Public ID: not a valid Curve25519 public key".to_string())
     }
 
     /// Get the name input (None if empty, truncated if too long)
