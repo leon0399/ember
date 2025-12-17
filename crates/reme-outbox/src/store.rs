@@ -3,6 +3,7 @@
 use crate::state::*;
 use reme_identity::PublicID;
 use reme_message::{ContentId, MessageID};
+use std::sync::Arc;
 
 /// Storage operations for the outbox.
 ///
@@ -78,4 +79,77 @@ pub trait OutboxStore {
     /// Returns the number of entries expired.
     /// This is more efficient than loading all pending and calling mark_expired individually.
     fn outbox_expire_due(&self, now_ms: u64) -> Result<u64, Self::Error>;
+}
+
+/// Blanket implementation for Arc<T> where T: OutboxStore.
+///
+/// This enables sharing storage between Client and ClientOutbox
+/// without requiring Clone on the storage implementation.
+impl<T: OutboxStore> OutboxStore for Arc<T> {
+    type Error = T::Error;
+
+    fn outbox_enqueue(
+        &self,
+        recipient: &PublicID,
+        content_id: ContentId,
+        message_id: MessageID,
+        envelope_bytes: &[u8],
+        inner_bytes: &[u8],
+        expires_at_ms: Option<u64>,
+    ) -> Result<OutboxEntryId, Self::Error> {
+        (**self).outbox_enqueue(recipient, content_id, message_id, envelope_bytes, inner_bytes, expires_at_ms)
+    }
+
+    fn outbox_get_pending(&self) -> Result<Vec<PendingMessage>, Self::Error> {
+        (**self).outbox_get_pending()
+    }
+
+    fn outbox_get_for_recipient(&self, recipient: &PublicID) -> Result<Vec<PendingMessage>, Self::Error> {
+        (**self).outbox_get_for_recipient(recipient)
+    }
+
+    fn outbox_get_due_for_retry(&self, now_ms: u64) -> Result<Vec<PendingMessage>, Self::Error> {
+        (**self).outbox_get_due_for_retry(now_ms)
+    }
+
+    fn outbox_get_by_id(&self, entry_id: OutboxEntryId) -> Result<Option<PendingMessage>, Self::Error> {
+        (**self).outbox_get_by_id(entry_id)
+    }
+
+    fn outbox_get_by_content_id(&self, content_id: ContentId) -> Result<Option<PendingMessage>, Self::Error> {
+        (**self).outbox_get_by_content_id(content_id)
+    }
+
+    fn outbox_record_attempt(
+        &self,
+        entry_id: OutboxEntryId,
+        attempt: &TransportAttempt,
+        next_retry_at_ms: Option<u64>,
+    ) -> Result<(), Self::Error> {
+        (**self).outbox_record_attempt(entry_id, attempt, next_retry_at_ms)
+    }
+
+    fn outbox_mark_confirmed(
+        &self,
+        entry_id: OutboxEntryId,
+        confirmation: &DeliveryConfirmation,
+    ) -> Result<(), Self::Error> {
+        (**self).outbox_mark_confirmed(entry_id, confirmation)
+    }
+
+    fn outbox_mark_expired(&self, entry_id: OutboxEntryId) -> Result<(), Self::Error> {
+        (**self).outbox_mark_expired(entry_id)
+    }
+
+    fn outbox_schedule_retry(&self, entry_ids: &[OutboxEntryId], now_ms: u64) -> Result<(), Self::Error> {
+        (**self).outbox_schedule_retry(entry_ids, now_ms)
+    }
+
+    fn outbox_cleanup(&self, confirmed_before_ms: u64) -> Result<u64, Self::Error> {
+        (**self).outbox_cleanup(confirmed_before_ms)
+    }
+
+    fn outbox_expire_due(&self, now_ms: u64) -> Result<u64, Self::Error> {
+        (**self).outbox_expire_due(now_ms)
+    }
 }

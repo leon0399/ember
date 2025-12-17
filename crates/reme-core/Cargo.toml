@@ -9,9 +9,11 @@ reme-message = { workspace = true }
 reme-encryption = { workspace = true }
 reme-transport = { workspace = true }
 reme-storage = { workspace = true }
+reme-outbox = { workspace = true }
 
 thiserror = { workspace = true }
 tracing = { workspace = true }
+bincode = { workspace = true }
 
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
