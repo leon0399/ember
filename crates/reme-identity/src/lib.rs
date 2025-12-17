@@ -253,6 +253,11 @@ impl<Context> Decode<Context> for PublicID {
 
 impl_borrow_decode!(PublicID);
 
+/// User identity containing the secret key for signing and decryption.
+///
+/// The secret key is automatically zeroized when the Identity is dropped,
+/// preventing sensitive key material from lingering in memory. This is
+/// handled by x25519-dalek's `StaticSecret` which implements `ZeroizeOnDrop`.
 #[derive(Getters)]
 pub struct Identity {
   #[get = "pub"]
