@@ -420,6 +420,7 @@ impl Storage {
     }
 
     /// Load a PendingMessage from row data
+    #[allow(clippy::too_many_arguments)]
     fn load_pending_message(
         &self,
         id: i64,
@@ -430,6 +431,7 @@ impl Storage {
         inner_bytes: Vec<u8>,
         created_at_ms: u64,
         expires_at_ms: Option<u64>,
+        expired_at_ms: Option<u64>,
         next_retry_at_ms: Option<u64>,
         confirmation_type: Option<String>,
         confirmation_data: Option<Vec<u8>>,
@@ -475,6 +477,7 @@ impl Storage {
             inner_bytes,
             created_at_ms,
             expires_at_ms,
+            expired_at_ms,
             attempts,
             next_retry_at_ms,
             confirmation,
@@ -574,6 +577,7 @@ impl OutboxStore for Storage {
                 inner_bytes,
                 created_at_ms,
                 expires_at_ms,
+                None, // expired_at_ms - always None since query filters expired
                 next_retry_at_ms,
                 confirmation_type,
                 confirmation_data,
@@ -635,6 +639,7 @@ impl OutboxStore for Storage {
                 inner_bytes,
                 created_at_ms,
                 expires_at_ms,
+                None, // expired_at_ms - always None since query filters expired
                 next_retry_at_ms,
                 confirmation_type,
                 confirmation_data,
@@ -697,6 +702,7 @@ impl OutboxStore for Storage {
                 inner_bytes,
                 created_at_ms,
                 expires_at_ms,
+                None, // expired_at_ms - always None since query filters expired
                 next_retry_at_ms,
                 confirmation_type,
                 confirmation_data,
@@ -840,6 +846,7 @@ impl OutboxStore for Storage {
                 inner_bytes,
                 created_at_ms,
                 expires_at_ms,
+                None, // expired_at_ms - always None since query filters expired
                 next_retry_at_ms,
                 confirmation_type,
                 confirmation_data,

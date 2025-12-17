@@ -191,6 +191,8 @@ pub struct PendingMessage {
     pub created_at_ms: u64,
     /// TTL expiry (None = no expiry)
     pub expires_at_ms: Option<u64>,
+    /// When this entry was marked as expired (None = not expired)
+    pub expired_at_ms: Option<u64>,
     /// All delivery attempts
     pub attempts: Vec<TransportAttempt>,
     /// When next retry is allowed (None = immediate)
@@ -211,7 +213,12 @@ impl PendingMessage {
             return DeliveryState::Confirmed;
         }
 
-        // Check expiry
+        // Check if explicitly marked expired
+        if self.expired_at_ms.is_some() {
+            return DeliveryState::Expired;
+        }
+
+        // Check TTL expiry
         if self.expires_at_ms.map(|e| now_ms > e).unwrap_or(false) {
             return DeliveryState::Expired;
         }
@@ -274,6 +281,7 @@ mod tests {
             inner_bytes: vec![],
             created_at_ms: 1000,
             expires_at_ms: Some(100_000),
+            expired_at_ms: None,
             attempts: vec![],
             next_retry_at_ms: None,
             confirmation: None,
