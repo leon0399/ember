@@ -1997,6 +1997,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "reme-outbox"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "reme-identity",
+ "reme-message",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "reme-storage"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,15 @@
+[package]
+name = "reme-outbox"
+version = "0.1.0"
+edition = "2021"
+description = "Client-side outbox for resilient message delivery"
+
+[dependencies]
+reme-identity = { workspace = true }
+reme-message = { workspace = true }
+
+thiserror = { workspace = true }
+bincode = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
