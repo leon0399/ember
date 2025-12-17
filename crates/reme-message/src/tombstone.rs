@@ -261,7 +261,7 @@ impl TombstoneEnvelope {
         bytes.extend_from_slice(&self.version.major.to_le_bytes());
         bytes.extend_from_slice(&self.version.minor.to_le_bytes());
         bytes.extend_from_slice(self.target_message_id.as_bytes());
-        bytes.extend_from_slice(&self.routing_key);
+        bytes.extend_from_slice(self.routing_key.as_bytes());
         bytes.extend_from_slice(&self.device_id);
         bytes.extend_from_slice(&self.timestamp_hours.to_le_bytes());
         bytes.extend_from_slice(&self.sequence.to_le_bytes());
@@ -447,7 +447,7 @@ impl WirePayload {
     }
 
     /// Get the routing key for this payload
-    pub fn routing_key(&self) -> &[u8; 16] {
+    pub fn routing_key(&self) -> &RoutingKey {
         match self {
             WirePayload::Message(envelope) => &envelope.routing_key,
             WirePayload::Tombstone(tombstone) => &tombstone.routing_key,
@@ -485,7 +485,7 @@ mod tests {
         let device_id = [0u8; 16];
 
         let tombstone = TombstoneEnvelope::new_simple(
-            message_id, [0u8; 16], pub_key, &priv_key, device_id, 1,
+            message_id, RoutingKey::from_bytes([0u8; 16]), pub_key, &priv_key, device_id, 1,
         );
 
         assert!(tombstone.verify_signature());
@@ -499,7 +499,7 @@ mod tests {
 
         let tombstone = TombstoneEnvelope::new_simple(
             MessageID::new(),
-            [0u8; 16],
+            RoutingKey::from_bytes([0u8; 16]),
             pub_key,
             &priv_key,
             device_id,
@@ -532,7 +532,7 @@ mod tests {
         // Create a fresh tombstone
         let tombstone = TombstoneEnvelope::new_simple(
             MessageID::new(),
-            [0u8; 16],
+            RoutingKey::from_bytes([0u8; 16]),
             pub_key,
             &priv_key,
             device_id,
@@ -544,7 +544,7 @@ mod tests {
         let mut old_tombstone = TombstoneEnvelope {
             version: CURRENT_VERSION,
             target_message_id: MessageID::new(),
-            routing_key: [0u8; 16],
+            routing_key: RoutingKey::from_bytes([0u8; 16]),
             recipient_id_pub: pub_key,
             device_id,
             timestamp_hours: now_hours().saturating_sub(11 * 24), // 11 days ago
@@ -572,7 +572,7 @@ mod tests {
         let mut future_tombstone = TombstoneEnvelope {
             version: CURRENT_VERSION,
             target_message_id: MessageID::new(),
-            routing_key: [0u8; 16],
+            routing_key: RoutingKey::from_bytes([0u8; 16]),
             recipient_id_pub: pub_key,
             device_id,
             timestamp_hours: now_hours() + 2, // 2 hours in future (beyond 1 hour allowance)
@@ -599,7 +599,7 @@ mod tests {
 
         let tombstone = TombstoneEnvelope::new(
             MessageID::new(),
-            [0u8; 16],
+            RoutingKey::from_bytes([0u8; 16]),
             recipient_pub,
             &recipient_priv,
             device_id,
@@ -628,7 +628,7 @@ mod tests {
 
         let tombstone = TombstoneEnvelope::new(
             MessageID::new(),
-            [0u8; 16],
+            RoutingKey::from_bytes([0u8; 16]),
             recipient_pub,
             &recipient_priv,
             device_id,
@@ -667,7 +667,7 @@ mod tests {
 
         let tombstone = TombstoneEnvelope::new_simple(
             MessageID::new(),
-            [0u8; 16],
+            RoutingKey::from_bytes([0u8; 16]),
             pub_key,
             &priv_key,
             device_id,
@@ -690,7 +690,7 @@ mod tests {
 
         let tombstone = TombstoneEnvelope::new_simple(
             MessageID::new(),
-            [0u8; 16],
+            RoutingKey::from_bytes([0u8; 16]),
             pub_key,
             &priv_key,
             device_id,

@@ -16,7 +16,7 @@ use axum::{
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
-use reme_message::{OuterEnvelope, WirePayload};
+use reme_message::{OuterEnvelope, RoutingKey, WirePayload};
 use serde::Serialize;
 use std::sync::Arc;
 use tracing::{debug, error, warn};
@@ -215,8 +215,9 @@ async fn fetch_messages(
             .into_response();
     }
 
-    let mut routing_key = [0u8; 16];
-    routing_key.copy_from_slice(&routing_key_bytes);
+    let mut routing_key_bytes_arr = [0u8; 16];
+    routing_key_bytes_arr.copy_from_slice(&routing_key_bytes);
+    let routing_key = RoutingKey::from_bytes(routing_key_bytes_arr);
 
     // Fetch messages
     match state.store.fetch(&routing_key) {

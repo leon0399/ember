@@ -1,7 +1,7 @@
 use bincode::enc::Encoder;
 use bincode::error::EncodeError;
 use bincode::{impl_borrow_decode, Decode, Encode};
-pub use reme_identity::PublicID;
+pub use reme_identity::{PublicID, RoutingKey};
 use uuid::Uuid;
 
 pub mod dag;
@@ -87,8 +87,6 @@ impl<C> bincode::Decode<C> for MessageID {
 }
 
 impl_borrow_decode!(MessageID);
-
-pub type RoutingKey = [u8; 16];
 
 // ============================================
 // Content-addressed ID for Merkle DAG
