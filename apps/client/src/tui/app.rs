@@ -15,7 +15,8 @@ use reme_transport::{MessageReceiver, ReceiverConfig, TransportEvent};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tracing::{debug, info, warn};
 use tui_textarea::{Input, TextArea};
 
 pub type AppResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -34,6 +35,9 @@ const MAX_CACHED_MESSAGES_PER_CONTACT: usize = 500;
 
 /// Maximum length for contact display names (prevents UI issues and potential abuse)
 const MAX_NAME_LENGTH: usize = 64;
+
+/// Interval between outbox retry ticks (5 seconds)
+const OUTBOX_TICK_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Focus area in the UI
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -294,6 +298,7 @@ impl<'a> App<'a> {
     /// Run the application main loop
     pub async fn run(&mut self, terminal: &mut Terminal<impl Backend>) -> AppResult<()> {
         let mut event_handler = EventHandler::new(100);
+        let mut last_outbox_tick = Instant::now();
 
         // Setup message receiver for incoming messages
         let receiver = MessageReceiver::new(self.transport.clone());
@@ -320,7 +325,28 @@ impl<'a> App<'a> {
 
             // Handle UI events
             match event_handler.next().await? {
-                Event::Tick => {}
+                Event::Tick => {
+                    // Periodically run outbox tick for message retries
+                    if last_outbox_tick.elapsed() >= OUTBOX_TICK_INTERVAL {
+                        match self.client.outbox_tick().await {
+                            Ok((retried, expired)) => {
+                                if retried > 0 || expired > 0 {
+                                    info!(
+                                        retried = retried,
+                                        expired = expired,
+                                        "Outbox tick completed"
+                                    );
+                                } else {
+                                    debug!("Outbox tick: no pending messages");
+                                }
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "Outbox tick failed");
+                            }
+                        }
+                        last_outbox_tick = Instant::now();
+                    }
+                }
                 Event::Key(key_event) => self.handle_key_event(key_event).await?,
                 Event::Resize(_, _) => {}
             }
