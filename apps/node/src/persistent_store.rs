@@ -496,7 +496,7 @@ mod tests {
     fn test_enqueue_and_fetch() {
         let config = PersistentStoreConfig::default();
         let store = PersistentMailboxStore::in_memory(config).unwrap();
-        let routing_key = [1u8; 16];
+        let routing_key = RoutingKey::from_bytes([1u8; 16]);
 
         let envelope = create_test_envelope(routing_key, Some(1));
         let message_id = envelope.message_id;
@@ -521,7 +521,7 @@ mod tests {
             ..Default::default()
         };
         let store = PersistentMailboxStore::in_memory(config).unwrap();
-        let routing_key = [4u8; 16];
+        let routing_key = RoutingKey::from_bytes([4u8; 16]);
 
         store.enqueue(routing_key, create_test_envelope(routing_key, Some(1))).unwrap();
         store.enqueue(routing_key, create_test_envelope(routing_key, Some(1))).unwrap();
@@ -535,7 +535,7 @@ mod tests {
     fn test_duplicate_message_id() {
         let config = PersistentStoreConfig::default();
         let store = PersistentMailboxStore::in_memory(config).unwrap();
-        let routing_key = [5u8; 16];
+        let routing_key = RoutingKey::from_bytes([5u8; 16]);
 
         let envelope = create_test_envelope(routing_key, Some(1));
         let message_id = envelope.message_id;
@@ -555,7 +555,7 @@ mod tests {
     fn test_get_message_ids() {
         let config = PersistentStoreConfig::default();
         let store = PersistentMailboxStore::in_memory(config).unwrap();
-        let routing_key = [6u8; 16];
+        let routing_key = RoutingKey::from_bytes([6u8; 16]);
 
         let env1 = create_test_envelope(routing_key, Some(1));
         let env2 = create_test_envelope(routing_key, Some(1));
@@ -575,7 +575,7 @@ mod tests {
     fn test_delete_message() {
         let config = PersistentStoreConfig::default();
         let store = PersistentMailboxStore::in_memory(config).unwrap();
-        let routing_key = [7u8; 16];
+        let routing_key = RoutingKey::from_bytes([7u8; 16]);
 
         let envelope = create_test_envelope(routing_key, Some(1));
         let message_id = envelope.message_id;
@@ -594,8 +594,8 @@ mod tests {
         let config = PersistentStoreConfig::default();
         let store = PersistentMailboxStore::in_memory(config).unwrap();
 
-        let rk1 = [10u8; 16];
-        let rk2 = [11u8; 16];
+        let rk1 = RoutingKey::from_bytes([10u8; 16]);
+        let rk2 = RoutingKey::from_bytes([11u8; 16]);
 
         store.enqueue(rk1, create_test_envelope(rk1, Some(1))).unwrap();
         store.enqueue(rk1, create_test_envelope(rk1, Some(1))).unwrap();

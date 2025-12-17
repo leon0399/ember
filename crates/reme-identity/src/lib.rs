@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::fmt::{self, Debug, Display};
 use getset::Getters;
 use rand_core::OsRng;
 use thiserror::Error;
@@ -62,9 +62,21 @@ pub fn is_low_order_point(public_key: &[u8; 32]) -> bool {
 /// This achieves 32-byte compact addresses while supporting both encryption
 /// and signature verification through the birational equivalence between
 /// Curve25519 (Montgomery) and Ed25519 (Twisted Edwards) forms.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PublicID {
   pub(crate) x25519_public: X25519PublicKey,
+}
+
+impl Display for PublicID {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{}", hex::encode(self.to_bytes()))
+  }
+}
+
+impl Debug for PublicID {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "PublicID({})", hex::encode(self.to_bytes()))
+  }
 }
 
 impl PublicID {
@@ -133,12 +145,80 @@ impl PublicID {
   /// Returns a 16-byte key derived from the public ID hash.
   /// This is used to address messages in the mailbox system
   /// without revealing the full public key.
-  pub fn routing_key(&self) -> [u8; 16] {
+  pub fn routing_key(&self) -> RoutingKey {
     let hash = blake3::hash(&self.to_bytes());
-    let mut routing_key = [0u8; 16];
-    routing_key.copy_from_slice(&hash.as_bytes()[0..16]);
-    routing_key
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&hash.as_bytes()[0..16]);
+    RoutingKey(bytes)
   }
+}
+
+/// Routing key for mailbox addressing (16 bytes).
+///
+/// Derived from the first 16 bytes of a BLAKE3 hash of a PublicID.
+/// Used to address messages without revealing the full public key.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Encode, Decode)]
+pub struct RoutingKey(pub [u8; 16]);
+
+impl RoutingKey {
+    /// Create a new RoutingKey from raw bytes
+    pub fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    /// Get the raw bytes
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+}
+
+impl Display for RoutingKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", hex::encode(self.0))
+    }
+}
+
+impl Debug for RoutingKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RoutingKey({})", hex::encode(self.0))
+    }
+}
+
+impl AsRef<[u8; 16]> for RoutingKey {
+    fn as_ref(&self) -> &[u8; 16] {
+        &self.0
+    }
+}
+
+impl AsRef<[u8]> for RoutingKey {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl From<[u8; 16]> for RoutingKey {
+    fn from(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl From<RoutingKey> for [u8; 16] {
+    fn from(key: RoutingKey) -> Self {
+        key.0
+    }
+}
+
+impl std::ops::Deref for RoutingKey {
+    type Target = [u8; 16];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for RoutingKey {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 impl AsRef<X25519PublicKey> for PublicID {
