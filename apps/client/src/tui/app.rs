@@ -4,6 +4,7 @@ use crate::config::AppConfig;
 use crate::tui::event::{Event, EventHandler};
 use crate::tui::ui;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::execute;
 use ratatui::prelude::*;
 use reme_core::Client;
 use reme_identity::{Identity, PublicID};
@@ -11,9 +12,8 @@ use reme_message::Content;
 use reme_storage::Storage;
 use reme_transport::http::HttpTransport;
 use reme_transport::{MessageReceiver, ReceiverConfig, TransportEvent};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
-use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 use tui_textarea::{Input, TextArea};
@@ -22,6 +22,18 @@ pub type AppResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 /// Length of a PublicID when encoded as hexadecimal (32 bytes = 64 hex chars)
 const PUBLIC_ID_HEX_LENGTH: usize = 64;
+
+/// Help text shown in status bar (Alt+H or initial startup)
+const HELP_TEXT: &str = "Alt+A: add | Alt+I: identity | Alt+H: help | Tab: switch | Ctrl+Q: quit";
+
+/// Short help hint for status bar
+const HELP_HINT: &str = "Alt+H for help";
+
+/// Maximum number of messages to cache per conversation (prevents unbounded memory growth)
+const MAX_CACHED_MESSAGES_PER_CONTACT: usize = 500;
+
+/// Maximum length for contact display names (prevents UI issues and potential abuse)
+const MAX_NAME_LENGTH: usize = 64;
 
 /// Focus area in the UI
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,22 +116,25 @@ impl<'a> AddContactPopup<'a> {
         let bytes = hex::decode(hex_str)
             .map_err(|_| "Invalid hex characters in Public ID".to_string())?;
 
+        // Safe: hex::decode of 64-char hex string always produces exactly 32 bytes
         let bytes: [u8; 32] = bytes
             .try_into()
-            .map_err(|_| "Internal error: wrong byte length".to_string())?;
+            .expect("hex::decode of 64-char hex produces 32 bytes");
 
         PublicID::try_from_bytes(&bytes)
             .map_err(|_| "Invalid Public ID: rejected by curve validation".to_string())
     }
 
-    /// Get the name input (None if empty)
+    /// Get the name input (None if empty, truncated if too long)
     pub fn get_name(&self) -> Option<String> {
         let name_str = self.name_input.lines().join("");
         let name = name_str.trim();
         if name.is_empty() {
             None
         } else {
-            Some(name.to_string())
+            // Truncate to max length to prevent UI issues and abuse
+            let truncated: String = name.chars().take(MAX_NAME_LENGTH).collect();
+            Some(truncated)
         }
     }
 }
@@ -168,7 +183,7 @@ pub struct App<'a> {
     /// Contacts by name (for reverse lookup)
     contacts_by_id: HashMap<PublicID, String>,
     /// In-memory message cache per contact (until storage retrieval is implemented)
-    message_cache: HashMap<PublicID, Vec<Message>>,
+    message_cache: HashMap<PublicID, VecDeque<Message>>,
     /// Whether the add contact popup is visible
     pub show_add_contact_popup: bool,
     /// Add contact popup state
@@ -197,7 +212,10 @@ impl<'a> App<'a> {
 
         // Create storage
         let db_path = config.data_dir.join("messages.db");
-        let storage = Storage::open(db_path.to_str().unwrap())?;
+        let db_path_str = db_path
+            .to_str()
+            .ok_or("Database path contains invalid UTF-8 characters")?;
+        let storage = Storage::open(db_path_str)?;
 
         // Create transport
         let transport = Arc::new(HttpTransport::with_nodes(config.node_urls.clone()));
@@ -218,7 +236,7 @@ impl<'a> App<'a> {
             messages: Vec::new(),
             message_scroll: 0,
             input,
-            status: "Alt+H for help | Alt+A: add contact | Alt+I: identity".to_string(),
+            status: HELP_HINT.to_string(),
             client,
             transport,
             contacts_by_id: HashMap::new(),
@@ -356,10 +374,7 @@ impl<'a> App<'a> {
         };
 
         // Cache message
-        self.message_cache
-            .entry(from)
-            .or_insert_with(Vec::new)
-            .push(message.clone());
+        self.cache_message(from, message.clone());
 
         // Update conversation
         self.conversations[conv_idx].last_message = Some(content);
@@ -373,9 +388,8 @@ impl<'a> App<'a> {
 
         self.status = "New message received".to_string();
 
-        // Ring terminal bell for notification
-        print!("\x07");
-        let _ = std::io::stdout().flush();
+        // Ring terminal bell for notification (using crossterm for ratatui compatibility)
+        let _ = execute!(std::io::stdout(), crossterm::style::Print("\x07"));
     }
 
     /// Handle key events
@@ -388,7 +402,7 @@ impl<'a> App<'a> {
             return self.handle_my_id_popup_key_event(key);
         }
 
-        // Global shortcuts (Ctrl+key)
+        // Global shortcuts
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('c') | KeyCode::Char('q') => {
@@ -416,7 +430,7 @@ impl<'a> App<'a> {
                 }
                 KeyCode::Char('h') => {
                     // Alt+H: Show help
-                    self.status = "Alt+A: add | Alt+I: identity | Alt+H: help | Tab: switch | Ctrl+Q: quit".to_string();
+                    self.status = HELP_TEXT.to_string();
                     return Ok(());
                 }
                 _ => {}
@@ -479,18 +493,9 @@ impl<'a> App<'a> {
                     conv.unread_count = 0;
                 }
             }
-            KeyCode::Char('a') => {
-                // Open add contact popup
-                self.show_add_contact_popup = true;
-                self.add_contact_popup.reset();
-                self.status = "Popup opened - Tab to switch, Enter to confirm, Esc to cancel".to_string();
-            }
-            KeyCode::Char('i') => {
-                // Show my identity popup
-                self.show_my_id_popup = true;
-            }
             KeyCode::Char('h') => {
-                self.status = "j/k: navigate | Enter: select | a/Alt+A: add | i/Alt+I: ID | Tab: switch | Alt+H: help".to_string();
+                // Show help (same as Alt+H)
+                self.status = HELP_TEXT.to_string();
             }
             _ => {}
         }
@@ -539,10 +544,7 @@ impl<'a> App<'a> {
                                 };
 
                                 // Cache the message
-                                self.message_cache
-                                    .entry(public_id)
-                                    .or_insert_with(Vec::new)
-                                    .push(message.clone());
+                                self.cache_message(public_id, message.clone());
 
                                 // Add to visible messages
                                 self.messages.push(message);
@@ -567,6 +569,15 @@ impl<'a> App<'a> {
         Ok(())
     }
 
+    /// Cache a message with size limit (O(1) eviction using VecDeque)
+    fn cache_message(&mut self, contact: PublicID, message: Message) {
+        let cache = self.message_cache.entry(contact).or_default();
+        cache.push_back(message);
+        if cache.len() > MAX_CACHED_MESSAGES_PER_CONTACT {
+            cache.pop_front();
+        }
+    }
+
     /// Load messages for the selected conversation
     fn load_conversation_messages(&mut self) {
         self.messages.clear();
@@ -575,7 +586,7 @@ impl<'a> App<'a> {
         // Load from in-memory cache
         if let Some(conv) = self.conversations.get(self.selected_conversation) {
             if let Some(cached) = self.message_cache.get(&conv.public_id) {
-                self.messages = cached.clone();
+                self.messages = cached.iter().cloned().collect();
             }
         }
         // TODO: Also load from storage when retrieval API is implemented
@@ -634,6 +645,12 @@ impl<'a> App<'a> {
 
         // Get optional name
         let name = self.add_contact_popup.get_name();
+
+        // Check if trying to add self
+        if &public_id == self.client.public_id() {
+            self.add_contact_popup.error = Some("Cannot add yourself as a contact".to_string());
+            return Ok(());
+        }
 
         // Check if contact already exists
         if self.client.get_contact(&public_id).is_ok() {
