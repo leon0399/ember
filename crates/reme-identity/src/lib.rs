@@ -9,6 +9,12 @@ use bincode::enc::Encoder;
 use bincode::de::Decoder;
 use bincode::error::{EncodeError, DecodeError};
 
+pub mod encrypted;
+pub use encrypted::{
+    Argon2Params, EncryptedIdentity, EncryptedIdentityError,
+    is_encrypted, load_identity, save_identity,
+};
+
 /// Error returned when a public key is invalid (e.g., low-order point)
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 #[error("Invalid public key: low-order point on Curve25519")]

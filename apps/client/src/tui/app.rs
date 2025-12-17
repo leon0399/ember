@@ -198,21 +198,13 @@ pub struct App<'a> {
 
 impl<'a> App<'a> {
     /// Create a new app instance
-    pub async fn new(config: AppConfig) -> AppResult<Self> {
+    ///
+    /// # Arguments
+    /// * `config` - Application configuration
+    /// * `identity` - The loaded/decrypted identity
+    pub async fn new(config: AppConfig, identity: Identity) -> AppResult<Self> {
         // Ensure data directory exists
         fs::create_dir_all(&config.data_dir)?;
-
-        // Load or generate identity
-        let identity_path = config.data_dir.join("identity.key");
-        let identity = if identity_path.exists() {
-            let bytes = fs::read(&identity_path)?;
-            let key: [u8; 32] = bytes.try_into().map_err(|_| "Invalid identity file")?;
-            Identity::from_bytes(&key)
-        } else {
-            let identity = Identity::generate();
-            fs::write(&identity_path, identity.to_bytes())?;
-            identity
-        };
 
         // Create storage
         let db_path = config.data_dir.join("messages.db");
