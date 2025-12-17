@@ -5,6 +5,7 @@
 //! - MIK-only stateless encryption (Session V1-style)
 //! - Sending and receiving encrypted messages
 //! - Contact management
+//! - Resilient delivery via outbox with retry policies
 
 use reme_encryption::{decrypt_with_mik, encrypt_to_mik, EncryptionError};
 use reme_identity::{Identity, PublicID};
@@ -13,13 +14,17 @@ use reme_message::{
     ReceiptContent, ReceiptKind, RoutingKey, TextContent, TombstoneEnvelope, TombstoneStatus,
     CURRENT_VERSION, FLAG_DETACHED,
 };
+use reme_outbox::{
+    AttemptError, AttemptResult, ClientOutbox, DeliveryState, OutboxConfig, OutboxEntryId,
+    PendingMessage, TransportRetryPolicy,
+};
 use reme_storage::{Storage, StorageError};
 use reme_transport::{Transport, TransportError};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Error)]
 pub enum ClientError {
@@ -32,8 +37,17 @@ pub enum ClientError {
     #[error("Encryption error: {0}")]
     Encryption(#[from] EncryptionError),
 
+    #[error("Outbox error: {0}")]
+    Outbox(StorageError),
+
+    #[error("Serialization error: {0}")]
+    Serialization(String),
+
     #[error("Contact not found")]
     ContactNotFound,
+
+    #[error("Outbox entry not found")]
+    OutboxEntryNotFound,
 
     #[error("Message not intended for this recipient (routing key mismatch)")]
     WrongRecipient,
@@ -84,13 +98,20 @@ pub struct ReceivedMessage {
 /// - Managing contacts
 /// - Sending tombstones for message acknowledgment
 /// - Merkle DAG tracking for message ordering and gap detection
+/// - Resilient delivery via outbox with configurable retry policies
 ///
 /// With MIK-only encryption, each message includes an ephemeral key for
 /// stateless ECDH. No session state is maintained between messages.
+///
+/// The outbox provides:
+/// - Persistent queue of pending messages
+/// - Per-transport retry scheduling
+/// - DAG-based delivery confirmation
+/// - Gap detection triggers automatic retry
 pub struct Client<T: Transport> {
     identity: Identity,
     transport: Arc<T>,
-    storage: Storage,
+    storage: Arc<Storage>,
     /// Device ID for tombstone sequence management (unique per device)
     device_id: DeviceID,
     /// Monotonically increasing tombstone sequence counter
@@ -98,17 +119,36 @@ pub struct Client<T: Transport> {
     /// DAG state per contact (keyed by PublicID bytes)
     /// Tracks message ordering for gap detection
     dag_state: Mutex<HashMap<[u8; 32], ConversationDag>>,
+    /// Client outbox for resilient delivery tracking
+    outbox: ClientOutbox<Arc<Storage>>,
 }
 
 impl<T: Transport> Client<T> {
     /// Create a new client with the given identity, transport, and storage
     ///
     /// Generates a random device ID for tombstone sequence management.
+    /// Uses default outbox configuration.
     pub fn new(identity: Identity, transport: Arc<T>, storage: Storage) -> Self {
+        Self::with_config(identity, transport, storage, OutboxConfig::default())
+    }
+
+    /// Create a new client with custom outbox configuration.
+    pub fn with_config(
+        identity: Identity,
+        transport: Arc<T>,
+        storage: Storage,
+        outbox_config: OutboxConfig,
+    ) -> Self {
         // Generate random device ID
         let mut device_id = [0u8; 16];
         use rand_core::{OsRng, RngCore};
         OsRng.fill_bytes(&mut device_id);
+
+        // Wrap storage in Arc for shared access between Client and ClientOutbox
+        let storage = Arc::new(storage);
+
+        // Create outbox with shared storage reference
+        let outbox = ClientOutbox::new(Arc::clone(&storage), outbox_config);
 
         Self {
             identity,
@@ -117,6 +157,7 @@ impl<T: Transport> Client<T> {
             device_id,
             tombstone_sequence: AtomicU64::new(1), // Start at 1
             dag_state: Mutex::new(HashMap::new()),
+            outbox,
         }
     }
 
@@ -131,6 +172,12 @@ impl<T: Transport> Client<T> {
         device_id: DeviceID,
         initial_sequence: u64,
     ) -> Self {
+        // Wrap storage in Arc for shared access between Client and ClientOutbox
+        let storage = Arc::new(storage);
+
+        // Create outbox with default config and shared storage
+        let outbox = ClientOutbox::new(Arc::clone(&storage), OutboxConfig::default());
+
         Self {
             identity,
             transport,
@@ -138,6 +185,7 @@ impl<T: Transport> Client<T> {
             device_id,
             tombstone_sequence: AtomicU64::new(initial_sequence),
             dag_state: Mutex::new(HashMap::new()),
+            outbox,
         }
     }
 
@@ -380,10 +428,46 @@ impl<T: Transport> Client<T> {
             dag.sender.on_send(content_id, prev_self);
         }
 
-        // Only submit to transport after successful local storage
-        self.transport.submit_message(outer).await?;
+        // Serialize envelopes for outbox storage
+        let envelope_bytes = bincode::encode_to_vec(&outer, bincode::config::standard())
+            .map_err(|e| ClientError::Serialization(format!("envelope: {}", e)))?;
+        let inner_bytes = bincode::encode_to_vec(&inner, bincode::config::standard())
+            .map_err(|e| ClientError::Serialization(format!("inner: {}", e)))?;
 
-        debug!("Message sent to contact (MIK-only encryption, content_id: {:?})", content_id);
+        // Enqueue to outbox for delivery tracking
+        let entry_id = self
+            .outbox
+            .enqueue(to, content_id, outer_message_id, &envelope_bytes, &inner_bytes, None)
+            .map_err(ClientError::Outbox)?;
+
+        // Attempt delivery via current transport
+        let transport_id = self.transport_id();
+        let attempt_result = match self.transport.submit_message(outer).await {
+            Ok(()) => AttemptResult::Sent,
+            Err(e) => AttemptResult::Failed(transport_error_to_attempt_error(&e)),
+        };
+
+        // Record the attempt (regardless of success/failure)
+        self.outbox
+            .record_attempt(entry_id, &transport_id, attempt_result.clone())
+            .map_err(ClientError::Outbox)?;
+
+        // Log result
+        match &attempt_result {
+            AttemptResult::Sent => {
+                debug!(
+                    "Message sent to contact (MIK-only encryption, content_id: {:?}, outbox_id: {})",
+                    content_id, entry_id
+                );
+            }
+            AttemptResult::Failed(e) => {
+                debug!(
+                    "Message delivery failed, queued for retry (content_id: {:?}, outbox_id: {}, error: {})",
+                    content_id, entry_id, e
+                );
+            }
+        }
+
         Ok(outer_message_id)
     }
 
@@ -509,6 +593,42 @@ impl<T: Transport> Client<T> {
             (gaps, sender_reset, local_behind)
         };
 
+        // Check for delivery confirmations in the peer's observed_heads
+        // This is the DAG-based implicit ACK mechanism
+        if !inner.observed_heads.is_empty() {
+            match self
+                .outbox
+                .on_peer_message_received(&sender_id, &inner.observed_heads, content_id)
+            {
+                Ok(confirmed) => {
+                    if !confirmed.is_empty() {
+                        debug!(
+                            "DAG confirmation: {} messages confirmed by peer's observed_heads",
+                            confirmed.len()
+                        );
+                    }
+                }
+                Err(e) => {
+                    // Log but don't fail message processing for outbox errors
+                    debug!("Outbox confirmation check failed: {}", e);
+                }
+            }
+
+            // If gap detected and retry triggers are enabled, schedule retry for unacked messages
+            if has_gaps {
+                if let Ok(unacked) = self.outbox.find_unacked_messages(&sender_id, &inner.observed_heads) {
+                    if !unacked.is_empty() {
+                        debug!(
+                            "Gap detected: scheduling retry for {} unacknowledged messages",
+                            unacked.len()
+                        );
+                        // Ignore errors - this is opportunistic
+                        let _ = self.outbox.schedule_immediate_retry(&unacked);
+                    }
+                }
+            }
+        }
+
         debug!(
             "Message received (content_id: {:?}, has_gaps: {}, sender_reset: {}, local_behind: {})",
             content_id, has_gaps, sender_state_reset, local_state_behind
@@ -608,6 +728,201 @@ impl<T: Transport> Client<T> {
     /// Use this when the user has opened/read the message.
     pub async fn send_read_tombstone(&self, message: &ReceivedMessage) -> Result<(), ClientError> {
         self.send_tombstone(message, TombstoneStatus::Read).await
+    }
+
+    // ========================================
+    // Outbox Management
+    // ========================================
+
+    /// Set retry policy for a transport type.
+    ///
+    /// # Arguments
+    /// * `transport_prefix` - Transport type prefix (e.g., "http", "lora", "ble", "p2p")
+    /// * `policy` - Retry policy for this transport type
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Configure LoRa with longer retry intervals
+    /// client.set_transport_policy("lora", TransportRetryPolicy::lora());
+    ///
+    /// // Configure BLE for device discovery scenarios
+    /// client.set_transport_policy("ble", TransportRetryPolicy::ble());
+    /// ```
+    pub fn set_transport_policy(&mut self, transport_prefix: &str, policy: TransportRetryPolicy) {
+        self.outbox.set_transport_policy(transport_prefix, policy);
+    }
+
+    /// Get the transport ID for the current transport.
+    ///
+    /// Format: `"{type}:{identifier}"` based on transport configuration.
+    /// Currently defaults to "http:default" - will be enhanced when
+    /// multi-transport support is added.
+    fn transport_id(&self) -> String {
+        // TODO: Extract transport identifier from transport instance
+        // For now, use a default identifier
+        "http:default".to_string()
+    }
+
+    /// Attempt to deliver a pending message via the current transport.
+    ///
+    /// This is the core delivery method that:
+    /// 1. Submits the message to the transport
+    /// 2. Records the attempt result in the outbox
+    ///
+    /// # Arguments
+    /// * `entry_id` - Outbox entry ID to deliver
+    ///
+    /// # Returns
+    /// The attempt result (Sent or Failed with error details)
+    pub async fn attempt_delivery(&self, entry_id: OutboxEntryId) -> Result<AttemptResult, ClientError> {
+        let pending = self.outbox.get_by_id(entry_id)
+            .map_err(ClientError::Outbox)?
+            .ok_or(ClientError::OutboxEntryNotFound)?;
+
+        let transport_id = self.transport_id();
+
+        // Deserialize the outer envelope
+        let outer: OuterEnvelope = bincode::decode_from_slice(
+            &pending.envelope_bytes,
+            bincode::config::standard(),
+        )
+        .map(|(envelope, _)| envelope)
+        .map_err(|e| ClientError::Outbox(StorageError::Serialization(e.to_string())))?;
+
+        // Attempt delivery
+        let result = match self.transport.submit_message(outer).await {
+            Ok(()) => AttemptResult::Sent,
+            Err(e) => AttemptResult::Failed(transport_error_to_attempt_error(&e)),
+        };
+
+        // Record the attempt
+        self.outbox
+            .record_attempt(entry_id, &transport_id, result.clone())
+            .map_err(ClientError::Outbox)?;
+
+        Ok(result)
+    }
+
+    /// Retry delivery via a specific transport.
+    ///
+    /// Use this for user-initiated transport override (e.g., "send via LoRa").
+    /// This schedules the message for immediate retry.
+    ///
+    /// # Arguments
+    /// * `entry_id` - Outbox entry ID to retry
+    pub fn schedule_retry(&self, entry_id: OutboxEntryId) -> Result<(), ClientError> {
+        self.outbox
+            .schedule_immediate_retry(&[entry_id])
+            .map_err(ClientError::Outbox)
+    }
+
+    /// Get messages ready for retry.
+    ///
+    /// Returns pending messages whose retry time has passed.
+    pub fn get_ready_for_retry(&self) -> Result<Vec<PendingMessage>, ClientError> {
+        self.outbox.get_ready_for_retry().map_err(ClientError::Outbox)
+    }
+
+    /// Get all pending (unconfirmed) messages.
+    pub fn get_pending_messages(&self) -> Result<Vec<PendingMessage>, ClientError> {
+        self.outbox.get_all_pending().map_err(ClientError::Outbox)
+    }
+
+    /// Get pending messages for a specific recipient.
+    pub fn get_pending_for(&self, recipient: &PublicID) -> Result<Vec<PendingMessage>, ClientError> {
+        self.outbox
+            .get_pending_for(recipient)
+            .map_err(ClientError::Outbox)
+    }
+
+    /// Get delivery state for a message.
+    pub fn get_delivery_state(&self, entry_id: OutboxEntryId) -> Result<Option<DeliveryState>, ClientError> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let timeout_ms = self.outbox.config().attempt_timeout_ms;
+
+        self.outbox
+            .get_by_id(entry_id)
+            .map(|opt| opt.map(|msg| msg.state(now_ms, timeout_ms)))
+            .map_err(ClientError::Outbox)
+    }
+
+    /// Process outbox tick: retry due messages and check expirations.
+    ///
+    /// Call this periodically (e.g., every 30 seconds) to process
+    /// pending retries and clean up expired messages.
+    ///
+    /// # Returns
+    /// Tuple of (messages_retried, messages_expired)
+    pub async fn outbox_tick(&self) -> Result<(usize, u64), ClientError> {
+        // Check for expired messages first
+        let expired = self.outbox.check_expirations().map_err(ClientError::Outbox)?;
+
+        // Get messages due for retry
+        let due = self.outbox.get_ready_for_retry().map_err(ClientError::Outbox)?;
+        let mut retried = 0;
+
+        for pending in due {
+            // Skip messages in confirmed/expired state
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let state = pending.state(now_ms, self.outbox.config().attempt_timeout_ms);
+
+            match state {
+                DeliveryState::Pending | DeliveryState::AwaitingRetry => {
+                    // Attempt delivery
+                    match self.attempt_delivery(pending.id).await {
+                        Ok(_) => {
+                            retried += 1;
+                        }
+                        Err(e) => {
+                            // Log error but continue processing other messages
+                            warn!(entry_id = pending.id, error = %e, "Outbox tick: delivery attempt failed");
+                        }
+                    }
+                }
+                DeliveryState::InFlight => {
+                    // Already in flight, skip
+                }
+                DeliveryState::Confirmed | DeliveryState::Expired => {
+                    // Already done, skip
+                }
+            }
+        }
+
+        Ok((retried, expired))
+    }
+
+    /// Clean up old confirmed/expired outbox entries.
+    pub fn outbox_cleanup(&self) -> Result<u64, ClientError> {
+        self.outbox.cleanup().map_err(ClientError::Outbox)
+    }
+}
+
+/// Convert transport error to attempt error.
+fn transport_error_to_attempt_error(e: &TransportError) -> AttemptError {
+    match e {
+        TransportError::Network(msg) => AttemptError::network_transient(msg.clone()),
+        TransportError::Serialization(msg) => AttemptError::Encoding {
+            message: msg.clone(),
+        },
+        TransportError::AuthenticationFailed => AttemptError::Rejected {
+            message: "authentication failed".to_string(),
+            is_transient: false,
+        },
+        TransportError::NotFound => AttemptError::Rejected {
+            message: "not found".to_string(),
+            is_transient: false,
+        },
+        TransportError::ServerError(msg) => AttemptError::rejected_transient(msg.clone()),
+        TransportError::ChannelClosed => AttemptError::Unavailable {
+            message: "channel closed".to_string(),
+        },
     }
 }
 

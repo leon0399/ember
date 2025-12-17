@@ -9,13 +9,15 @@ use ratatui::prelude::*;
 use reme_core::Client;
 use reme_identity::{Identity, PublicID};
 use reme_message::Content;
+use reme_outbox::{OutboxConfig, TransportRetryPolicy};
 use reme_storage::Storage;
 use reme_transport::http::HttpTransport;
 use reme_transport::{MessageReceiver, ReceiverConfig, TransportEvent};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tracing::{debug, info, warn};
 use tui_textarea::{Input, TextArea};
 
 pub type AppResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -190,6 +192,8 @@ pub struct App<'a> {
     pub add_contact_popup: AddContactPopup<'a>,
     /// Whether the "my identity" popup is visible
     pub show_my_id_popup: bool,
+    /// Outbox tick interval from config
+    outbox_tick_interval: Duration,
 }
 
 impl<'a> App<'a> {
@@ -220,8 +224,33 @@ impl<'a> App<'a> {
         // Create transport
         let transport = Arc::new(HttpTransport::with_nodes(config.node_urls.clone()));
 
-        // Create client
-        let client = Client::new(identity, transport.clone(), storage);
+        // Build OutboxConfig from app config
+        let ttl_ms = if config.outbox.ttl_days == 0 {
+            None
+        } else {
+            Some(config.outbox.ttl_days * 24 * 60 * 60 * 1000)
+        };
+        let outbox_config = OutboxConfig {
+            default_ttl_ms: ttl_ms,
+            attempt_timeout_ms: config.outbox.attempt_timeout_secs * 1000,
+            ..OutboxConfig::default()
+        };
+
+        // Create custom retry policy from config
+        let retry_policy = TransportRetryPolicy {
+            initial_delay: Duration::from_secs(config.outbox.retry_initial_delay_secs),
+            max_delay: Duration::from_secs(config.outbox.retry_max_delay_secs),
+            ..TransportRetryPolicy::default()
+        };
+
+        // Create client with custom outbox config
+        let mut client = Client::with_config(identity, transport.clone(), storage, outbox_config);
+
+        // Set HTTP transport retry policy
+        client.set_transport_policy("http:", retry_policy);
+
+        // Store tick interval from config
+        let outbox_tick_interval = Duration::from_secs(config.outbox.tick_interval_secs);
 
         // Create input area
         let mut input = TextArea::default();
@@ -244,6 +273,7 @@ impl<'a> App<'a> {
             show_add_contact_popup: false,
             add_contact_popup: AddContactPopup::default(),
             show_my_id_popup: false,
+            outbox_tick_interval,
         };
 
         // Load contacts
@@ -294,6 +324,7 @@ impl<'a> App<'a> {
     /// Run the application main loop
     pub async fn run(&mut self, terminal: &mut Terminal<impl Backend>) -> AppResult<()> {
         let mut event_handler = EventHandler::new(100);
+        let mut last_outbox_tick = Instant::now();
 
         // Setup message receiver for incoming messages
         let receiver = MessageReceiver::new(self.transport.clone());
@@ -320,7 +351,28 @@ impl<'a> App<'a> {
 
             // Handle UI events
             match event_handler.next().await? {
-                Event::Tick => {}
+                Event::Tick => {
+                    // Periodically run outbox tick for message retries
+                    if last_outbox_tick.elapsed() >= self.outbox_tick_interval {
+                        match self.client.outbox_tick().await {
+                            Ok((retried, expired)) => {
+                                if retried > 0 || expired > 0 {
+                                    info!(
+                                        retried = retried,
+                                        expired = expired,
+                                        "Outbox tick completed"
+                                    );
+                                } else {
+                                    debug!("Outbox tick: no pending messages");
+                                }
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "Outbox tick failed");
+                            }
+                        }
+                        last_outbox_tick = Instant::now();
+                    }
+                }
                 Event::Key(key_event) => self.handle_key_event(key_event).await?,
                 Event::Resize(_, _) => {}
             }

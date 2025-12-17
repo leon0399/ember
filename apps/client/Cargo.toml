@@ -9,6 +9,7 @@ reme-message = { workspace = true }
 reme-encryption = { workspace = true }
 reme-transport = { workspace = true }
 reme-storage = { workspace = true }
+reme-outbox = { workspace = true }
 reme-core = { workspace = true }
 
 thiserror = { workspace = true }

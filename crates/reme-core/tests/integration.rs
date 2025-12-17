@@ -9,6 +9,7 @@ use reme_identity::Identity;
 use reme_message::{
     Content, InnerEnvelope, MessageID, OuterEnvelope, TextContent, TombstoneStatus, CURRENT_VERSION,
 };
+use reme_outbox::{DeliveryState, OutboxConfig};
 use reme_storage::Storage;
 use reme_transport::http::HttpTransport;
 use reme_transport::{MessageReceiver, ReceiverConfig, Transport, TransportEvent};
@@ -522,4 +523,304 @@ async fn test_tombstone_sequence() {
     }
 
     println!("\n✓ Tombstone sequence test passed!");
+}
+
+// ============================================
+// Outbox Integration Tests
+// ============================================
+
+/// Test that sending a message queues it in the outbox
+#[tokio::test]
+async fn test_outbox_message_queuing() {
+    let server = TestServer::start().await;
+    let transport = Arc::new(HttpTransport::new(server.url()));
+
+    let alice_identity = Identity::generate();
+    let alice_storage = Storage::in_memory().unwrap();
+    let alice = Client::new(alice_identity, transport.clone(), alice_storage);
+
+    let bob_identity = Identity::generate();
+
+    // Alice adds Bob as contact
+    alice
+        .add_contact(bob_identity.public_id(), Some("Bob"))
+        .expect("Alice add_contact failed");
+
+    // Check outbox is empty
+    let pending_before = alice.get_pending_messages().expect("get_pending failed");
+    assert_eq!(pending_before.len(), 0);
+
+    // Alice sends a message
+    let _msg_id = alice
+        .send_text(bob_identity.public_id(), "Hello Bob!")
+        .await
+        .expect("Alice send_text failed");
+
+    // Check that message is tracked in outbox (should be InFlight or Pending after successful send)
+    let pending_for_bob = alice
+        .get_pending_for(bob_identity.public_id())
+        .expect("get_pending_for failed");
+
+    // After successful send, the message should have an attempt recorded
+    // It will be in InFlight state briefly, then AwaitingRetry (waiting for DAG confirmation)
+    assert_eq!(pending_for_bob.len(), 1);
+    println!("Message queued in outbox for Bob: {:?}", pending_for_bob[0].content_id);
+
+    println!("\n✓ Outbox message queuing test passed!");
+}
+
+/// Test DAG-based delivery confirmation: Bob's reply confirms Alice's message
+#[tokio::test]
+async fn test_outbox_dag_confirmation() {
+    let server = TestServer::start().await;
+    let transport = Arc::new(HttpTransport::new(server.url()));
+
+    // Create Alice
+    let alice_identity = Identity::generate();
+    let alice_storage = Storage::in_memory().unwrap();
+    let alice = Client::new(alice_identity, transport.clone(), alice_storage);
+
+    // Create Bob
+    let bob_identity = Identity::generate();
+    let bob_storage = Storage::in_memory().unwrap();
+    let bob = Client::new(bob_identity, transport.clone(), bob_storage);
+
+    // Alice adds Bob as contact
+    alice
+        .add_contact(bob.public_id(), Some("Bob"))
+        .expect("Alice add_contact failed");
+
+    // Alice sends a message to Bob
+    let _msg_id = alice
+        .send_text(bob.public_id(), "Hello Bob!")
+        .await
+        .expect("Alice send_text failed");
+
+    // Get Alice's pending message
+    let alice_pending = alice
+        .get_pending_for(bob.public_id())
+        .expect("get_pending_for failed");
+    assert_eq!(alice_pending.len(), 1);
+    let alice_entry_id = alice_pending[0].id;
+    println!("Alice's message is pending, entry_id: {}", alice_entry_id);
+
+    // Bob receives the message using push-based MessageReceiver
+    let receiver = MessageReceiver::new(transport.clone());
+    let config = ReceiverConfig::with_poll_interval(Duration::from_millis(50));
+    let (mut events, _handle) = receiver.subscribe(bob.routing_key(), config);
+
+    let _received = tokio::time::timeout(Duration::from_secs(2), async {
+        while let Some(event) = events.recv().await {
+            if let TransportEvent::Message(envelope) = event {
+                return bob.process_message(&envelope).await.ok();
+            }
+        }
+        None
+    })
+    .await
+    .expect("Timeout waiting for message")
+    .expect("No message received");
+    println!("Bob received Alice's message");
+
+    // Bob replies to Alice (this will include observed_heads with Alice's content_id)
+    let _reply_id = bob
+        .send_text(alice.public_id(), "Hi Alice!")
+        .await
+        .expect("Bob send_text failed");
+    println!("Bob sent reply to Alice");
+
+    // Alice receives Bob's reply
+    let (mut alice_events, _alice_handle) = receiver.subscribe(alice.routing_key(), config);
+
+    let _alice_received = tokio::time::timeout(Duration::from_secs(2), async {
+        while let Some(event) = alice_events.recv().await {
+            if let TransportEvent::Message(envelope) = event {
+                return alice.process_message(&envelope).await.ok();
+            }
+        }
+        None
+    })
+    .await
+    .expect("Timeout waiting for reply")
+    .expect("No reply received");
+    println!("Alice received Bob's reply");
+
+    // Check that Alice's original message is now confirmed via DAG
+    let alice_state = alice
+        .get_delivery_state(alice_entry_id)
+        .expect("get_delivery_state failed")
+        .expect("entry not found");
+
+    assert_eq!(
+        alice_state,
+        DeliveryState::Confirmed,
+        "Alice's message should be confirmed after Bob's reply with observed_heads"
+    );
+    println!("Alice's message confirmed via DAG acknowledgment");
+
+    println!("\n✓ Outbox DAG confirmation test passed!");
+}
+
+/// Test that outbox cleanup removes old confirmed entries
+#[tokio::test]
+async fn test_outbox_cleanup() {
+    let server = TestServer::start().await;
+    let transport = Arc::new(HttpTransport::new(server.url()));
+
+    // Use custom config with cleanup_after_ms: 0 so cleanup happens immediately
+    let alice_config = OutboxConfig {
+        cleanup_after_ms: 0,
+        ..OutboxConfig::default()
+    };
+
+    let alice_identity = Identity::generate();
+    let alice_storage = Storage::in_memory().unwrap();
+    let alice = Client::with_config(alice_identity, transport.clone(), alice_storage, alice_config);
+
+    // Bob uses default config
+    let bob_identity = Identity::generate();
+    let bob_storage = Storage::in_memory().unwrap();
+    let bob = Client::new(bob_identity, transport.clone(), bob_storage);
+
+    // Both add each other as contacts
+    alice
+        .add_contact(bob.public_id(), Some("Bob"))
+        .expect("Alice add_contact failed");
+    bob.add_contact(alice.public_id(), Some("Alice"))
+        .expect("Bob add_contact failed");
+
+    alice
+        .send_text(bob.public_id(), "Test message")
+        .await
+        .expect("Alice send_text failed");
+
+    // Get entry_id to track state
+    let alice_pending = alice
+        .get_pending_for(bob.public_id())
+        .expect("get_pending_for failed");
+    assert_eq!(alice_pending.len(), 1);
+    let entry_id = alice_pending[0].id;
+    println!("Alice's message is pending, entry_id: {}", entry_id);
+
+    // Bob receives and replies (confirms Alice's message)
+    let receiver = MessageReceiver::new(transport.clone());
+    let config = ReceiverConfig::with_poll_interval(Duration::from_millis(50));
+    let (mut events, _handle) = receiver.subscribe(bob.routing_key(), config);
+
+    let _bob_received = tokio::time::timeout(Duration::from_secs(2), async {
+        while let Some(event) = events.recv().await {
+            if let TransportEvent::Message(envelope) = event {
+                return bob.process_message(&envelope).await.ok();
+            }
+        }
+        None
+    })
+    .await
+    .expect("Timeout waiting for Bob to receive")
+    .expect("Bob didn't receive message");
+    println!("Bob received Alice's message");
+
+    // Bob replies (this will include observed_heads with Alice's content_id)
+    bob.send_text(alice.public_id(), "Got it!")
+        .await
+        .expect("Bob reply failed");
+    println!("Bob sent reply to Alice");
+
+    // Alice receives reply (triggers confirmation via DAG)
+    let (mut alice_events, _alice_handle) = receiver.subscribe(alice.routing_key(), config);
+    let _alice_received = tokio::time::timeout(Duration::from_secs(2), async {
+        while let Some(event) = alice_events.recv().await {
+            if let TransportEvent::Message(envelope) = event {
+                return alice.process_message(&envelope).await.ok();
+            }
+        }
+        None
+    })
+    .await
+    .expect("Timeout waiting for Alice to receive reply")
+    .expect("Alice didn't receive reply");
+    println!("Alice received Bob's reply");
+
+    // Verify message is confirmed before cleanup
+    let state = alice
+        .get_delivery_state(entry_id)
+        .expect("get_delivery_state failed")
+        .expect("entry not found");
+    assert_eq!(state, DeliveryState::Confirmed, "Message should be confirmed via DAG");
+    println!("Message confirmed, entry_id: {}", entry_id);
+
+    // Cleanup should remove confirmed entries (cleanup_after_ms=0 means immediate cleanup)
+    let cleaned = alice.outbox_cleanup().expect("cleanup failed");
+    println!("Cleaned {} old confirmed entries", cleaned);
+    assert_eq!(cleaned, 1, "Should have cleaned exactly 1 confirmed entry");
+
+    println!("\n✓ Outbox cleanup test passed!");
+}
+
+/// Test that retry mechanism works for pending messages
+#[tokio::test]
+async fn test_outbox_retry_mechanism() {
+    let server = TestServer::start().await;
+    let transport = Arc::new(HttpTransport::new(server.url()));
+
+    let alice_identity = Identity::generate();
+    let alice_storage = Storage::in_memory().unwrap();
+    let alice = Client::new(alice_identity, transport.clone(), alice_storage);
+
+    let bob_identity = Identity::generate();
+
+    // Alice adds Bob as contact
+    alice
+        .add_contact(bob_identity.public_id(), Some("Bob"))
+        .expect("Alice add_contact failed");
+
+    // Alice sends a message
+    let _msg_id = alice
+        .send_text(bob_identity.public_id(), "Hello Bob!")
+        .await
+        .expect("Alice send_text failed");
+
+    // Get pending messages - should have one
+    let pending = alice.get_pending_messages().expect("get_pending failed");
+    assert_eq!(pending.len(), 1);
+    let entry_id = pending[0].id;
+    println!("Message is pending with entry_id: {}", entry_id);
+
+    // Verify the message state after send (should have at least one attempt)
+    assert!(!pending[0].attempts.is_empty(), "Should have recorded an attempt");
+    println!("Message has {} attempts", pending[0].attempts.len());
+
+    // Schedule immediate retry for this entry
+    alice
+        .schedule_retry(entry_id)
+        .expect("schedule_retry failed");
+    println!("Scheduled immediate retry for entry {}", entry_id);
+
+    // Get messages due for retry
+    let due_for_retry = alice.get_ready_for_retry().expect("get_due failed");
+    assert!(
+        due_for_retry.iter().any(|m| m.id == entry_id),
+        "Entry should be due for retry after scheduling"
+    );
+    println!("Entry is due for retry");
+
+    // Attempt delivery again using attempt_delivery
+    let result = alice
+        .attempt_delivery(entry_id)
+        .await
+        .expect("attempt_delivery failed");
+    println!("Retry attempt result: {:?}", result);
+
+    // Should have recorded another attempt
+    let updated = alice
+        .get_pending_for(bob_identity.public_id())
+        .expect("get_pending_for failed");
+    assert_eq!(updated.len(), 1);
+    assert!(
+        updated[0].attempts.len() >= 2,
+        "Should have at least 2 attempts after retry"
+    );
+    println!("Message now has {} attempts", updated[0].attempts.len());
+
+    println!("\n✓ Outbox retry mechanism test passed!");
 }
