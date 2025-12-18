@@ -83,6 +83,10 @@ pub enum EncryptedIdentityError {
     #[error("Decryption failed: wrong password or corrupted data")]
     DecryptionFailed,
 
+    /// Password required for encrypted identity
+    #[error("Password required: identity file is encrypted")]
+    PasswordRequired,
+
     /// Encryption failed
     #[error("Encryption failed: {0}")]
     EncryptionFailed(String),
@@ -327,7 +331,7 @@ pub fn load_identity(
             let enc = EncryptedIdentity::from_bytes(data)?;
             enc.decrypt(pwd)
         }
-        (true, None) => Err(EncryptedIdentityError::DecryptionFailed),
+        (true, None) => Err(EncryptedIdentityError::PasswordRequired),
         (false, None) => {
             // Plaintext format: raw 32-byte key
             if data.len() != PLAINTEXT_FILE_SIZE {
@@ -336,7 +340,8 @@ pub fn load_identity(
                     actual: data.len(),
                 });
             }
-            let mut key = [0u8; 32];
+            // Wrap in Zeroizing to ensure key is cleared from memory on drop
+            let mut key = Zeroizing::new([0u8; 32]);
             key.copy_from_slice(data);
             Ok(Identity::from_bytes(&key))
         }
@@ -349,7 +354,8 @@ pub fn load_identity(
                     actual: data.len(),
                 });
             }
-            let mut key = [0u8; 32];
+            // Wrap in Zeroizing to ensure key is cleared from memory on drop
+            let mut key = Zeroizing::new([0u8; 32]);
             key.copy_from_slice(data);
             Ok(Identity::from_bytes(&key))
         }
