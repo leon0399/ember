@@ -5,9 +5,11 @@ use tokio::sync::mpsc;
 
 pub mod http;
 pub mod receiver;
+pub mod tls;
 pub mod url_auth;
 
 pub use receiver::{MessageReceiver, ReceiverConfig, ReceiverHandle};
+pub use tls::{CertPin, PinParseError, PinningVerifier};
 pub use url_auth::{parse_url_with_auth, ParsedUrl};
 
 #[derive(Debug, Error)]
@@ -29,6 +31,12 @@ pub enum TransportError {
 
     #[error("Channel closed")]
     ChannelClosed,
+
+    #[error("TLS configuration error: {0}")]
+    TlsConfig(String),
+
+    #[error("Certificate pin mismatch for {hostname}: expected {expected}")]
+    CertificatePinMismatch { hostname: String, expected: String },
 }
 
 /// Transport trait for sending messages (MIK-only, no prekeys)
