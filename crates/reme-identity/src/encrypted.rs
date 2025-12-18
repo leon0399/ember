@@ -7,13 +7,10 @@
 //!
 //! ## File Format
 //!
-//! ### Encrypted Format (105 bytes)
+//! ### Encrypted Format (93 bytes)
 //! ```text
 //! MAGIC       (16 bytes): "reme-identity-v1"
 //! VERSION     (1 byte):   0x01
-//! ARGON2_M    (4 bytes):  memory cost in KiB (LE u32)
-//! ARGON2_T    (4 bytes):  time cost / iterations (LE u32)
-//! ARGON2_P    (4 bytes):  parallelism (LE u32)
 //! SALT        (16 bytes): random salt for Argon2
 //! NONCE       (12 bytes): random nonce for ChaCha20
 //! CIPHERTEXT  (32 bytes): encrypted identity key
@@ -25,10 +22,12 @@
 //!
 //! ## Security Parameters (OWASP 2024)
 //!
-//! Default Argon2id parameters follow OWASP recommendations:
+//! Argon2id parameters are hardcoded following OWASP recommendations:
 //! - Memory: 46 MiB (47104 KiB)
 //! - Iterations: 1
 //! - Parallelism: 1
+//!
+//! To change parameters, bump VERSION and handle migration.
 
 use crate::Identity;
 use argon2::{Algorithm, Argon2, Params, Version};
@@ -47,18 +46,15 @@ pub const MAGIC: &[u8; 16] = b"reme-identity-v1";
 pub const VERSION: u8 = 0x01;
 
 /// Size of the encrypted file format
-pub const ENCRYPTED_FILE_SIZE: usize = 105;
+pub const ENCRYPTED_FILE_SIZE: usize = 93;
 
 /// Size of the plaintext file format (raw key)
 pub const PLAINTEXT_FILE_SIZE: usize = 32;
 
-// OWASP 2024 recommended Argon2id parameters
-/// Default memory cost in KiB (46 MiB)
-pub const DEFAULT_ARGON2_M: u32 = 47104;
-/// Default time cost (iterations)
-pub const DEFAULT_ARGON2_T: u32 = 1;
-/// Default parallelism
-pub const DEFAULT_ARGON2_P: u32 = 1;
+// OWASP 2024 recommended Argon2id parameters (hardcoded)
+const ARGON2_M: u32 = 47104; // 46 MiB
+const ARGON2_T: u32 = 1;     // 1 iteration
+const ARGON2_P: u32 = 1;     // 1 parallelism
 
 /// Errors that can occur during encrypted identity operations
 #[derive(Debug, Error)]
@@ -75,10 +71,6 @@ pub enum EncryptedIdentityError {
     #[error("Unsupported version: {0}")]
     UnsupportedVersion(u8),
 
-    /// Invalid Argon2 parameters
-    #[error("Invalid Argon2 parameters: {0}")]
-    InvalidParams(String),
-
     /// Decryption failed (wrong password or corrupted data)
     #[error("Decryption failed: wrong password or corrupted data")]
     DecryptionFailed,
@@ -92,55 +84,15 @@ pub enum EncryptedIdentityError {
     EncryptionFailed(String),
 }
 
-/// Argon2id parameters for key derivation
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Argon2Params {
-    /// Memory cost in KiB
-    pub m_cost: u32,
-    /// Time cost (iterations)
-    pub t_cost: u32,
-    /// Parallelism
-    pub p_cost: u32,
-}
-
-impl Default for Argon2Params {
-    fn default() -> Self {
-        Self {
-            m_cost: DEFAULT_ARGON2_M,
-            t_cost: DEFAULT_ARGON2_T,
-            p_cost: DEFAULT_ARGON2_P,
-        }
-    }
-}
-
-impl Argon2Params {
-    /// Create Argon2id parameters with custom values
-    pub fn new(m_cost: u32, t_cost: u32, p_cost: u32) -> Self {
-        Self {
-            m_cost,
-            t_cost,
-            p_cost,
-        }
-    }
-
-    /// Convert to argon2 crate Params
-    fn to_argon2_params(&self) -> Result<Params, EncryptedIdentityError> {
-        Params::new(self.m_cost, self.t_cost, self.p_cost, Some(32))
-            .map_err(|e| EncryptedIdentityError::InvalidParams(e.to_string()))
-    }
-}
-
 /// Encrypted identity file representation
 #[derive(Debug, Clone)]
 pub struct EncryptedIdentity {
-    /// Argon2id parameters used for key derivation
-    pub params: Argon2Params,
     /// Random salt for Argon2id (16 bytes)
-    pub salt: [u8; 16],
+    salt: [u8; 16],
     /// Random nonce for ChaCha20-Poly1305 (12 bytes)
-    pub nonce: [u8; 12],
+    nonce: [u8; 12],
     /// Encrypted identity key + Poly1305 tag (48 bytes)
-    pub ciphertext: [u8; 48],
+    ciphertext: [u8; 48],
 }
 
 impl EncryptedIdentity {
@@ -149,15 +101,6 @@ impl EncryptedIdentity {
     /// Uses Argon2id for key derivation with OWASP 2024 recommended parameters,
     /// and ChaCha20-Poly1305 for authenticated encryption.
     pub fn encrypt(identity: &Identity, password: &[u8]) -> Result<Self, EncryptedIdentityError> {
-        Self::encrypt_with_params(identity, password, Argon2Params::default())
-    }
-
-    /// Encrypt an identity with a password using custom Argon2id parameters.
-    pub fn encrypt_with_params(
-        identity: &Identity,
-        password: &[u8],
-        params: Argon2Params,
-    ) -> Result<Self, EncryptedIdentityError> {
         // Generate random salt and nonce
         let mut salt = [0u8; 16];
         let mut nonce = [0u8; 12];
@@ -165,10 +108,11 @@ impl EncryptedIdentity {
         OsRng.fill_bytes(&mut nonce);
 
         // Derive encryption key using Argon2id
-        // Key is wrapped in Zeroizing to ensure it's cleared from memory on drop
-        let argon2_params = params.to_argon2_params()?;
+        let argon2_params = Params::new(ARGON2_M, ARGON2_T, ARGON2_P, Some(32))
+            .map_err(|e| EncryptedIdentityError::EncryptionFailed(e.to_string()))?;
         let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon2_params);
 
+        // Key is wrapped in Zeroizing to ensure it's cleared from memory on drop
         let mut key = Zeroizing::new([0u8; 32]);
         argon2
             .hash_password_into(password, &salt, key.as_mut())
@@ -194,7 +138,6 @@ impl EncryptedIdentity {
         ciphertext.copy_from_slice(&ciphertext_vec);
 
         Ok(Self {
-            params,
             salt,
             nonce,
             ciphertext,
@@ -204,10 +147,11 @@ impl EncryptedIdentity {
     /// Decrypt the identity using the provided password.
     pub fn decrypt(&self, password: &[u8]) -> Result<Identity, EncryptedIdentityError> {
         // Derive decryption key using Argon2id
-        // Key is wrapped in Zeroizing to ensure it's cleared from memory on drop
-        let argon2_params = self.params.to_argon2_params()?;
+        let argon2_params = Params::new(ARGON2_M, ARGON2_T, ARGON2_P, Some(32))
+            .map_err(|_| EncryptedIdentityError::DecryptionFailed)?;
         let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon2_params);
 
+        // Key is wrapped in Zeroizing to ensure it's cleared from memory on drop
         let mut key = Zeroizing::new([0u8; 32]);
         argon2
             .hash_password_into(password, &self.salt, key.as_mut())
@@ -243,11 +187,6 @@ impl EncryptedIdentity {
         // Version
         buf.push(VERSION);
 
-        // Argon2 parameters (little-endian u32)
-        buf.extend_from_slice(&self.params.m_cost.to_le_bytes());
-        buf.extend_from_slice(&self.params.t_cost.to_le_bytes());
-        buf.extend_from_slice(&self.params.p_cost.to_le_bytes());
-
         // Salt
         buf.extend_from_slice(&self.salt);
 
@@ -280,25 +219,19 @@ impl EncryptedIdentity {
             return Err(EncryptedIdentityError::UnsupportedVersion(version));
         }
 
-        // Parse Argon2 parameters
-        let m_cost = u32::from_le_bytes([data[17], data[18], data[19], data[20]]);
-        let t_cost = u32::from_le_bytes([data[21], data[22], data[23], data[24]]);
-        let p_cost = u32::from_le_bytes([data[25], data[26], data[27], data[28]]);
-
         // Parse salt
         let mut salt = [0u8; 16];
-        salt.copy_from_slice(&data[29..45]);
+        salt.copy_from_slice(&data[17..33]);
 
         // Parse nonce
         let mut nonce = [0u8; 12];
-        nonce.copy_from_slice(&data[45..57]);
+        nonce.copy_from_slice(&data[33..45]);
 
         // Parse ciphertext + tag
         let mut ciphertext = [0u8; 48];
-        ciphertext.copy_from_slice(&data[57..105]);
+        ciphertext.copy_from_slice(&data[45..93]);
 
         Ok(Self {
-            params: Argon2Params::new(m_cost, t_cost, p_cost),
             salt,
             nonce,
             ciphertext,
@@ -317,7 +250,7 @@ pub fn is_encrypted(data: &[u8]) -> bool {
 /// Load an identity from file data, handling both encrypted and plaintext formats.
 ///
 /// - If `password` is `Some` and data is encrypted: decrypt with password
-/// - If `password` is `Some` and data is plaintext: return error (expected encrypted)
+/// - If `password` is `Some` and data is plaintext: warn and load anyway
 /// - If `password` is `None` and data is plaintext: load directly
 /// - If `password` is `None` and data is encrypted: return error (password required)
 pub fn load_identity(
@@ -347,7 +280,6 @@ pub fn load_identity(
         }
         (false, Some(_)) => {
             // User provided password but file is plaintext
-            // Warn about potential security concern - file may not be encrypted as expected
             eprintln!(
                 "Warning: Identity file is not encrypted. \
                 Password provided but file is in plaintext format."
@@ -441,7 +373,7 @@ mod tests {
         let mut bytes = encrypted.to_bytes();
 
         // Corrupt the ciphertext
-        bytes[60] ^= 0xFF;
+        bytes[50] ^= 0xFF;
 
         let parsed = EncryptedIdentity::from_bytes(&bytes).unwrap();
         let result = parsed.decrypt(password);
@@ -531,26 +463,6 @@ mod tests {
 
         let loaded = load_identity(&plaintext, Some(b"some-password")).unwrap();
         assert_eq!(identity.to_bytes(), loaded.to_bytes());
-    }
-
-    #[test]
-    fn test_custom_argon2_params() {
-        let identity = Identity::generate();
-        let password = b"test";
-
-        // Use lighter params for faster test
-        let params = Argon2Params::new(1024, 1, 1); // 1 MiB, 1 iteration
-
-        let encrypted = EncryptedIdentity::encrypt_with_params(&identity, password, params).unwrap();
-
-        // Verify params are preserved
-        let bytes = encrypted.to_bytes();
-        let parsed = EncryptedIdentity::from_bytes(&bytes).unwrap();
-        assert_eq!(parsed.params, params);
-
-        // Verify decryption works
-        let decrypted = parsed.decrypt(password).unwrap();
-        assert_eq!(identity.to_bytes(), decrypted.to_bytes());
     }
 
     #[test]

@@ -11,7 +11,7 @@ use bincode::error::{EncodeError, DecodeError};
 
 pub mod encrypted;
 pub use encrypted::{
-    Argon2Params, EncryptedIdentity, EncryptedIdentityError,
+    EncryptedIdentity, EncryptedIdentityError,
     is_encrypted, load_identity, save_identity,
 };
 
