@@ -24,7 +24,7 @@
 //!
 //! Argon2id parameters are hardcoded following OWASP recommendations:
 //! - Memory: 46 MiB (47104 KiB)
-//! - Iterations: 1
+//! - Iterations: 2
 //! - Parallelism: 1
 //!
 //! To change parameters, bump VERSION and handle migration.
@@ -122,7 +122,7 @@ impl EncryptedIdentity {
         let cipher = ChaCha20Poly1305::new_from_slice(key.as_ref())
             .expect("derived key has correct length");
 
-        let plaintext = identity.to_bytes();
+        let plaintext = Zeroizing::new(identity.to_bytes());
         let ciphertext_vec = cipher
             .encrypt(Nonce::from_slice(&nonce), plaintext.as_ref())
             .map_err(|e| EncryptedIdentityError::EncryptionFailed(e.to_string()))?;
