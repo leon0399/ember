@@ -330,13 +330,20 @@ impl<'a> App<'a> {
             // Check for incoming messages (non-blocking)
             while let Ok(event) = msg_events.try_recv() {
                 if let TransportEvent::Message(envelope) = event {
-                    if let Ok(msg) = self.client.process_message(&envelope).await {
-                        let content = match &msg.content {
-                            Content::Text(t) => t.body.clone(),
-                            Content::Receipt(r) => format!("[Receipt: {:?}]", r.kind),
-                            _ => "[Unknown content]".to_string(),
-                        };
-                        self.handle_incoming_message(msg.from, content);
+                    match self.client.process_message(&envelope).await {
+                        Ok(msg) => {
+                            let content = match &msg.content {
+                                Content::Text(t) => t.body.clone(),
+                                Content::Receipt(r) => format!("[Receipt: {:?}]", r.kind),
+                                _ => "[Unknown content]".to_string(),
+                            };
+                            self.handle_incoming_message(msg.from, content);
+                        }
+                        Err(e) => {
+                            // Log message processing failure (don't silently drop)
+                            tracing::warn!("Failed to process incoming message: {}", e);
+                            self.status = format!("Message decrypt failed: {}", e);
+                        }
                     }
                 }
             }
