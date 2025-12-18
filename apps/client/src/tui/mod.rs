@@ -54,92 +54,95 @@ pub async fn run(config: AppConfig) -> AppResult<()> {
 
 /// Setup identity: load existing or create new (with optional password protection)
 fn setup_identity(identity_path: &std::path::Path) -> AppResult<Identity> {
+    if !identity_path.exists() {
+        return create_new_identity(identity_path)
+    }
+
+    load_existing_identity(identity_path)
+}
+
+/// Load an existing identity file, prompting for password if encrypted.
+fn load_existing_identity(identity_path: &std::path::Path) -> AppResult<Identity> {
+    let mut stdout = io::stdout();
+    let data = fs::read(identity_path)?;
+
+    if !is_encrypted(&data) {
+        // Plaintext identity - load directly
+        return load_identity(&data, None)
+            .map_err(|e| format!("Failed to load identity: {}", e).into());
+    }
+
+    // Encrypted - prompt for password
+    println!();
+    println!("========================================");
+    println!("  Identity file is password-protected");
+    println!("========================================");
+    println!();
+    stdout.flush()?;
+
+    loop {
+        let password = Zeroizing::new(prompt_for_password("Enter password: ")?);
+        match load_identity(&data, Some(password.as_bytes())) {
+            Ok(identity) => {
+                println!();
+                return Ok(identity);
+            }
+            Err(EncryptedIdentityError::DecryptionFailed) => {
+                println!("Wrong password. Try again (or press Ctrl+C to exit).");
+                println!();
+            }
+            Err(e) => {
+                return Err(format!("Failed to load identity: {}", e).into());
+            }
+        }
+    }
+}
+
+/// Create a new identity with optional password protection.
+fn create_new_identity(identity_path: &std::path::Path) -> AppResult<Identity> {
     let mut stdout = io::stdout();
 
-    if identity_path.exists() {
-        // Load existing identity
-        let data = fs::read(identity_path)?;
-        let encrypted = is_encrypted(&data);
+    println!();
+    println!("========================================");
+    println!("       Creating new identity");
+    println!("========================================");
+    println!();
+    println!("Would you like to protect your identity with a password?");
+    println!("(Type password and press Enter, or just press Enter to skip)");
+    println!();
+    stdout.flush()?;
 
-        if encrypted {
-            // Prompt for password to decrypt
-            println!();
-            println!("========================================");
-            println!("  Identity file is password-protected");
-            println!("========================================");
-            println!();
-            stdout.flush()?;
+    let password = Zeroizing::new(prompt_for_password("Password (optional): ")?);
 
-            loop {
-                // Wrap in Zeroizing to ensure password is cleared from memory on drop
-                let password = Zeroizing::new(prompt_for_password("Enter password: ")?);
-                match load_identity(&data, Some(password.as_bytes())) {
-                    Ok(identity) => {
-                        println!();
-                        return Ok(identity);
-                    }
-                    Err(EncryptedIdentityError::DecryptionFailed) => {
-                        println!("Wrong password. Try again (or press Ctrl+C to exit).");
-                        println!();
-                    }
-                    Err(e) => {
-                        // Non-recoverable error (corrupted file, invalid format, etc.)
-                        return Err(format!("Failed to load identity: {}", e).into());
-                    }
-                }
-            }
-        } else {
-            // Plaintext identity - load directly
-            let identity = load_identity(&data, None)
-                .map_err(|e| format!("Failed to load identity: {}", e))?;
-            Ok(identity)
-        }
+    let identity = if password.is_empty() {
+        println!();
+        println!("No password set. Identity will be stored in plaintext.");
+        let identity = Identity::generate();
+        let data = save_identity(&identity, None)
+            .map_err(|e| format!("Failed to save identity: {}", e))?;
+        fs::write(identity_path, data)?;
+        identity
     } else {
-        // Create new identity
-        println!();
-        println!("========================================");
-        println!("       Creating new identity");
-        println!("========================================");
-        println!();
-        println!("Would you like to protect your identity with a password?");
-        println!("(Type password and press Enter, or just press Enter to skip)");
-        println!();
-        stdout.flush()?;
-
-        // Wrap in Zeroizing to ensure password is cleared from memory on drop
-        let password = Zeroizing::new(prompt_for_password("Password (optional): ")?);
-
-        let identity = if password.is_empty() {
+        // Confirm password with retry loop
+        loop {
             println!();
-            println!("No password set. Identity will be stored in plaintext.");
-            let identity = Identity::generate();
-            let data = save_identity(&identity, None)
-                .map_err(|e| format!("Failed to save identity: {}", e))?;
-            fs::write(identity_path, data)?;
-            identity
-        } else {
-            // Confirm password with retry loop
-            loop {
+            let confirm = Zeroizing::new(prompt_for_password("Confirm password: ")?);
+
+            if *password == *confirm {
                 println!();
-                // Wrap in Zeroizing to ensure password is cleared from memory on drop
-                let confirm = Zeroizing::new(prompt_for_password("Confirm password: ")?);
-
-                if *password == *confirm {
-                    println!();
-                    println!("Password set. Identity will be encrypted.");
-                    let identity = Identity::generate();
-                    let data = save_identity(&identity, Some(password.as_bytes()))
-                        .map_err(|e| format!("Failed to save identity: {}", e))?;
-                    fs::write(identity_path, data)?;
-                    break identity;
-                } else {
-                    println!();
-                    println!("Passwords do not match. Please try again.");
-                }
+                println!("Password set. Identity will be encrypted.");
+                let identity = Identity::generate();
+                let data = save_identity(&identity, Some(password.as_bytes()))
+                    .map_err(|e| format!("Failed to save identity: {}", e))?;
+                fs::write(identity_path, data)?;
+                break identity;
+            } else {
+                println!();
+                println!("Passwords do not match. Please try again.");
             }
-        };
+        }
+    };
 
-        println!();
-        Ok(identity)
-    }
+    println!();
+    Ok(identity)
 }

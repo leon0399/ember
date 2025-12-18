@@ -39,6 +39,7 @@ use config::{Config, Environment, File, FileFormat};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use tracing::Level;
 
 /// CLI arguments for the client
 #[derive(Parser, Debug, Clone, Serialize)]
@@ -373,6 +374,18 @@ retry_max_delay_secs = {}
         defaults.outbox.retry_initial_delay_secs,
         defaults.outbox.retry_max_delay_secs,
     )
+}
+
+/// Parse log level from string
+pub(crate) fn parse_log_level(level: &str) -> Level {
+    match level.to_lowercase().as_str() {
+        "trace" => Level::TRACE,
+        "debug" => Level::DEBUG,
+        "info" => Level::INFO,
+        "warn" | "warning" => Level::WARN,
+        "error" => Level::ERROR,
+        _ => Level::INFO,
+    }
 }
 
 #[cfg(test)]
