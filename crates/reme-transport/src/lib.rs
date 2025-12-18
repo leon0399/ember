@@ -8,6 +8,7 @@ pub mod receiver;
 pub mod tls;
 pub mod url_auth;
 
+pub use http::NodeSpec;
 pub use receiver::{MessageReceiver, ReceiverConfig, ReceiverHandle};
 pub use tls::{CertPin, PinParseError, PinningVerifier};
 pub use url_auth::{parse_url_with_auth, ParsedUrl};

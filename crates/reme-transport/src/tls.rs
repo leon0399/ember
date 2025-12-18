@@ -157,13 +157,19 @@ impl PinningVerifier {
     ///
     /// Pins are keyed by hostname (without port).
     pub fn new(pins: HashMap<String, CertPin>) -> Self {
+        // Use ring as the crypto provider explicitly
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+
         // Use platform verifier with webpki roots
         let root_store = rustls::RootCertStore::from_iter(
             webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
         );
-        let inner = rustls::client::WebPkiServerVerifier::builder(Arc::new(root_store))
-            .build()
-            .expect("valid root store");
+        let inner = rustls::client::WebPkiServerVerifier::builder_with_provider(
+            Arc::new(root_store),
+            provider,
+        )
+        .build()
+        .expect("valid root store");
         Self { pins, inner }
     }
 

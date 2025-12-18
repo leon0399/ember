@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -7,10 +8,21 @@ use futures::future::join_all;
 use reme_message::{MessageID, OuterEnvelope, RoutingKey, TombstoneEnvelope, WirePayload};
 use reqwest::Client;
 use serde::Deserialize;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
+use url::Url;
 
+use crate::tls::{CertPin, PinningVerifier};
 use crate::url_auth::parse_url_with_auth;
 use crate::{Transport, TransportError};
+
+/// Node configuration for HttpTransport.
+#[derive(Debug, Clone)]
+pub struct NodeSpec {
+    /// Node URL (http:// or https://)
+    pub url: String,
+    /// Optional certificate pin for TLS verification
+    pub cert_pin: Option<CertPin>,
+}
 
 /// HTTP transport client for communicating with mailbox nodes (MIK-only, no prekeys)
 ///
@@ -63,6 +75,57 @@ impl HttpTransport {
     pub fn with_nodes_and_client(base_urls: Vec<String>, client: Client) -> Self {
         assert!(!base_urls.is_empty(), "At least one node URL is required");
         Self { base_urls, client }
+    }
+
+    /// Create a new HTTP transport with node configurations (URLs + optional pins).
+    ///
+    /// This is the recommended constructor for production use. It:
+    /// - Builds a custom TLS client with certificate pinning
+    /// - Warns on HTTP URLs (unencrypted)
+    /// - Warns on HTTPS URLs without pins (vulnerable to MITM)
+    ///
+    /// # Example
+    /// ```ignore
+    /// let nodes = vec![
+    ///     NodeSpec { url: "https://node1.example.com".into(), cert_pin: Some(pin) },
+    ///     NodeSpec { url: "https://node2.example.com".into(), cert_pin: None },
+    /// ];
+    /// let transport = HttpTransport::with_nodes_config(nodes)?;
+    /// ```
+    pub fn with_nodes_config(nodes: Vec<NodeSpec>) -> Result<Self, TransportError> {
+        assert!(!nodes.is_empty(), "At least one node is required");
+
+        // Collect pins and emit warnings
+        let mut pins: HashMap<String, CertPin> = HashMap::new();
+        for node in &nodes {
+            if node.url.starts_with("http://") {
+                warn!(
+                    "Node {} uses unencrypted HTTP - credentials and messages may be exposed",
+                    sanitize_url_for_log(&node.url)
+                );
+            } else if node.url.starts_with("https://") {
+                if let Some(ref pin) = node.cert_pin {
+                    if let Some(host) = extract_hostname(&node.url) {
+                        pins.insert(host, pin.clone());
+                        info!(
+                            "Certificate pinning enabled for {}",
+                            sanitize_url_for_log(&node.url)
+                        );
+                    }
+                } else {
+                    warn!(
+                        "Node {} has no certificate pin - vulnerable to MITM attacks",
+                        sanitize_url_for_log(&node.url)
+                    );
+                }
+            }
+        }
+
+        // Build TLS client with pinning verifier
+        let client = build_pinning_client(pins)?;
+        let base_urls = nodes.into_iter().map(|n| n.url).collect();
+
+        Ok(Self { base_urls, client })
     }
 
     /// Get the configured node URLs
@@ -360,6 +423,43 @@ impl Transport for HttpTransport {
     }
 }
 
+/// Extract hostname from URL for pin lookup.
+fn extract_hostname(url_str: &str) -> Option<String> {
+    Url::parse(url_str).ok().and_then(|u| u.host_str().map(|h| h.to_string()))
+}
+
+/// Sanitize URL for logging (remove credentials).
+fn sanitize_url_for_log(url_str: &str) -> String {
+    match parse_url_with_auth(url_str) {
+        Ok(parsed) => parsed.url,
+        // Don't return original URL on parse failure - it may contain credentials
+        Err(_) => "[invalid URL]".to_string(),
+    }
+}
+
+/// Build a reqwest client with TLS certificate pinning.
+fn build_pinning_client(pins: HashMap<String, CertPin>) -> Result<Client, TransportError> {
+    // Create pinning verifier (empty pins map = standard verification only)
+    let verifier = PinningVerifier::new(pins);
+
+    // Build rustls client config with custom verifier
+    // Use ring as the crypto provider explicitly
+    let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| TransportError::TlsConfig(format!("Failed to set protocol versions: {}", e)))?
+    .dangerous()
+    .with_custom_certificate_verifier(Arc::new(verifier))
+    .with_no_client_auth();
+
+    // Build reqwest client with custom TLS config
+    Client::builder()
+        .use_preconfigured_tls(tls_config)
+        .build()
+        .map_err(|e| TransportError::TlsConfig(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,5 +493,65 @@ mod tests {
     #[should_panic(expected = "At least one node URL is required")]
     fn test_empty_nodes_panics() {
         HttpTransport::with_nodes(vec![]);
+    }
+
+    #[test]
+    fn test_extract_hostname() {
+        assert_eq!(
+            extract_hostname("https://example.com:8443/path"),
+            Some("example.com".to_string())
+        );
+        assert_eq!(
+            extract_hostname("http://localhost:3000"),
+            Some("localhost".to_string())
+        );
+        assert_eq!(extract_hostname("invalid"), None);
+    }
+
+    #[test]
+    fn test_sanitize_url_for_log() {
+        assert_eq!(
+            sanitize_url_for_log("https://user:pass@example.com/api"),
+            "https://example.com/api"
+        );
+        assert_eq!(
+            sanitize_url_for_log("https://example.com/api"),
+            "https://example.com/api"
+        );
+        // Invalid URLs should return placeholder, not the original (which may contain credentials)
+        assert_eq!(sanitize_url_for_log("not-a-url"), "[invalid URL]");
+    }
+
+    #[test]
+    fn test_with_nodes_config_no_pins() {
+        let nodes = vec![
+            NodeSpec {
+                url: "https://node1.example.com".to_string(),
+                cert_pin: None,
+            },
+            NodeSpec {
+                url: "https://node2.example.com".to_string(),
+                cert_pin: None,
+            },
+        ];
+        let transport = HttpTransport::with_nodes_config(nodes).unwrap();
+        assert_eq!(transport.node_urls().len(), 2);
+    }
+
+    #[test]
+    fn test_with_nodes_config_with_pins() {
+        let pin = CertPin::parse("spki//sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").unwrap();
+        let nodes = vec![NodeSpec {
+            url: "https://example.com".to_string(),
+            cert_pin: Some(pin),
+        }];
+        let transport = HttpTransport::with_nodes_config(nodes).unwrap();
+        assert_eq!(transport.node_urls().len(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "At least one node is required")]
+    fn test_with_nodes_config_empty_panics() {
+        let _ = HttpTransport::with_nodes_config(vec![]);
     }
 }
