@@ -16,6 +16,9 @@
 //! - `REME_NODE_DEFAULT_TTL` - Default message TTL in seconds
 //! - `REME_NODE_LOG_LEVEL` - Log level (trace, debug, info, warn, error)
 //! - `REME_NODE_STORAGE_PATH` - Path to SQLite database file (`:memory:` for in-memory)
+//! - `REME_NODE_TLS_ENABLED` - Enable TLS/HTTPS (true/false)
+//! - `REME_NODE_TLS_CERT` - Path to PEM certificate file
+//! - `REME_NODE_TLS_KEY` - Path to PEM private key file
 //!
 //! ## Config File
 //!
@@ -28,6 +31,11 @@
 //! default_ttl = 604800
 //! log_level = "info"
 //! storage_path = "/var/lib/reme/mailbox.db"  # Optional: enables persistent storage
+//!
+//! [tls]
+//! enabled = true
+//! cert_path = "/etc/reme/cert.pem"
+//! key_path = "/etc/reme/key.pem"
 //! ```
 
 use crate::cleanup::CleanupConfig;
@@ -76,6 +84,31 @@ impl Default for RateLimitConfig {
             fetch_ip_burst: 50,
             fetch_key_rps: 0,
             fetch_key_burst: 30,
+        }
+    }
+}
+
+/// TLS configuration for HTTPS server
+///
+/// When enabled, the node will serve HTTPS instead of HTTP.
+/// Requires both cert_path and key_path to be set.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct TlsConfig {
+    /// Enable TLS (requires cert_path and key_path)
+    pub enabled: bool,
+    /// Path to PEM-encoded certificate file
+    pub cert_path: Option<PathBuf>,
+    /// Path to PEM-encoded private key file
+    pub key_path: Option<PathBuf>,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cert_path: None,
+            key_path: None,
         }
     }
 }
@@ -213,6 +246,19 @@ pub struct CliArgs {
     /// Fetch endpoint: per-routing-key burst capacity
     #[arg(long, env = "REME_NODE_RATE_LIMIT_FETCH_KEY_BURST")]
     pub rate_limit_fetch_key_burst: Option<u32>,
+
+    // TLS configuration
+    /// Enable TLS (HTTPS) for the server
+    #[arg(long, env = "REME_NODE_TLS_ENABLED")]
+    pub tls_enabled: Option<bool>,
+
+    /// Path to PEM-encoded TLS certificate file
+    #[arg(long, env = "REME_NODE_TLS_CERT")]
+    pub tls_cert: Option<PathBuf>,
+
+    /// Path to PEM-encoded TLS private key file
+    #[arg(long, env = "REME_NODE_TLS_KEY")]
+    pub tls_key: Option<PathBuf>,
 }
 
 /// Final resolved configuration
@@ -257,6 +303,10 @@ pub struct NodeConfig {
     /// Rate limiting configuration
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
+
+    /// TLS configuration
+    #[serde(default)]
+    pub tls: TlsConfig,
 }
 
 impl Default for NodeConfig {
@@ -274,6 +324,7 @@ impl Default for NodeConfig {
             auth_username: None,
             auth_password: None,
             rate_limit: RateLimitConfig::default(),
+            tls: TlsConfig::default(),
         }
     }
 }
@@ -486,6 +537,32 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         rate_limit.fetch_key_burst = v;
     }
 
+    // Extract TLS config
+    let mut tls = TlsConfig {
+        enabled: config
+            .get::<bool>("tls.enabled")
+            .unwrap_or(defaults.tls.enabled),
+        cert_path: config
+            .get::<String>("tls.cert_path")
+            .ok()
+            .map(PathBuf::from),
+        key_path: config
+            .get::<String>("tls.key_path")
+            .ok()
+            .map(PathBuf::from),
+    };
+
+    // Apply CLI overrides for TLS
+    if let Some(v) = cli.tls_enabled {
+        tls.enabled = v;
+    }
+    if let Some(ref path) = cli.tls_cert {
+        tls.cert_path = Some(path.clone());
+    }
+    if let Some(ref path) = cli.tls_key {
+        tls.key_path = Some(path.clone());
+    }
+
     Ok(NodeConfig {
         bind_addr,
         max_messages,
@@ -498,6 +575,7 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         auth_username,
         auth_password,
         rate_limit,
+        tls,
     })
 }
 
