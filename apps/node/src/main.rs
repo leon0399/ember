@@ -219,39 +219,54 @@ async fn main() {
 
     if config.tls.enabled {
         // TLS mode
-        let cert_path = config.tls.cert_path.as_ref().expect(
-            "TLS enabled but tls.cert_path not set. Provide --tls-cert or set tls.cert_path in config.",
-        );
-        let key_path = config.tls.key_path.as_ref().expect(
-            "TLS enabled but tls.key_path not set. Provide --tls-key or set tls.key_path in config.",
-        );
+        let Some(cert_path) = config.tls.cert_path.as_ref() else {
+            error!("TLS enabled but tls.cert_path not set. Provide --tls-cert or set tls.cert_path in config.");
+            std::process::exit(1);
+        };
+        let Some(key_path) = config.tls.key_path.as_ref() else {
+            error!("TLS enabled but tls.key_path not set. Provide --tls-key or set tls.key_path in config.");
+            std::process::exit(1);
+        };
 
         info!("TLS: enabled");
         info!("  Certificate: {}", cert_path.display());
         info!("  Private key: {}", key_path.display());
 
-        let rustls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path)
-            .await
-            .expect("Failed to load TLS certificate/key");
+        let rustls_config =
+            match axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path).await {
+                Ok(config) => config,
+                Err(e) => {
+                    error!("Failed to load TLS certificate/key: {}", e);
+                    std::process::exit(1);
+                }
+            };
 
         info!("Node listening on https://{}", addr);
 
-        axum_server::bind_rustls(addr, rustls_config)
+        if let Err(e) = axum_server::bind_rustls(addr, rustls_config)
             .serve(app.into_make_service_with_connect_info::<SocketAddr>())
             .await
-            .expect("Server failed");
+        {
+            error!("Server failed: {}", e);
+            std::process::exit(1);
+        }
     } else {
         // Plain HTTP mode
         info!("TLS: disabled (use --tls-enabled to enable HTTPS)");
 
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .expect("Failed to bind address");
+        let listener = match tokio::net::TcpListener::bind(addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                error!("Failed to bind address: {}", e);
+                std::process::exit(1);
+            }
+        };
 
         info!("Node listening on http://{}", addr);
 
-        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-            .await
-            .expect("Server failed");
+        if let Err(e) = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await {
+            error!("Server failed: {}", e);
+            std::process::exit(1);
+        }
     }
 }

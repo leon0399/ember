@@ -93,7 +93,11 @@ impl HttpTransport {
     /// let transport = HttpTransport::with_nodes_config(nodes)?;
     /// ```
     pub fn with_nodes_config(nodes: Vec<NodeSpec>) -> Result<Self, TransportError> {
-        assert!(!nodes.is_empty(), "At least one node is required");
+        if nodes.is_empty() {
+            return Err(TransportError::TlsConfig(
+                "At least one node is required".to_string(),
+            ));
+        }
 
         // Collect pins and emit warnings
         let mut pins: HashMap<String, CertPin> = HashMap::new();
@@ -111,6 +115,12 @@ impl HttpTransport {
                             "Certificate pinning enabled for {}",
                             sanitize_url_for_log(&node.url)
                         );
+                    } else {
+                        // Fail if we can't extract hostname for a pinned URL
+                        return Err(TransportError::TlsConfig(format!(
+                            "Could not extract hostname from URL '{}' to apply certificate pin",
+                            sanitize_url_for_log(&node.url)
+                        )));
                     }
                 } else {
                     warn!(
@@ -440,15 +450,20 @@ fn sanitize_url_for_log(url_str: &str) -> String {
 /// Build a reqwest client with TLS certificate pinning.
 fn build_pinning_client(pins: HashMap<String, CertPin>) -> Result<Client, TransportError> {
     // Create pinning verifier (empty pins map = standard verification only)
-    let verifier = PinningVerifier::new(pins);
+    let verifier = PinningVerifier::new(pins)
+        .map_err(|e| TransportError::TlsConfig(e.to_string()))?;
 
-    // Build rustls client config with custom verifier
-    // Use ring as the crypto provider explicitly
+    // Build rustls client config with custom verifier.
+    // Use ring as the crypto provider explicitly.
     let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
     .with_safe_default_protocol_versions()
     .map_err(|e| TransportError::TlsConfig(format!("Failed to set protocol versions: {}", e)))?
+    // SAFETY: We use dangerous() to install a custom certificate verifier, but our
+    // PinningVerifier still performs full certificate chain validation via the inner
+    // WebPkiServerVerifier. The "dangerous" API is required because we add additional
+    // pin verification on top of standard TLS validation - we do NOT bypass any security.
     .dangerous()
     .with_custom_certificate_verifier(Arc::new(verifier))
     .with_no_client_auth();
@@ -550,8 +565,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "At least one node is required")]
-    fn test_with_nodes_config_empty_panics() {
-        let _ = HttpTransport::with_nodes_config(vec![]);
+    fn test_with_nodes_config_empty_returns_error() {
+        let result = HttpTransport::with_nodes_config(vec![]);
+        assert!(result.is_err());
+        match result {
+            Err(TransportError::TlsConfig(msg)) => {
+                assert!(msg.contains("At least one node"));
+            }
+            _ => panic!("Expected TlsConfig error"),
+        }
     }
 }

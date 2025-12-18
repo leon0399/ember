@@ -10,7 +10,7 @@ pub mod url_auth;
 
 pub use http::NodeSpec;
 pub use receiver::{MessageReceiver, ReceiverConfig, ReceiverHandle};
-pub use tls::{CertPin, PinParseError, PinningVerifier};
+pub use tls::{CertPin, PinParseError, PinningVerifier, VerifierBuildError};
 pub use url_auth::{parse_url_with_auth, ParsedUrl};
 
 #[derive(Debug, Error)]
@@ -36,8 +36,12 @@ pub enum TransportError {
     #[error("TLS configuration error: {0}")]
     TlsConfig(String),
 
-    #[error("Certificate pin mismatch for {hostname}: expected {expected}")]
-    CertificatePinMismatch { hostname: String, expected: String },
+    #[error("Certificate pin mismatch for {hostname}: expected {expected}, got {actual}")]
+    CertificatePinMismatch {
+        hostname: String,
+        expected: String,
+        actual: String,
+    },
 }
 
 /// Transport trait for sending messages (MIK-only, no prekeys)

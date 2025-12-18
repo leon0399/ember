@@ -927,8 +927,15 @@ fn transport_error_to_attempt_error(e: &TransportError) -> AttemptError {
             message: format!("TLS configuration error: {}", msg),
             is_transient: false,
         },
-        TransportError::CertificatePinMismatch { hostname, expected } => AttemptError::Rejected {
-            message: format!("Certificate pin mismatch for {}: expected {}", hostname, expected),
+        TransportError::CertificatePinMismatch {
+            hostname,
+            expected,
+            actual,
+        } => AttemptError::Rejected {
+            message: format!(
+                "Certificate pin mismatch for {}: expected {}, got {}",
+                hostname, expected, actual
+            ),
             is_transient: false,
         },
     }

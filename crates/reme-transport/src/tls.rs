@@ -89,14 +89,31 @@ impl CertPin {
 
     /// Verify that a certificate matches this pin.
     pub fn verify(&self, cert: &CertificateDer<'_>) -> bool {
+        self.verify_with_actual(cert).is_ok()
+    }
+
+    /// Verify that a certificate matches this pin, returning the actual pin on mismatch.
+    ///
+    /// Returns `Ok(())` if the pin matches, or `Err(actual_pin_string)` if it doesn't.
+    pub fn verify_with_actual(&self, cert: &CertificateDer<'_>) -> Result<(), String> {
         match self {
             CertPin::Spki { sha256 } => {
                 let actual = compute_spki_hash(cert);
-                actual.as_ref() == Some(sha256)
+                match actual {
+                    Some(actual_hash) if &actual_hash == sha256 => Ok(()),
+                    Some(actual_hash) => {
+                        Err(format!("spki//sha256/{}", BASE64_STANDARD.encode(actual_hash)))
+                    }
+                    None => Err("[failed to compute SPKI hash]".to_string()),
+                }
             }
             CertPin::Cert { sha256 } => {
                 let actual = compute_cert_hash(cert);
-                &actual == sha256
+                if &actual == sha256 {
+                    Ok(())
+                } else {
+                    Err(format!("cert//sha256/{}", BASE64_STANDARD.encode(actual)))
+                }
             }
         }
     }
@@ -152,11 +169,26 @@ pub struct PinningVerifier {
     inner: Arc<dyn ServerCertVerifier>,
 }
 
+/// Error building a pinning verifier.
+#[derive(Debug, Clone)]
+pub struct VerifierBuildError(String);
+
+impl fmt::Display for VerifierBuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Failed to build certificate verifier: {}", self.0)
+    }
+}
+
+impl std::error::Error for VerifierBuildError {}
+
 impl PinningVerifier {
     /// Create a new pinning verifier with the given pins.
     ///
     /// Pins are keyed by hostname (without port).
-    pub fn new(pins: HashMap<String, CertPin>) -> Self {
+    ///
+    /// # Errors
+    /// Returns an error if the root certificate store cannot be initialized.
+    pub fn new(pins: HashMap<String, CertPin>) -> Result<Self, VerifierBuildError> {
         // Use ring as the crypto provider explicitly
         let provider = Arc::new(rustls::crypto::ring::default_provider());
 
@@ -169,12 +201,15 @@ impl PinningVerifier {
             provider,
         )
         .build()
-        .expect("valid root store");
-        Self { pins, inner }
+        .map_err(|e| VerifierBuildError(e.to_string()))?;
+        Ok(Self { pins, inner })
     }
 
     /// Create a pinning verifier without any pins (just standard verification).
-    pub fn without_pins() -> Self {
+    ///
+    /// # Errors
+    /// Returns an error if the root certificate store cannot be initialized.
+    pub fn without_pins() -> Result<Self, VerifierBuildError> {
         Self::new(HashMap::new())
     }
 }
@@ -198,14 +233,28 @@ impl ServerCertVerifier for PinningVerifier {
         )?;
 
         // Then check pin if configured for this host
-        if let ServerName::DnsName(dns_name) = server_name {
-            let hostname = dns_name.as_ref().to_string();
+        let hostname = match server_name {
+            ServerName::DnsName(dns_name) => Some(dns_name.as_ref().to_string()),
+            ServerName::IpAddress(ip) => {
+                // Convert rustls IpAddr to string
+                use rustls::pki_types::IpAddr;
+                let ip_str = match ip {
+                    IpAddr::V4(v4) => format!("{}", std::net::Ipv4Addr::from(*v4)),
+                    IpAddr::V6(v6) => format!("{}", std::net::Ipv6Addr::from(*v6)),
+                };
+                Some(ip_str)
+            }
+            _ => None,
+        };
+
+        if let Some(hostname) = hostname {
             if let Some(pin) = self.pins.get(&hostname) {
-                if !pin.verify(end_entity) {
+                if let Err(actual) = pin.verify_with_actual(end_entity) {
                     return Err(TlsError::General(format!(
-                        "Certificate pin mismatch for {}: expected {}",
+                        "Certificate pin mismatch for {}: expected {}, got {}",
                         hostname,
-                        pin.to_pin_string()
+                        pin.to_pin_string(),
+                        actual
                     )));
                 }
             }
