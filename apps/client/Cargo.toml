@@ -37,3 +37,6 @@ tui-textarea = { workspace = true }
 
 # password input
 rpassword = "7"
+
+# secure memory handling
+zeroize = "1"

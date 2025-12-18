@@ -22,6 +22,7 @@ use ratatui::prelude::*;
 use reme_identity::{is_encrypted, load_identity, save_identity, Identity};
 use std::io::{self, Write};
 use std::fs;
+use zeroize::Zeroizing;
 
 /// Initialize and run the TUI
 pub async fn run(config: AppConfig) -> AppResult<()> {
@@ -70,7 +71,8 @@ fn setup_identity(identity_path: &std::path::Path) -> AppResult<Identity> {
             stdout.flush()?;
 
             loop {
-                let password = prompt_for_password("Enter password: ")?;
+                // Wrap in Zeroizing to ensure password is cleared from memory on drop
+                let password = Zeroizing::new(prompt_for_password("Enter password: ")?);
                 match load_identity(&data, Some(password.as_bytes())) {
                     Ok(identity) => {
                         println!();
@@ -100,7 +102,8 @@ fn setup_identity(identity_path: &std::path::Path) -> AppResult<Identity> {
         println!();
         stdout.flush()?;
 
-        let password = prompt_for_password("Password (optional): ")?;
+        // Wrap in Zeroizing to ensure password is cleared from memory on drop
+        let password = Zeroizing::new(prompt_for_password("Password (optional): ")?);
 
         let identity = if password.is_empty() {
             println!();
@@ -114,9 +117,10 @@ fn setup_identity(identity_path: &std::path::Path) -> AppResult<Identity> {
             // Confirm password with retry loop
             loop {
                 println!();
-                let confirm = prompt_for_password("Confirm password: ")?;
+                // Wrap in Zeroizing to ensure password is cleared from memory on drop
+                let confirm = Zeroizing::new(prompt_for_password("Confirm password: ")?);
 
-                if password == confirm {
+                if *password == *confirm {
                     println!();
                     println!("Password set. Identity will be encrypted.");
                     let identity = Identity::generate();
