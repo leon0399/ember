@@ -8,7 +8,7 @@ use crate::persistent_store::{PersistentMailboxStore, PersistentStoreError};
 use crate::replication::{ReplicationClient, FROM_NODE_HEADER};
 use axum::{
     body::Bytes,
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
@@ -27,6 +27,11 @@ pub struct AppState {
     pub replication: Arc<ReplicationClient>,
 }
 
+/// Maximum request body size (256 KiB)
+/// Prevents memory exhaustion from oversized payloads.
+/// Typical OuterEnvelope is ~2 KiB; 256 KiB provides ample headroom.
+const MAX_BODY_SIZE: usize = 256 * 1024;
+
 /// Create the API router
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
@@ -34,6 +39,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/fetch/{routing_key}", get(fetch_messages))
         .route("/api/v1/health", get(health_check))
         .route("/api/v1/stats", get(get_stats))
+        .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
         .with_state(state)
 }
 
