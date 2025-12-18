@@ -213,8 +213,9 @@ impl<'a> App<'a> {
             .ok_or("Database path contains invalid UTF-8 characters")?;
         let storage = Storage::open(db_path_str)?;
 
-        // Create transport
-        let transport = Arc::new(HttpTransport::with_nodes(config.node_urls.clone()));
+        // Create transport (extract URLs from node configs)
+        let node_urls: Vec<String> = config.nodes.iter().map(|n| n.url.clone()).collect();
+        let transport = Arc::new(HttpTransport::with_nodes(node_urls));
 
         // Build OutboxConfig from app config
         let ttl_ms = if config.outbox.ttl_days == 0 {
