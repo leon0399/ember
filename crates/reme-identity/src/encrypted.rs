@@ -346,8 +346,12 @@ pub fn load_identity(
             Ok(Identity::from_bytes(&key))
         }
         (false, Some(_)) => {
-            // User provided password but file is plaintext - load anyway
-            // This allows loading legacy files even when password is configured
+            // User provided password but file is plaintext
+            // Warn about potential security concern - file may not be encrypted as expected
+            eprintln!(
+                "Warning: Identity file is not encrypted. \
+                Password provided but file is in plaintext format."
+            );
             if data.len() != PLAINTEXT_FILE_SIZE {
                 return Err(EncryptedIdentityError::InvalidSize {
                     expected: PLAINTEXT_FILE_SIZE,
