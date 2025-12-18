@@ -53,7 +53,7 @@ pub const PLAINTEXT_FILE_SIZE: usize = 32;
 
 // OWASP 2024 recommended Argon2id parameters (hardcoded)
 const ARGON2_M: u32 = 47104; // 46 MiB
-const ARGON2_T: u32 = 1;     // 1 iteration
+const ARGON2_T: u32 = 2;     // 2 iterations (OWASP minimum)
 const ARGON2_P: u32 = 1;     // 1 parallelism
 
 /// Errors that can occur during encrypted identity operations
@@ -109,7 +109,7 @@ impl EncryptedIdentity {
 
         // Derive encryption key using Argon2id
         let argon2_params = Params::new(ARGON2_M, ARGON2_T, ARGON2_P, Some(32))
-            .map_err(|e| EncryptedIdentityError::EncryptionFailed(e.to_string()))?;
+            .expect("hardcoded Argon2 parameters are invalid");
         let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon2_params);
 
         // Key is wrapped in Zeroizing to ensure it's cleared from memory on drop
@@ -120,7 +120,7 @@ impl EncryptedIdentity {
 
         // Encrypt identity key with ChaCha20-Poly1305
         let cipher = ChaCha20Poly1305::new_from_slice(key.as_ref())
-            .map_err(|e| EncryptedIdentityError::EncryptionFailed(e.to_string()))?;
+            .expect("derived key has correct length");
 
         let plaintext = identity.to_bytes();
         let ciphertext_vec = cipher
@@ -148,7 +148,7 @@ impl EncryptedIdentity {
     pub fn decrypt(&self, password: &[u8]) -> Result<Identity, EncryptedIdentityError> {
         // Derive decryption key using Argon2id
         let argon2_params = Params::new(ARGON2_M, ARGON2_T, ARGON2_P, Some(32))
-            .map_err(|_| EncryptedIdentityError::DecryptionFailed)?;
+            .expect("hardcoded Argon2 parameters are invalid");
         let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon2_params);
 
         // Key is wrapped in Zeroizing to ensure it's cleared from memory on drop
@@ -159,7 +159,7 @@ impl EncryptedIdentity {
 
         // Decrypt with ChaCha20-Poly1305
         let cipher = ChaCha20Poly1305::new_from_slice(key.as_ref())
-            .map_err(|_| EncryptedIdentityError::DecryptionFailed)?;
+            .expect("derived key has correct length");
 
         let plaintext = Zeroizing::new(
             cipher
