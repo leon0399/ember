@@ -5,8 +5,10 @@ use tokio::sync::mpsc;
 
 pub mod http;
 pub mod receiver;
+pub mod url_auth;
 
 pub use receiver::{MessageReceiver, ReceiverConfig, ReceiverHandle};
+pub use url_auth::{parse_url_with_auth, ParsedUrl};
 
 #[derive(Debug, Error)]
 pub enum TransportError {

@@ -9,6 +9,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
+use crate::url_auth::parse_url_with_auth;
 use crate::{Transport, TransportError};
 
 /// HTTP transport client for communicating with mailbox nodes (MIK-only, no prekeys)
@@ -70,23 +71,41 @@ impl HttpTransport {
     }
 
     /// Submit wire payload to a single node
+    ///
+    /// Supports URL-embedded credentials (e.g., `http://user:pass@host/`)
+    /// which are extracted and sent as HTTP Basic Auth headers.
     async fn submit_to_node(
         &self,
         base_url: &str,
         payload_b64: &str,
     ) -> Result<(), TransportError> {
-        let url = format!("{}/api/v1/submit", base_url);
-        let response = self
+        // Parse URL and extract credentials if present
+        let parsed = parse_url_with_auth(base_url)
+            .map_err(|e| TransportError::Network(format!("Invalid URL: {}", e)))?;
+
+        let url = format!("{}/api/v1/submit", parsed.url.trim_end_matches('/'));
+
+        let mut request = self
             .client
             .post(&url)
             .header("Content-Type", "text/plain")
-            .body(payload_b64.to_string())
+            .body(payload_b64.to_string());
+
+        // Add Basic Auth if credentials were embedded in URL
+        if let Some((username, password)) = parsed.auth {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        let response = request
             .send()
             .await
             .map_err(|e| TransportError::Network(e.to_string()))?;
 
         if !response.status().is_success() {
             let status = response.status();
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(TransportError::AuthenticationFailed);
+            }
             let body = response
                 .text()
                 .await
@@ -106,22 +125,41 @@ impl HttpTransport {
     }
 
     /// Fetch messages from a single node
+    ///
+    /// Supports URL-embedded credentials (e.g., `http://user:pass@host/`)
+    /// which are extracted and sent as HTTP Basic Auth headers.
     async fn fetch_from_node(
         &self,
         base_url: &str,
         routing_key_b64: &str,
     ) -> Result<Vec<OuterEnvelope>, TransportError> {
-        let url = format!("{}/api/v1/fetch/{}", base_url, routing_key_b64);
+        // Parse URL and extract credentials if present
+        let parsed = parse_url_with_auth(base_url)
+            .map_err(|e| TransportError::Network(format!("Invalid URL: {}", e)))?;
 
-        let response = self
-            .client
-            .get(&url)
+        let url = format!(
+            "{}/api/v1/fetch/{}",
+            parsed.url.trim_end_matches('/'),
+            routing_key_b64
+        );
+
+        let mut request = self.client.get(&url);
+
+        // Add Basic Auth if credentials were embedded in URL
+        if let Some((username, password)) = parsed.auth {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        let response = request
             .send()
             .await
             .map_err(|e| TransportError::Network(e.to_string()))?;
 
         if !response.status().is_success() {
             let status = response.status();
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(TransportError::AuthenticationFailed);
+            }
             let body = response
                 .text()
                 .await

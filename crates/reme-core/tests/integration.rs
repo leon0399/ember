@@ -43,8 +43,8 @@ impl TestServer {
             "test-node".to_string(),
             vec![], // No peers for testing
         ));
-        let state = Arc::new(api::AppState { store, replication });
-        let app = api::router(state);
+        let state = Arc::new(api::AppState { store, replication, auth: None, submit_key_limiter: None });
+        let app = api::router(state, None);
 
         // Spawn server in background
         let handle = tokio::spawn(async move {
@@ -424,8 +424,8 @@ async fn test_multi_node_replication() {
         "node-1".to_string(),
         vec![url2.clone()],
     ));
-    let state1 = Arc::new(api::AppState { store: store1, replication: replication1 });
-    let app1 = api::router(state1);
+    let state1 = Arc::new(api::AppState { store: store1, replication: replication1, auth: None, submit_key_limiter: None });
+    let app1 = api::router(state1, None);
 
     // Create node 2 with node 1 as peer
     let store2 = Arc::new(persistent_store::PersistentMailboxStore::open(":memory:", config).unwrap());
@@ -433,8 +433,8 @@ async fn test_multi_node_replication() {
         "node-2".to_string(),
         vec![url1.clone()],
     ));
-    let state2 = Arc::new(api::AppState { store: store2, replication: replication2 });
-    let app2 = api::router(state2);
+    let state2 = Arc::new(api::AppState { store: store2, replication: replication2, auth: None, submit_key_limiter: None });
+    let app2 = api::router(state2, None);
 
     // Spawn both servers
     let _handle1 = tokio::spawn(async move {

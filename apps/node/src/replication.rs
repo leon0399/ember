@@ -2,7 +2,19 @@
 //!
 //! This module handles replicating payloads (messages/tombstones) to peer nodes.
 //! Uses fire-and-forget pattern to avoid blocking the client response.
+//!
+//! ## Per-Peer Authentication
+//!
+//! Supports URL-embedded credentials for per-peer authentication:
+//! ```text
+//! peers = [
+//!     "http://user1:pass1@peer1.example:3000",
+//!     "http://user2:pass2@peer2.example:3000",
+//!     "http://public-peer.example:3000",  # No auth
+//! ]
+//! ```
 
+use reme_transport::parse_url_with_auth;
 use reqwest::Client;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -30,6 +42,7 @@ impl ReplicationClient {
     /// Replicate a wire payload (message or tombstone) to all peer nodes (except the source)
     ///
     /// Uses fire-and-forget pattern - spawns tasks and returns immediately.
+    /// Supports URL-embedded credentials for per-peer authentication.
     pub fn replicate_payload(self: &Arc<Self>, payload_b64: String, from_node: Option<String>) {
         if self.peer_urls.is_empty() {
             return;
@@ -46,29 +59,51 @@ impl ReplicationClient {
                     }
                 }
 
-                let url = format!("{}/api/v1/submit", peer_url);
-                let result = this
+                // Parse URL and extract credentials if present
+                let parsed = match parse_url_with_auth(peer_url) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        // Don't log raw peer_url - it may contain credentials
+                        error!("Invalid peer URL (parse error): {}", e);
+                        continue;
+                    }
+                };
+
+                let url = format!("{}/api/v1/submit", parsed.url.trim_end_matches('/'));
+
+                let mut request = this
                     .client
                     .post(&url)
                     .header(FROM_NODE_HEADER, &this.node_id)
                     .header("Content-Type", "text/plain")
-                    .body(payload_b64.clone())
-                    .send()
-                    .await;
+                    .body(payload_b64.clone());
+
+                // Add Basic Auth if credentials were embedded in peer URL
+                if let Some((username, password)) = parsed.auth {
+                    request = request.basic_auth(username, Some(password));
+                }
+
+                let result = request.send().await;
 
                 match result {
                     Ok(resp) if resp.status().is_success() => {
-                        debug!("Replicated payload to {}", peer_url);
+                        debug!("Replicated payload to {}", parsed.url);
+                    }
+                    Ok(resp) if resp.status() == reqwest::StatusCode::UNAUTHORIZED => {
+                        error!(
+                            "Authentication failed for peer {} - check credentials",
+                            parsed.url
+                        );
                     }
                     Ok(resp) => {
                         warn!(
                             "Peer {} returned status {} for payload replication",
-                            peer_url,
+                            parsed.url,
                             resp.status()
                         );
                     }
                     Err(e) => {
-                        error!("Failed to replicate payload to {}: {}", peer_url, e);
+                        error!("Failed to replicate payload to {}: {}", parsed.url, e);
                     }
                 }
             }
@@ -76,6 +111,8 @@ impl ReplicationClient {
     }
 
     /// Log replication configuration on startup
+    ///
+    /// Note: Credentials are stripped from URLs before logging for security.
     pub fn log_config(&self) {
         if self.peer_urls.is_empty() {
             info!("Replication: disabled (no peers configured)");
@@ -84,7 +121,18 @@ impl ReplicationClient {
             info!("  Node ID: {}", self.node_id);
             info!("  Peers:");
             for peer in &self.peer_urls {
-                info!("    - {}", peer);
+                // Strip credentials from URL before logging
+                let display_url = match parse_url_with_auth(peer) {
+                    Ok(parsed) => {
+                        if parsed.auth.is_some() {
+                            format!("{} (authenticated)", parsed.url)
+                        } else {
+                            parsed.url
+                        }
+                    }
+                    Err(_) => peer.clone(),
+                };
+                info!("    - {}", display_url);
             }
         }
     }
