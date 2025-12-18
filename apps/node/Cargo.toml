@@ -34,6 +34,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "ti
 
 # web
 axum = { workspace = true }
+http = "1"
 reqwest = { workspace = true, features = ["json"] }
 
 # security
@@ -41,8 +42,8 @@ subtle = "2"
 zeroize = "1"
 
 # rate limiting
-tower-governor = "0.5"
-governor = "0.8"
+tower_governor = "0.8"
+governor = "0.10"
 
 # CLI / config
 clap = { workspace = true }
