@@ -36,6 +36,87 @@ use config::{Config, Environment, File, FileFormat};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use tracing::info;
+
+/// Rate limiting configuration
+///
+/// Each limit can be independently disabled by setting its `_rps` value to 0.
+/// Limits are applied per-IP (using X-Forwarded-For if present) and per-routing-key.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RateLimitConfig {
+    /// Submit endpoint: per-IP requests per second (0 = disabled)
+    pub submit_ip_rps: u32,
+    /// Submit endpoint: per-IP burst capacity
+    pub submit_ip_burst: u32,
+    /// Submit endpoint: per-routing-key requests per second (0 = disabled)
+    pub submit_key_rps: u32,
+    /// Submit endpoint: per-routing-key burst capacity
+    pub submit_key_burst: u32,
+
+    /// Fetch endpoint: per-IP requests per second (0 = disabled)
+    pub fetch_ip_rps: u32,
+    /// Fetch endpoint: per-IP burst capacity
+    pub fetch_ip_burst: u32,
+    /// Fetch endpoint: per-routing-key requests per second (0 = disabled)
+    pub fetch_key_rps: u32,
+    /// Fetch endpoint: per-routing-key burst capacity
+    pub fetch_key_burst: u32,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            // All disabled by default (0 = off)
+            submit_ip_rps: 0,
+            submit_ip_burst: 10,
+            submit_key_rps: 0,
+            submit_key_burst: 20,
+            fetch_ip_rps: 0,
+            fetch_ip_burst: 50,
+            fetch_key_rps: 0,
+            fetch_key_burst: 30,
+        }
+    }
+}
+
+impl RateLimitConfig {
+    /// Check if any rate limiting is enabled
+    pub fn any_enabled(&self) -> bool {
+        self.submit_ip_rps > 0
+            || self.submit_key_rps > 0
+            || self.fetch_ip_rps > 0
+            || self.fetch_key_rps > 0
+    }
+
+    /// Log which limiters are enabled
+    pub fn log_config(&self) {
+        if self.submit_ip_rps > 0 {
+            info!(
+                "  Submit per-IP: {} rps, burst {}",
+                self.submit_ip_rps, self.submit_ip_burst
+            );
+        }
+        if self.submit_key_rps > 0 {
+            info!(
+                "  Submit per-key: {} rps, burst {}",
+                self.submit_key_rps, self.submit_key_burst
+            );
+        }
+        if self.fetch_ip_rps > 0 {
+            info!(
+                "  Fetch per-IP: {} rps, burst {}",
+                self.fetch_ip_rps, self.fetch_ip_burst
+            );
+        }
+        if self.fetch_key_rps > 0 {
+            info!(
+                "  Fetch per-key: {} rps, burst {}",
+                self.fetch_key_rps, self.fetch_key_burst
+            );
+        }
+    }
+}
 
 /// CLI arguments for the node
 #[derive(Parser, Debug, Clone)]
@@ -104,6 +185,34 @@ pub struct CliArgs {
     /// If set along with auth_username, incoming requests must authenticate
     #[arg(long, env = "REME_NODE_AUTH_PASSWORD")]
     pub auth_password: Option<String>,
+
+    // Rate limiting: Submit endpoint
+    /// Submit endpoint: per-IP requests per second (0 = disabled)
+    #[arg(long, env = "REME_NODE_RATE_LIMIT_SUBMIT_IP_RPS")]
+    pub rate_limit_submit_ip_rps: Option<u32>,
+    /// Submit endpoint: per-IP burst capacity
+    #[arg(long, env = "REME_NODE_RATE_LIMIT_SUBMIT_IP_BURST")]
+    pub rate_limit_submit_ip_burst: Option<u32>,
+    /// Submit endpoint: per-routing-key requests per second (0 = disabled)
+    #[arg(long, env = "REME_NODE_RATE_LIMIT_SUBMIT_KEY_RPS")]
+    pub rate_limit_submit_key_rps: Option<u32>,
+    /// Submit endpoint: per-routing-key burst capacity
+    #[arg(long, env = "REME_NODE_RATE_LIMIT_SUBMIT_KEY_BURST")]
+    pub rate_limit_submit_key_burst: Option<u32>,
+
+    // Rate limiting: Fetch endpoint
+    /// Fetch endpoint: per-IP requests per second (0 = disabled)
+    #[arg(long, env = "REME_NODE_RATE_LIMIT_FETCH_IP_RPS")]
+    pub rate_limit_fetch_ip_rps: Option<u32>,
+    /// Fetch endpoint: per-IP burst capacity
+    #[arg(long, env = "REME_NODE_RATE_LIMIT_FETCH_IP_BURST")]
+    pub rate_limit_fetch_ip_burst: Option<u32>,
+    /// Fetch endpoint: per-routing-key requests per second (0 = disabled)
+    #[arg(long, env = "REME_NODE_RATE_LIMIT_FETCH_KEY_RPS")]
+    pub rate_limit_fetch_key_rps: Option<u32>,
+    /// Fetch endpoint: per-routing-key burst capacity
+    #[arg(long, env = "REME_NODE_RATE_LIMIT_FETCH_KEY_BURST")]
+    pub rate_limit_fetch_key_burst: Option<u32>,
 }
 
 /// Final resolved configuration
@@ -144,6 +253,10 @@ pub struct NodeConfig {
     /// Password for HTTP Basic Auth (optional)
     #[serde(default)]
     pub auth_password: Option<String>,
+
+    /// Rate limiting configuration
+    #[serde(default)]
+    pub rate_limit: RateLimitConfig,
 }
 
 impl Default for NodeConfig {
@@ -160,6 +273,7 @@ impl Default for NodeConfig {
             storage_path: None, // None means :memory:
             auth_username: None,
             auth_password: None,
+            rate_limit: RateLimitConfig::default(),
         }
     }
 }
@@ -167,6 +281,12 @@ impl Default for NodeConfig {
 /// Get the default config file path based on platform conventions
 fn default_config_path() -> Option<PathBuf> {
     ProjectDirs::from("com", "branch", "reme").map(|dirs| dirs.config_dir().join("node.toml"))
+}
+
+/// Safely convert i64 to u32, clamping negative values to 0.
+/// Prevents negative config values from wrapping to huge u32 values.
+fn i64_to_u32_clamped(v: i64) -> u32 {
+    v.max(0) as u32
 }
 
 /// Load configuration from all sources with proper layering
@@ -304,6 +424,68 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     let auth_username = cli.auth_username.or(auth_username);
     let auth_password = cli.auth_password.or(auth_password);
 
+    // Extract rate limit config (clamp negative values to 0)
+    let mut rate_limit = RateLimitConfig {
+        submit_ip_rps: config
+            .get::<i64>("rate_limit.submit_ip_rps")
+            .map(i64_to_u32_clamped)
+            .unwrap_or(defaults.rate_limit.submit_ip_rps),
+        submit_ip_burst: config
+            .get::<i64>("rate_limit.submit_ip_burst")
+            .map(i64_to_u32_clamped)
+            .unwrap_or(defaults.rate_limit.submit_ip_burst),
+        submit_key_rps: config
+            .get::<i64>("rate_limit.submit_key_rps")
+            .map(i64_to_u32_clamped)
+            .unwrap_or(defaults.rate_limit.submit_key_rps),
+        submit_key_burst: config
+            .get::<i64>("rate_limit.submit_key_burst")
+            .map(i64_to_u32_clamped)
+            .unwrap_or(defaults.rate_limit.submit_key_burst),
+        fetch_ip_rps: config
+            .get::<i64>("rate_limit.fetch_ip_rps")
+            .map(i64_to_u32_clamped)
+            .unwrap_or(defaults.rate_limit.fetch_ip_rps),
+        fetch_ip_burst: config
+            .get::<i64>("rate_limit.fetch_ip_burst")
+            .map(i64_to_u32_clamped)
+            .unwrap_or(defaults.rate_limit.fetch_ip_burst),
+        fetch_key_rps: config
+            .get::<i64>("rate_limit.fetch_key_rps")
+            .map(i64_to_u32_clamped)
+            .unwrap_or(defaults.rate_limit.fetch_key_rps),
+        fetch_key_burst: config
+            .get::<i64>("rate_limit.fetch_key_burst")
+            .map(i64_to_u32_clamped)
+            .unwrap_or(defaults.rate_limit.fetch_key_burst),
+    };
+
+    // Apply CLI overrides for rate limiting
+    if let Some(v) = cli.rate_limit_submit_ip_rps {
+        rate_limit.submit_ip_rps = v;
+    }
+    if let Some(v) = cli.rate_limit_submit_ip_burst {
+        rate_limit.submit_ip_burst = v;
+    }
+    if let Some(v) = cli.rate_limit_submit_key_rps {
+        rate_limit.submit_key_rps = v;
+    }
+    if let Some(v) = cli.rate_limit_submit_key_burst {
+        rate_limit.submit_key_burst = v;
+    }
+    if let Some(v) = cli.rate_limit_fetch_ip_rps {
+        rate_limit.fetch_ip_rps = v;
+    }
+    if let Some(v) = cli.rate_limit_fetch_ip_burst {
+        rate_limit.fetch_ip_burst = v;
+    }
+    if let Some(v) = cli.rate_limit_fetch_key_rps {
+        rate_limit.fetch_key_rps = v;
+    }
+    if let Some(v) = cli.rate_limit_fetch_key_burst {
+        rate_limit.fetch_key_burst = v;
+    }
+
     Ok(NodeConfig {
         bind_addr,
         max_messages,
@@ -315,6 +497,7 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         storage_path,
         auth_username,
         auth_password,
+        rate_limit,
     })
 }
 

@@ -40,6 +40,10 @@ reqwest = { workspace = true, features = ["json"] }
 subtle = "2"
 zeroize = "1"
 
+# rate limiting
+tower-governor = "0.5"
+governor = "0.8"
+
 # CLI / config
 clap = { workspace = true }
 config = { workspace = true }
