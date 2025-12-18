@@ -5,6 +5,7 @@
 //! - GET /api/v1/fetch/:routing_key - Fetch messages
 
 use crate::persistent_store::{PersistentMailboxStore, PersistentStoreError};
+use crate::rate_limit::{KeyedLimiter, RateLimiters};
 use crate::replication::{ReplicationClient, FROM_NODE_HEADER};
 use axum::{
     body::Bytes,
@@ -31,6 +32,8 @@ pub struct AppState {
     /// Optional HTTP Basic Auth credentials (username, password)
     /// If Some, all API endpoints require authentication
     pub auth: Option<(String, String)>,
+    /// Optional per-routing-key rate limiter for submit endpoint
+    pub submit_key_limiter: Option<Arc<KeyedLimiter>>,
 }
 
 /// Maximum request body size (256 KiB)
@@ -39,10 +42,34 @@ pub struct AppState {
 const MAX_BODY_SIZE: usize = 256 * 1024;
 
 /// Create the API router
-pub fn router(state: Arc<AppState>) -> Router {
+///
+/// Rate limiters are applied per-route if configured:
+/// - submit_ip: Per-IP limit on submit endpoint
+/// - submit_key: Per-routing-key limit on submit (checked inline in handler)
+/// - fetch_ip: Per-IP limit on fetch endpoint
+/// - fetch_key: Per-routing-key limit on fetch endpoint
+pub fn router(state: Arc<AppState>, rate_limiters: Option<&RateLimiters>) -> Router {
+    // Build submit route with optional IP rate limiting
+    let submit_route = Router::new().route("/api/v1/submit", post(submit_payload));
+    let submit_route = if let Some(limiters) = rate_limiters {
+        limiters.apply_submit_ip(submit_route)
+    } else {
+        submit_route
+    };
+
+    // Build fetch route with optional IP and routing-key rate limiting
+    let fetch_route = Router::new().route("/api/v1/fetch/{routing_key}", get(fetch_messages));
+    let fetch_route = if let Some(limiters) = rate_limiters {
+        let route = limiters.apply_fetch_ip(fetch_route);
+        limiters.apply_fetch_key(route)
+    } else {
+        fetch_route
+    };
+
+    // Combine routes with shared middleware
     Router::new()
-        .route("/api/v1/submit", post(submit_payload))
-        .route("/api/v1/fetch/{routing_key}", get(fetch_messages))
+        .merge(submit_route)
+        .merge(fetch_route)
         .route("/api/v1/health", get(health_check))
         .route("/api/v1/stats", get(get_stats))
         .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
@@ -218,6 +245,22 @@ async fn handle_message(
 ) -> axum::response::Response {
     let routing_key = envelope.routing_key;
     let message_id = envelope.message_id;
+
+    // Check per-routing-key rate limit (inline, after parsing body)
+    if let Some(ref limiter) = state.submit_key_limiter {
+        // Use URL-safe base64 of routing key as the rate limit key
+        let key = URL_SAFE_NO_PAD.encode(routing_key.as_bytes());
+        if limiter.check_key(&key).is_err() {
+            debug!("Rate limited submit for routing key {:?}", &routing_key[..4]);
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(ErrorResponse {
+                    error: "Rate limit exceeded for this routing key".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    }
 
     // Check for duplicate (idempotent operation)
     match state.store.has_message(&routing_key, &message_id) {

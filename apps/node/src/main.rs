@@ -30,13 +30,16 @@ mod api;
 mod cleanup;
 mod config;
 mod persistent_store;
+mod rate_limit;
 mod replication;
 
 use api::AppState;
 use cleanup::run_cleanup_task;
 use config::{load_config, NodeConfig};
 use persistent_store::{PersistentMailboxStore, PersistentStoreConfig};
+use rate_limit::RateLimiters;
 use replication::ReplicationClient;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
@@ -137,22 +140,37 @@ async fn main() {
         }
     };
 
-    // Create app state
+    // Build rate limiters if any are configured
+    let rate_limiters = if config.rate_limit.any_enabled() {
+        info!("Rate limiting: enabled");
+        config.rate_limit.log_config();
+        Some(RateLimiters::new(&config.rate_limit))
+    } else {
+        info!("Rate limiting: disabled (all limits set to 0)");
+        None
+    };
+
+    // Create app state (submit_key_limiter is moved out of rate_limiters for AppState)
+    let submit_key_limiter = rate_limiters.as_ref().and_then(|r| r.submit_key.clone());
+
     let state = Arc::new(AppState {
         store,
         replication,
         auth,
+        submit_key_limiter,
     });
 
-    // Create router
-    let app = api::router(state);
+    // Create router with rate limiting
+    let app = api::router(state, rate_limiters.as_ref());
 
-    // Start server
+    // Start server with connect info for IP extraction
     let listener = tokio::net::TcpListener::bind(&config.bind_addr)
         .await
         .expect("Failed to bind address");
 
     info!("Node listening on {}", config.bind_addr);
 
-    axum::serve(listener, app).await.expect("Server failed");
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+        .await
+        .expect("Server failed");
 }
