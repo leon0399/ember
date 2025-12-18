@@ -11,8 +11,8 @@ use reme_identity::{Identity, PublicID};
 use reme_message::Content;
 use reme_outbox::{OutboxConfig, TransportRetryPolicy};
 use reme_storage::Storage;
-use reme_transport::http::HttpTransport;
-use reme_transport::{MessageReceiver, ReceiverConfig, TransportEvent};
+use reme_transport::http::{HttpTransport, NodeSpec};
+use reme_transport::{CertPin, MessageReceiver, ReceiverConfig, TransportEvent};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::sync::Arc;
@@ -213,9 +213,32 @@ impl<'a> App<'a> {
             .ok_or("Database path contains invalid UTF-8 characters")?;
         let storage = Storage::open(db_path_str)?;
 
-        // Create transport (extract URLs from node configs)
-        let node_urls: Vec<String> = config.nodes.iter().map(|n| n.url.clone()).collect();
-        let transport = Arc::new(HttpTransport::with_nodes(node_urls));
+        // Create transport with TLS and certificate pinning support
+        let node_specs: Vec<NodeSpec> = config
+            .nodes
+            .iter()
+            .map(|n| {
+                let cert_pin = match &n.cert_pin {
+                    Some(pin_str) => {
+                        // Fail explicitly if a configured pin is invalid - don't silently disable security
+                        let pin = CertPin::parse(pin_str).map_err(|e| {
+                            format!(
+                                "Invalid certificate pin for node {}: {}. \
+                                Fix the pin or remove it to disable pinning for this node.",
+                                n.url, e
+                            )
+                        })?;
+                        Some(pin)
+                    }
+                    None => None,
+                };
+                Ok(NodeSpec {
+                    url: n.url.clone(),
+                    cert_pin,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let transport = Arc::new(HttpTransport::with_nodes_config(node_specs)?);
 
         // Build OutboxConfig from app config
         let ttl_ms = if config.outbox.ttl_days == 0 {
