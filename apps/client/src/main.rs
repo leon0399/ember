@@ -26,34 +26,19 @@
 mod config;
 mod tui;
 
-use crate::config::load_config;
+use crate::config::{load_config, parse_log_level};
 use std::fs::{self, File};
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
-/// Parse log level from string
-fn parse_log_level(level: &str) -> Level {
-    match level.to_lowercase().as_str() {
-        "trace" => Level::TRACE,
-        "debug" => Level::DEBUG,
-        "info" => Level::INFO,
-        "warn" | "warning" => Level::WARN,
-        "error" => Level::ERROR,
-        _ => Level::INFO,
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration
-    let config = match load_config() {
-        Ok(config) => config,
-        Err(e) => {
-            eprintln!("Failed to load configuration: {}", e);
-            eprintln!("Using default configuration...");
-            config::AppConfig::default()
-        }
-    };
+    let config = load_config().unwrap_or_else(|e| {
+        eprintln!("Failed to load configuration: {}", e);
+        eprintln!("Using default configuration...");
+        config::AppConfig::default()
+    });
 
     // Ensure data directory exists for log file
     fs::create_dir_all(&config.data_dir)?;

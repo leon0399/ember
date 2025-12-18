@@ -198,21 +198,13 @@ pub struct App<'a> {
 
 impl<'a> App<'a> {
     /// Create a new app instance
-    pub async fn new(config: AppConfig) -> AppResult<Self> {
+    ///
+    /// # Arguments
+    /// * `config` - Application configuration
+    /// * `identity` - The loaded/decrypted identity
+    pub async fn new(config: AppConfig, identity: Identity) -> AppResult<Self> {
         // Ensure data directory exists
         fs::create_dir_all(&config.data_dir)?;
-
-        // Load or generate identity
-        let identity_path = config.data_dir.join("identity.key");
-        let identity = if identity_path.exists() {
-            let bytes = fs::read(&identity_path)?;
-            let key: [u8; 32] = bytes.try_into().map_err(|_| "Invalid identity file")?;
-            Identity::from_bytes(&key)
-        } else {
-            let identity = Identity::generate();
-            fs::write(&identity_path, identity.to_bytes())?;
-            identity
-        };
 
         // Create storage
         let db_path = config.data_dir.join("messages.db");
@@ -338,13 +330,20 @@ impl<'a> App<'a> {
             // Check for incoming messages (non-blocking)
             while let Ok(event) = msg_events.try_recv() {
                 if let TransportEvent::Message(envelope) = event {
-                    if let Ok(msg) = self.client.process_message(&envelope).await {
-                        let content = match &msg.content {
-                            Content::Text(t) => t.body.clone(),
-                            Content::Receipt(r) => format!("[Receipt: {:?}]", r.kind),
-                            _ => "[Unknown content]".to_string(),
-                        };
-                        self.handle_incoming_message(msg.from, content);
+                    match self.client.process_message(&envelope).await {
+                        Ok(msg) => {
+                            let content = match &msg.content {
+                                Content::Text(t) => t.body.clone(),
+                                Content::Receipt(r) => format!("[Receipt: {:?}]", r.kind),
+                                _ => "[Unknown content]".to_string(),
+                            };
+                            self.handle_incoming_message(msg.from, content);
+                        }
+                        Err(e) => {
+                            // Log message processing failure (don't silently drop)
+                            tracing::warn!("Failed to process incoming message: {}", e);
+                            self.status = format!("Message decrypt failed: {}", e);
+                        }
                     }
                 }
             }

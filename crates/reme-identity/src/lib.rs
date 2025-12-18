@@ -9,6 +9,12 @@ use bincode::enc::Encoder;
 use bincode::de::Decoder;
 use bincode::error::{EncodeError, DecodeError};
 
+pub mod encrypted;
+pub use encrypted::{
+    EncryptedIdentity, EncryptedIdentityError,
+    is_encrypted, load_identity, save_identity,
+};
+
 /// Error returned when a public key is invalid (e.g., low-order point)
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 #[error("Invalid public key: low-order point on Curve25519")]
@@ -247,6 +253,11 @@ impl<Context> Decode<Context> for PublicID {
 
 impl_borrow_decode!(PublicID);
 
+/// User identity containing the secret key for signing and decryption.
+///
+/// The secret key is automatically zeroized when the Identity is dropped,
+/// preventing sensitive key material from lingering in memory. This is
+/// handled by x25519-dalek's `StaticSecret` which implements `ZeroizeOnDrop`.
 #[derive(Getters)]
 pub struct Identity {
   #[get = "pub"]
