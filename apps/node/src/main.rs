@@ -38,7 +38,7 @@ use config::{load_config, NodeConfig};
 use persistent_store::{PersistentMailboxStore, PersistentStoreConfig};
 use replication::ReplicationClient;
 use std::sync::Arc;
-use tracing::{error, info, Level};
+use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 /// Parse log level from string
@@ -121,8 +121,28 @@ async fn main() {
         run_cleanup_task(cleanup_store, cleanup_config).await;
     });
 
+    // Build auth credentials if both username and password are provided
+    let auth = match (&config.auth_username, &config.auth_password) {
+        (Some(username), Some(password)) => {
+            info!("Basic Auth: enabled");
+            Some((username.clone(), password.clone()))
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            warn!("Basic Auth: DISABLED (both username and password required)");
+            None
+        }
+        (None, None) => {
+            info!("Basic Auth: disabled (no credentials configured)");
+            None
+        }
+    };
+
     // Create app state
-    let state = Arc::new(AppState { store, replication });
+    let state = Arc::new(AppState {
+        store,
+        replication,
+        auth,
+    });
 
     // Create router
     let app = api::router(state);

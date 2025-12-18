@@ -43,7 +43,7 @@ impl TestServer {
             "test-node".to_string(),
             vec![], // No peers for testing
         ));
-        let state = Arc::new(api::AppState { store, replication });
+        let state = Arc::new(api::AppState { store, replication, auth: None });
         let app = api::router(state);
 
         // Spawn server in background
@@ -424,7 +424,7 @@ async fn test_multi_node_replication() {
         "node-1".to_string(),
         vec![url2.clone()],
     ));
-    let state1 = Arc::new(api::AppState { store: store1, replication: replication1 });
+    let state1 = Arc::new(api::AppState { store: store1, replication: replication1, auth: None });
     let app1 = api::router(state1);
 
     // Create node 2 with node 1 as peer
@@ -433,7 +433,7 @@ async fn test_multi_node_replication() {
         "node-2".to_string(),
         vec![url1.clone()],
     ));
-    let state2 = Arc::new(api::AppState { store: store2, replication: replication2 });
+    let state2 = Arc::new(api::AppState { store: store2, replication: replication2, auth: None });
     let app2 = api::router(state2);
 
     // Spawn both servers

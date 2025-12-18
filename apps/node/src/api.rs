@@ -8,8 +8,9 @@ use crate::persistent_store::{PersistentMailboxStore, PersistentStoreError};
 use crate::replication::{ReplicationClient, FROM_NODE_HEADER};
 use axum::{
     body::Bytes,
-    extract::{DefaultBodyLimit, Path, State},
-    http::{HeaderMap, StatusCode},
+    extract::{DefaultBodyLimit, Path, Request, State},
+    http::{header, HeaderMap, StatusCode},
+    middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -19,12 +20,17 @@ use base64::prelude::*;
 use reme_message::{OuterEnvelope, RoutingKey, WirePayload};
 use serde::Serialize;
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 use tracing::{debug, error, warn};
+use zeroize::Zeroize;
 
 /// Shared application state
 pub struct AppState {
     pub store: Arc<PersistentMailboxStore>,
     pub replication: Arc<ReplicationClient>,
+    /// Optional HTTP Basic Auth credentials (username, password)
+    /// If Some, all API endpoints require authentication
+    pub auth: Option<(String, String)>,
 }
 
 /// Maximum request body size (256 KiB)
@@ -40,7 +46,67 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/health", get(health_check))
         .route("/api/v1/stats", get(get_stats))
         .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            check_basic_auth,
+        ))
         .with_state(state)
+}
+
+/// Middleware to check HTTP Basic Auth if credentials are configured
+async fn check_basic_auth(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    request: Request,
+    next: Next,
+) -> Result<impl IntoResponse, StatusCode> {
+    // If no auth configured, allow all requests
+    let Some((expected_user, expected_pass)) = &state.auth else {
+        return Ok(next.run(request).await);
+    };
+
+    // Get Authorization header
+    let Some(auth_header) = headers.get(header::AUTHORIZATION) else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+
+    // Parse "Basic <base64>" header
+    let auth_str = auth_header
+        .to_str()
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    if !auth_str.starts_with("Basic ") {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    // Decode base64 credentials
+    let mut decoded = BASE64_STANDARD
+        .decode(&auth_str[6..])
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    // Find separator and split into user/pass bytes, avoiding String allocation
+    let Some(separator_pos) = decoded.iter().position(|&b| b == b':') else {
+        decoded.zeroize();
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+
+    let (user_bytes, pass_bytes_with_colon) = decoded.split_at(separator_pos);
+    let pass_bytes = &pass_bytes_with_colon[1..];
+
+    // Validate credentials in constant time to prevent timing attacks
+    let user_match = user_bytes.ct_eq(expected_user.as_bytes());
+    let pass_match = pass_bytes.ct_eq(expected_pass.as_bytes());
+
+    // Securely clear credentials from memory
+    decoded.zeroize();
+
+    // Use bitwise AND to avoid short-circuit timing leak
+    // (short-circuit && would skip password check if username fails, leaking info)
+    if (user_match & pass_match).into() {
+        Ok(next.run(request).await)
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
+    }
 }
 
 // ============================================

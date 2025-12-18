@@ -12,6 +12,8 @@ bincode = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 base64 = "0.22"
 tracing = { workspace = true }
+url = "2"
+percent-encoding = "2"
 
 # HTTP implementation
 reqwest = { workspace = true, features = ["json"] }

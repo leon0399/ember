@@ -94,6 +94,16 @@ pub struct CliArgs {
     /// Use ":memory:" for in-memory storage, or a file path for persistence
     #[arg(long, env = "REME_NODE_STORAGE_PATH")]
     pub storage_path: Option<String>,
+
+    /// Username for HTTP Basic Auth (optional)
+    /// If set along with auth_password, incoming requests must authenticate
+    #[arg(long, env = "REME_NODE_AUTH_USERNAME")]
+    pub auth_username: Option<String>,
+
+    /// Password for HTTP Basic Auth (optional)
+    /// If set along with auth_username, incoming requests must authenticate
+    #[arg(long, env = "REME_NODE_AUTH_PASSWORD")]
+    pub auth_password: Option<String>,
 }
 
 /// Final resolved configuration
@@ -126,6 +136,14 @@ pub struct NodeConfig {
     /// Use ":memory:" for in-memory storage, or a file path for persistence
     #[serde(default)]
     pub storage_path: Option<String>,
+
+    /// Username for HTTP Basic Auth (optional)
+    #[serde(default)]
+    pub auth_username: Option<String>,
+
+    /// Password for HTTP Basic Auth (optional)
+    #[serde(default)]
+    pub auth_password: Option<String>,
 }
 
 impl Default for NodeConfig {
@@ -140,6 +158,8 @@ impl Default for NodeConfig {
             peers: Vec::new(),
             cleanup: CleanupConfig::default(),
             storage_path: None, // None means :memory:
+            auth_username: None,
+            auth_password: None,
         }
     }
 }
@@ -276,6 +296,14 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     // Override from CLI if provided
     let storage_path = cli.storage_path.or(storage_path);
 
+    // Extract auth config
+    let auth_username: Option<String> = config.get("auth_username").ok();
+    let auth_password: Option<String> = config.get("auth_password").ok();
+
+    // Override from CLI if provided
+    let auth_username = cli.auth_username.or(auth_username);
+    let auth_password = cli.auth_password.or(auth_password);
+
     Ok(NodeConfig {
         bind_addr,
         max_messages,
@@ -285,6 +313,8 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         peers,
         cleanup,
         storage_path,
+        auth_username,
+        auth_password,
     })
 }
 
