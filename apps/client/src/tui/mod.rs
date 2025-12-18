@@ -19,7 +19,7 @@ use crossterm::{
 };
 use password::prompt_for_password;
 use ratatui::prelude::*;
-use reme_identity::{is_encrypted, load_identity, save_identity, Identity};
+use reme_identity::{is_encrypted, load_identity, save_identity, EncryptedIdentityError, Identity};
 use std::io::{self, Write};
 use std::fs;
 use zeroize::Zeroizing;
@@ -78,9 +78,13 @@ fn setup_identity(identity_path: &std::path::Path) -> AppResult<Identity> {
                         println!();
                         return Ok(identity);
                     }
-                    Err(_) => {
+                    Err(EncryptedIdentityError::DecryptionFailed) => {
                         println!("Wrong password. Try again (or press Ctrl+C to exit).");
                         println!();
+                    }
+                    Err(e) => {
+                        // Non-recoverable error (corrupted file, invalid format, etc.)
+                        return Err(format!("Failed to load identity: {}", e).into());
                     }
                 }
             }
