@@ -5,8 +5,10 @@ use tokio::sync::mpsc;
 
 pub mod composite;
 pub mod http;
+pub mod http_target;
 pub mod receiver;
 pub mod seen_cache;
+pub mod target;
 pub mod tls;
 pub mod url_auth;
 
@@ -17,8 +19,12 @@ pub mod mqtt_receiver;
 
 pub use composite::CompositeTransport;
 pub use http::NodeSpec;
+pub use http_target::{HttpTarget, HttpTargetConfig};
 pub use receiver::{MessageReceiver, ReceiverConfig, ReceiverHandle};
 pub use seen_cache::{SeenCache, SharedSeenCache};
+pub use target::{
+    HealthState, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget,
+};
 pub use tls::{
     build_pinning_config, build_pinning_config_single, CertPin, PinParseError, PinningVerifier,
     VerifierBuildError,
