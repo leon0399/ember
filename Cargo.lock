@@ -2488,6 +2488,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "reme-node-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "bincode",
+ "reme-message",
+ "reme-transport",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "reme-outbox"
 version = "0.1.0"
 dependencies = [

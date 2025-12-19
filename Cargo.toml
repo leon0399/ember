@@ -13,7 +13,7 @@ reme-transport = { path = "crates/reme-transport" }
 reme-storage = { path = "crates/reme-storage" }
 reme-core = { path = "crates/reme-core" }
 reme-outbox = { path = "crates/reme-outbox" }
-reme-node = { path = "crates/reme-node" }
+reme-node-core = { path = "crates/reme-node-core" }
 
 anyhow = "^1.0.99"
 thiserror = "^2.0.16"

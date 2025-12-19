@@ -1,0 +1,38 @@
+[package]
+name = "reme-node-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core node functionality for resilient messenger"
+
+[dependencies]
+reme-message = { workspace = true }
+reme-transport = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# Async
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "net", "rt"] }
+tokio-util = { workspace = true }
+
+# Serialization
+bincode = { workspace = true }
+base64 = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+
+# HTTP client for replication (use native-tls to avoid aws-lc-sys build issues on Windows)
+reqwest = { workspace = true, default-features = false, features = ["json", "native-tls"] }
+
+# HTTP server for peers
+axum = { workspace = true }
+
+# SQLite storage (match reme-storage version)
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Utilities
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
