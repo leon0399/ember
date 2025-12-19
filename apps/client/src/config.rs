@@ -82,6 +82,21 @@ pub struct CliArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mqtt_client_id: Option<Vec<String>>,
 
+    /// LAN peer URLs for embedded node replication
+    ///
+    /// Example: --peers http://192.168.1.100:3000,http://192.168.1.101:3000
+    #[arg(long, value_delimiter = ',')]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peers: Option<Vec<String>>,
+
+    /// HTTP bind address for embedded node (enables LAN peer connections)
+    ///
+    /// Use "0.0.0.0:0" for automatic port selection
+    /// Example: --node-bind 0.0.0.0:3000
+    #[arg(long)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_bind: Option<String>,
+
     /// Directory for storing identity, keys, and messages
     #[arg(short = 'd', long, env = "REME_DATA_DIR")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -226,6 +241,18 @@ impl MqttBroker {
     }
 }
 
+/// Embedded node configuration
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct EmbeddedNodeConfig {
+    /// LAN peer URLs for message replication
+    #[serde(default)]
+    pub peers: Vec<String>,
+
+    /// HTTP bind address for accepting peer connections (None = disabled)
+    #[serde(default)]
+    pub bind_addr: Option<String>,
+}
+
 /// Final resolved configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
@@ -246,6 +273,10 @@ pub struct AppConfig {
     /// Outbox configuration
     #[serde(default)]
     pub outbox: OutboxAppConfig,
+
+    /// Embedded node configuration
+    #[serde(default)]
+    pub node: EmbeddedNodeConfig,
 }
 
 fn default_http() -> Vec<HttpEndpoint> {
@@ -260,6 +291,7 @@ impl Default for AppConfig {
             data_dir: default_data_dir(),
             log_level: "info".to_string(),
             outbox: OutboxAppConfig::default(),
+            node: EmbeddedNodeConfig::default(),
         }
     }
 }
@@ -288,6 +320,16 @@ struct RawConfig {
     /// Outbox config section
     #[serde(default)]
     outbox: RawOutboxConfig,
+    /// Embedded node config section
+    #[serde(default)]
+    node: RawNodeConfig,
+}
+
+/// Raw node config from file/env
+#[derive(Debug, Clone, Deserialize, Default)]
+struct RawNodeConfig {
+    peers: Option<Vec<String>>,
+    bind_addr: Option<String>,
 }
 
 /// Parse HTTP endpoints from REME_HTTP environment variable (JSON format)
@@ -473,12 +515,22 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
             .unwrap_or(outbox_defaults.retry_max_delay_secs),
     };
 
+    // Build node config with priority: CLI > config file > defaults
+    let node = EmbeddedNodeConfig {
+        peers: cli.peers
+            .or(raw.node.peers)
+            .unwrap_or_default(),
+        bind_addr: cli.node_bind
+            .or(raw.node.bind_addr),
+    };
+
     Ok(AppConfig {
         http,
         mqtt,
         data_dir,
         log_level,
         outbox,
+        node,
     })
 }
 

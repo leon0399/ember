@@ -6,18 +6,15 @@ use crate::tui::ui;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use ratatui::prelude::*;
-use reme_core::Client;
+use reme_core::embedded::{EmbeddedClient, EmbeddedClientConfig};
 use reme_identity::{Identity, PublicID};
 use reme_message::Content;
-use reme_outbox::{OutboxConfig, TransportRetryPolicy};
-use reme_storage::Storage;
-use reme_transport::http::{HttpTransport, NodeSpec};
-use reme_transport::{
-    CertPin, CompositeTransport, MessageReceiver, MqttBrokerSpec, MqttTransport, ReceiverConfig,
-    TransportEvent,
-};
+use reme_node_core::NodeEvent;
+use reme_outbox::OutboxConfig;
+use reme_storage::UnifiedStorage;
 use std::collections::{HashMap, VecDeque};
 use std::fs;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
@@ -181,10 +178,8 @@ pub struct App<'a> {
     pub input: TextArea<'a>,
     /// Status message
     pub status: String,
-    /// The messenger client (uses CompositeTransport for sending via HTTP and/or MQTT)
-    client: Client<CompositeTransport>,
-    /// HTTP transport for message receiving (HTTP polling-based receiver)
-    http_transport: Arc<HttpTransport>,
+    /// The messenger client with embedded node (uses channel transport internally)
+    client: EmbeddedClient,
     /// Contacts by name (for reverse lookup)
     contacts_by_id: HashMap<PublicID, String>,
     /// In-memory message cache per contact (until storage retrieval is implemented)
@@ -209,84 +204,20 @@ impl<'a> App<'a> {
         // Ensure data directory exists
         fs::create_dir_all(&config.data_dir)?;
 
-        // Create storage
+        // Create unified storage (shared between client and embedded node)
         let db_path = config.data_dir.join("messages.db");
         let db_path_str = db_path
             .to_str()
             .ok_or("Database path contains invalid UTF-8 characters")?;
-        let storage = Storage::open(db_path_str)?;
+        let storage = Arc::new(UnifiedStorage::open(db_path_str)?);
 
-        // Create HTTP transport with TLS and certificate pinning support
-        let node_specs: Vec<NodeSpec> = config
-            .http
-            .iter()
-            .map(|n| {
-                let cert_pin = match &n.cert_pin {
-                    Some(pin_str) => {
-                        // Fail explicitly if a configured pin is invalid - don't silently disable security
-                        let pin = CertPin::parse(pin_str).map_err(|e| {
-                            format!(
-                                "Invalid certificate pin for node {}: {}. \
-                                Fix the pin or remove it to disable pinning for this node.",
-                                n.url, e
-                            )
-                        })?;
-                        Some(pin)
-                    }
-                    None => None,
-                };
-                Ok(NodeSpec {
-                    url: n.url.clone(),
-                    cert_pin,
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-
-        // Create HTTP transport for both sending and receiving
-        let http_transport = if !node_specs.is_empty() {
-            let transport = HttpTransport::with_nodes_config(node_specs)?;
-            Some(Arc::new(transport))
-        } else {
-            None
+        // Parse HTTP bind address for embedded node (if configured)
+        let http_bind_addr: Option<SocketAddr> = match &config.node.bind_addr {
+            Some(addr_str) => Some(addr_str.parse().map_err(|e| {
+                format!("Invalid node bind address '{}': {}", addr_str, e)
+            })?),
+            None => None,
         };
-
-        // Create MQTT transport if brokers are configured
-        let mqtt_transport = if !config.mqtt.is_empty() {
-            // Convert config brokers to transport broker specs
-            let broker_specs: Vec<MqttBrokerSpec> = config
-                .mqtt
-                .iter()
-                .map(|b| MqttBrokerSpec {
-                    url: b.url.clone(),
-                    client_id: b.client_id.clone(),
-                })
-                .collect();
-            info!("Connecting to {} MQTT broker(s)...", broker_specs.len());
-            match MqttTransport::new(broker_specs).await {
-                Ok(t) => Some(t),
-                Err(e) => {
-                    warn!("Failed to connect to MQTT brokers: {}. MQTT transport disabled.", e);
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        // Build composite transport for sending
-        let mut composite = CompositeTransport::new();
-        if let Some(ref http) = http_transport {
-            composite = composite.with_arc_transport(http.clone());
-        }
-        if let Some(mqtt) = mqtt_transport {
-            composite = composite.with_transport(mqtt);
-        }
-        let transport = Arc::new(composite);
-
-        // Ensure we have at least one transport
-        if transport.is_empty() {
-            return Err("No transports configured. Add HTTP nodes and/or MQTT brokers.".into());
-        }
 
         // Build OutboxConfig from app config
         let ttl_ms = if config.outbox.ttl_days == 0 {
@@ -300,18 +231,21 @@ impl<'a> App<'a> {
             ..OutboxConfig::default()
         };
 
-        // Create custom retry policy from config
-        let retry_policy = TransportRetryPolicy {
-            initial_delay: Duration::from_secs(config.outbox.retry_initial_delay_secs),
-            max_delay: Duration::from_secs(config.outbox.retry_max_delay_secs),
-            ..TransportRetryPolicy::default()
+        // Configure embedded client with node settings
+        let embedded_config = EmbeddedClientConfig {
+            peers: config.node.peers.clone(),
+            http_bind_addr,
+            outbox_config,
+            ..EmbeddedClientConfig::default()
         };
 
-        // Create client with custom outbox config
-        let mut client = Client::with_config(identity, transport.clone(), storage, outbox_config);
+        // Create embedded client (starts embedded node automatically)
+        let client = EmbeddedClient::new(identity, storage, embedded_config).await?;
 
-        // Set HTTP transport retry policy
-        client.set_transport_policy("http:", retry_policy);
+        // Log HTTP server address if enabled
+        if let Some(addr) = client.http_addr() {
+            info!("Embedded node HTTP server listening on {}", addr);
+        }
 
         // Store tick interval from config
         let outbox_tick_interval = Duration::from_secs(config.outbox.tick_interval_secs);
@@ -320,11 +254,6 @@ impl<'a> App<'a> {
         let mut input = TextArea::default();
         input.set_placeholder_text("Type a message...");
         input.set_cursor_line_style(Style::default());
-
-        // Ensure we have HTTP transport for message receiving
-        let http_transport_arc = http_transport.ok_or(
-            "No HTTP nodes configured. HTTP is required for message receiving.",
-        )?;
 
         let mut app = Self {
             running: true,
@@ -336,7 +265,6 @@ impl<'a> App<'a> {
             input,
             status: HELP_HINT.to_string(),
             client,
-            http_transport: http_transport_arc,
             contacts_by_id: HashMap::new(),
             message_cache: HashMap::new(),
             show_add_contact_popup: false,
@@ -395,62 +323,71 @@ impl<'a> App<'a> {
         let mut event_handler = EventHandler::new(100);
         let mut last_outbox_tick = Instant::now();
 
-        // Setup message receiver for incoming messages (uses HTTP transport for polling)
-        let receiver = MessageReceiver::new(self.http_transport.clone());
-        let config = ReceiverConfig::with_poll_interval(Duration::from_secs(2));
-        let (mut msg_events, _handle) = receiver.subscribe(self.client.routing_key(), config);
-
         while self.running {
             // Draw UI
             terminal.draw(|frame| ui::render(frame, self))?;
 
-            // Check for incoming messages (non-blocking)
-            while let Ok(event) = msg_events.try_recv() {
-                if let TransportEvent::Message(envelope) = event {
-                    match self.client.process_message(&envelope).await {
-                        Ok(msg) => {
-                            let content = match &msg.content {
-                                Content::Text(t) => t.body.clone(),
-                                Content::Receipt(r) => format!("[Receipt: {:?}]", r.kind),
-                                _ => "[Unknown content]".to_string(),
-                            };
-                            self.handle_incoming_message(msg.from, content);
-                        }
-                        Err(e) => {
-                            // Log message processing failure (don't silently drop)
-                            tracing::warn!("Failed to process incoming message: {}", e);
-                            self.status = format!("Message decrypt failed: {}", e);
-                        }
-                    }
-                }
-            }
-
-            // Handle UI events
-            match event_handler.next().await? {
-                Event::Tick => {
-                    // Periodically run outbox tick for message retries
-                    if last_outbox_tick.elapsed() >= self.outbox_tick_interval {
-                        match self.client.outbox_tick().await {
-                            Ok((retried, expired)) => {
-                                if retried > 0 || expired > 0 {
-                                    info!(
-                                        retried = retried,
-                                        expired = expired,
-                                        "Outbox tick completed"
-                                    );
-                                } else {
-                                    debug!("Outbox tick: no pending messages");
+            // Use tokio::select! to handle multiple event sources concurrently
+            tokio::select! {
+                // Handle push notifications from embedded node
+                Some(node_event) = self.client.event_receiver().recv() => {
+                    match node_event {
+                        NodeEvent::MessageReceived(envelope) => {
+                            match self.client.process_message(&envelope).await {
+                                Ok(msg) => {
+                                    let content = match &msg.content {
+                                        Content::Text(t) => t.body.clone(),
+                                        Content::Receipt(r) => format!("[Receipt: {:?}]", r.kind),
+                                        _ => "[Unknown content]".to_string(),
+                                    };
+                                    self.handle_incoming_message(msg.from, content);
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Failed to process incoming message: {}", e);
+                                    self.status = format!("Message decrypt failed: {}", e);
                                 }
                             }
-                            Err(e) => {
-                                warn!(error = %e, "Outbox tick failed");
-                            }
                         }
-                        last_outbox_tick = Instant::now();
+                        NodeEvent::Error(e) => {
+                            warn!("Node error: {}", e);
+                            self.status = format!("Node error: {}", e);
+                        }
+                        NodeEvent::ShuttingDown => {
+                            info!("Embedded node shutting down");
+                            self.running = false;
+                        }
                     }
                 }
-                Event::Key(key_event) => self.handle_key_event(key_event).await?,
-                Event::Resize(_, _) => {}
+
+                // Handle UI events (keyboard input, resize, tick)
+                ui_event = event_handler.next() => {
+                    match ui_event? {
+                        Event::Tick => {
+                            // Periodically run outbox tick for message retries
+                            if last_outbox_tick.elapsed() >= self.outbox_tick_interval {
+                                match self.client.outbox_tick().await {
+                                    Ok((retried, expired)) => {
+                                        if retried > 0 || expired > 0 {
+                                            info!(
+                                                retried = retried,
+                                                expired = expired,
+                                                "Outbox tick completed"
+                                            );
+                                        } else {
+                                            debug!("Outbox tick: no pending messages");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(error = %e, "Outbox tick failed");
+                                    }
+                                }
+                                last_outbox_tick = Instant::now();
+                            }
+                        }
+                        Event::Key(key_event) => self.handle_key_event(key_event).await?,
+                        Event::Resize(_, _) => {}
+                    }
+                }
             }
         }
 

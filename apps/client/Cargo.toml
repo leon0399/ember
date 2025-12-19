@@ -11,6 +11,7 @@ reme-transport = { workspace = true, features = ["mqtt"] }
 reme-storage = { workspace = true }
 reme-outbox = { workspace = true }
 reme-core = { workspace = true }
+reme-node-core = { workspace = true }
 
 thiserror = { workspace = true }
 tracing = { workspace = true }

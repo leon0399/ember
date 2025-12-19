@@ -492,6 +492,7 @@ dependencies = [
  "reme-encryption",
  "reme-identity",
  "reme-message",
+ "reme-node-core",
  "reme-outbox",
  "reme-storage",
  "reme-transport",
