@@ -7,8 +7,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
-use reme_message::{OuterEnvelope, TombstoneEnvelope, WirePayload};
+use reme_message::{OuterEnvelope, RoutingKey, TombstoneEnvelope, WirePayload};
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, warn};
@@ -103,6 +104,11 @@ struct SubmitResponse {
     status: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct FetchResponse {
+    payloads: Vec<String>,
+}
+
 impl HttpTarget {
     /// Create a new HTTP target.
     ///
@@ -189,6 +195,105 @@ impl HttpTarget {
         } else {
             sanitize_url_for_log(&self.config.url)
         }
+    }
+
+    /// Fetch messages once from this target.
+    ///
+    /// This method performs a single fetch operation from this endpoint.
+    /// Health tracking is updated based on success/failure.
+    pub async fn fetch_once(
+        &self,
+        routing_key: &RoutingKey,
+    ) -> Result<Vec<OuterEnvelope>, TransportError> {
+        let start = Instant::now();
+        let routing_key_b64 = URL_SAFE_NO_PAD.encode(routing_key);
+
+        let result = self.fetch_from_endpoint(&routing_key_b64).await;
+
+        match &result {
+            Ok(messages) => {
+                self.record_success(start.elapsed());
+                if !messages.is_empty() {
+                    debug!(
+                        "Fetched {} messages from {}",
+                        messages.len(),
+                        self.display_label()
+                    );
+                }
+            }
+            Err(e) => {
+                self.record_failure(e);
+                warn!("Failed to fetch from {}: {}", self.display_label(), e);
+            }
+        }
+
+        result
+    }
+
+    /// Internal fetch implementation.
+    async fn fetch_from_endpoint(
+        &self,
+        routing_key_b64: &str,
+    ) -> Result<Vec<OuterEnvelope>, TransportError> {
+        // Parse URL and extract credentials if present
+        let parsed = parse_url_with_auth(&self.config.url)
+            .map_err(|e| TransportError::Network(format!("Invalid URL: {}", e)))?;
+
+        let url = format!(
+            "{}/api/v1/fetch/{}",
+            parsed.url.trim_end_matches('/'),
+            routing_key_b64
+        );
+
+        let mut request = self.client.get(&url).timeout(self.config.base.request_timeout);
+
+        // Add Basic Auth if credentials were embedded in URL
+        if let Some((username, password)) = parsed.auth {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| TransportError::Network(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(TransportError::AuthenticationFailed);
+            }
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "unknown error".to_string());
+            return Err(TransportError::ServerError(format!(
+                "HTTP {}: {}",
+                status, body
+            )));
+        }
+
+        let result: FetchResponse = response
+            .json()
+            .await
+            .map_err(|e| TransportError::Serialization(e.to_string()))?;
+
+        // Decode and deserialize each wire payload
+        let mut envelopes = Vec::new();
+        for blob in result.payloads {
+            let wire_bytes = BASE64_STANDARD
+                .decode(&blob)
+                .map_err(|e| TransportError::Serialization(format!("base64 decode: {}", e)))?;
+
+            let payload = WirePayload::decode(&wire_bytes)
+                .map_err(|e| TransportError::Serialization(format!("wire decode: {}", e)))?;
+
+            // Only extract messages (tombstones are handled separately)
+            if let WirePayload::Message(envelope) = payload {
+                envelopes.push(envelope);
+            }
+        }
+
+        Ok(envelopes)
     }
 }
 

@@ -13,7 +13,8 @@ use tokio::time::{interval, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use crate::http::HttpTransport;
+use crate::http_target::HttpTarget;
+use crate::pool::TransportPool;
 use crate::{EventReceiver, EventSender, TransportEvent};
 
 /// Configuration for the message receiver
@@ -67,8 +68,9 @@ impl Drop for ReceiverHandle {
 /// # Example
 ///
 /// ```ignore
-/// let transport = Arc::new(HttpTransport::new("http://localhost:3000"));
-/// let receiver = MessageReceiver::new(transport);
+/// let pool = Arc::new(TransportPool::<HttpTarget>::new());
+/// pool.add_target(HttpTarget::new(HttpTargetConfig::stable("http://localhost:3000")).unwrap());
+/// let receiver = MessageReceiver::new(pool);
 ///
 /// let (events, handle) = receiver.subscribe(routing_key, ReceiverConfig::default());
 ///
@@ -84,13 +86,13 @@ impl Drop for ReceiverHandle {
 /// handle.stop();
 /// ```
 pub struct MessageReceiver {
-    transport: Arc<HttpTransport>,
+    pool: Arc<TransportPool<HttpTarget>>,
 }
 
 impl MessageReceiver {
-    /// Create a new message receiver
-    pub fn new(transport: Arc<HttpTransport>) -> Self {
-        Self { transport }
+    /// Create a new message receiver with a transport pool
+    pub fn new(pool: Arc<TransportPool<HttpTarget>>) -> Self {
+        Self { pool }
     }
 
     /// Subscribe to messages for a routing key
@@ -113,14 +115,8 @@ impl MessageReceiver {
         };
 
         // Spawn the polling task
-        let transport = self.transport.clone();
-        tokio::spawn(polling_loop(
-            transport,
-            routing_key,
-            config,
-            tx,
-            cancel_token,
-        ));
+        let pool = self.pool.clone();
+        tokio::spawn(polling_loop(pool, routing_key, config, tx, cancel_token));
 
         (rx, handle)
     }
@@ -133,7 +129,7 @@ impl MessageReceiver {
 
 /// Internal polling loop that fetches messages and sends them to the channel
 async fn polling_loop(
-    transport: Arc<HttpTransport>,
+    pool: Arc<TransportPool<HttpTarget>>,
     routing_key: RoutingKey,
     config: ReceiverConfig,
     tx: EventSender,
@@ -155,7 +151,7 @@ async fn polling_loop(
                 break;
             }
             _ = poll_interval.tick() => {
-                match transport.fetch_once(&routing_key).await {
+                match pool.fetch_once(&routing_key).await {
                     Ok(messages) => {
                         if !messages.is_empty() {
                             debug!(

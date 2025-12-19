@@ -11,8 +11,9 @@ use reme_message::{
 };
 use reme_outbox::{DeliveryState, OutboxConfig};
 use reme_storage::Storage;
-use reme_transport::http::HttpTransport;
-use reme_transport::{MessageReceiver, ReceiverConfig, Transport, TransportEvent};
+use reme_transport::http_target::HttpTarget;
+use reme_transport::pool::TransportPool;
+use reme_transport::{MessageReceiver, ReceiverConfig, TransportEvent};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -66,7 +67,7 @@ impl TestServer {
 #[tokio::test]
 async fn test_transport_roundtrip() {
     let server = TestServer::start().await;
-    let transport = HttpTransport::new(server.url());
+    let transport = TransportPool::<HttpTarget>::single(server.url()).unwrap();
 
     // Create a test identity
     let identity = Identity::generate();
@@ -100,7 +101,7 @@ async fn test_transport_roundtrip() {
 #[tokio::test]
 async fn test_e2e_encryption_mik_only() {
     let server = TestServer::start().await;
-    let transport = Arc::new(HttpTransport::new(server.url()));
+    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
 
     // Create Alice and Bob identities
     let alice = Identity::generate();
@@ -194,7 +195,7 @@ async fn test_e2e_encryption_mik_only() {
 #[tokio::test]
 async fn test_two_client_messaging() {
     let server = TestServer::start().await;
-    let transport = Arc::new(HttpTransport::new(server.url()));
+    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
 
     // Create Alice's client (no prekey initialization needed!)
     let alice_identity = Identity::generate();
@@ -290,7 +291,7 @@ async fn test_two_client_messaging() {
 #[ignore = "Tombstones temporarily disabled pending refactor"]
 async fn test_tombstone_flow() {
     let server = TestServer::start().await;
-    let transport = Arc::new(HttpTransport::new(server.url()));
+    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
 
     // Create Alice and Bob (no prekey initialization needed!)
     let alice_identity = Identity::generate();
@@ -353,7 +354,7 @@ async fn test_tombstone_flow() {
 #[ignore = "Tombstones temporarily disabled pending refactor"]
 async fn test_tombstone_with_status() {
     let server = TestServer::start().await;
-    let transport = Arc::new(HttpTransport::new(server.url()));
+    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
 
     let identity = Identity::generate();
     let storage = Storage::in_memory().unwrap();
@@ -448,8 +449,8 @@ async fn test_multi_node_replication() {
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
     // Create transports for both nodes
-    let transport1 = HttpTransport::new(&url1);
-    let transport2 = HttpTransport::new(&url2);
+    let transport1 = TransportPool::<HttpTarget>::single(&url1).unwrap();
+    let transport2 = TransportPool::<HttpTarget>::single(&url2).unwrap();
 
     // Create a test identity
     let identity = Identity::generate();
@@ -486,7 +487,7 @@ async fn test_multi_node_replication() {
 #[ignore = "Tombstones temporarily disabled pending refactor"]
 async fn test_tombstone_sequence() {
     let server = TestServer::start().await;
-    let transport = Arc::new(HttpTransport::new(server.url()));
+    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
 
     let identity = Identity::generate();
     let storage = Storage::in_memory().unwrap();
@@ -533,7 +534,7 @@ async fn test_tombstone_sequence() {
 #[tokio::test]
 async fn test_outbox_message_queuing() {
     let server = TestServer::start().await;
-    let transport = Arc::new(HttpTransport::new(server.url()));
+    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
 
     let alice_identity = Identity::generate();
     let alice_storage = Storage::in_memory().unwrap();
@@ -573,7 +574,7 @@ async fn test_outbox_message_queuing() {
 #[tokio::test]
 async fn test_outbox_dag_confirmation() {
     let server = TestServer::start().await;
-    let transport = Arc::new(HttpTransport::new(server.url()));
+    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
 
     // Create Alice
     let alice_identity = Identity::generate();
@@ -665,7 +666,7 @@ async fn test_outbox_dag_confirmation() {
 #[tokio::test]
 async fn test_outbox_cleanup() {
     let server = TestServer::start().await;
-    let transport = Arc::new(HttpTransport::new(server.url()));
+    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
 
     // Use custom config with cleanup_after_ms: 0 so cleanup happens immediately
     let alice_config = OutboxConfig {
@@ -761,7 +762,7 @@ async fn test_outbox_cleanup() {
 #[tokio::test]
 async fn test_outbox_retry_mechanism() {
     let server = TestServer::start().await;
-    let transport = Arc::new(HttpTransport::new(server.url()));
+    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
 
     let alice_identity = Identity::generate();
     let alice_storage = Storage::in_memory().unwrap();

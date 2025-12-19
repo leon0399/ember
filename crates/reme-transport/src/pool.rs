@@ -520,6 +520,148 @@ impl<T: TransportTarget> TransportPool<T> {
     }
 }
 
+// HTTP-specific pool methods for fetching messages
+use crate::http::NodeSpec;
+use crate::http_target::{HttpTarget, HttpTargetConfig};
+use reme_message::{MessageID, RoutingKey};
+use std::collections::HashMap;
+use tracing::info;
+
+impl TransportPool<HttpTarget> {
+    /// Create a pool with a single HTTP target.
+    ///
+    /// This is a convenience constructor for simple setups and testing.
+    pub fn single(url: impl Into<String>) -> Result<Self, TransportError> {
+        let config = HttpTargetConfig::stable(url);
+        let target = HttpTarget::new(config)?;
+        let pool = Self::new();
+        pool.add_target(target);
+        Ok(pool)
+    }
+
+    /// Create a pool from a list of node specifications.
+    ///
+    /// This is a convenience constructor for migrating from the old `HttpTransport` API.
+    /// Each node spec is converted to a stable HTTP target.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let nodes = vec![
+    ///     NodeSpec { url: "https://node1.example.com".into(), cert_pin: Some(pin) },
+    ///     NodeSpec { url: "https://node2.example.com".into(), cert_pin: None },
+    /// ];
+    /// let pool = TransportPool::from_node_specs(nodes)?;
+    /// ```
+    pub fn from_node_specs(nodes: Vec<NodeSpec>) -> Result<Self, TransportError> {
+        if nodes.is_empty() {
+            return Err(TransportError::Network(
+                "At least one node is required".to_string(),
+            ));
+        }
+
+        let pool = Self::new();
+
+        for node in nodes {
+            let mut config = HttpTargetConfig::stable(&node.url);
+            if let Some(pin) = node.cert_pin {
+                config = config.with_cert_pin(pin);
+            }
+
+            // Log security warnings
+            if node.url.starts_with("http://") {
+                warn!(
+                    "Node {} uses unencrypted HTTP - credentials and messages may be exposed",
+                    &node.url
+                );
+            } else if node.url.starts_with("https://") && config.cert_pin.is_none() {
+                warn!(
+                    "Node {} has no certificate pin - vulnerable to MITM attacks",
+                    &node.url
+                );
+            } else if config.cert_pin.is_some() {
+                info!("Certificate pinning enabled for {}", &node.url);
+            }
+
+            let target = HttpTarget::new(config)?;
+            pool.add_target(target);
+        }
+
+        Ok(pool)
+    }
+    /// Fetch messages once from all healthy targets and deduplicate.
+    ///
+    /// This method performs a single fetch operation from all available targets
+    /// and returns unique messages (deduplicated by message_id).
+    pub async fn fetch_once(
+        &self,
+        routing_key: &RoutingKey,
+    ) -> Result<Vec<OuterEnvelope>, TransportError> {
+        let targets = self.healthy_targets();
+        if targets.is_empty() {
+            // Try all targets if none are healthy (circuit breaker may have recovered)
+            let all_targets = self.all_targets();
+            if all_targets.is_empty() {
+                return Err(TransportError::Network("No targets available".to_string()));
+            }
+            return self.fetch_from_targets(&all_targets, routing_key).await;
+        }
+
+        self.fetch_from_targets(&targets, routing_key).await
+    }
+
+    /// Fetch from a specific set of targets.
+    async fn fetch_from_targets(
+        &self,
+        targets: &[Arc<HttpTarget>],
+        routing_key: &RoutingKey,
+    ) -> Result<Vec<OuterEnvelope>, TransportError> {
+        // Fetch from all targets in parallel
+        let futures: Vec<_> = targets
+            .iter()
+            .map(|t| {
+                let t = t.clone();
+                let rk = *routing_key;
+                async move { t.fetch_once(&rk).await }
+            })
+            .collect();
+
+        let results = join_all(futures).await;
+
+        // Aggregate and deduplicate by message_id
+        let mut messages_by_id: HashMap<MessageID, OuterEnvelope> = HashMap::new();
+        let mut last_error = None;
+        let mut success_count = 0;
+
+        for result in results {
+            match result {
+                Ok(messages) => {
+                    success_count += 1;
+                    for msg in messages {
+                        messages_by_id.insert(msg.message_id, msg);
+                    }
+                }
+                Err(e) => {
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        // If we got messages from at least one target, return them
+        if success_count > 0 {
+            let messages: Vec<_> = messages_by_id.into_values().collect();
+            debug!(
+                "Fetched {} unique messages from {}/{} targets",
+                messages.len(),
+                success_count,
+                targets.len()
+            );
+            Ok(messages)
+        } else {
+            Err(last_error.unwrap_or(TransportError::Network("All targets failed".to_string())))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
