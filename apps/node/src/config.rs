@@ -19,7 +19,10 @@
 //! - `REME_NODE_TLS_ENABLED` - Enable TLS/HTTPS (true/false)
 //! - `REME_NODE_TLS_CERT` - Path to PEM certificate file
 //! - `REME_NODE_TLS_KEY` - Path to PEM private key file
-//! - `REME_NODE_MQTT_BROKERS` - JSON array of MQTT broker configs
+//! - `REME_NODE_MQTT_BROKER` - Comma-separated MQTT broker URLs
+//! - `REME_NODE_MQTT_CERT_PIN` - Comma-separated certificate pins (paired with broker URLs)
+//! - `REME_NODE_MQTT_CLIENT_ID` - Comma-separated client IDs (paired with broker URLs)
+//! - `REME_NODE_MQTT_TOPIC_PREFIX` - MQTT topic prefix (default: "reme/v1")
 //!
 //! ## Config File
 //!
@@ -321,6 +324,11 @@ pub struct CliArgs {
     /// Example: spki//sha256/abc...,spki//sha256/def...
     #[arg(long, env = "REME_NODE_MQTT_CERT_PIN", value_delimiter = ',')]
     pub mqtt_cert_pin: Option<Vec<String>>,
+
+    /// MQTT client IDs (comma-separated, matched with mqtt_broker)
+    /// If not specified, random client IDs will be generated
+    #[arg(long, env = "REME_NODE_MQTT_CLIENT_ID", value_delimiter = ',')]
+    pub mqtt_client_id: Option<Vec<String>>,
 
     /// MQTT topic prefix (default: reme/v1)
     #[arg(long, env = "REME_NODE_MQTT_TOPIC_PREFIX")]
@@ -654,13 +662,14 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     let mqtt = if let Some(ref broker_urls) = cli.mqtt_broker {
         // CLI brokers override file config entirely
         let cert_pins = cli.mqtt_cert_pin.clone().unwrap_or_default();
+        let client_ids = cli.mqtt_client_id.clone().unwrap_or_default();
         let brokers: Vec<MqttBrokerConfig> = broker_urls
             .iter()
             .enumerate()
             .map(|(i, url)| MqttBrokerConfig {
                 url: url.clone(),
                 cert_pin: cert_pins.get(i).cloned(),
-                client_id: None,
+                client_id: client_ids.get(i).cloned(),
             })
             .collect();
         MqttBridgeConfig {

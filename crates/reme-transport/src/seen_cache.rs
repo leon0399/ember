@@ -23,11 +23,11 @@ pub struct SeenCache {
     seen: HashMap<MessageID, Instant>,
     /// Time-to-live for entries
     ttl: Duration,
-    /// Maximum number of entries (LRU eviction when exceeded)
+    /// Maximum number of entries (FIFO eviction when exceeded)
     max_size: usize,
     /// Timestamp of last cleanup
     last_cleanup: Instant,
-    /// Cleanup interval (run cleanup every N inserts)
+    /// Cleanup interval (time-based cleanup of expired entries)
     cleanup_interval: Duration,
 }
 
@@ -90,6 +90,25 @@ impl SeenCache {
         }
     }
 
+    /// Mark a message as seen without checking first.
+    ///
+    /// Use this after successfully publishing a message to prevent duplicates.
+    pub fn mark(&mut self, message_id: &MessageID) {
+        let now = Instant::now();
+
+        // Periodic cleanup
+        if now.duration_since(self.last_cleanup) > self.cleanup_interval {
+            self.cleanup_expired(now);
+        }
+
+        self.seen.insert(*message_id, now);
+
+        // Evict oldest entries if over capacity
+        if self.seen.len() > self.max_size {
+            self.evict_oldest();
+        }
+    }
+
     /// Remove expired entries from the cache.
     pub fn cleanup_expired(&mut self, now: Instant) {
         self.seen
@@ -98,20 +117,27 @@ impl SeenCache {
     }
 
     /// Evict oldest entries until under max_size.
+    ///
+    /// Uses `select_nth_unstable_by_key` for O(N) average performance
+    /// instead of O(N log N) full sort.
     fn evict_oldest(&mut self) {
-        // Find the oldest entries to remove
-        let target_size = self.max_size * 9 / 10; // Remove 10% when over capacity
+        // Remove 10% when over capacity
+        let target_size = self.max_size * 9 / 10;
 
         if self.seen.len() <= target_size {
             return;
         }
 
-        // Collect (id, seen_at) pairs and sort by age
-        let mut entries: Vec<_> = self.seen.iter().map(|(k, v)| (*k, *v)).collect();
-        entries.sort_by_key(|(_, seen_at)| *seen_at);
-
-        // Remove oldest entries
         let to_remove = self.seen.len() - target_size;
+
+        // Collect (id, seen_at) pairs
+        let mut entries: Vec<_> = self.seen.iter().map(|(k, v)| (*k, *v)).collect();
+
+        // Partial sort: partition around the Nth oldest element (O(N) average)
+        // After this, entries[..to_remove] contains the oldest entries (unordered)
+        entries.select_nth_unstable_by_key(to_remove - 1, |(_, seen_at)| *seen_at);
+
+        // Remove the oldest entries
         for (id, _) in entries.into_iter().take(to_remove) {
             self.seen.remove(&id);
         }
@@ -170,6 +196,16 @@ impl SharedSeenCache {
             .lock()
             .expect("SeenCache lock poisoned")
             .was_seen(message_id)
+    }
+
+    /// Mark a message as seen without checking first.
+    ///
+    /// Use this after successfully publishing a message to prevent duplicates.
+    pub fn mark(&self, message_id: &MessageID) {
+        self.0
+            .lock()
+            .expect("SeenCache lock poisoned")
+            .mark(message_id)
     }
 
     /// Get the current number of entries.

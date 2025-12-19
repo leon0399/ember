@@ -231,6 +231,12 @@ impl MqttTransport {
     }
 
     /// Parse an MQTT URL into host, port, and TLS flag.
+    ///
+    /// Supports both IPv4/hostname and IPv6 addresses:
+    /// - `mqtt://broker:1883`
+    /// - `mqtts://broker.example.com:8883`
+    /// - `mqtt://[::1]:1883`
+    /// - `mqtts://[2001:db8::1]` (uses default port 8883)
     fn parse_mqtt_url(url: &str) -> Result<ParsedMqttUrl, TransportError> {
         let use_tls = url.starts_with("mqtts://");
         let is_mqtt = url.starts_with("mqtt://") || use_tls;
@@ -244,16 +250,42 @@ impl MqttTransport {
 
         let prefix = if use_tls { "mqtts://" } else { "mqtt://" };
         let rest = url.strip_prefix(prefix).unwrap();
+        let default_port = if use_tls { 8883 } else { 1883 };
 
-        // Parse host:port
-        let (host, port) = if let Some((h, p)) = rest.rsplit_once(':') {
+        // Parse host:port, handling IPv6 addresses in brackets
+        let (host, port) = if rest.starts_with('[') {
+            // IPv6 address: [host]:port or [host]
+            if let Some(bracket_end) = rest.find(']') {
+                let host = rest[..=bracket_end].to_string();
+                let after_bracket = &rest[bracket_end + 1..];
+
+                if let Some(port_str) = after_bracket.strip_prefix(':') {
+                    let port: u16 = port_str.parse().map_err(|_| {
+                        TransportError::Network(format!("Invalid port in URL: {}", url))
+                    })?;
+                    (host, port)
+                } else if after_bracket.is_empty() {
+                    (host, default_port)
+                } else {
+                    return Err(TransportError::Network(format!(
+                        "Invalid IPv6 URL format: {}",
+                        url
+                    )));
+                }
+            } else {
+                return Err(TransportError::Network(format!(
+                    "Unclosed bracket in IPv6 URL: {}",
+                    url
+                )));
+            }
+        } else if let Some((h, p)) = rest.rsplit_once(':') {
+            // IPv4/hostname: host:port
             let port: u16 = p
                 .parse()
                 .map_err(|_| TransportError::Network(format!("Invalid port in URL: {}", url)))?;
             (h.to_string(), port)
         } else {
-            // Default ports
-            let default_port = if use_tls { 8883 } else { 1883 };
+            // No port specified, use default
             (rest.to_string(), default_port)
         };
 
@@ -343,17 +375,26 @@ impl MqttTransport {
 #[async_trait]
 impl Transport for MqttTransport {
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
-        // Check seen cache for deduplication
-        if !self.seen_cache.check_and_mark(&envelope.message_id) {
+        // Check seen cache for deduplication (without marking yet)
+        if self.seen_cache.was_seen(&envelope.message_id) {
             trace!("Skipping duplicate message via MQTT: {:?}", envelope.message_id);
             return Ok(());
         }
 
         let topic = self.topic_for_routing_key(&envelope.routing_key);
-        let wire = WirePayload::Message(envelope);
+        let wire = WirePayload::Message(envelope.clone());
         let bytes = wire.encode();
 
-        self.publish_to_all(&topic, &bytes).await
+        // Attempt to publish
+        let result = self.publish_to_all(&topic, &bytes).await;
+
+        // Only mark as seen after successful publish
+        // This ensures retries work if the first attempt fails
+        if result.is_ok() {
+            self.seen_cache.mark(&envelope.message_id);
+        }
+
+        result
     }
 
     async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {

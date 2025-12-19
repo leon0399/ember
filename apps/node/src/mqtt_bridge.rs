@@ -232,11 +232,15 @@ impl MqttBridge {
             self.transport.seen_cache().clone(),
         )
         .await?;
-        let (mut events, _handles) = receiver.subscribe_all().await?;
+        let (mut events, handles) = receiver.subscribe_all().await?;
 
         let (tx, rx) = mpsc::unbounded_channel();
 
         tokio::spawn(async move {
+            // Keep handles alive for the duration of the event loop.
+            // Dropping them would close the stop channel and terminate receivers.
+            let _handles = handles;
+
             while let Some(event) = events.recv().await {
                 match event {
                     TransportEvent::Message(envelope) => {

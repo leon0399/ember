@@ -144,15 +144,40 @@ impl MqttReceiver {
 
         let prefix = if use_tls { "mqtts://" } else { "mqtt://" };
         let rest = url.strip_prefix(prefix).unwrap();
+        let default_port = if use_tls { 8883 } else { 1883 };
 
-        // Parse host:port
-        let (host, port) = if let Some((h, p)) = rest.rsplit_once(':') {
+        // Parse host:port, handling IPv6 addresses in brackets
+        let (host, port) = if rest.starts_with('[') {
+            // IPv6 address: [host]:port or [host]
+            if let Some(bracket_end) = rest.find(']') {
+                let host = rest[..=bracket_end].to_string();
+                let after_bracket = &rest[bracket_end + 1..];
+
+                if let Some(port_str) = after_bracket.strip_prefix(':') {
+                    let port: u16 = port_str.parse().map_err(|_| {
+                        TransportError::Network(format!("Invalid port in URL: {}", url))
+                    })?;
+                    (host, port)
+                } else if after_bracket.is_empty() {
+                    (host, default_port)
+                } else {
+                    return Err(TransportError::Network(format!(
+                        "Invalid IPv6 URL format: {}",
+                        url
+                    )));
+                }
+            } else {
+                return Err(TransportError::Network(format!(
+                    "Unclosed bracket in IPv6 URL: {}",
+                    url
+                )));
+            }
+        } else if let Some((h, p)) = rest.rsplit_once(':') {
             let port: u16 = p
                 .parse()
                 .map_err(|_| TransportError::Network(format!("Invalid port in URL: {}", url)))?;
             (h.to_string(), port)
         } else {
-            let default_port = if use_tls { 8883 } else { 1883 };
             (rest.to_string(), default_port)
         };
 

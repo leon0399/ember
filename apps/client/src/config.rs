@@ -81,6 +81,13 @@ pub struct CliArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mqtt_cert_pin: Option<Vec<String>>,
 
+    /// Client IDs for MQTT brokers (pair with --mqtt-url by order)
+    ///
+    /// If not specified, random client IDs will be generated
+    #[arg(long, value_delimiter = ',')]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mqtt_client_id: Option<Vec<String>>,
+
     /// Directory for storing identity, keys, and messages
     #[arg(short = 'd', long, env = "REME_DATA_DIR")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -421,13 +428,14 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
     };
 
     // Resolve MQTT brokers with priority:
-    // 1. CLI --mqtt-url and --mqtt-cert-pin (paired by order)
+    // 1. CLI --mqtt-url, --mqtt-cert-pin, --mqtt-client-id (paired by order)
     // 2. REME_MQTT environment variable (JSON format)
     // 3. Config file [[mqtt]] array
     // 4. Default (empty)
     let mqtt = if let Some(urls) = cli.mqtt_url {
-        // Pair URLs with pins by order
+        // Pair URLs with pins and client IDs by order
         let pins = cli.mqtt_cert_pin.unwrap_or_default();
+        let client_ids = cli.mqtt_client_id.unwrap_or_default();
 
         // Warn if counts don't match
         if !pins.is_empty() && pins.len() != urls.len() {
@@ -437,13 +445,20 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
                 pins.len()
             );
         }
+        if !client_ids.is_empty() && client_ids.len() != urls.len() {
+            warn!(
+                "Mismatched --mqtt-url ({}) and --mqtt-client-id ({}) counts - some brokers will use random IDs",
+                urls.len(),
+                client_ids.len()
+            );
+        }
 
         urls.into_iter()
             .enumerate()
             .map(|(i, url)| MqttBroker {
                 url,
                 cert_pin: pins.get(i).cloned(),
-                client_id: None,
+                client_id: client_ids.get(i).cloned(),
             })
             .collect()
     } else if let Some(env_mqtt) = parse_mqtt_from_env() {
