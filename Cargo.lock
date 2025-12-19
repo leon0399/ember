@@ -2424,12 +2424,14 @@ dependencies = [
  "reme-encryption",
  "reme-identity",
  "reme-message",
+ "reme-node-core",
  "reme-outbox",
  "reme-storage",
  "reme-transport",
  "thiserror 2.0.17",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

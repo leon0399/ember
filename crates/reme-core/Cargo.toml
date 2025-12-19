@@ -10,6 +10,7 @@ reme-encryption = { workspace = true }
 reme-transport = { workspace = true }
 reme-storage = { workspace = true }
 reme-outbox = { workspace = true }
+reme-node-core = { workspace = true }
 
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -18,6 +19,7 @@ bincode = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 rand_core = { version = "0.6.4", features = ["getrandom"] }
+uuid = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

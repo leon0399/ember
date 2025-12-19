@@ -6,6 +6,18 @@
 //! - Sending and receiving encrypted messages
 //! - Contact management
 //! - Resilient delivery via outbox with retry policies
+//!
+//! ## Embedded Node Mode
+//!
+//! For local-first messaging with an embedded mailbox node, use the `embedded` module:
+//!
+//! ```ignore
+//! use reme_core::embedded::{EmbeddedClient, EmbeddedClientConfig};
+//!
+//! let client = EmbeddedClient::new(identity, storage, config).await?;
+//! ```
+
+pub mod embedded;
 
 use reme_encryption::{decrypt_with_mik, encrypt_to_mik, EncryptionError};
 use reme_identity::{Identity, PublicID};
