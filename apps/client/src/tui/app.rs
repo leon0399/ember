@@ -215,7 +215,7 @@ impl<'a> App<'a> {
 
         // Create transport with TLS and certificate pinning support
         let node_specs: Vec<NodeSpec> = config
-            .nodes
+            .http
             .iter()
             .map(|n| {
                 let cert_pin = match &n.cert_pin {
