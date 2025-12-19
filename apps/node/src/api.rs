@@ -4,6 +4,7 @@
 //! - POST /api/v1/submit - Submit a message (tombstones temporarily disabled)
 //! - GET /api/v1/fetch/:routing_key - Fetch messages
 
+use crate::mqtt_bridge::MqttBridge;
 use crate::persistent_store::{PersistentMailboxStore, PersistentStoreError};
 use crate::rate_limit::{KeyedLimiter, RateLimiters};
 use crate::replication::{ReplicationClient, FROM_NODE_HEADER};
@@ -34,6 +35,8 @@ pub struct AppState {
     pub auth: Option<(String, String)>,
     /// Optional per-routing-key rate limiter for submit endpoint
     pub submit_key_limiter: Option<Arc<KeyedLimiter>>,
+    /// Optional MQTT bridge for publishing messages to MQTT brokers
+    pub mqtt_bridge: Option<Arc<MqttBridge>>,
 }
 
 /// Maximum request body size (256 KiB)
@@ -245,6 +248,8 @@ async fn handle_message(
 ) -> axum::response::Response {
     let routing_key = envelope.routing_key;
     let message_id = envelope.message_id;
+    // Clone envelope for MQTT publishing (enqueue takes ownership)
+    let envelope_for_mqtt = envelope.clone();
 
     // Check per-routing-key rate limit (inline, after parsing body)
     if let Some(ref limiter) = state.submit_key_limiter {
@@ -287,6 +292,16 @@ async fn handle_message(
 
             // Trigger replication to peers (fire-and-forget)
             state.replication.replicate_payload(payload_b64, from_node);
+
+            // Publish to MQTT brokers if bridge is configured (fire-and-forget)
+            if let Some(ref bridge) = state.mqtt_bridge {
+                let bridge = bridge.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = bridge.publish(&envelope_for_mqtt).await {
+                        warn!("Failed to publish message to MQTT: {}", e);
+                    }
+                });
+            }
 
             (StatusCode::OK, Json(SubmitResponse { status: "ok".to_string() })).into_response()
         }

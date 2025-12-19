@@ -3,15 +3,32 @@ use reme_message::{OuterEnvelope, TombstoneEnvelope};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
+pub mod composite;
 pub mod http;
 pub mod receiver;
+pub mod seen_cache;
 pub mod tls;
 pub mod url_auth;
 
+#[cfg(feature = "mqtt")]
+pub mod mqtt;
+#[cfg(feature = "mqtt")]
+pub mod mqtt_receiver;
+
+pub use composite::CompositeTransport;
 pub use http::NodeSpec;
 pub use receiver::{MessageReceiver, ReceiverConfig, ReceiverHandle};
-pub use tls::{CertPin, PinParseError, PinningVerifier, VerifierBuildError};
+pub use seen_cache::{SeenCache, SharedSeenCache};
+pub use tls::{
+    build_pinning_config, build_pinning_config_single, CertPin, PinParseError, PinningVerifier,
+    VerifierBuildError,
+};
 pub use url_auth::{parse_url_with_auth, ParsedUrl};
+
+#[cfg(feature = "mqtt")]
+pub use mqtt::{MqttBrokerSpec, MqttTransport};
+#[cfg(feature = "mqtt")]
+pub use mqtt_receiver::{MultiBrokerReceiver, MqttReceiver, MqttReceiverConfig, MqttReceiverHandle};
 
 #[derive(Debug, Error)]
 pub enum TransportError {

@@ -11,7 +11,8 @@
 //! ## Environment Variables
 //!
 //! All environment variables are prefixed with `REME_` and use `_` as separator:
-//! - `REME_NODES` - JSON array of node configs: `[{"url":"...", "cert_pin":"..."}]`
+//! - `REME_HTTP` - JSON array of HTTP endpoint configs: `[{"url":"...", "cert_pin":"..."}]`
+//! - `REME_MQTT` - JSON array of MQTT broker configs: `[{"url":"...", "client_id":"..."}]`
 //! - `REME_DATA_DIR` - Directory for storing identity, keys, and messages
 //! - `REME_LOG_LEVEL` - Log level (trace, debug, info, warn, error)
 //!
@@ -21,14 +22,20 @@
 //! `%APPDATA%\reme\config.toml` (Windows)
 //!
 //! ```toml
-//! # Node configuration with optional certificate pinning
-//! [[nodes]]
+//! # HTTP endpoint configuration with optional certificate pinning
+//! [[http]]
 //! url = "https://node1.example.com:23003"
 //! cert_pin = "spki//sha256/AAAA..."  # Optional
 //!
-//! [[nodes]]
+//! [[http]]
 //! url = "https://node2.example.com:23003"
 //! # No pin - will connect but warn
+//!
+//! # MQTT broker configuration (optional)
+//! # Note: MQTT uses system root certificates (no certificate pinning support)
+//! [[mqtt]]
+//! url = "mqtts://broker.example.com:8883"
+//! client_id = "my-client"  # Optional, auto-generated if not set
 //!
 //! data_dir = "~/.local/share/reme"
 //! log_level = "info"
@@ -46,20 +53,34 @@ use tracing::{warn, Level};
 #[command(name = "reme-client")]
 #[command(author, version, about = "Branch Messenger Client")]
 pub struct CliArgs {
-    /// Node URLs (pair with --node-cert-pin by order)
+    /// HTTP endpoint URLs (pair with --http-cert-pin by order)
     ///
-    /// Example: --node-url https://node1:23003,https://node2:23003
+    /// Example: --http-url https://node1:23003,https://node2:23003
     #[arg(long, value_delimiter = ',')]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub node_url: Option<Vec<String>>,
+    pub http_url: Option<Vec<String>>,
 
-    /// Certificate pins for nodes (pair with --node-url by order)
+    /// Certificate pins for HTTP endpoints (pair with --http-url by order)
     ///
     /// Format: spki//sha256/<base64> or cert//sha256/<base64>
-    /// Example: --node-cert-pin spki//sha256/aaa=,spki//sha256/bbb=
+    /// Example: --http-cert-pin spki//sha256/aaa=,spki//sha256/bbb=
     #[arg(long, value_delimiter = ',')]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub node_cert_pin: Option<Vec<String>>,
+    pub http_cert_pin: Option<Vec<String>>,
+
+    /// MQTT broker URLs (pair with --mqtt-client-id by order)
+    ///
+    /// Example: --mqtt-url mqtts://broker1:8883,mqtts://broker2:8883
+    #[arg(long, value_delimiter = ',')]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mqtt_url: Option<Vec<String>>,
+
+    /// Client IDs for MQTT brokers (pair with --mqtt-url by order)
+    ///
+    /// If not specified, random client IDs will be generated
+    #[arg(long, value_delimiter = ',')]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mqtt_client_id: Option<Vec<String>>,
 
     /// Directory for storing identity, keys, and messages
     #[arg(short = 'd', long, env = "REME_DATA_DIR")]
@@ -144,10 +165,10 @@ impl Default for OutboxAppConfig {
     }
 }
 
-/// Node configuration with optional certificate pinning
+/// HTTP endpoint configuration with optional certificate pinning
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub struct NodeConfig {
-    /// Node URL (http:// or https://)
+pub struct HttpEndpoint {
+    /// Endpoint URL (http:// or https://)
     pub url: String,
     /// Optional certificate pin for TLS verification
     ///
@@ -156,8 +177,8 @@ pub struct NodeConfig {
     pub cert_pin: Option<String>,
 }
 
-impl NodeConfig {
-    /// Create a new node config with just a URL (no pinning)
+impl HttpEndpoint {
+    /// Create a new HTTP endpoint with just a URL (no pinning)
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
@@ -165,7 +186,7 @@ impl NodeConfig {
         }
     }
 
-    /// Create a new node config with URL and certificate pin
+    /// Create a new HTTP endpoint with URL and certificate pin
     pub fn with_pin(url: impl Into<String>, cert_pin: impl Into<String>) -> Self {
         Self {
             url: url.into(),
@@ -174,12 +195,47 @@ impl NodeConfig {
     }
 }
 
+/// MQTT broker configuration
+///
+/// Note: MQTT uses system root certificates for TLS verification.
+/// Certificate pinning is not currently supported for MQTT connections.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct MqttBroker {
+    /// Broker URL (mqtt:// or mqtts://)
+    pub url: String,
+    /// Optional custom client ID (auto-generated if not specified)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+}
+
+impl MqttBroker {
+    /// Create a new MQTT broker with just a URL
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            client_id: None,
+        }
+    }
+
+    /// Create a new MQTT broker with URL and client ID
+    pub fn with_client_id(url: impl Into<String>, client_id: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            client_id: Some(client_id.into()),
+        }
+    }
+}
+
 /// Final resolved configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
-    /// Node configurations with optional certificate pinning
-    #[serde(default = "default_nodes")]
-    pub nodes: Vec<NodeConfig>,
+    /// HTTP endpoint configurations with optional certificate pinning
+    #[serde(default = "default_http")]
+    pub http: Vec<HttpEndpoint>,
+
+    /// MQTT broker configurations with optional certificate pinning
+    #[serde(default)]
+    pub mqtt: Vec<MqttBroker>,
 
     /// Directory for storing identity, keys, and messages
     pub data_dir: PathBuf,
@@ -192,14 +248,15 @@ pub struct AppConfig {
     pub outbox: OutboxAppConfig,
 }
 
-fn default_nodes() -> Vec<NodeConfig> {
-    vec![NodeConfig::new("http://localhost:23003")]
+fn default_http() -> Vec<HttpEndpoint> {
+    vec![HttpEndpoint::new("http://localhost:23003")]
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            nodes: default_nodes(),
+            http: default_http(),
+            mqtt: Vec::new(),
             data_dir: default_data_dir(),
             log_level: "info".to_string(),
             outbox: OutboxAppConfig::default(),
@@ -224,21 +281,38 @@ fn default_config_path() -> Option<PathBuf> {
 /// Intermediate config for deserializing from file
 #[derive(Debug, Clone, Deserialize, Default)]
 struct RawConfig {
-    /// Node configurations (new format)
-    nodes: Option<Vec<NodeConfig>>,
+    /// HTTP endpoint configurations (new format)
+    http: Option<Vec<HttpEndpoint>>,
+    /// MQTT broker configurations
+    mqtt: Option<Vec<MqttBroker>>,
     /// Outbox config section
     #[serde(default)]
     outbox: RawOutboxConfig,
 }
 
-/// Parse nodes from REME_NODES environment variable (JSON format)
-fn parse_nodes_from_env() -> Option<Vec<NodeConfig>> {
-    let json = std::env::var("REME_NODES").ok()?;
+/// Parse HTTP endpoints from REME_HTTP environment variable (JSON format)
+fn parse_http_from_env() -> Option<Vec<HttpEndpoint>> {
+    let json = std::env::var("REME_HTTP").ok()?;
     match serde_json::from_str(&json) {
-        Ok(nodes) => Some(nodes),
+        Ok(endpoints) => Some(endpoints),
         Err(e) => {
             warn!(
-                "Failed to parse REME_NODES as JSON: {} - falling back to config file or defaults",
+                "Failed to parse REME_HTTP as JSON: {} - falling back to config file or defaults",
+                e
+            );
+            None
+        }
+    }
+}
+
+/// Parse MQTT brokers from REME_MQTT environment variable (JSON format)
+fn parse_mqtt_from_env() -> Option<Vec<MqttBroker>> {
+    let json = std::env::var("REME_MQTT").ok()?;
+    match serde_json::from_str(&json) {
+        Ok(brokers) => Some(brokers),
+        Err(e) => {
+            warn!(
+                "Failed to parse REME_MQTT as JSON: {} - falling back to config file or defaults",
                 e
             );
             None
@@ -310,19 +384,19 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
     // Deserialize raw config for file-based settings
     let raw: RawConfig = config.try_deserialize().unwrap_or_default();
 
-    // Resolve nodes with priority:
-    // 1. CLI --node-url and --node-cert-pin (paired by order)
-    // 2. REME_NODES environment variable (JSON format)
-    // 3. Config file [[nodes]] array
+    // Resolve HTTP endpoints with priority:
+    // 1. CLI --http-url and --http-cert-pin (paired by order)
+    // 2. REME_HTTP environment variable (JSON format)
+    // 3. Config file [[http]] array
     // 4. Default
-    let nodes = if let Some(urls) = cli.node_url {
+    let http = if let Some(urls) = cli.http_url {
         // Pair URLs with pins by order
-        let pins = cli.node_cert_pin.unwrap_or_default();
+        let pins = cli.http_cert_pin.unwrap_or_default();
 
         // Warn if counts don't match
         if !pins.is_empty() && pins.len() != urls.len() {
             warn!(
-                "Mismatched --node-url ({}) and --node-cert-pin ({}) counts - some nodes may be unpinned",
+                "Mismatched --http-url ({}) and --http-cert-pin ({}) counts - some endpoints may be unpinned",
                 urls.len(),
                 pins.len()
             );
@@ -330,17 +404,50 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
 
         urls.into_iter()
             .enumerate()
-            .map(|(i, url)| NodeConfig {
+            .map(|(i, url)| HttpEndpoint {
                 url,
                 cert_pin: pins.get(i).cloned(),
             })
             .collect()
-    } else if let Some(env_nodes) = parse_nodes_from_env() {
-        env_nodes
-    } else if let Some(file_nodes) = raw.nodes {
-        file_nodes
+    } else if let Some(env_http) = parse_http_from_env() {
+        env_http
+    } else if let Some(file_http) = raw.http {
+        file_http
     } else {
-        defaults.nodes
+        defaults.http
+    };
+
+    // Resolve MQTT brokers with priority:
+    // 1. CLI --mqtt-url and --mqtt-client-id (paired by order)
+    // 2. REME_MQTT environment variable (JSON format)
+    // 3. Config file [[mqtt]] array
+    // 4. Default (empty)
+    let mqtt = if let Some(urls) = cli.mqtt_url {
+        // Pair URLs with client IDs by order
+        let client_ids = cli.mqtt_client_id.unwrap_or_default();
+
+        // Warn if counts don't match
+        if !client_ids.is_empty() && client_ids.len() != urls.len() {
+            warn!(
+                "Mismatched --mqtt-url ({}) and --mqtt-client-id ({}) counts - some brokers will use random IDs",
+                urls.len(),
+                client_ids.len()
+            );
+        }
+
+        urls.into_iter()
+            .enumerate()
+            .map(|(i, url)| MqttBroker {
+                url,
+                client_id: client_ids.get(i).cloned(),
+            })
+            .collect()
+    } else if let Some(env_mqtt) = parse_mqtt_from_env() {
+        env_mqtt
+    } else if let Some(file_mqtt) = raw.mqtt {
+        file_mqtt
+    } else {
+        Vec::new() // MQTT is optional
     };
 
     // Expand ~ in data_dir path
@@ -367,7 +474,8 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
     };
 
     Ok(AppConfig {
-        nodes,
+        http,
+        mqtt,
         data_dir,
         log_level,
         outbox,
@@ -400,22 +508,30 @@ pub fn default_config_toml() -> String {
 #   Windows: %APPDATA%\reme\config.toml
 #
 # All settings can be overridden by:
-#   1. Environment variable: REME_NODES='[{{"url":"...", "cert_pin":"..."}}]'
-#   2. CLI arguments: --node-url <url> --node-cert-pin <pin>
+#   1. Environment variables: REME_HTTP='[{{"url":"...", "cert_pin":"..."}}]'
+#   2. CLI arguments: --http-url <url> --http-cert-pin <pin>
 
-# Node configuration with optional certificate pinning
+# HTTP endpoint configuration with optional certificate pinning
 # For TLS with pinning:
-# [[nodes]]
+# [[http]]
 # url = "https://node1.example.com:23003"
 # cert_pin = "spki//sha256/AAAA..."  # SPKI hash
 #
-# [[nodes]]
+# [[http]]
 # url = "https://node2.example.com:23003"
 # cert_pin = "cert//sha256/BBBB..."  # Certificate hash
 #
 # Without pinning (will warn):
-[[nodes]]
+[[http]]
 url = "{}"
+
+# MQTT broker configuration (optional)
+# Messages can be exchanged via MQTT in addition to or instead of HTTP.
+# Note: MQTT uses system root certificates (no certificate pinning support)
+#
+# [[mqtt]]
+# url = "mqtts://broker.example.com:8883"
+# client_id = "my-client"  # Optional, auto-generated if not set
 
 # Directory for storing identity, keys, and messages
 # Use ~ for home directory
@@ -439,7 +555,7 @@ attempt_timeout_secs = {}
 retry_initial_delay_secs = {}
 retry_max_delay_secs = {}
 "#,
-        defaults.nodes[0].url,
+        defaults.http[0].url,
         defaults.data_dir.to_string_lossy(),
         defaults.log_level,
         defaults.outbox.tick_interval_secs,
@@ -469,9 +585,10 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = AppConfig::default();
-        assert_eq!(config.nodes.len(), 1);
-        assert_eq!(config.nodes[0].url, "http://localhost:23003");
-        assert_eq!(config.nodes[0].cert_pin, None);
+        assert_eq!(config.http.len(), 1);
+        assert_eq!(config.http[0].url, "http://localhost:23003");
+        assert_eq!(config.http[0].cert_pin, None);
+        assert!(config.mqtt.is_empty());
         assert_eq!(config.log_level, "info");
     }
 
@@ -488,60 +605,99 @@ mod tests {
     #[test]
     fn test_default_config_toml() {
         let toml = default_config_toml();
-        assert!(toml.contains("[[nodes]]"));
+        assert!(toml.contains("[[http]]"));
         assert!(toml.contains("url ="));
         assert!(toml.contains("data_dir"));
         assert!(toml.contains("log_level"));
         assert!(toml.contains("[outbox]"));
         assert!(toml.contains("tick_interval_secs"));
         assert!(toml.contains("ttl_days"));
+        assert!(toml.contains("[[mqtt]]")); // Documentation for MQTT
     }
 
     #[test]
-    fn test_default_nodes() {
-        let nodes = default_nodes();
-        assert_eq!(nodes.len(), 1);
-        assert_eq!(nodes[0].url, "http://localhost:23003");
-        assert_eq!(nodes[0].cert_pin, None);
+    fn test_default_http() {
+        let endpoints = default_http();
+        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints[0].url, "http://localhost:23003");
+        assert_eq!(endpoints[0].cert_pin, None);
     }
 
     #[test]
-    fn test_node_config_constructors() {
-        let node = NodeConfig::new("https://example.com");
-        assert_eq!(node.url, "https://example.com");
-        assert_eq!(node.cert_pin, None);
+    fn test_http_endpoint_constructors() {
+        let endpoint = HttpEndpoint::new("https://example.com");
+        assert_eq!(endpoint.url, "https://example.com");
+        assert_eq!(endpoint.cert_pin, None);
 
-        let node = NodeConfig::with_pin("https://example.com", "spki//sha256/abc=");
-        assert_eq!(node.url, "https://example.com");
-        assert_eq!(node.cert_pin, Some("spki//sha256/abc=".to_string()));
+        let endpoint = HttpEndpoint::with_pin("https://example.com", "spki//sha256/abc=");
+        assert_eq!(endpoint.url, "https://example.com");
+        assert_eq!(endpoint.cert_pin, Some("spki//sha256/abc=".to_string()));
     }
 
     #[test]
-    fn test_node_config_deserialize() {
+    fn test_mqtt_broker_constructors() {
+        let broker = MqttBroker::new("mqtts://example.com:8883");
+        assert_eq!(broker.url, "mqtts://example.com:8883");
+        assert_eq!(broker.client_id, None);
+
+        let broker = MqttBroker::with_client_id("mqtts://example.com:8883", "my-client");
+        assert_eq!(broker.url, "mqtts://example.com:8883");
+        assert_eq!(broker.client_id, Some("my-client".to_string()));
+    }
+
+    #[test]
+    fn test_http_endpoint_deserialize() {
         let json = r#"{"url":"https://example.com","cert_pin":"spki//sha256/test="}"#;
-        let node: NodeConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(node.url, "https://example.com");
-        assert_eq!(node.cert_pin, Some("spki//sha256/test=".to_string()));
+        let endpoint: HttpEndpoint = serde_json::from_str(json).unwrap();
+        assert_eq!(endpoint.url, "https://example.com");
+        assert_eq!(endpoint.cert_pin, Some("spki//sha256/test=".to_string()));
 
         // Without cert_pin
         let json = r#"{"url":"https://example.com"}"#;
-        let node: NodeConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(node.url, "https://example.com");
-        assert_eq!(node.cert_pin, None);
+        let endpoint: HttpEndpoint = serde_json::from_str(json).unwrap();
+        assert_eq!(endpoint.url, "https://example.com");
+        assert_eq!(endpoint.cert_pin, None);
     }
 
     #[test]
-    fn test_parse_nodes_from_env_json() {
+    fn test_mqtt_broker_deserialize() {
+        let json = r#"{"url":"mqtts://example.com:8883","client_id":"my-client"}"#;
+        let broker: MqttBroker = serde_json::from_str(json).unwrap();
+        assert_eq!(broker.url, "mqtts://example.com:8883");
+        assert_eq!(broker.client_id, Some("my-client".to_string()));
+
+        // Without optional fields
+        let json = r#"{"url":"mqtts://example.com:8883"}"#;
+        let broker: MqttBroker = serde_json::from_str(json).unwrap();
+        assert_eq!(broker.url, "mqtts://example.com:8883");
+        assert_eq!(broker.client_id, None);
+    }
+
+    #[test]
+    fn test_parse_http_from_env_json() {
         std::env::set_var(
-            "REME_NODES",
+            "REME_HTTP",
             r#"[{"url":"https://node1.example.com","cert_pin":"spki//sha256/abc="},{"url":"https://node2.example.com"}]"#,
         );
-        let nodes = parse_nodes_from_env().expect("Should parse JSON");
-        assert_eq!(nodes.len(), 2);
-        assert_eq!(nodes[0].url, "https://node1.example.com");
-        assert_eq!(nodes[0].cert_pin, Some("spki//sha256/abc=".to_string()));
-        assert_eq!(nodes[1].url, "https://node2.example.com");
-        assert_eq!(nodes[1].cert_pin, None);
-        std::env::remove_var("REME_NODES");
+        let endpoints = parse_http_from_env().expect("Should parse JSON");
+        assert_eq!(endpoints.len(), 2);
+        assert_eq!(endpoints[0].url, "https://node1.example.com");
+        assert_eq!(endpoints[0].cert_pin, Some("spki//sha256/abc=".to_string()));
+        assert_eq!(endpoints[1].url, "https://node2.example.com");
+        assert_eq!(endpoints[1].cert_pin, None);
+        std::env::remove_var("REME_HTTP");
+    }
+
+    #[test]
+    fn test_parse_mqtt_from_env_json() {
+        std::env::set_var(
+            "REME_MQTT",
+            r#"[{"url":"mqtts://broker.example.com:8883","client_id":"test-client"}]"#,
+        );
+        let brokers = parse_mqtt_from_env().expect("Should parse JSON");
+        assert_eq!(brokers.len(), 1);
+        assert_eq!(brokers[0].url, "mqtts://broker.example.com:8883");
+        assert_eq!(brokers[0].client_id, Some("test-client".to_string()));
+        std::env::remove_var("REME_MQTT");
     }
 }
