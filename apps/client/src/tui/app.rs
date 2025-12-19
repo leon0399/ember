@@ -12,7 +12,10 @@ use reme_message::Content;
 use reme_outbox::{OutboxConfig, TransportRetryPolicy};
 use reme_storage::Storage;
 use reme_transport::http::{HttpTransport, NodeSpec};
-use reme_transport::{CertPin, MessageReceiver, ReceiverConfig, TransportEvent};
+use reme_transport::{
+    CertPin, CompositeTransport, MessageReceiver, MqttBrokerSpec, MqttTransport, ReceiverConfig,
+    TransportEvent,
+};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::sync::Arc;
@@ -178,10 +181,10 @@ pub struct App<'a> {
     pub input: TextArea<'a>,
     /// Status message
     pub status: String,
-    /// The messenger client
-    client: Client<HttpTransport>,
-    /// Transport for message receiving
-    transport: Arc<HttpTransport>,
+    /// The messenger client (uses CompositeTransport for sending via HTTP and/or MQTT)
+    client: Client<CompositeTransport>,
+    /// HTTP transport for message receiving (HTTP polling-based receiver)
+    http_transport: Arc<HttpTransport>,
     /// Contacts by name (for reverse lookup)
     contacts_by_id: HashMap<PublicID, String>,
     /// In-memory message cache per contact (until storage retrieval is implemented)
@@ -213,7 +216,7 @@ impl<'a> App<'a> {
             .ok_or("Database path contains invalid UTF-8 characters")?;
         let storage = Storage::open(db_path_str)?;
 
-        // Create transport with TLS and certificate pinning support
+        // Create HTTP transport with TLS and certificate pinning support
         let node_specs: Vec<NodeSpec> = config
             .http
             .iter()
@@ -238,7 +241,66 @@ impl<'a> App<'a> {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        let transport = Arc::new(HttpTransport::with_nodes_config(node_specs)?);
+
+        // Create HTTP transport for both sending and receiving
+        let http_transport = if !node_specs.is_empty() {
+            let transport = HttpTransport::with_nodes_config(node_specs)?;
+            Some(Arc::new(transport))
+        } else {
+            None
+        };
+
+        // Create MQTT transport if brokers are configured
+        let mqtt_transport = if !config.mqtt.is_empty() {
+            // Parse broker specs, failing fast on invalid cert pins
+            let broker_specs: Result<Vec<MqttBrokerSpec>, String> = config
+                .mqtt
+                .iter()
+                .map(|b| {
+                    let cert_pin = b
+                        .cert_pin
+                        .as_ref()
+                        .map(|p| {
+                            CertPin::parse(p).map_err(|e| {
+                                format!("Invalid MQTT cert pin for {}: {}", b.url, e)
+                            })
+                        })
+                        .transpose()?;
+                    Ok(MqttBrokerSpec {
+                        url: b.url.clone(),
+                        cert_pin,
+                        client_id: b.client_id.clone(),
+                    })
+                })
+                .collect();
+
+            let broker_specs = broker_specs?;
+            info!("Connecting to {} MQTT broker(s)...", broker_specs.len());
+            match MqttTransport::new(broker_specs).await {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    warn!("Failed to connect to MQTT brokers: {}. MQTT transport disabled.", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Build composite transport for sending
+        let mut composite = CompositeTransport::new();
+        if let Some(ref http) = http_transport {
+            composite = composite.with_arc_transport(http.clone());
+        }
+        if let Some(mqtt) = mqtt_transport {
+            composite = composite.with_transport(mqtt);
+        }
+        let transport = Arc::new(composite);
+
+        // Ensure we have at least one transport
+        if transport.is_empty() {
+            return Err("No transports configured. Add HTTP nodes and/or MQTT brokers.".into());
+        }
 
         // Build OutboxConfig from app config
         let ttl_ms = if config.outbox.ttl_days == 0 {
@@ -273,6 +335,11 @@ impl<'a> App<'a> {
         input.set_placeholder_text("Type a message...");
         input.set_cursor_line_style(Style::default());
 
+        // Ensure we have HTTP transport for message receiving
+        let http_transport_arc = http_transport.ok_or(
+            "No HTTP nodes configured. HTTP is required for message receiving.",
+        )?;
+
         let mut app = Self {
             running: true,
             focus: Focus::Conversations,
@@ -283,7 +350,7 @@ impl<'a> App<'a> {
             input,
             status: HELP_HINT.to_string(),
             client,
-            transport,
+            http_transport: http_transport_arc,
             contacts_by_id: HashMap::new(),
             message_cache: HashMap::new(),
             show_add_contact_popup: false,
@@ -342,8 +409,8 @@ impl<'a> App<'a> {
         let mut event_handler = EventHandler::new(100);
         let mut last_outbox_tick = Instant::now();
 
-        // Setup message receiver for incoming messages
-        let receiver = MessageReceiver::new(self.transport.clone());
+        // Setup message receiver for incoming messages (uses HTTP transport for polling)
+        let receiver = MessageReceiver::new(self.http_transport.clone());
         let config = ReceiverConfig::with_poll_interval(Duration::from_secs(2));
         let (mut msg_events, _handle) = receiver.subscribe(self.client.routing_key(), config);
 
