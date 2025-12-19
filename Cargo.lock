@@ -2522,13 +2522,16 @@ dependencies = [
 name = "reme-storage"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bincode",
  "reme-identity",
  "reme-message",
+ "reme-node-core",
  "reme-outbox",
  "rusqlite",
  "tempfile",
  "thiserror 2.0.17",
+ "tokio",
  "tracing",
 ]
 
