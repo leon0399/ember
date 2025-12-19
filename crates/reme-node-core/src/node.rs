@@ -340,10 +340,47 @@ pub async fn start_embedded_node<S: MailboxStorage + Send + Sync + 'static>(
     let (event_tx, event_rx) = mpsc::channel(EVENT_CHANNEL_SIZE);
     let cancel_token = CancellationToken::new();
 
-    // TODO: Start HTTP server if configured
-    let http_addr = None;
+    // Create monitored keys set
+    let monitored_keys: HashSet<RoutingKey> =
+        config.monitored_routing_keys.iter().cloned().collect();
+    let monitored_keys = Arc::new(RwLock::new(monitored_keys));
 
-    let node = EmbeddedNode::new(storage, config, event_tx);
+    // Create replication client
+    let replication = Arc::new(ReplicationClient::new(
+        config.node_id.clone(),
+        config.peers.clone(),
+    ));
+
+    // Start HTTP server if configured
+    let http_addr = if let Some(bind_addr) = config.http_bind_addr {
+        let http_state = Arc::new(crate::http::HttpState {
+            storage: storage.clone(),
+            event_tx: event_tx.clone(),
+            monitored_keys: monitored_keys.clone(),
+            replication: replication.clone(),
+        });
+
+        match crate::http::start_http_server(bind_addr, http_state, cancel_token.clone()).await {
+            Ok(addr) => {
+                info!("HTTP server started on {}", addr);
+                Some(addr)
+            }
+            Err(e) => {
+                return Err(NodeError::Storage(format!("Failed to start HTTP server: {}", e)));
+            }
+        }
+    } else {
+        None
+    };
+
+    // Create the embedded node with shared state
+    let node = EmbeddedNode {
+        storage,
+        config,
+        replication,
+        event_tx,
+        monitored_keys,
+    };
 
     let cancel = cancel_token.clone();
     let join_handle = tokio::spawn(async move {

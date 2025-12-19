@@ -38,6 +38,7 @@
 //! handle.shutdown().await?;
 //! ```
 
+pub mod http;
 pub mod node;
 pub mod replication;
 pub mod storage;
