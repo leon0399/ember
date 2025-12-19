@@ -205,15 +205,16 @@ impl MqttTransport {
         options.set_clean_session(true);
 
         // Configure TLS if using mqtts://
-        // Note: Certificate pinning is not yet supported for MQTT due to rustls version
-        // differences. Using standard TLS with system root certificates.
         if parsed.use_tls {
+            // Certificate pinning is not yet supported for MQTT due to rustls version
+            // differences between rumqttc (0.22) and our HTTP transport (0.23).
+            // Rather than silently downgrade security, we fail if pinning is configured.
             if spec.cert_pin.is_some() {
-                warn!(
+                return Err(TransportError::TlsConfig(format!(
                     "Certificate pinning configured for {} but not yet supported for MQTT. \
-                     Using standard TLS verification.",
+                     Remove the cert_pin configuration or use HTTP transport for pinned connections.",
                     spec.url
-                );
+                )));
             }
             // Use rumqttc's native rustls configuration with system roots
             options.set_transport(MqttTransportType::tls_with_default_config());

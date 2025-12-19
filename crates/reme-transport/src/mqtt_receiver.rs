@@ -106,12 +106,15 @@ impl MqttReceiver {
 
         // Configure TLS if using mqtts://
         if parsed.use_tls {
+            // Certificate pinning is not yet supported for MQTT due to rustls version
+            // differences between rumqttc (0.22) and our HTTP transport (0.23).
+            // Rather than silently downgrade security, we fail if pinning is configured.
             if config.cert_pin.is_some() {
-                warn!(
+                return Err(TransportError::TlsConfig(format!(
                     "Certificate pinning configured for {} but not yet supported for MQTT. \
-                     Using standard TLS verification.",
+                     Remove the cert_pin configuration or use HTTP transport for pinned connections.",
                     config.url
-                );
+                )));
             }
             options.set_transport(MqttTransportType::tls_with_default_config());
         }
@@ -317,6 +320,43 @@ impl MultiBrokerReceiver {
         }
 
         let seen_cache = Arc::new(SharedSeenCache::with_defaults());
+        let mut receivers = Vec::with_capacity(configs.len());
+        let mut errors = Vec::new();
+
+        for config in configs {
+            match MqttReceiver::with_seen_cache(config.clone(), seen_cache.clone()).await {
+                Ok(receiver) => receivers.push(Arc::new(receiver)),
+                Err(e) => {
+                    warn!("Failed to connect to MQTT broker {}: {}", config.url, e);
+                    errors.push(e);
+                }
+            }
+        }
+
+        if receivers.is_empty() {
+            return Err(TransportError::Network(format!(
+                "Failed to connect to any MQTT brokers: {:?}",
+                errors.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+            )));
+        }
+
+        Ok(Self { receivers, seen_cache })
+    }
+
+    /// Create a multi-broker receiver with a shared seen cache.
+    ///
+    /// Use this when you want to share deduplication state with other components
+    /// (e.g., an MqttTransport that publishes to the same brokers).
+    pub async fn with_seen_cache(
+        configs: Vec<MqttReceiverConfig>,
+        seen_cache: Arc<SharedSeenCache>,
+    ) -> Result<Self, TransportError> {
+        if configs.is_empty() {
+            return Err(TransportError::Network(
+                "No MQTT broker configs provided".to_string(),
+            ));
+        }
+
         let mut receivers = Vec::with_capacity(configs.len());
         let mut errors = Vec::new();
 
