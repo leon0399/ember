@@ -923,6 +923,21 @@ fn transport_error_to_attempt_error(e: &TransportError) -> AttemptError {
         TransportError::ChannelClosed => AttemptError::Unavailable {
             message: "channel closed".to_string(),
         },
+        TransportError::TlsConfig(msg) => AttemptError::Rejected {
+            message: format!("TLS configuration error: {}", msg),
+            is_transient: false,
+        },
+        TransportError::CertificatePinMismatch {
+            hostname,
+            expected,
+            actual,
+        } => AttemptError::Rejected {
+            message: format!(
+                "Certificate pin mismatch for {}: expected {}, got {}",
+                hostname, expected, actual
+            ),
+            is_transient: false,
+        },
     }
 }
 

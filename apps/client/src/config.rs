@@ -11,7 +11,7 @@
 //! ## Environment Variables
 //!
 //! All environment variables are prefixed with `REME_` and use `_` as separator:
-//! - `REME_NODE_URLS` - Comma-separated list of node URLs
+//! - `REME_NODES` - JSON array of node configs: `[{"url":"...", "cert_pin":"..."}]`
 //! - `REME_DATA_DIR` - Directory for storing identity, keys, and messages
 //! - `REME_LOG_LEVEL` - Log level (trace, debug, info, warn, error)
 //!
@@ -21,14 +21,14 @@
 //! `%APPDATA%\reme\config.toml` (Windows)
 //!
 //! ```toml
-//! # Single node (backward compatible)
-//! node_url = "http://localhost:23003"
+//! # Node configuration with optional certificate pinning
+//! [[nodes]]
+//! url = "https://node1.example.com:23003"
+//! cert_pin = "spki//sha256/AAAA..."  # Optional
 //!
-//! # OR multiple nodes for redundancy
-//! node_urls = [
-//!     "http://localhost:23003",
-//!     "http://localhost:23004",
-//! ]
+//! [[nodes]]
+//! url = "https://node2.example.com:23003"
+//! # No pin - will connect but warn
 //!
 //! data_dir = "~/.local/share/reme"
 //! log_level = "info"
@@ -39,19 +39,27 @@ use config::{Config, Environment, File, FileFormat};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tracing::Level;
+use tracing::{warn, Level};
 
 /// CLI arguments for the client
 #[derive(Parser, Debug, Clone, Serialize)]
 #[command(name = "reme-client")]
 #[command(author, version, about = "Branch Messenger Client")]
 pub struct CliArgs {
-    /// URLs of the mailbox nodes (comma-separated for multiple nodes)
+    /// Node URLs (pair with --node-cert-pin by order)
     ///
-    /// Example: -n http://node1:23003,http://node2:23003
-    #[arg(short = 'n', long, env = "REME_NODE_URLS", value_delimiter = ',')]
+    /// Example: --node-url https://node1:23003,https://node2:23003
+    #[arg(long, value_delimiter = ',')]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub node_urls: Option<Vec<String>>,
+    pub node_url: Option<Vec<String>>,
+
+    /// Certificate pins for nodes (pair with --node-url by order)
+    ///
+    /// Format: spki//sha256/<base64> or cert//sha256/<base64>
+    /// Example: --node-cert-pin spki//sha256/aaa=,spki//sha256/bbb=
+    #[arg(long, value_delimiter = ',')]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_cert_pin: Option<Vec<String>>,
 
     /// Directory for storing identity, keys, and messages
     #[arg(short = 'd', long, env = "REME_DATA_DIR")]
@@ -136,12 +144,42 @@ impl Default for OutboxAppConfig {
     }
 }
 
+/// Node configuration with optional certificate pinning
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct NodeConfig {
+    /// Node URL (http:// or https://)
+    pub url: String,
+    /// Optional certificate pin for TLS verification
+    ///
+    /// Format: `spki//sha256/<base64>` or `cert//sha256/<base64>`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cert_pin: Option<String>,
+}
+
+impl NodeConfig {
+    /// Create a new node config with just a URL (no pinning)
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            cert_pin: None,
+        }
+    }
+
+    /// Create a new node config with URL and certificate pin
+    pub fn with_pin(url: impl Into<String>, cert_pin: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            cert_pin: Some(cert_pin.into()),
+        }
+    }
+}
+
 /// Final resolved configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
-    /// URLs of the mailbox nodes
-    #[serde(default = "default_node_urls")]
-    pub node_urls: Vec<String>,
+    /// Node configurations with optional certificate pinning
+    #[serde(default = "default_nodes")]
+    pub nodes: Vec<NodeConfig>,
 
     /// Directory for storing identity, keys, and messages
     pub data_dir: PathBuf,
@@ -154,14 +192,14 @@ pub struct AppConfig {
     pub outbox: OutboxAppConfig,
 }
 
-fn default_node_urls() -> Vec<String> {
-    vec!["http://localhost:23003".to_string()]
+fn default_nodes() -> Vec<NodeConfig> {
+    vec![NodeConfig::new("http://localhost:23003")]
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            node_urls: default_node_urls(),
+            nodes: default_nodes(),
             data_dir: default_data_dir(),
             log_level: "info".to_string(),
             outbox: OutboxAppConfig::default(),
@@ -183,17 +221,29 @@ fn default_config_path() -> Option<PathBuf> {
     ProjectDirs::from("com", "branch", "reme").map(|dirs| dirs.config_dir().join("config.toml"))
 }
 
-/// Intermediate config for deserializing node URLs from file/env
-/// Supports both `node_url` (single, backward compat) and `node_urls` (multiple)
+/// Intermediate config for deserializing from file
 #[derive(Debug, Clone, Deserialize, Default)]
 struct RawConfig {
-    /// Single node URL (backward compatible)
-    node_url: Option<String>,
-    /// Multiple node URLs
-    node_urls: Option<Vec<String>>,
+    /// Node configurations (new format)
+    nodes: Option<Vec<NodeConfig>>,
     /// Outbox config section
     #[serde(default)]
     outbox: RawOutboxConfig,
+}
+
+/// Parse nodes from REME_NODES environment variable (JSON format)
+fn parse_nodes_from_env() -> Option<Vec<NodeConfig>> {
+    let json = std::env::var("REME_NODES").ok()?;
+    match serde_json::from_str(&json) {
+        Ok(nodes) => Some(nodes),
+        Err(e) => {
+            warn!(
+                "Failed to parse REME_NODES as JSON: {} - falling back to config file or defaults",
+                e
+            );
+            None
+        }
+    }
 }
 
 /// Raw outbox config from file/env
@@ -257,22 +307,40 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
     });
     let log_level: String = config.get("log_level").unwrap_or_else(|_| "info".to_string());
 
-    // Deserialize raw config to handle node_url vs node_urls
+    // Deserialize raw config for file-based settings
     let raw: RawConfig = config.try_deserialize().unwrap_or_default();
 
-    // Resolve node URLs with priority:
-    // 1. CLI --node-urls (multiple)
-    // 2. Config file node_urls (array)
-    // 3. Config file node_url (single, backward compat)
+    // Resolve nodes with priority:
+    // 1. CLI --node-url and --node-cert-pin (paired by order)
+    // 2. REME_NODES environment variable (JSON format)
+    // 3. Config file [[nodes]] array
     // 4. Default
-    let node_urls = if let Some(urls) = cli.node_urls {
-        urls
-    } else if let Some(urls) = raw.node_urls {
-        urls
-    } else if let Some(url) = raw.node_url {
-        vec![url]
+    let nodes = if let Some(urls) = cli.node_url {
+        // Pair URLs with pins by order
+        let pins = cli.node_cert_pin.unwrap_or_default();
+
+        // Warn if counts don't match
+        if !pins.is_empty() && pins.len() != urls.len() {
+            warn!(
+                "Mismatched --node-url ({}) and --node-cert-pin ({}) counts - some nodes may be unpinned",
+                urls.len(),
+                pins.len()
+            );
+        }
+
+        urls.into_iter()
+            .enumerate()
+            .map(|(i, url)| NodeConfig {
+                url,
+                cert_pin: pins.get(i).cloned(),
+            })
+            .collect()
+    } else if let Some(env_nodes) = parse_nodes_from_env() {
+        env_nodes
+    } else if let Some(file_nodes) = raw.nodes {
+        file_nodes
     } else {
-        defaults.node_urls
+        defaults.nodes
     };
 
     // Expand ~ in data_dir path
@@ -299,7 +367,7 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
     };
 
     Ok(AppConfig {
-        node_urls,
+        nodes,
         data_dir,
         log_level,
         outbox,
@@ -332,16 +400,22 @@ pub fn default_config_toml() -> String {
 #   Windows: %APPDATA%\reme\config.toml
 #
 # All settings can be overridden by:
-#   1. Environment variables (REME_NODE_URLS, REME_DATA_DIR, etc.)
-#   2. CLI arguments (--node-urls, --data-dir, etc.)
+#   1. Environment variable: REME_NODES='[{{"url":"...", "cert_pin":"..."}}]'
+#   2. CLI arguments: --node-url <url> --node-cert-pin <pin>
 
-# URLs of the mailbox nodes
-# For redundancy, you can specify multiple nodes:
-# node_urls = [
-#     "http://node1.example.com:23003",
-#     "http://node2.example.com:23003",
-# ]
-node_urls = ["{}"]
+# Node configuration with optional certificate pinning
+# For TLS with pinning:
+# [[nodes]]
+# url = "https://node1.example.com:23003"
+# cert_pin = "spki//sha256/AAAA..."  # SPKI hash
+#
+# [[nodes]]
+# url = "https://node2.example.com:23003"
+# cert_pin = "cert//sha256/BBBB..."  # Certificate hash
+#
+# Without pinning (will warn):
+[[nodes]]
+url = "{}"
 
 # Directory for storing identity, keys, and messages
 # Use ~ for home directory
@@ -365,7 +439,7 @@ attempt_timeout_secs = {}
 retry_initial_delay_secs = {}
 retry_max_delay_secs = {}
 "#,
-        defaults.node_urls[0],
+        defaults.nodes[0].url,
         defaults.data_dir.to_string_lossy(),
         defaults.log_level,
         defaults.outbox.tick_interval_secs,
@@ -395,7 +469,9 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = AppConfig::default();
-        assert_eq!(config.node_urls, vec!["http://localhost:23003"]);
+        assert_eq!(config.nodes.len(), 1);
+        assert_eq!(config.nodes[0].url, "http://localhost:23003");
+        assert_eq!(config.nodes[0].cert_pin, None);
         assert_eq!(config.log_level, "info");
     }
 
@@ -412,7 +488,8 @@ mod tests {
     #[test]
     fn test_default_config_toml() {
         let toml = default_config_toml();
-        assert!(toml.contains("node_urls"));
+        assert!(toml.contains("[[nodes]]"));
+        assert!(toml.contains("url ="));
         assert!(toml.contains("data_dir"));
         assert!(toml.contains("log_level"));
         assert!(toml.contains("[outbox]"));
@@ -421,9 +498,50 @@ mod tests {
     }
 
     #[test]
-    fn test_default_node_urls() {
-        let urls = default_node_urls();
-        assert_eq!(urls.len(), 1);
-        assert_eq!(urls[0], "http://localhost:23003");
+    fn test_default_nodes() {
+        let nodes = default_nodes();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].url, "http://localhost:23003");
+        assert_eq!(nodes[0].cert_pin, None);
+    }
+
+    #[test]
+    fn test_node_config_constructors() {
+        let node = NodeConfig::new("https://example.com");
+        assert_eq!(node.url, "https://example.com");
+        assert_eq!(node.cert_pin, None);
+
+        let node = NodeConfig::with_pin("https://example.com", "spki//sha256/abc=");
+        assert_eq!(node.url, "https://example.com");
+        assert_eq!(node.cert_pin, Some("spki//sha256/abc=".to_string()));
+    }
+
+    #[test]
+    fn test_node_config_deserialize() {
+        let json = r#"{"url":"https://example.com","cert_pin":"spki//sha256/test="}"#;
+        let node: NodeConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(node.url, "https://example.com");
+        assert_eq!(node.cert_pin, Some("spki//sha256/test=".to_string()));
+
+        // Without cert_pin
+        let json = r#"{"url":"https://example.com"}"#;
+        let node: NodeConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(node.url, "https://example.com");
+        assert_eq!(node.cert_pin, None);
+    }
+
+    #[test]
+    fn test_parse_nodes_from_env_json() {
+        std::env::set_var(
+            "REME_NODES",
+            r#"[{"url":"https://node1.example.com","cert_pin":"spki//sha256/abc="},{"url":"https://node2.example.com"}]"#,
+        );
+        let nodes = parse_nodes_from_env().expect("Should parse JSON");
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].url, "https://node1.example.com");
+        assert_eq!(nodes[0].cert_pin, Some("spki//sha256/abc=".to_string()));
+        assert_eq!(nodes[1].url, "https://node2.example.com");
+        assert_eq!(nodes[1].cert_pin, None);
+        std::env::remove_var("REME_NODES");
     }
 }

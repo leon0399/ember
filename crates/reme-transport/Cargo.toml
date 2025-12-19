@@ -16,10 +16,16 @@ url = "2"
 percent-encoding = "2"
 
 # HTTP implementation
-reqwest = { workspace = true, features = ["json"] }
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true }
 futures = { workspace = true }
+
+# TLS + Certificate Pinning
+rustls = { workspace = true, features = ["ring"] }
+sha2 = { workspace = true }
+webpki-roots = "1"
+x509-parser = "0.17"
 
 # Optional: for server implementation
 axum = { workspace = true, optional = true }
