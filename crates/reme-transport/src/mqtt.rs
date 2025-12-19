@@ -255,8 +255,9 @@ impl MqttTransport {
         // Parse host:port, handling IPv6 addresses in brackets
         let (host, port) = if rest.starts_with('[') {
             // IPv6 address: [host]:port or [host]
+            // Strip brackets - MQTT libraries expect raw IPv6 address
             if let Some(bracket_end) = rest.find(']') {
-                let host = rest[..=bracket_end].to_string();
+                let host = rest[1..bracket_end].to_string();
                 let after_bracket = &rest[bracket_end + 1..];
 
                 if let Some(port_str) = after_bracket.strip_prefix(':') {
