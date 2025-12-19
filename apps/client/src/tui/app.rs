@@ -252,29 +252,15 @@ impl<'a> App<'a> {
 
         // Create MQTT transport if brokers are configured
         let mqtt_transport = if !config.mqtt.is_empty() {
-            // Parse broker specs, failing fast on invalid cert pins
-            let broker_specs: Result<Vec<MqttBrokerSpec>, String> = config
+            // Convert config brokers to transport broker specs
+            let broker_specs: Vec<MqttBrokerSpec> = config
                 .mqtt
                 .iter()
-                .map(|b| {
-                    let cert_pin = b
-                        .cert_pin
-                        .as_ref()
-                        .map(|p| {
-                            CertPin::parse(p).map_err(|e| {
-                                format!("Invalid MQTT cert pin for {}: {}", b.url, e)
-                            })
-                        })
-                        .transpose()?;
-                    Ok(MqttBrokerSpec {
-                        url: b.url.clone(),
-                        cert_pin,
-                        client_id: b.client_id.clone(),
-                    })
+                .map(|b| MqttBrokerSpec {
+                    url: b.url.clone(),
+                    client_id: b.client_id.clone(),
                 })
                 .collect();
-
-            let broker_specs = broker_specs?;
             info!("Connecting to {} MQTT broker(s)...", broker_specs.len());
             match MqttTransport::new(broker_specs).await {
                 Ok(t) => Some(t),

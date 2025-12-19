@@ -4,7 +4,6 @@
 //! handling incoming messages and dispatching them to event channels.
 
 use crate::seen_cache::SharedSeenCache;
-use crate::tls::CertPin;
 use crate::{TransportError, TransportEvent};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
@@ -19,12 +18,13 @@ use tracing::{debug, trace, warn, error};
 pub const DEFAULT_TOPIC_PREFIX: &str = "reme/v1";
 
 /// Configuration for MQTT receiver.
+///
+/// Note: MQTT uses system root certificates for TLS verification.
+/// Certificate pinning is not currently supported for MQTT connections.
 #[derive(Debug, Clone)]
 pub struct MqttReceiverConfig {
     /// Broker URL (e.g., "mqtts://broker:8883")
     pub url: String,
-    /// Optional certificate pin for TLS verification
-    pub cert_pin: Option<CertPin>,
     /// Client ID (auto-generated if None)
     pub client_id: Option<String>,
     /// Topic prefix (default: "reme/v1")
@@ -36,7 +36,6 @@ impl MqttReceiverConfig {
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
-            cert_pin: None,
             client_id: None,
             topic_prefix: DEFAULT_TOPIC_PREFIX.to_string(),
         }
@@ -106,16 +105,6 @@ impl MqttReceiver {
 
         // Configure TLS if using mqtts://
         if parsed.use_tls {
-            // Certificate pinning is not yet supported for MQTT due to rustls version
-            // differences between rumqttc (0.22) and our HTTP transport (0.23).
-            // Rather than silently downgrade security, we fail if pinning is configured.
-            if config.cert_pin.is_some() {
-                return Err(TransportError::TlsConfig(format!(
-                    "Certificate pinning configured for {} but not yet supported for MQTT. \
-                     Remove the cert_pin configuration or use HTTP transport for pinned connections.",
-                    config.url
-                )));
-            }
             options.set_transport(MqttTransportType::tls_with_default_config());
         }
 

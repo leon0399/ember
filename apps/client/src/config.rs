@@ -12,7 +12,7 @@
 //!
 //! All environment variables are prefixed with `REME_` and use `_` as separator:
 //! - `REME_HTTP` - JSON array of HTTP endpoint configs: `[{"url":"...", "cert_pin":"..."}]`
-//! - `REME_MQTT` - JSON array of MQTT broker configs: `[{"url":"...", "cert_pin":"..."}]`
+//! - `REME_MQTT` - JSON array of MQTT broker configs: `[{"url":"...", "client_id":"..."}]`
 //! - `REME_DATA_DIR` - Directory for storing identity, keys, and messages
 //! - `REME_LOG_LEVEL` - Log level (trace, debug, info, warn, error)
 //!
@@ -32,9 +32,10 @@
 //! # No pin - will connect but warn
 //!
 //! # MQTT broker configuration (optional)
+//! # Note: MQTT uses system root certificates (no certificate pinning support)
 //! [[mqtt]]
 //! url = "mqtts://broker.example.com:8883"
-//! cert_pin = "spki//sha256/BBBB..."  # Optional
+//! client_id = "my-client"  # Optional, auto-generated if not set
 //!
 //! data_dir = "~/.local/share/reme"
 //! log_level = "info"
@@ -67,19 +68,12 @@ pub struct CliArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http_cert_pin: Option<Vec<String>>,
 
-    /// MQTT broker URLs (pair with --mqtt-cert-pin by order)
+    /// MQTT broker URLs (pair with --mqtt-client-id by order)
     ///
     /// Example: --mqtt-url mqtts://broker1:8883,mqtts://broker2:8883
     #[arg(long, value_delimiter = ',')]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mqtt_url: Option<Vec<String>>,
-
-    /// Certificate pins for MQTT brokers (pair with --mqtt-url by order)
-    ///
-    /// Format: spki//sha256/<base64> or cert//sha256/<base64>
-    #[arg(long, value_delimiter = ',')]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mqtt_cert_pin: Option<Vec<String>>,
 
     /// Client IDs for MQTT brokers (pair with --mqtt-url by order)
     ///
@@ -201,37 +195,33 @@ impl HttpEndpoint {
     }
 }
 
-/// MQTT broker configuration with optional certificate pinning
+/// MQTT broker configuration
+///
+/// Note: MQTT uses system root certificates for TLS verification.
+/// Certificate pinning is not currently supported for MQTT connections.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct MqttBroker {
     /// Broker URL (mqtt:// or mqtts://)
     pub url: String,
-    /// Optional certificate pin for TLS verification
-    ///
-    /// Format: `spki//sha256/<base64>` or `cert//sha256/<base64>`
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cert_pin: Option<String>,
-    /// Optional custom client ID
+    /// Optional custom client ID (auto-generated if not specified)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
 }
 
 impl MqttBroker {
-    /// Create a new MQTT broker with just a URL (no pinning)
+    /// Create a new MQTT broker with just a URL
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
-            cert_pin: None,
             client_id: None,
         }
     }
 
-    /// Create a new MQTT broker with URL and certificate pin
-    pub fn with_pin(url: impl Into<String>, cert_pin: impl Into<String>) -> Self {
+    /// Create a new MQTT broker with URL and client ID
+    pub fn with_client_id(url: impl Into<String>, client_id: impl Into<String>) -> Self {
         Self {
             url: url.into(),
-            cert_pin: Some(cert_pin.into()),
-            client_id: None,
+            client_id: Some(client_id.into()),
         }
     }
 }
@@ -428,23 +418,15 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
     };
 
     // Resolve MQTT brokers with priority:
-    // 1. CLI --mqtt-url, --mqtt-cert-pin, --mqtt-client-id (paired by order)
+    // 1. CLI --mqtt-url and --mqtt-client-id (paired by order)
     // 2. REME_MQTT environment variable (JSON format)
     // 3. Config file [[mqtt]] array
     // 4. Default (empty)
     let mqtt = if let Some(urls) = cli.mqtt_url {
-        // Pair URLs with pins and client IDs by order
-        let pins = cli.mqtt_cert_pin.unwrap_or_default();
+        // Pair URLs with client IDs by order
         let client_ids = cli.mqtt_client_id.unwrap_or_default();
 
         // Warn if counts don't match
-        if !pins.is_empty() && pins.len() != urls.len() {
-            warn!(
-                "Mismatched --mqtt-url ({}) and --mqtt-cert-pin ({}) counts - some brokers may be unpinned",
-                urls.len(),
-                pins.len()
-            );
-        }
         if !client_ids.is_empty() && client_ids.len() != urls.len() {
             warn!(
                 "Mismatched --mqtt-url ({}) and --mqtt-client-id ({}) counts - some brokers will use random IDs",
@@ -457,7 +439,6 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
             .enumerate()
             .map(|(i, url)| MqttBroker {
                 url,
-                cert_pin: pins.get(i).cloned(),
                 client_id: client_ids.get(i).cloned(),
             })
             .collect()
@@ -546,11 +527,11 @@ url = "{}"
 
 # MQTT broker configuration (optional)
 # Messages can be exchanged via MQTT in addition to or instead of HTTP.
+# Note: MQTT uses system root certificates (no certificate pinning support)
 #
 # [[mqtt]]
 # url = "mqtts://broker.example.com:8883"
-# cert_pin = "spki//sha256/CCCC..."  # Optional
-# client_id = "my-client"            # Optional, auto-generated if not set
+# client_id = "my-client"  # Optional, auto-generated if not set
 
 # Directory for storing identity, keys, and messages
 # Use ~ for home directory
@@ -657,12 +638,11 @@ mod tests {
     fn test_mqtt_broker_constructors() {
         let broker = MqttBroker::new("mqtts://example.com:8883");
         assert_eq!(broker.url, "mqtts://example.com:8883");
-        assert_eq!(broker.cert_pin, None);
         assert_eq!(broker.client_id, None);
 
-        let broker = MqttBroker::with_pin("mqtts://example.com:8883", "spki//sha256/abc=");
+        let broker = MqttBroker::with_client_id("mqtts://example.com:8883", "my-client");
         assert_eq!(broker.url, "mqtts://example.com:8883");
-        assert_eq!(broker.cert_pin, Some("spki//sha256/abc=".to_string()));
+        assert_eq!(broker.client_id, Some("my-client".to_string()));
     }
 
     #[test]
@@ -681,17 +661,15 @@ mod tests {
 
     #[test]
     fn test_mqtt_broker_deserialize() {
-        let json = r#"{"url":"mqtts://example.com:8883","cert_pin":"spki//sha256/test=","client_id":"my-client"}"#;
+        let json = r#"{"url":"mqtts://example.com:8883","client_id":"my-client"}"#;
         let broker: MqttBroker = serde_json::from_str(json).unwrap();
         assert_eq!(broker.url, "mqtts://example.com:8883");
-        assert_eq!(broker.cert_pin, Some("spki//sha256/test=".to_string()));
         assert_eq!(broker.client_id, Some("my-client".to_string()));
 
         // Without optional fields
         let json = r#"{"url":"mqtts://example.com:8883"}"#;
         let broker: MqttBroker = serde_json::from_str(json).unwrap();
         assert_eq!(broker.url, "mqtts://example.com:8883");
-        assert_eq!(broker.cert_pin, None);
         assert_eq!(broker.client_id, None);
     }
 
@@ -714,12 +692,12 @@ mod tests {
     fn test_parse_mqtt_from_env_json() {
         std::env::set_var(
             "REME_MQTT",
-            r#"[{"url":"mqtts://broker.example.com:8883","cert_pin":"spki//sha256/def="}]"#,
+            r#"[{"url":"mqtts://broker.example.com:8883","client_id":"test-client"}]"#,
         );
         let brokers = parse_mqtt_from_env().expect("Should parse JSON");
         assert_eq!(brokers.len(), 1);
         assert_eq!(brokers[0].url, "mqtts://broker.example.com:8883");
-        assert_eq!(brokers[0].cert_pin, Some("spki//sha256/def=".to_string()));
+        assert_eq!(brokers[0].client_id, Some("test-client".to_string()));
         std::env::remove_var("REME_MQTT");
     }
 }

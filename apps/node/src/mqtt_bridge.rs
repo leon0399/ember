@@ -24,9 +24,6 @@ pub enum MqttBridgeError {
 
     #[error("Store error: {0}")]
     Store(#[from] crate::persistent_store::PersistentStoreError),
-
-    #[error("Invalid certificate pin for {broker}: {error}")]
-    InvalidCertPin { broker: String, error: String },
 }
 
 /// MQTT Bridge for bidirectional HTTP <-> MQTT message exchange.
@@ -53,13 +50,13 @@ impl MqttBridge {
         }
 
         let topic_prefix = config.topic_prefix().to_string();
-        let broker_specs = Self::config_to_broker_specs(&config.brokers)?;
+        let broker_specs = Self::config_to_broker_specs(&config.brokers);
 
         // Create transport for publishing (it has its own internal seen cache)
         let transport = MqttTransport::with_config(broker_specs, topic_prefix.clone()).await?;
 
         // Create receiver configs for subscribing
-        let receiver_configs = Self::config_to_receiver_configs(&config.brokers, &topic_prefix)?;
+        let receiver_configs = Self::config_to_receiver_configs(&config.brokers, &topic_prefix);
 
         info!(
             "MQTT bridge configured with {} broker(s), topic prefix: {}",
@@ -75,61 +72,27 @@ impl MqttBridge {
     }
 
     /// Convert config brokers to transport broker specs.
-    ///
-    /// Returns an error if any certificate pin is invalid - we fail fast
-    /// rather than silently downgrade security.
-    fn config_to_broker_specs(
-        brokers: &[MqttBrokerConfig],
-    ) -> Result<Vec<MqttBrokerSpec>, MqttBridgeError> {
+    fn config_to_broker_specs(brokers: &[MqttBrokerConfig]) -> Vec<MqttBrokerSpec> {
         brokers
             .iter()
-            .map(|b| {
-                let cert_pin = b
-                    .cert_pin
-                    .as_ref()
-                    .map(|p| {
-                        reme_transport::CertPin::parse(p).map_err(|e| MqttBridgeError::InvalidCertPin {
-                            broker: b.url.clone(),
-                            error: e.to_string(),
-                        })
-                    })
-                    .transpose()?;
-                Ok(MqttBrokerSpec {
-                    url: b.url.clone(),
-                    cert_pin,
-                    client_id: b.client_id.clone(),
-                })
+            .map(|b| MqttBrokerSpec {
+                url: b.url.clone(),
+                client_id: b.client_id.clone(),
             })
             .collect()
     }
 
     /// Convert config brokers to receiver configs.
-    ///
-    /// Returns an error if any certificate pin is invalid - we fail fast
-    /// rather than silently downgrade security.
     fn config_to_receiver_configs(
         brokers: &[MqttBrokerConfig],
         topic_prefix: &str,
-    ) -> Result<Vec<MqttReceiverConfig>, MqttBridgeError> {
+    ) -> Vec<MqttReceiverConfig> {
         brokers
             .iter()
-            .map(|b| {
-                let cert_pin = b
-                    .cert_pin
-                    .as_ref()
-                    .map(|p| {
-                        reme_transport::CertPin::parse(p).map_err(|e| MqttBridgeError::InvalidCertPin {
-                            broker: b.url.clone(),
-                            error: e.to_string(),
-                        })
-                    })
-                    .transpose()?;
-                Ok(MqttReceiverConfig {
-                    url: b.url.clone(),
-                    cert_pin,
-                    client_id: b.client_id.clone(),
-                    topic_prefix: topic_prefix.to_string(),
-                })
+            .map(|b| MqttReceiverConfig {
+                url: b.url.clone(),
+                client_id: b.client_id.clone(),
+                topic_prefix: topic_prefix.to_string(),
             })
             .collect()
     }

@@ -20,7 +20,6 @@
 //! - `REME_NODE_TLS_CERT` - Path to PEM certificate file
 //! - `REME_NODE_TLS_KEY` - Path to PEM private key file
 //! - `REME_NODE_MQTT_BROKER` - Comma-separated MQTT broker URLs
-//! - `REME_NODE_MQTT_CERT_PIN` - Comma-separated certificate pins (paired with broker URLs)
 //! - `REME_NODE_MQTT_CLIENT_ID` - Comma-separated client IDs (paired with broker URLs)
 //! - `REME_NODE_MQTT_TOPIC_PREFIX` - MQTT topic prefix (default: "reme/v1")
 //!
@@ -42,12 +41,13 @@
 //! key_path = "/etc/reme/key.pem"
 //!
 //! # MQTT bridge configuration (enabled when brokers are configured)
+//! # Note: MQTT uses system root certificates (no certificate pinning support)
 //! [mqtt]
 //! topic_prefix = "reme/v1"  # Optional, defaults to "reme/v1"
 //!
 //! [[mqtt.brokers]]
 //! url = "mqtts://broker.example.com:8883"
-//! cert_pin = "spki//sha256/abc..."  # Optional
+//! client_id = "node-1"  # Optional, auto-generated if not set
 //! ```
 
 use crate::cleanup::CleanupConfig;
@@ -126,13 +126,13 @@ impl Default for TlsConfig {
 }
 
 /// MQTT broker configuration for the bridge
+///
+/// Note: MQTT uses system root certificates for TLS verification.
+/// Certificate pinning is not currently supported for MQTT connections.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MqttBrokerConfig {
     /// MQTT broker URL (e.g., "mqtts://broker.example.com:8883")
     pub url: String,
-    /// Optional certificate pin for TLS verification
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cert_pin: Option<String>,
     /// Optional client ID (auto-generated if not specified)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
@@ -319,11 +319,6 @@ pub struct CliArgs {
     /// Example: mqtts://broker1:8883,mqtts://broker2:8883
     #[arg(long, env = "REME_NODE_MQTT_BROKER", value_delimiter = ',')]
     pub mqtt_broker: Option<Vec<String>>,
-
-    /// MQTT broker certificate pins (comma-separated, matched with mqtt_broker)
-    /// Example: spki//sha256/abc...,spki//sha256/def...
-    #[arg(long, env = "REME_NODE_MQTT_CERT_PIN", value_delimiter = ',')]
-    pub mqtt_cert_pin: Option<Vec<String>>,
 
     /// MQTT client IDs (comma-separated, matched with mqtt_broker)
     /// If not specified, random client IDs will be generated
@@ -661,14 +656,12 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     // Build MQTT config, applying CLI overrides
     let mqtt = if let Some(ref broker_urls) = cli.mqtt_broker {
         // CLI brokers override file config entirely
-        let cert_pins = cli.mqtt_cert_pin.clone().unwrap_or_default();
         let client_ids = cli.mqtt_client_id.clone().unwrap_or_default();
         let brokers: Vec<MqttBrokerConfig> = broker_urls
             .iter()
             .enumerate()
             .map(|(i, url)| MqttBrokerConfig {
                 url: url.clone(),
-                cert_pin: cert_pins.get(i).cloned(),
                 client_id: client_ids.get(i).cloned(),
             })
             .collect();

@@ -15,13 +15,11 @@
 //!
 //! # TLS Note
 //!
-//! Certificate pinning for MQTT is not yet implemented due to rustls version
-//! differences between rumqttc and our HTTP transport. MQTT connections use
-//! standard TLS with system root certificates. The `cert_pin` field is parsed
-//! and stored for future use.
+//! MQTT connections use standard TLS with system root certificates.
+//! Certificate pinning is not currently supported for MQTT (use HTTP
+//! transport if certificate pinning is required).
 
 use crate::seen_cache::SharedSeenCache;
-use crate::tls::CertPin;
 use crate::{Transport, TransportError};
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -37,12 +35,13 @@ use tracing::{debug, trace, warn};
 pub const DEFAULT_TOPIC_PREFIX: &str = "reme/v1";
 
 /// MQTT broker specification.
+///
+/// Note: MQTT uses system root certificates for TLS verification.
+/// Certificate pinning is not currently supported for MQTT connections.
 #[derive(Debug, Clone)]
 pub struct MqttBrokerSpec {
     /// Broker URL (e.g., "mqtts://broker:8883" or "mqtt://broker:1883")
     pub url: String,
-    /// Optional certificate pin for TLS verification
-    pub cert_pin: Option<CertPin>,
     /// Client ID (auto-generated if None)
     pub client_id: Option<String>,
 }
@@ -52,24 +51,16 @@ impl MqttBrokerSpec {
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
-            cert_pin: None,
             client_id: None,
         }
     }
 
-    /// Create a broker spec with URL and certificate pin.
-    pub fn with_pin(url: impl Into<String>, cert_pin: CertPin) -> Self {
+    /// Create a broker spec with URL and client ID.
+    pub fn with_client_id(url: impl Into<String>, client_id: impl Into<String>) -> Self {
         Self {
             url: url.into(),
-            cert_pin: Some(cert_pin),
-            client_id: None,
+            client_id: Some(client_id.into()),
         }
-    }
-
-    /// Set a custom client ID.
-    pub fn with_client_id(mut self, client_id: impl Into<String>) -> Self {
-        self.client_id = Some(client_id.into());
-        self
     }
 }
 
@@ -206,16 +197,6 @@ impl MqttTransport {
 
         // Configure TLS if using mqtts://
         if parsed.use_tls {
-            // Certificate pinning is not yet supported for MQTT due to rustls version
-            // differences between rumqttc (0.22) and our HTTP transport (0.23).
-            // Rather than silently downgrade security, we fail if pinning is configured.
-            if spec.cert_pin.is_some() {
-                return Err(TransportError::TlsConfig(format!(
-                    "Certificate pinning configured for {} but not yet supported for MQTT. \
-                     Remove the cert_pin configuration or use HTTP transport for pinned connections.",
-                    spec.url
-                )));
-            }
             // Use rumqttc's native rustls configuration with system roots
             options.set_transport(MqttTransportType::tls_with_default_config());
         }
@@ -510,10 +491,10 @@ mod tests {
     fn test_broker_spec_creation() {
         let spec = MqttBrokerSpec::new("mqtts://broker.example.com:8883");
         assert_eq!(spec.url, "mqtts://broker.example.com:8883");
-        assert!(spec.cert_pin.is_none());
         assert!(spec.client_id.is_none());
 
-        let spec = spec.with_client_id("my-client");
+        let spec = MqttBrokerSpec::with_client_id("mqtts://broker.example.com:8883", "my-client");
+        assert_eq!(spec.url, "mqtts://broker.example.com:8883");
         assert_eq!(spec.client_id, Some("my-client".to_string()));
     }
 }
