@@ -22,7 +22,7 @@
 
 use crate::seen_cache::SharedSeenCache;
 use crate::tls::CertPin;
-use crate::{Transport, TransportError, TransportEvent};
+use crate::{Transport, TransportError};
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
@@ -31,7 +31,6 @@ use reme_message::{OuterEnvelope, RoutingKey, TombstoneEnvelope, WirePayload};
 use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, Publish, QoS, Transport as MqttTransportType};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
 
 /// Default topic prefix for REME messages.
@@ -334,47 +333,9 @@ impl MqttTransport {
         &self.seen_cache
     }
 
-    /// Subscribe to all messages (wildcard).
-    ///
-    /// Returns a receiver for incoming messages.
-    /// Used by nodes to receive messages from all routing keys.
-    pub async fn subscribe_all(&self) -> Result<MqttSubscription, TransportError> {
-        let topic = format!("{}/messages/#", self.topic_prefix);
-        self.subscribe(&topic).await
-    }
-
-    /// Subscribe to messages for a specific routing key.
-    pub async fn subscribe_routing_key(
-        &self,
-        routing_key: &RoutingKey,
-    ) -> Result<MqttSubscription, TransportError> {
-        let topic = self.topic_for_routing_key(routing_key);
-        self.subscribe(&topic).await
-    }
-
-    /// Subscribe to a specific topic.
-    async fn subscribe(&self, topic: &str) -> Result<MqttSubscription, TransportError> {
-        if self.clients.is_empty() {
-            return Err(TransportError::Network("No MQTT brokers connected".to_string()));
-        }
-
-        // Subscribe on all brokers
-        for client in &self.clients {
-            client
-                .subscribe(topic, QoS::AtLeastOnce)
-                .await
-                .map_err(|e| TransportError::Network(e.to_string()))?;
-        }
-
-        debug!("Subscribed to MQTT topic: {}", topic);
-
-        // Create channel for events
-        let (tx, rx) = mpsc::unbounded_channel();
-
-        Ok(MqttSubscription {
-            rx,
-            _tx: tx, // Keep sender alive
-        })
+    /// Get the topic prefix.
+    pub fn topic_prefix(&self) -> &str {
+        &self.topic_prefix
     }
 }
 
@@ -408,19 +369,6 @@ struct ParsedMqttUrl {
     host: String,
     port: u16,
     use_tls: bool,
-}
-
-/// Subscription to MQTT messages.
-pub struct MqttSubscription {
-    rx: mpsc::UnboundedReceiver<TransportEvent>,
-    _tx: mpsc::UnboundedSender<TransportEvent>,
-}
-
-impl MqttSubscription {
-    /// Receive the next event.
-    pub async fn recv(&mut self) -> Option<TransportEvent> {
-        self.rx.recv().await
-    }
 }
 
 /// Parse a base64-encoded MQTT message payload into an OuterEnvelope.

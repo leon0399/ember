@@ -11,6 +11,8 @@ pub mod url_auth;
 
 #[cfg(feature = "mqtt")]
 pub mod mqtt;
+#[cfg(feature = "mqtt")]
+pub mod mqtt_receiver;
 
 pub use http::NodeSpec;
 pub use receiver::{MessageReceiver, ReceiverConfig, ReceiverHandle};
@@ -23,6 +25,8 @@ pub use url_auth::{parse_url_with_auth, ParsedUrl};
 
 #[cfg(feature = "mqtt")]
 pub use mqtt::{MqttBrokerSpec, MqttTransport};
+#[cfg(feature = "mqtt")]
+pub use mqtt_receiver::{MultiBrokerReceiver, MqttReceiver, MqttReceiverConfig, MqttReceiverHandle};
 
 #[derive(Debug, Error)]
 pub enum TransportError {
