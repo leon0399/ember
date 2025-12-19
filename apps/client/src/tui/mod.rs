@@ -42,14 +42,18 @@ pub async fn run(config: AppConfig) -> AppResult<()> {
 
     // Create app and run
     let mut app = App::new(config, identity).await?;
-    let res = app.run(&mut terminal).await;
+    let run_result = app.run(&mut terminal).await;
+
+    // Shutdown embedded node gracefully
+    let shutdown_result = app.shutdown().await;
 
     // Restore terminal
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
-    res
+    // Return the first error encountered, or Ok
+    run_result.and(shutdown_result)
 }
 
 /// Setup identity: load existing or create new (with optional password protection)

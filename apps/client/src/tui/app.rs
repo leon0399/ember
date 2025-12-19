@@ -6,12 +6,15 @@ use crate::tui::ui;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use ratatui::prelude::*;
-use reme_core::embedded::{EmbeddedClient, EmbeddedClientConfig};
+use reme_core::Client;
 use reme_identity::{Identity, PublicID};
 use reme_message::Content;
-use reme_node_core::NodeEvent;
+use reme_node_core::{
+    start_embedded_node, EmbeddedNodeConfig, EmbeddedNodeHandle, NodeEvent,
+};
 use reme_outbox::OutboxConfig;
-use reme_storage::UnifiedStorage;
+use reme_storage::{Storage, UnifiedStorage};
+use reme_transport::ChannelTransport;
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::net::SocketAddr;
@@ -178,8 +181,13 @@ pub struct App<'a> {
     pub input: TextArea<'a>,
     /// Status message
     pub status: String,
-    /// The messenger client with embedded node (uses channel transport internally)
-    client: EmbeddedClient,
+    /// The messenger client (uses channel transport to communicate with embedded node)
+    client: Client<ChannelTransport>,
+    /// Handle to the embedded node (for lifecycle management and event receiving)
+    node_handle: EmbeddedNodeHandle,
+    /// Shared storage (node mailbox + client state)
+    #[allow(dead_code)]
+    storage: Arc<UnifiedStorage>,
     /// Contacts by name (for reverse lookup)
     contacts_by_id: HashMap<PublicID, String>,
     /// In-memory message cache per contact (until storage retrieval is implemented)
@@ -231,21 +239,41 @@ impl<'a> App<'a> {
             ..OutboxConfig::default()
         };
 
-        // Configure embedded client with node settings
-        let embedded_config = EmbeddedClientConfig {
-            peers: config.node.peers.clone(),
-            http_bind_addr,
-            outbox_config,
-            ..EmbeddedClientConfig::default()
-        };
+        // Get the routing key for this identity (node will monitor for incoming messages)
+        let routing_key = identity.public_id().routing_key();
 
-        // Create embedded client (starts embedded node automatically)
-        let client = EmbeddedClient::new(identity, storage, embedded_config).await?;
+        // Configure and start the embedded node
+        let node_config = EmbeddedNodeConfig {
+            max_messages_per_mailbox: 1000,
+            default_ttl_secs: 7 * 24 * 60 * 60, // 7 days
+            peers: config.node.peers.clone(),
+            node_id: uuid::Uuid::new_v4().to_string(),
+            http_bind_addr,
+            monitored_routing_keys: vec![routing_key],
+        };
+        let node_handle = start_embedded_node(storage.clone(), node_config).await?;
 
         // Log HTTP server address if enabled
-        if let Some(addr) = client.http_addr() {
+        if let Some(addr) = node_handle.http_addr() {
             info!("Embedded node HTTP server listening on {}", addr);
         }
+
+        // Create channel transport for communication with the embedded node
+        let channel_transport = ChannelTransport::new(node_handle.request_sender());
+
+        // Create client storage (separate from node storage for now)
+        // TODO: Make Client generic over storage type to share UnifiedStorage
+        let client_storage = Storage::in_memory()?;
+
+        // Create the messaging client with channel transport
+        let client = Client::with_config(
+            identity,
+            Arc::new(channel_transport),
+            client_storage,
+            outbox_config,
+        );
+
+        info!("Embedded client started");
 
         // Store tick interval from config
         let outbox_tick_interval = Duration::from_secs(config.outbox.tick_interval_secs);
@@ -265,6 +293,8 @@ impl<'a> App<'a> {
             input,
             status: HELP_HINT.to_string(),
             client,
+            node_handle,
+            storage,
             contacts_by_id: HashMap::new(),
             message_cache: HashMap::new(),
             show_add_contact_popup: false,
@@ -330,7 +360,7 @@ impl<'a> App<'a> {
             // Use tokio::select! to handle multiple event sources concurrently
             tokio::select! {
                 // Handle push notifications from embedded node
-                Some(node_event) = self.client.event_receiver().recv() => {
+                Some(node_event) = self.node_handle.event_rx.recv() => {
                     match node_event {
                         NodeEvent::MessageReceived(envelope) => {
                             match self.client.process_message(&envelope).await {
@@ -391,6 +421,17 @@ impl<'a> App<'a> {
             }
         }
 
+        Ok(())
+    }
+
+    /// Shutdown the embedded node gracefully.
+    pub async fn shutdown(self) -> AppResult<()> {
+        info!("Shutting down embedded node...");
+        self.node_handle
+            .shutdown()
+            .await
+            .map_err(|e| format!("Failed to shutdown node: {}", e))?;
+        info!("Embedded node shutdown complete");
         Ok(())
     }
 
