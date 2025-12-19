@@ -1834,6 +1834,7 @@ dependencies = [
  "http",
  "reme-identity",
  "reme-message",
+ "reme-node-core",
  "reme-transport",
  "reqwest",
  "rusqlite",
