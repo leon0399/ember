@@ -209,16 +209,16 @@ async fn main() {
     let app = api::router(state, rate_limiters.as_ref());
 
     // Start server with connect info for IP extraction
-    let addr = match resolve_bind_addr(&config.bind_addr).await {
-        Ok(addr) => addr,
-        Err(e) => {
-            error!("{}", e);
-            std::process::exit(1);
-        }
-    };
-
     if config.tls.enabled {
-        // TLS mode
+        // TLS mode - requires a single SocketAddr
+        let addr = match resolve_bind_addr(&config.bind_addr).await {
+            Ok(addr) => addr,
+            Err(e) => {
+                error!("{}", e);
+                std::process::exit(1);
+            }
+        };
+
         let Some(cert_path) = config.tls.cert_path.as_ref() else {
             error!("TLS enabled but tls.cert_path not set. Provide --tls-cert or set tls.cert_path in config.");
             std::process::exit(1);
@@ -251,18 +251,25 @@ async fn main() {
             std::process::exit(1);
         }
     } else {
-        // Plain HTTP mode
+        // Plain HTTP mode - bind directly to the address string to allow
+        // TcpListener to try all resolved addresses (e.g., both IPv4 and IPv6)
         info!("TLS: disabled (use --tls-enabled to enable HTTPS)");
 
-        let listener = match tokio::net::TcpListener::bind(addr).await {
+        let listener = match tokio::net::TcpListener::bind(&config.bind_addr).await {
             Ok(l) => l,
             Err(e) => {
-                error!("Failed to bind address: {}", e);
+                error!("Failed to bind to '{}': {}", config.bind_addr, e);
                 std::process::exit(1);
             }
         };
 
-        info!("Node listening on http://{}", addr);
+        let local_addr = listener.local_addr().unwrap_or_else(|_| {
+            // Fallback: parse the config address for logging
+            config.bind_addr.parse().unwrap_or_else(|_| {
+                SocketAddr::from(([127, 0, 0, 1], 23003))
+            })
+        });
+        info!("Node listening on http://{}", local_addr);
 
         if let Err(e) = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await {
             error!("Server failed: {}", e);
