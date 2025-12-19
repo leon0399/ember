@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 use reme_identity::{InvalidPublicKey, PublicID};
 use reme_message::{Content, ContentId, MessageID, OuterEnvelope, RoutingKey};
-use reme_node_core::{MailboxStorage, StorageError as NodeStorageError};
+use crate::mailbox::{MailboxStorage, MailboxStorageError};
 use reme_outbox::{
     AttemptError, AttemptResult, DeliveryConfirmation, OutboxEntryId, OutboxStore, PendingMessage,
     TransportAttempt,
@@ -44,18 +44,18 @@ pub enum UnifiedStorageError {
     MailboxFull,
 }
 
-impl From<UnifiedStorageError> for NodeStorageError {
+impl From<UnifiedStorageError> for MailboxStorageError {
     fn from(e: UnifiedStorageError) -> Self {
         match e {
-            UnifiedStorageError::Database(e) => NodeStorageError::Database(e.to_string()),
-            UnifiedStorageError::Serialization(msg) => NodeStorageError::Serialization(msg),
-            UnifiedStorageError::InvalidPublicKey(e) => NodeStorageError::Database(e.to_string()),
-            UnifiedStorageError::NotFound => NodeStorageError::Database("Not found".to_string()),
+            UnifiedStorageError::Database(e) => MailboxStorageError::Database(e.to_string()),
+            UnifiedStorageError::Serialization(msg) => MailboxStorageError::Serialization(msg),
+            UnifiedStorageError::InvalidPublicKey(e) => MailboxStorageError::Database(e.to_string()),
+            UnifiedStorageError::NotFound => MailboxStorageError::Database("Not found".to_string()),
             UnifiedStorageError::AlreadyExists => {
-                NodeStorageError::Database("Already exists".to_string())
+                MailboxStorageError::Database("Already exists".to_string())
             }
-            UnifiedStorageError::LockPoisoned => NodeStorageError::LockPoisoned,
-            UnifiedStorageError::MailboxFull => NodeStorageError::MailboxFull,
+            UnifiedStorageError::LockPoisoned => MailboxStorageError::LockPoisoned,
+            UnifiedStorageError::MailboxFull => MailboxStorageError::MailboxFull,
         }
     }
 }
@@ -415,7 +415,7 @@ impl MailboxStorage for UnifiedStorage {
         &self,
         routing_key: RoutingKey,
         envelope: OuterEnvelope,
-    ) -> Result<(), NodeStorageError> {
+    ) -> Result<(), MailboxStorageError> {
         let now = Self::now_secs();
         let ttl_secs = envelope
             .ttl_hours
@@ -424,25 +424,25 @@ impl MailboxStorage for UnifiedStorage {
         let expires_at = now + ttl_secs;
 
         let envelope_data = Self::serialize_envelope(&envelope)
-            .map_err(|e| NodeStorageError::Serialization(e.to_string()))?;
+            .map_err(|e| MailboxStorageError::Serialization(e.to_string()))?;
         let message_id_bytes = envelope.message_id.as_bytes();
 
         let conn = self
             .conn
             .lock()
-            .map_err(|_| NodeStorageError::LockPoisoned)?;
+            .map_err(|_| MailboxStorageError::LockPoisoned)?;
 
         // Use transaction for atomicity
         conn.execute("BEGIN IMMEDIATE", [])
-            .map_err(|e| NodeStorageError::Database(e.to_string()))?;
+            .map_err(|e| MailboxStorageError::Database(e.to_string()))?;
 
-        let result = (|| -> Result<(), NodeStorageError> {
+        let result = (|| -> Result<(), MailboxStorageError> {
             // Clean up expired messages for this routing key
             conn.execute(
                 "DELETE FROM mailbox_messages WHERE routing_key = ? AND expires_at <= ?",
                 params![&routing_key[..], now as i64],
             )
-            .map_err(|e| NodeStorageError::Database(e.to_string()))?;
+            .map_err(|e| MailboxStorageError::Database(e.to_string()))?;
 
             // Check capacity
             let count: i64 = conn
@@ -451,11 +451,11 @@ impl MailboxStorage for UnifiedStorage {
                     params![&routing_key[..]],
                     |row| row.get(0),
                 )
-                .map_err(|e| NodeStorageError::Database(e.to_string()))?;
+                .map_err(|e| MailboxStorageError::Database(e.to_string()))?;
 
             if count as usize >= Self::MAX_MESSAGES_PER_MAILBOX {
                 warn!(routing_key = ?&routing_key[..4], count = count, "mailbox full");
-                return Err(NodeStorageError::MailboxFull);
+                return Err(MailboxStorageError::MailboxFull);
             }
 
             // Insert message
@@ -471,7 +471,7 @@ impl MailboxStorage for UnifiedStorage {
                     now as i64
                 ],
             )
-            .map_err(|e| NodeStorageError::Database(e.to_string()))?;
+            .map_err(|e| MailboxStorageError::Database(e.to_string()))?;
 
             Ok(())
         })();
@@ -479,7 +479,7 @@ impl MailboxStorage for UnifiedStorage {
         match result {
             Ok(()) => {
                 conn.execute("COMMIT", [])
-                    .map_err(|e| NodeStorageError::Database(e.to_string()))?;
+                    .map_err(|e| MailboxStorageError::Database(e.to_string()))?;
                 trace!(
                     routing_key = ?&routing_key[..4],
                     message_id = ?envelope.message_id,
@@ -497,13 +497,13 @@ impl MailboxStorage for UnifiedStorage {
     async fn mailbox_fetch(
         &self,
         routing_key: &RoutingKey,
-    ) -> Result<Vec<OuterEnvelope>, NodeStorageError> {
+    ) -> Result<Vec<OuterEnvelope>, MailboxStorageError> {
         let now = Self::now_secs();
 
         let conn = self
             .conn
             .lock()
-            .map_err(|_| NodeStorageError::LockPoisoned)?;
+            .map_err(|_| MailboxStorageError::LockPoisoned)?;
 
         let mut stmt = conn
             .prepare(
@@ -511,18 +511,18 @@ impl MailboxStorage for UnifiedStorage {
                  WHERE routing_key = ? AND expires_at > ?
                  ORDER BY created_at ASC",
             )
-            .map_err(|e| NodeStorageError::Database(e.to_string()))?;
+            .map_err(|e| MailboxStorageError::Database(e.to_string()))?;
 
         let rows = stmt
             .query_map(params![&routing_key[..], now as i64], |row| {
                 let data: Vec<u8> = row.get(0)?;
                 Ok(data)
             })
-            .map_err(|e| NodeStorageError::Database(e.to_string()))?;
+            .map_err(|e| MailboxStorageError::Database(e.to_string()))?;
 
         let mut envelopes = Vec::new();
         for row in rows {
-            let data = row.map_err(|e| NodeStorageError::Database(e.to_string()))?;
+            let data = row.map_err(|e| MailboxStorageError::Database(e.to_string()))?;
             match Self::deserialize_envelope(&data) {
                 Ok(envelope) => envelopes.push(envelope),
                 Err(e) => warn!(error = %e, "failed to deserialize envelope, skipping"),
@@ -542,14 +542,14 @@ impl MailboxStorage for UnifiedStorage {
         &self,
         routing_key: &RoutingKey,
         message_id: &MessageID,
-    ) -> Result<bool, NodeStorageError> {
+    ) -> Result<bool, MailboxStorageError> {
         let now = Self::now_secs();
         let message_id_bytes = message_id.as_bytes();
 
         let conn = self
             .conn
             .lock()
-            .map_err(|_| NodeStorageError::LockPoisoned)?;
+            .map_err(|_| MailboxStorageError::LockPoisoned)?;
 
         let exists: bool = conn
             .query_row(
@@ -559,7 +559,7 @@ impl MailboxStorage for UnifiedStorage {
                 |_| Ok(true),
             )
             .optional()
-            .map_err(|e| NodeStorageError::Database(e.to_string()))?
+            .map_err(|e| MailboxStorageError::Database(e.to_string()))?
             .unwrap_or(false);
 
         Ok(exists)
@@ -569,38 +569,38 @@ impl MailboxStorage for UnifiedStorage {
         &self,
         _routing_key: &RoutingKey,
         message_id: &MessageID,
-    ) -> Result<bool, NodeStorageError> {
+    ) -> Result<bool, MailboxStorageError> {
         let message_id_bytes = message_id.as_bytes();
 
         let conn = self
             .conn
             .lock()
-            .map_err(|_| NodeStorageError::LockPoisoned)?;
+            .map_err(|_| MailboxStorageError::LockPoisoned)?;
 
         let deleted = conn
             .execute(
                 "DELETE FROM mailbox_messages WHERE message_id = ?",
                 params![&message_id_bytes[..]],
             )
-            .map_err(|e| NodeStorageError::Database(e.to_string()))?;
+            .map_err(|e| MailboxStorageError::Database(e.to_string()))?;
 
         Ok(deleted > 0)
     }
 
-    async fn mailbox_cleanup_expired(&self) -> Result<usize, NodeStorageError> {
+    async fn mailbox_cleanup_expired(&self) -> Result<usize, MailboxStorageError> {
         let now = Self::now_secs();
 
         let conn = self
             .conn
             .lock()
-            .map_err(|_| NodeStorageError::LockPoisoned)?;
+            .map_err(|_| MailboxStorageError::LockPoisoned)?;
 
         let deleted = conn
             .execute(
                 "DELETE FROM mailbox_messages WHERE expires_at <= ?",
                 params![now as i64],
             )
-            .map_err(|e| NodeStorageError::Database(e.to_string()))?;
+            .map_err(|e| MailboxStorageError::Database(e.to_string()))?;
 
         if deleted > 0 {
             debug!(deleted = deleted, "expired mailbox messages cleaned up");

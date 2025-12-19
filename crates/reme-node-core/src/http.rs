@@ -6,7 +6,7 @@
 //! - GET /api/v1/health - Health check
 
 use crate::replication::FROM_NODE_HEADER;
-use crate::storage::MailboxStorage;
+use reme_storage::MailboxStorage;
 use crate::NodeEvent;
 use axum::{
     body::Bytes,

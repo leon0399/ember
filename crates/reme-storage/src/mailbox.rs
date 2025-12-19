@@ -1,14 +1,14 @@
 //! Storage trait for mailbox operations.
 //!
 //! The `MailboxStorage` trait abstracts storage operations, allowing
-//! the embedded node to work with different storage backends.
+//! embedded nodes to work with different storage backends.
 
 use async_trait::async_trait;
 use reme_message::{MessageID, OuterEnvelope, RoutingKey};
 
-/// Error type for storage operations.
+/// Error type for mailbox storage operations.
 #[derive(Debug, Clone, thiserror::Error)]
-pub enum StorageError {
+pub enum MailboxStorageError {
     /// Database or I/O error.
     #[error("Database error: {0}")]
     Database(String),
@@ -40,19 +40,22 @@ pub trait MailboxStorage {
         &self,
         routing_key: RoutingKey,
         envelope: OuterEnvelope,
-    ) -> Result<(), StorageError>;
+    ) -> Result<(), MailboxStorageError>;
 
     /// Fetch all messages for a routing key.
     ///
     /// This does NOT delete messages - use `mailbox_delete_message` for that.
-    async fn mailbox_fetch(&self, routing_key: &RoutingKey) -> Result<Vec<OuterEnvelope>, StorageError>;
+    async fn mailbox_fetch(
+        &self,
+        routing_key: &RoutingKey,
+    ) -> Result<Vec<OuterEnvelope>, MailboxStorageError>;
 
     /// Check if a message with the given ID exists.
     async fn mailbox_has_message(
         &self,
         routing_key: &RoutingKey,
         message_id: &MessageID,
-    ) -> Result<bool, StorageError>;
+    ) -> Result<bool, MailboxStorageError>;
 
     /// Delete a specific message by routing key and message ID.
     ///
@@ -61,10 +64,10 @@ pub trait MailboxStorage {
         &self,
         routing_key: &RoutingKey,
         message_id: &MessageID,
-    ) -> Result<bool, StorageError>;
+    ) -> Result<bool, MailboxStorageError>;
 
     /// Cleanup expired messages across all mailboxes.
     ///
     /// Returns the number of messages deleted.
-    async fn mailbox_cleanup_expired(&self) -> Result<usize, StorageError>;
+    async fn mailbox_cleanup_expired(&self) -> Result<usize, MailboxStorageError>;
 }

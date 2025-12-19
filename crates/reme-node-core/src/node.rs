@@ -8,7 +8,7 @@
 
 use reme_transport::{NodeError, NodeEvent, NodeRequest, EVENT_CHANNEL_SIZE, REQUEST_CHANNEL_SIZE};
 use crate::replication::ReplicationClient;
-use crate::storage::MailboxStorage;
+use reme_storage::MailboxStorage;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use reme_message::{OuterEnvelope, RoutingKey, WirePayload};

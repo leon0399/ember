@@ -8,8 +8,10 @@ use rusqlite::{params, Connection, OptionalExtension};
 use thiserror::Error;
 use tracing::{debug, trace};
 
+pub mod mailbox;
 pub mod unified;
 
+pub use mailbox::{MailboxStorage, MailboxStorageError};
 pub use unified::{UnifiedStorage, UnifiedStorageError};
 
 #[derive(Debug, Error)]

@@ -6,6 +6,7 @@ description = "Core node functionality for resilient messenger"
 
 [dependencies]
 reme-message = { workspace = true }
+reme-storage = { workspace = true }
 reme-transport = { workspace = true }
 
 # Error handling

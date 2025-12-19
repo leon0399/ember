@@ -41,7 +41,6 @@
 pub mod http;
 pub mod node;
 pub mod replication;
-pub mod storage;
 
 // Re-export channel types from reme-transport (canonical location)
 pub use reme_transport::{
@@ -51,4 +50,6 @@ pub use reme_transport::{
 // Re-export main types for convenience
 pub use node::{start_embedded_node, EmbeddedNode, EmbeddedNodeConfig, EmbeddedNodeHandle};
 pub use replication::{ReplicationClient, FROM_NODE_HEADER};
-pub use storage::{MailboxStorage, StorageError};
+
+// Re-export storage types from reme-storage
+pub use reme_storage::{MailboxStorage, MailboxStorageError};

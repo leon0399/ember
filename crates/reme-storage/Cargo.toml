@@ -7,7 +7,6 @@ edition = "2021"
 reme-identity = { workspace = true }
 reme-message = { workspace = true }
 reme-outbox = { workspace = true }
-reme-node-core = { workspace = true }
 
 rusqlite = { version = "0.32", features = ["bundled"] }
 thiserror = { workspace = true }
