@@ -19,6 +19,7 @@
 //! - `REME_NODE_TLS_ENABLED` - Enable TLS/HTTPS (true/false)
 //! - `REME_NODE_TLS_CERT` - Path to PEM certificate file
 //! - `REME_NODE_TLS_KEY` - Path to PEM private key file
+//! - `REME_NODE_MQTT_BROKERS` - JSON array of MQTT broker configs
 //!
 //! ## Config File
 //!
@@ -36,6 +37,14 @@
 //! enabled = true
 //! cert_path = "/etc/reme/cert.pem"
 //! key_path = "/etc/reme/key.pem"
+//!
+//! # MQTT bridge configuration (enabled when brokers are configured)
+//! [mqtt]
+//! topic_prefix = "reme/v1"  # Optional, defaults to "reme/v1"
+//!
+//! [[mqtt.brokers]]
+//! url = "mqtts://broker.example.com:8883"
+//! cert_pin = "spki//sha256/abc..."  # Optional
 //! ```
 
 use crate::cleanup::CleanupConfig;
@@ -110,6 +119,48 @@ impl Default for TlsConfig {
             cert_path: None,
             key_path: None,
         }
+    }
+}
+
+/// MQTT broker configuration for the bridge
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MqttBrokerConfig {
+    /// MQTT broker URL (e.g., "mqtts://broker.example.com:8883")
+    pub url: String,
+    /// Optional certificate pin for TLS verification
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cert_pin: Option<String>,
+    /// Optional client ID (auto-generated if not specified)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+}
+
+/// MQTT bridge configuration for nodes
+///
+/// The MQTT bridge is enabled automatically when brokers are configured.
+/// When enabled, the node will:
+/// - Subscribe to `{topic_prefix}/messages/#` to receive messages from MQTT
+/// - Publish received HTTP messages to MQTT brokers
+/// - Use message ID deduplication to prevent loops
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct MqttBridgeConfig {
+    /// MQTT brokers to connect to (bridge enabled if non-empty)
+    #[serde(default)]
+    pub brokers: Vec<MqttBrokerConfig>,
+    /// Topic prefix (default: "reme/v1")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic_prefix: Option<String>,
+}
+
+impl MqttBridgeConfig {
+    /// Returns true if MQTT bridge should be enabled (has brokers configured)
+    pub fn is_enabled(&self) -> bool {
+        !self.brokers.is_empty()
+    }
+
+    /// Get the topic prefix, using default if not specified
+    pub fn topic_prefix(&self) -> &str {
+        self.topic_prefix.as_deref().unwrap_or("reme/v1")
     }
 }
 
@@ -259,6 +310,21 @@ pub struct CliArgs {
     /// Path to PEM-encoded TLS private key file
     #[arg(long, env = "REME_NODE_TLS_KEY")]
     pub tls_key: Option<PathBuf>,
+
+    // MQTT bridge configuration
+    /// MQTT broker URLs (comma-separated, enables MQTT bridge)
+    /// Example: mqtts://broker1:8883,mqtts://broker2:8883
+    #[arg(long, env = "REME_NODE_MQTT_BROKER", value_delimiter = ',')]
+    pub mqtt_broker: Option<Vec<String>>,
+
+    /// MQTT broker certificate pins (comma-separated, matched with mqtt_broker)
+    /// Example: spki//sha256/abc...,spki//sha256/def...
+    #[arg(long, env = "REME_NODE_MQTT_CERT_PIN", value_delimiter = ',')]
+    pub mqtt_cert_pin: Option<Vec<String>>,
+
+    /// MQTT topic prefix (default: reme/v1)
+    #[arg(long, env = "REME_NODE_MQTT_TOPIC_PREFIX")]
+    pub mqtt_topic_prefix: Option<String>,
 }
 
 /// Final resolved configuration
@@ -307,6 +373,10 @@ pub struct NodeConfig {
     /// TLS configuration
     #[serde(default)]
     pub tls: TlsConfig,
+
+    /// MQTT bridge configuration
+    #[serde(default)]
+    pub mqtt: MqttBridgeConfig,
 }
 
 impl Default for NodeConfig {
@@ -325,6 +395,7 @@ impl Default for NodeConfig {
             auth_password: None,
             rate_limit: RateLimitConfig::default(),
             tls: TlsConfig::default(),
+            mqtt: MqttBridgeConfig::default(),
         }
     }
 }
@@ -338,6 +409,16 @@ fn default_config_path() -> Option<PathBuf> {
 /// Prevents negative config values from wrapping to huge u32 values.
 fn i64_to_u32_clamped(v: i64) -> u32 {
     v.max(0) as u32
+}
+
+/// Safely convert i64 to u64, clamping negative values to 0.
+fn i64_to_u64_clamped(v: i64) -> u64 {
+    v.max(0) as u64
+}
+
+/// Safely convert i64 to usize, clamping negative values to 0.
+fn i64_to_usize_clamped(v: i64) -> usize {
+    v.max(0) as usize
 }
 
 /// Load configuration from all sources with proper layering
@@ -422,15 +503,15 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
 
     let config = builder.build()?;
 
-    // Extract values
+    // Extract values (using clamped conversions to prevent negative values wrapping)
     let bind_addr: String = config.get("bind_addr").unwrap_or(defaults.bind_addr);
     let max_messages: usize = config
         .get::<i64>("max_messages")
-        .map(|v| v as usize)
+        .map(i64_to_usize_clamped)
         .unwrap_or(defaults.max_messages);
     let default_ttl: u32 = config
         .get::<i64>("default_ttl")
-        .map(|v| v as u32)
+        .map(i64_to_u32_clamped)
         .unwrap_or(defaults.default_ttl);
     let log_level: String = config.get("log_level").unwrap_or(defaults.log_level);
     let node_id: String = config.get("node_id").unwrap_or(defaults.node_id);
@@ -438,26 +519,26 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         .get::<Vec<String>>("peers")
         .unwrap_or(defaults.peers);
 
-    // Extract cleanup config
+    // Extract cleanup config (using clamped conversions for safety)
     let cleanup = CleanupConfig {
         enabled: config
             .get::<bool>("cleanup.enabled")
             .unwrap_or(defaults.cleanup.enabled),
         interval_secs: config
             .get::<i64>("cleanup.interval_secs")
-            .map(|v| v as u64)
+            .map(i64_to_u64_clamped)
             .unwrap_or(defaults.cleanup.interval_secs),
         tombstone_delay_secs: config
             .get::<i64>("cleanup.tombstone_delay_secs")
-            .map(|v| v as u64)
+            .map(i64_to_u64_clamped)
             .unwrap_or(defaults.cleanup.tombstone_delay_secs),
         orphan_delay_secs: config
             .get::<i64>("cleanup.orphan_delay_secs")
-            .map(|v| v as u64)
+            .map(i64_to_u64_clamped)
             .unwrap_or(defaults.cleanup.orphan_delay_secs),
         rate_limit_delay_secs: config
             .get::<i64>("cleanup.rate_limit_delay_secs")
-            .map(|v| v as u64)
+            .map(i64_to_u64_clamped)
             .unwrap_or(defaults.cleanup.rate_limit_delay_secs),
     };
 
@@ -563,6 +644,37 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         tls.key_path = Some(path.clone());
     }
 
+    // Extract MQTT bridge config from file/env
+    let mqtt_brokers_from_config: Vec<MqttBrokerConfig> = config
+        .get::<Vec<MqttBrokerConfig>>("mqtt.brokers")
+        .unwrap_or_default();
+    let mqtt_topic_prefix_from_config: Option<String> = config.get("mqtt.topic_prefix").ok();
+
+    // Build MQTT config, applying CLI overrides
+    let mqtt = if let Some(ref broker_urls) = cli.mqtt_broker {
+        // CLI brokers override file config entirely
+        let cert_pins = cli.mqtt_cert_pin.clone().unwrap_or_default();
+        let brokers: Vec<MqttBrokerConfig> = broker_urls
+            .iter()
+            .enumerate()
+            .map(|(i, url)| MqttBrokerConfig {
+                url: url.clone(),
+                cert_pin: cert_pins.get(i).cloned(),
+                client_id: None,
+            })
+            .collect();
+        MqttBridgeConfig {
+            brokers,
+            topic_prefix: cli.mqtt_topic_prefix.clone().or(mqtt_topic_prefix_from_config),
+        }
+    } else {
+        // Use file/env config
+        MqttBridgeConfig {
+            brokers: mqtt_brokers_from_config,
+            topic_prefix: cli.mqtt_topic_prefix.clone().or(mqtt_topic_prefix_from_config),
+        }
+    };
+
     Ok(NodeConfig {
         bind_addr,
         max_messages,
@@ -576,6 +688,7 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         auth_password,
         rate_limit,
         tls,
+        mqtt,
     })
 }
 

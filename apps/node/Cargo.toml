@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 reme-message = { workspace = true }
-reme-transport = { workspace = true }
+reme-transport = { workspace = true, features = ["mqtt"] }
 
 # storage
 rusqlite = { version = "0.32", features = ["bundled"] }

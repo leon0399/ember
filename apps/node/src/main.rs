@@ -43,6 +43,7 @@
 mod api;
 mod cleanup;
 mod config;
+mod mqtt_bridge;
 mod persistent_store;
 mod rate_limit;
 mod replication;
@@ -50,6 +51,7 @@ mod replication;
 use api::AppState;
 use cleanup::run_cleanup_task;
 use config::{load_config, NodeConfig};
+use mqtt_bridge::MqttBridge;
 use persistent_store::{PersistentMailboxStore, PersistentStoreConfig};
 use rate_limit::RateLimiters;
 use replication::ReplicationClient;
@@ -195,6 +197,33 @@ async fn main() {
         None
     };
 
+    // Create MQTT bridge if configured
+    let mqtt_bridge = match MqttBridge::new(&config.mqtt).await {
+        Ok(Some(bridge)) => {
+            info!("MQTT bridge: enabled");
+            Some(Arc::new(bridge))
+        }
+        Ok(None) => {
+            info!("MQTT bridge: disabled (no brokers configured)");
+            None
+        }
+        Err(e) => {
+            error!("Failed to create MQTT bridge: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Spawn MQTT subscriber task if bridge is configured
+    if let Some(ref bridge) = mqtt_bridge {
+        let bridge = bridge.clone();
+        let subscriber_store = Arc::clone(&store);
+        tokio::spawn(async move {
+            if let Err(e) = bridge.run_subscriber(subscriber_store).await {
+                error!("MQTT subscriber error: {}", e);
+            }
+        });
+    }
+
     // Create app state (submit_key_limiter is moved out of rate_limiters for AppState)
     let submit_key_limiter = rate_limiters.as_ref().and_then(|r| r.submit_key.clone());
 
@@ -203,6 +232,7 @@ async fn main() {
         replication,
         auth,
         submit_key_limiter,
+        mqtt_bridge,
     });
 
     // Create router with rate limiting
