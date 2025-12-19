@@ -165,6 +165,17 @@ impl Default for OutboxAppConfig {
     }
 }
 
+/// Target kind: stable (mailboxes, configured peers) or ephemeral (discovered peers).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TargetKindConfig {
+    /// Stable targets with aggressive retry (mailboxes, configured peers).
+    #[default]
+    Stable,
+    /// Ephemeral targets with quick give-up (discovered peers via DHT/mDNS).
+    Ephemeral,
+}
+
 /// HTTP endpoint configuration with optional certificate pinning
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct HttpEndpoint {
@@ -175,6 +186,15 @@ pub struct HttpEndpoint {
     /// Format: `spki//sha256/<base64>` or `cert//sha256/<base64>`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cert_pin: Option<String>,
+    /// Target kind: "stable" (default) or "ephemeral"
+    #[serde(default)]
+    pub kind: TargetKindConfig,
+    /// Priority (higher = preferred). Default: 100 for stable, 200 for ephemeral.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<u8>,
+    /// Optional human-readable label for this endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 impl HttpEndpoint {
@@ -183,6 +203,9 @@ impl HttpEndpoint {
         Self {
             url: url.into(),
             cert_pin: None,
+            kind: TargetKindConfig::default(),
+            priority: None,
+            label: None,
         }
     }
 
@@ -191,7 +214,28 @@ impl HttpEndpoint {
         Self {
             url: url.into(),
             cert_pin: Some(cert_pin.into()),
+            kind: TargetKindConfig::default(),
+            priority: None,
+            label: None,
         }
+    }
+
+    /// Set the target kind.
+    pub fn with_kind(mut self, kind: TargetKindConfig) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// Set the priority.
+    pub fn with_priority(mut self, priority: u8) -> Self {
+        self.priority = Some(priority);
+        self
+    }
+
+    /// Set the label.
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
     }
 }
 
@@ -206,6 +250,15 @@ pub struct MqttBroker {
     /// Optional custom client ID (auto-generated if not specified)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
+    /// Topic prefix for messages (default: "reme/v1")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic_prefix: Option<String>,
+    /// Priority (higher = preferred). Default: 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<u8>,
+    /// Optional human-readable label for this broker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 impl MqttBroker {
@@ -214,6 +267,9 @@ impl MqttBroker {
         Self {
             url: url.into(),
             client_id: None,
+            topic_prefix: None,
+            priority: None,
+            label: None,
         }
     }
 
@@ -222,7 +278,28 @@ impl MqttBroker {
         Self {
             url: url.into(),
             client_id: Some(client_id.into()),
+            topic_prefix: None,
+            priority: None,
+            label: None,
         }
+    }
+
+    /// Set the topic prefix.
+    pub fn with_topic_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.topic_prefix = Some(prefix.into());
+        self
+    }
+
+    /// Set the priority.
+    pub fn with_priority(mut self, priority: u8) -> Self {
+        self.priority = Some(priority);
+        self
+    }
+
+    /// Set the label.
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
     }
 }
 
@@ -407,6 +484,9 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
             .map(|(i, url)| HttpEndpoint {
                 url,
                 cert_pin: pins.get(i).cloned(),
+                kind: TargetKindConfig::default(),
+                priority: None,
+                label: None,
             })
             .collect()
     } else if let Some(env_http) = parse_http_from_env() {
@@ -440,6 +520,9 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
             .map(|(i, url)| MqttBroker {
                 url,
                 client_id: client_ids.get(i).cloned(),
+                topic_prefix: None,
+                priority: None,
+                label: None,
             })
             .collect()
     } else if let Some(env_mqtt) = parse_mqtt_from_env() {
