@@ -4,6 +4,7 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 
 pub mod composite;
+pub mod coordinator;
 pub mod http;
 pub mod http_target;
 pub mod pool;
@@ -29,6 +30,9 @@ pub use target::{
     HealthState, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget,
 };
 pub use pool::{PoolConfig, PoolStrategy, TransportPool};
+pub use coordinator::{
+    CoordinatorConfig, CoordinatorHandle, CoordinatorHealth, RoutingStrategy, TransportCoordinator,
+};
 pub use tls::{
     build_pinning_config, build_pinning_config_single, CertPin, PinParseError, PinningVerifier,
     VerifierBuildError,
