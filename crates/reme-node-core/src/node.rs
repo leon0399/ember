@@ -6,7 +6,7 @@
 //! - Replicating to peer nodes
 //! - Pushing incoming messages to the client
 
-use crate::channel::{NodeError, NodeEvent, NodeRequest, EVENT_CHANNEL_SIZE, REQUEST_CHANNEL_SIZE};
+use reme_transport::{NodeError, NodeEvent, NodeRequest, EVENT_CHANNEL_SIZE, REQUEST_CHANNEL_SIZE};
 use crate::replication::ReplicationClient;
 use crate::storage::MailboxStorage;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;

@@ -38,13 +38,16 @@
 //! handle.shutdown().await?;
 //! ```
 
-pub mod channel;
 pub mod node;
 pub mod replication;
 pub mod storage;
 
+// Re-export channel types from reme-transport (canonical location)
+pub use reme_transport::{
+    NodeError, NodeEvent, NodeRequest, EVENT_CHANNEL_SIZE, REQUEST_CHANNEL_SIZE,
+};
+
 // Re-export main types for convenience
-pub use channel::{NodeError, NodeEvent, NodeRequest, EVENT_CHANNEL_SIZE, REQUEST_CHANNEL_SIZE};
 pub use node::{start_embedded_node, EmbeddedNode, EmbeddedNodeConfig, EmbeddedNodeHandle};
 pub use replication::{ReplicationClient, FROM_NODE_HEADER};
 pub use storage::{MailboxStorage, StorageError};

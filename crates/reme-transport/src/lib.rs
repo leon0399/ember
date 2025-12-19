@@ -3,6 +3,7 @@ use reme_message::{OuterEnvelope, TombstoneEnvelope};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
+pub mod channel;
 pub mod composite;
 pub mod http;
 pub mod receiver;
@@ -15,6 +16,9 @@ pub mod mqtt;
 #[cfg(feature = "mqtt")]
 pub mod mqtt_receiver;
 
+pub use channel::{
+    ChannelTransport, NodeError, NodeEvent, NodeRequest, EVENT_CHANNEL_SIZE, REQUEST_CHANNEL_SIZE,
+};
 pub use composite::CompositeTransport;
 pub use http::NodeSpec;
 pub use receiver::{MessageReceiver, ReceiverConfig, ReceiverHandle};
