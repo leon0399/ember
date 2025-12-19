@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 pub mod composite;
 pub mod http;
 pub mod http_target;
+pub mod pool;
 pub mod receiver;
 pub mod seen_cache;
 pub mod target;
@@ -25,6 +26,7 @@ pub use seen_cache::{SeenCache, SharedSeenCache};
 pub use target::{
     HealthState, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget,
 };
+pub use pool::{PoolConfig, PoolStrategy, TransportPool};
 pub use tls::{
     build_pinning_config, build_pinning_config_single, CertPin, PinParseError, PinningVerifier,
     VerifierBuildError,
