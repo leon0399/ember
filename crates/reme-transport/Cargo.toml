@@ -21,6 +21,11 @@ tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true }
 futures = { workspace = true }
 
+# MQTT implementation
+rumqttc = { version = "0.24", features = ["use-rustls"], optional = true }
+hex = { version = "0.4", optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+
 # TLS + Certificate Pinning
 rustls = { workspace = true, features = ["ring"] }
 sha2 = { workspace = true }
@@ -35,6 +40,7 @@ tower = { workspace = true, optional = true }
 default = ["http-client"]
 http-client = []
 http-server = ["axum", "tower"]
+mqtt = ["rumqttc", "hex", "uuid"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

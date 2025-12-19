@@ -5,13 +5,24 @@ use tokio::sync::mpsc;
 
 pub mod http;
 pub mod receiver;
+pub mod seen_cache;
 pub mod tls;
 pub mod url_auth;
 
+#[cfg(feature = "mqtt")]
+pub mod mqtt;
+
 pub use http::NodeSpec;
 pub use receiver::{MessageReceiver, ReceiverConfig, ReceiverHandle};
-pub use tls::{CertPin, PinParseError, PinningVerifier, VerifierBuildError};
+pub use seen_cache::{SeenCache, SharedSeenCache};
+pub use tls::{
+    build_pinning_config, build_pinning_config_single, CertPin, PinParseError, PinningVerifier,
+    VerifierBuildError,
+};
 pub use url_auth::{parse_url_with_auth, ParsedUrl};
+
+#[cfg(feature = "mqtt")]
+pub use mqtt::{MqttBrokerSpec, MqttTransport};
 
 #[derive(Debug, Error)]
 pub enum TransportError {

@@ -214,6 +214,55 @@ impl PinningVerifier {
     }
 }
 
+/// Build a rustls ClientConfig with optional certificate pinning.
+///
+/// This can be used for any rustls-based client (MQTT, custom transports, etc.).
+///
+/// # Arguments
+/// * `pins` - Map of hostname -> CertPin. Hostnames without pins will
+///   only receive standard certificate validation.
+///
+/// # Errors
+/// Returns an error if the TLS configuration cannot be built.
+pub fn build_pinning_config(
+    pins: HashMap<String, CertPin>,
+) -> Result<rustls::ClientConfig, crate::TransportError> {
+    let verifier =
+        PinningVerifier::new(pins).map_err(|e| crate::TransportError::TlsConfig(e.to_string()))?;
+
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| crate::TransportError::TlsConfig(e.to_string()))?
+    .dangerous()
+    .with_custom_certificate_verifier(Arc::new(verifier))
+    .with_no_client_auth();
+
+    Ok(config)
+}
+
+/// Build a rustls ClientConfig for a single host with optional pinning.
+///
+/// Convenience wrapper around `build_pinning_config` for single-host use cases.
+///
+/// # Arguments
+/// * `hostname` - The hostname (without port) to connect to
+/// * `cert_pin` - Optional certificate pin
+///
+/// # Errors
+/// Returns an error if the TLS configuration cannot be built.
+pub fn build_pinning_config_single(
+    hostname: impl Into<String>,
+    cert_pin: Option<&CertPin>,
+) -> Result<rustls::ClientConfig, crate::TransportError> {
+    let mut pins = HashMap::new();
+    if let Some(pin) = cert_pin {
+        pins.insert(hostname.into(), pin.clone());
+    }
+    build_pinning_config(pins)
+}
+
 impl ServerCertVerifier for PinningVerifier {
     fn verify_server_cert(
         &self,
