@@ -67,6 +67,11 @@ impl Default for CoordinatorConfig {
 }
 
 /// Handle to control a running coordinator subscription.
+///
+/// When this handle is dropped, all receiver tasks will be automatically
+/// cancelled via the internal `CancellationToken`. This ensures clean
+/// resource cleanup but may be surprising if the handle is stored in a
+/// scope that ends prematurely.
 pub struct CoordinatorHandle {
     cancel_token: CancellationToken,
 }
@@ -195,6 +200,12 @@ impl TransportCoordinator {
     /// Subscribe to messages for a routing key from all transports.
     ///
     /// Returns a unified event channel and a handle to stop all receivers.
+    ///
+    /// # Note
+    ///
+    /// Uses an unbounded channel for events. If the consumer is slow,
+    /// messages will accumulate in memory. For high-throughput scenarios,
+    /// ensure the receiver processes events promptly.
     pub fn subscribe(&self, routing_key: RoutingKey) -> (EventReceiver, CoordinatorHandle) {
         let (tx, rx) = mpsc::unbounded_channel();
         let cancel_token = CancellationToken::new();
@@ -325,7 +336,7 @@ impl TransportCoordinator {
             return Err(TransportError::Network("No transports configured".to_string()));
         }
 
-        self.await_any_success(futures).await
+        self.broadcast_await_any_success(futures).await
     }
 
     /// Broadcast tombstone to all available transports.
@@ -353,7 +364,7 @@ impl TransportCoordinator {
             return Err(TransportError::Network("No transports configured".to_string()));
         }
 
-        self.await_any_success(futures).await
+        self.broadcast_await_any_success(futures).await
     }
 
     /// Try direct/ephemeral targets first, fall back to stable.
@@ -446,8 +457,13 @@ impl TransportCoordinator {
         }
     }
 
-    /// Wait for any future to succeed, or return error if all fail.
-    async fn await_any_success<F>(&self, futures: Vec<F>) -> Result<(), TransportError>
+    /// Run all futures to completion, succeed if at least one succeeds.
+    ///
+    /// Unlike a true "race" that cancels on first success, this waits for
+    /// all futures to complete to ensure delivery attempts to all transports.
+    /// Returns `Ok(())` if any transport succeeded, or an error with all
+    /// failure messages if all transports failed.
+    async fn broadcast_await_any_success<F>(&self, futures: Vec<F>) -> Result<(), TransportError>
     where
         F: std::future::Future<Output = Result<(), TransportError>>,
     {

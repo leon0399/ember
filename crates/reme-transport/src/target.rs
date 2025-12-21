@@ -430,16 +430,20 @@ mod tests {
 
     #[test]
     fn test_target_id_sanitizes_credentials() {
-        // Credentials should be stripped from the URL
+        // HTTP: Credentials should be stripped from the URL
         let id = TargetId::http("https://user:pass@example.com:23003/api");
         assert_eq!(id.as_str(), "http:https://example.com:23003/api");
 
-        // MQTT URLs are not parsed by the url crate (different scheme), so they
-        // pass through the "invalid URL redacted" path, but in practice the URLs
-        // passed to MqttTarget are valid mqtt:// URLs which get sanitized
+        // MQTT: The url crate parses mqtt:// schemes and strips credentials
         let id = TargetId::mqtt("mqtts://user:pass@broker.example.com:8883");
-        // The url crate doesn't recognize mqtt:// as a valid scheme, so it returns redacted
-        assert!(id.as_str().contains("mqtt:"));
+        assert_eq!(id.as_str(), "mqtt:mqtts://broker.example.com:8883");
+        // Verify credentials are NOT in the output
+        assert!(!id.as_str().contains("user"));
+        assert!(!id.as_str().contains("pass"));
+
+        // MQTT without credentials: Passes through unchanged
+        let id = TargetId::mqtt("mqtts://broker.example.com:8883");
+        assert_eq!(id.as_str(), "mqtt:mqtts://broker.example.com:8883");
     }
 
     #[test]
