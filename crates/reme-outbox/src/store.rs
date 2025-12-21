@@ -79,6 +79,53 @@ pub trait OutboxStore {
     /// Returns the number of entries expired.
     /// This is more efficient than loading all pending and calling mark_expired individually.
     fn outbox_expire_due(&self, now_ms: u64) -> Result<u64, Self::Error>;
+
+    // ========== Tiered Delivery Methods ==========
+
+    /// Update the tiered delivery phase for an entry.
+    ///
+    /// Used to transition between Urgent → Distributed → Confirmed phases.
+    fn outbox_update_tiered_phase(
+        &self,
+        entry_id: OutboxEntryId,
+        phase: &TieredDeliveryPhase,
+    ) -> Result<(), Self::Error>;
+
+    /// Add a successful target to an entry.
+    ///
+    /// Used to track which targets have successfully received the message.
+    fn outbox_add_successful_target(
+        &self,
+        entry_id: OutboxEntryId,
+        target_id: &TargetId,
+    ) -> Result<(), Self::Error>;
+
+    /// Get urgent phase messages due for retry.
+    ///
+    /// Returns messages where:
+    /// - `tiered_phase` is `Urgent`
+    /// - Not confirmed, not expired
+    /// - `next_retry_at_ms <= now` (or no retry scheduled)
+    fn outbox_get_urgent_retry_due(&self, now_ms: u64) -> Result<Vec<PendingMessage>, Self::Error>;
+
+    /// Get distributed phase messages due for maintenance.
+    ///
+    /// Returns messages where:
+    /// - `tiered_phase` is `Distributed`
+    /// - Not confirmed, not expired
+    /// - Last maintenance was >= `maintenance_interval_ms` ago
+    fn outbox_get_maintenance_due(
+        &self,
+        now_ms: u64,
+        maintenance_interval_ms: u64,
+    ) -> Result<Vec<PendingMessage>, Self::Error>;
+
+    /// Update last maintenance time for an entry.
+    fn outbox_update_last_maintenance(
+        &self,
+        entry_id: OutboxEntryId,
+        last_maintenance_ms: u64,
+    ) -> Result<(), Self::Error>;
 }
 
 /// Blanket implementation for Arc<T> where T: OutboxStore.
@@ -151,5 +198,41 @@ impl<T: OutboxStore> OutboxStore for Arc<T> {
 
     fn outbox_expire_due(&self, now_ms: u64) -> Result<u64, Self::Error> {
         (**self).outbox_expire_due(now_ms)
+    }
+
+    fn outbox_update_tiered_phase(
+        &self,
+        entry_id: OutboxEntryId,
+        phase: &TieredDeliveryPhase,
+    ) -> Result<(), Self::Error> {
+        (**self).outbox_update_tiered_phase(entry_id, phase)
+    }
+
+    fn outbox_add_successful_target(
+        &self,
+        entry_id: OutboxEntryId,
+        target_id: &TargetId,
+    ) -> Result<(), Self::Error> {
+        (**self).outbox_add_successful_target(entry_id, target_id)
+    }
+
+    fn outbox_get_urgent_retry_due(&self, now_ms: u64) -> Result<Vec<PendingMessage>, Self::Error> {
+        (**self).outbox_get_urgent_retry_due(now_ms)
+    }
+
+    fn outbox_get_maintenance_due(
+        &self,
+        now_ms: u64,
+        maintenance_interval_ms: u64,
+    ) -> Result<Vec<PendingMessage>, Self::Error> {
+        (**self).outbox_get_maintenance_due(now_ms, maintenance_interval_ms)
+    }
+
+    fn outbox_update_last_maintenance(
+        &self,
+        entry_id: OutboxEntryId,
+        last_maintenance_ms: u64,
+    ) -> Result<(), Self::Error> {
+        (**self).outbox_update_last_maintenance(entry_id, last_maintenance_ms)
     }
 }
