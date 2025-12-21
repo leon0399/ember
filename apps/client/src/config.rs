@@ -44,8 +44,10 @@
 use clap::Parser;
 use config::{Config, Environment, File, FileFormat};
 use directories::ProjectDirs;
+use reme_transport::{QuorumStrategy, TieredDeliveryConfig};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::time::Duration;
 use tracing::{warn, Level};
 
 /// CLI arguments for the client
@@ -258,6 +260,35 @@ impl Default for DeliveryAppConfig {
             maintenance_enabled: default_maintenance_enabled(),
             p2p_tier_timeout_ms: default_p2p_tier_timeout_ms(),
             internet_tier_timeout_secs: default_internet_tier_timeout_secs(),
+        }
+    }
+}
+
+/// Convert config quorum strategy to transport quorum strategy.
+impl From<QuorumStrategyConfig> for QuorumStrategy {
+    fn from(config: QuorumStrategyConfig) -> Self {
+        match config {
+            QuorumStrategyConfig::Any => QuorumStrategy::Any,
+            QuorumStrategyConfig::Count(n) => QuorumStrategy::Count(n),
+            QuorumStrategyConfig::Fraction(f) => QuorumStrategy::Fraction(f),
+            QuorumStrategyConfig::All => QuorumStrategy::All,
+        }
+    }
+}
+
+/// Convert config delivery settings to transport tiered delivery config.
+impl From<DeliveryAppConfig> for TieredDeliveryConfig {
+    fn from(config: DeliveryAppConfig) -> Self {
+        TieredDeliveryConfig {
+            quorum: config.quorum.into(),
+            urgent_initial_delay: Duration::from_secs(config.urgent_initial_delay_secs),
+            urgent_max_delay: Duration::from_secs(config.urgent_max_delay_secs),
+            urgent_backoff_multiplier: config.urgent_backoff_multiplier,
+            maintenance_interval: Duration::from_secs(config.maintenance_interval_hours * 60 * 60),
+            maintenance_enabled: config.maintenance_enabled,
+            p2p_tier_timeout: Duration::from_millis(config.p2p_tier_timeout_ms),
+            internet_tier_timeout: Duration::from_secs(config.internet_tier_timeout_secs),
+            excluded_targets: std::collections::HashSet::new(),
         }
     }
 }
@@ -1031,5 +1062,58 @@ mod tests {
         // Unspecified fields should get defaults
         assert_eq!(config.urgent_max_delay_secs, 60);
         assert!(config.maintenance_enabled);
+    }
+
+    #[test]
+    fn test_quorum_strategy_conversion() {
+        // Test Any
+        let config = QuorumStrategyConfig::Any;
+        let transport: QuorumStrategy = config.into();
+        assert!(matches!(transport, QuorumStrategy::Any));
+
+        // Test Count
+        let config = QuorumStrategyConfig::Count(5);
+        let transport: QuorumStrategy = config.into();
+        assert!(matches!(transport, QuorumStrategy::Count(5)));
+
+        // Test Fraction
+        let config = QuorumStrategyConfig::Fraction(0.75);
+        let transport: QuorumStrategy = config.into();
+        match transport {
+            QuorumStrategy::Fraction(f) => assert!((f - 0.75).abs() < 0.001),
+            _ => panic!("Expected Fraction"),
+        }
+
+        // Test All
+        let config = QuorumStrategyConfig::All;
+        let transport: QuorumStrategy = config.into();
+        assert!(matches!(transport, QuorumStrategy::All));
+    }
+
+    #[test]
+    fn test_delivery_config_conversion() {
+        let config = DeliveryAppConfig {
+            quorum: QuorumStrategyConfig::Count(2),
+            tiered_enabled: false,
+            urgent_initial_delay_secs: 10,
+            urgent_max_delay_secs: 120,
+            urgent_backoff_multiplier: 1.5,
+            maintenance_interval_hours: 6,
+            maintenance_enabled: false,
+            p2p_tier_timeout_ms: 1000,
+            internet_tier_timeout_secs: 10,
+        };
+
+        let transport: TieredDeliveryConfig = config.into();
+
+        assert!(matches!(transport.quorum, QuorumStrategy::Count(2)));
+        assert_eq!(transport.urgent_initial_delay, Duration::from_secs(10));
+        assert_eq!(transport.urgent_max_delay, Duration::from_secs(120));
+        assert!((transport.urgent_backoff_multiplier - 1.5).abs() < 0.001);
+        assert_eq!(transport.maintenance_interval, Duration::from_secs(6 * 60 * 60));
+        assert!(!transport.maintenance_enabled);
+        assert_eq!(transport.p2p_tier_timeout, Duration::from_millis(1000));
+        assert_eq!(transport.internet_tier_timeout, Duration::from_secs(10));
+        assert!(transport.excluded_targets.is_empty());
     }
 }
