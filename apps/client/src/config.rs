@@ -165,6 +165,103 @@ impl Default for OutboxAppConfig {
     }
 }
 
+/// Quorum strategy configuration.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QuorumStrategyConfig {
+    /// Any single transport success (legacy behavior).
+    Any,
+    /// Fixed count: at least N transports must succeed.
+    Count(u32),
+    /// Fraction of configured stable transports (e.g., 0.5 = majority).
+    Fraction(f32),
+    /// All configured stable transports must succeed.
+    All,
+}
+
+impl Default for QuorumStrategyConfig {
+    fn default() -> Self {
+        QuorumStrategyConfig::Any
+    }
+}
+
+/// Tiered delivery configuration for quorum semantics.
+///
+/// This controls how messages flow through delivery tiers:
+/// - Tier 1 (P2P): Race all ephemeral targets, exit on any success
+/// - Tier 2 (Internet): Broadcast to all stable targets, require quorum
+/// - Tier 3 (Radio): Best effort delivery (future)
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DeliveryAppConfig {
+    /// Quorum strategy for Internet tier.
+    #[serde(default)]
+    pub quorum: QuorumStrategyConfig,
+
+    /// Enable tiered delivery (default: true).
+    /// When disabled, uses simple broadcast-all behavior.
+    #[serde(default = "default_tiered_enabled")]
+    pub tiered_enabled: bool,
+
+    // Phase 1 (Urgent) retry settings
+
+    /// Initial retry delay in seconds for urgent phase.
+    #[serde(default = "default_urgent_initial_delay")]
+    pub urgent_initial_delay_secs: u64,
+
+    /// Maximum retry delay in seconds for urgent phase.
+    #[serde(default = "default_urgent_max_delay")]
+    pub urgent_max_delay_secs: u64,
+
+    /// Backoff multiplier for urgent phase retries.
+    #[serde(default = "default_urgent_backoff_multiplier")]
+    pub urgent_backoff_multiplier: f32,
+
+    // Phase 2 (Maintenance) settings
+
+    /// Maintenance refresh interval in hours for distributed phase.
+    #[serde(default = "default_maintenance_interval_hours")]
+    pub maintenance_interval_hours: u64,
+
+    /// Enable maintenance refreshes (default: true).
+    #[serde(default = "default_maintenance_enabled")]
+    pub maintenance_enabled: bool,
+
+    // Tier timeouts
+
+    /// P2P tier timeout in milliseconds.
+    #[serde(default = "default_p2p_tier_timeout_ms")]
+    pub p2p_tier_timeout_ms: u64,
+
+    /// Internet tier timeout in seconds.
+    #[serde(default = "default_internet_tier_timeout_secs")]
+    pub internet_tier_timeout_secs: u64,
+}
+
+fn default_tiered_enabled() -> bool { true }
+fn default_urgent_initial_delay() -> u64 { 5 }
+fn default_urgent_max_delay() -> u64 { 60 }
+fn default_urgent_backoff_multiplier() -> f32 { 2.0 }
+fn default_maintenance_interval_hours() -> u64 { 4 }
+fn default_maintenance_enabled() -> bool { true }
+fn default_p2p_tier_timeout_ms() -> u64 { 500 }
+fn default_internet_tier_timeout_secs() -> u64 { 5 }
+
+impl Default for DeliveryAppConfig {
+    fn default() -> Self {
+        Self {
+            quorum: QuorumStrategyConfig::default(),
+            tiered_enabled: default_tiered_enabled(),
+            urgent_initial_delay_secs: default_urgent_initial_delay(),
+            urgent_max_delay_secs: default_urgent_max_delay(),
+            urgent_backoff_multiplier: default_urgent_backoff_multiplier(),
+            maintenance_interval_hours: default_maintenance_interval_hours(),
+            maintenance_enabled: default_maintenance_enabled(),
+            p2p_tier_timeout_ms: default_p2p_tier_timeout_ms(),
+            internet_tier_timeout_secs: default_internet_tier_timeout_secs(),
+        }
+    }
+}
+
 /// Target kind: stable (mailboxes, configured peers) or ephemeral (discovered peers).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -323,6 +420,10 @@ pub struct AppConfig {
     /// Outbox configuration
     #[serde(default)]
     pub outbox: OutboxAppConfig,
+
+    /// Tiered delivery configuration
+    #[serde(default)]
+    pub delivery: DeliveryAppConfig,
 }
 
 fn default_http() -> Vec<HttpEndpoint> {
@@ -337,6 +438,7 @@ impl Default for AppConfig {
             data_dir: default_data_dir(),
             log_level: "info".to_string(),
             outbox: OutboxAppConfig::default(),
+            delivery: DeliveryAppConfig::default(),
         }
     }
 }
@@ -365,6 +467,9 @@ struct RawConfig {
     /// Outbox config section
     #[serde(default)]
     outbox: RawOutboxConfig,
+    /// Delivery config section
+    #[serde(default)]
+    delivery: RawDeliveryConfig,
 }
 
 /// Parse HTTP endpoints from REME_HTTP environment variable (JSON format)
@@ -405,6 +510,20 @@ struct RawOutboxConfig {
     attempt_timeout_secs: Option<u64>,
     retry_initial_delay_secs: Option<u64>,
     retry_max_delay_secs: Option<u64>,
+}
+
+/// Raw delivery config from file/env
+#[derive(Debug, Clone, Deserialize, Default)]
+struct RawDeliveryConfig {
+    quorum: Option<QuorumStrategyConfig>,
+    tiered_enabled: Option<bool>,
+    urgent_initial_delay_secs: Option<u64>,
+    urgent_max_delay_secs: Option<u64>,
+    urgent_backoff_multiplier: Option<f32>,
+    maintenance_interval_hours: Option<u64>,
+    maintenance_enabled: Option<bool>,
+    p2p_tier_timeout_ms: Option<u64>,
+    internet_tier_timeout_secs: Option<u64>,
 }
 
 /// Load configuration from all sources with proper layering
@@ -556,12 +675,37 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
             .unwrap_or(outbox_defaults.retry_max_delay_secs),
     };
 
+    // Build delivery config from config file > defaults
+    // (No CLI arguments for delivery config - use config file or env vars)
+    let delivery_defaults = DeliveryAppConfig::default();
+    let delivery = DeliveryAppConfig {
+        quorum: raw.delivery.quorum
+            .unwrap_or(delivery_defaults.quorum),
+        tiered_enabled: raw.delivery.tiered_enabled
+            .unwrap_or(delivery_defaults.tiered_enabled),
+        urgent_initial_delay_secs: raw.delivery.urgent_initial_delay_secs
+            .unwrap_or(delivery_defaults.urgent_initial_delay_secs),
+        urgent_max_delay_secs: raw.delivery.urgent_max_delay_secs
+            .unwrap_or(delivery_defaults.urgent_max_delay_secs),
+        urgent_backoff_multiplier: raw.delivery.urgent_backoff_multiplier
+            .unwrap_or(delivery_defaults.urgent_backoff_multiplier),
+        maintenance_interval_hours: raw.delivery.maintenance_interval_hours
+            .unwrap_or(delivery_defaults.maintenance_interval_hours),
+        maintenance_enabled: raw.delivery.maintenance_enabled
+            .unwrap_or(delivery_defaults.maintenance_enabled),
+        p2p_tier_timeout_ms: raw.delivery.p2p_tier_timeout_ms
+            .unwrap_or(delivery_defaults.p2p_tier_timeout_ms),
+        internet_tier_timeout_secs: raw.delivery.internet_tier_timeout_secs
+            .unwrap_or(delivery_defaults.internet_tier_timeout_secs),
+    };
+
     Ok(AppConfig {
         http,
         mqtt,
         data_dir,
         log_level,
         outbox,
+        delivery,
     })
 }
 
@@ -583,6 +727,12 @@ fn dirs_home() -> Option<PathBuf> {
 /// Generate a default config file content
 pub fn default_config_toml() -> String {
     let defaults = AppConfig::default();
+    let quorum_str = match &defaults.delivery.quorum {
+        QuorumStrategyConfig::Any => "\"any\"".to_string(),
+        QuorumStrategyConfig::Count(n) => format!("{{ count = {} }}", n),
+        QuorumStrategyConfig::Fraction(f) => format!("{{ fraction = {} }}", f),
+        QuorumStrategyConfig::All => "\"all\"".to_string(),
+    };
     format!(
         r#"# Resilient Messenger Client Configuration
 #
@@ -606,7 +756,7 @@ pub fn default_config_toml() -> String {
 #
 # Without pinning (will warn):
 [[http]]
-url = "{}"
+url = "{url}"
 
 # MQTT broker configuration (optional)
 # Messages can be exchanged via MQTT in addition to or instead of HTTP.
@@ -618,34 +768,73 @@ url = "{}"
 
 # Directory for storing identity, keys, and messages
 # Use ~ for home directory
-data_dir = "{}"
+data_dir = "{data_dir}"
 
 # Log level: trace, debug, info, warn, error
-log_level = "{}"
+log_level = "{log_level}"
 
 # Outbox configuration for message delivery tracking and retries
 [outbox]
 # How often to check for pending retries (seconds)
-tick_interval_secs = {}
+tick_interval_secs = {tick_interval}
 
 # Message TTL in days (0 = never expire)
-ttl_days = {}
+ttl_days = {ttl_days}
 
 # How long a "sent" attempt stays in-flight before timing out (seconds)
-attempt_timeout_secs = {}
+attempt_timeout_secs = {attempt_timeout}
 
 # Retry backoff settings
-retry_initial_delay_secs = {}
-retry_max_delay_secs = {}
+retry_initial_delay_secs = {retry_initial}
+retry_max_delay_secs = {retry_max}
+
+# Tiered delivery configuration
+# Messages flow through delivery tiers: P2P -> Internet -> Radio
+# with configurable quorum requirements for the Internet tier.
+[delivery]
+# Quorum strategy for Internet tier:
+# - "any" = any single transport success (legacy behavior)
+# - {{ count = N }} = at least N transports must succeed
+# - {{ fraction = F }} = fraction of stable transports (e.g., 0.5 = majority)
+# - "all" = all configured stable transports must succeed
+quorum = {quorum}
+
+# Enable tiered delivery (default: true)
+# When disabled, uses simple broadcast-all behavior
+tiered_enabled = {tiered_enabled}
+
+# Phase 1 (Urgent) retry settings
+# Aggressive retry until quorum is reached
+urgent_initial_delay_secs = {urgent_initial}
+urgent_max_delay_secs = {urgent_max}
+urgent_backoff_multiplier = {urgent_multiplier}
+
+# Phase 2 (Maintenance) settings
+# Periodic refresh of distributed messages awaiting ACK
+maintenance_interval_hours = {maintenance_interval}
+maintenance_enabled = {maintenance_enabled}
+
+# Tier timeouts
+p2p_tier_timeout_ms = {p2p_timeout}
+internet_tier_timeout_secs = {internet_timeout}
 "#,
-        defaults.http[0].url,
-        defaults.data_dir.to_string_lossy(),
-        defaults.log_level,
-        defaults.outbox.tick_interval_secs,
-        defaults.outbox.ttl_days,
-        defaults.outbox.attempt_timeout_secs,
-        defaults.outbox.retry_initial_delay_secs,
-        defaults.outbox.retry_max_delay_secs,
+        url = defaults.http[0].url,
+        data_dir = defaults.data_dir.to_string_lossy(),
+        log_level = defaults.log_level,
+        tick_interval = defaults.outbox.tick_interval_secs,
+        ttl_days = defaults.outbox.ttl_days,
+        attempt_timeout = defaults.outbox.attempt_timeout_secs,
+        retry_initial = defaults.outbox.retry_initial_delay_secs,
+        retry_max = defaults.outbox.retry_max_delay_secs,
+        quorum = quorum_str,
+        tiered_enabled = defaults.delivery.tiered_enabled,
+        urgent_initial = defaults.delivery.urgent_initial_delay_secs,
+        urgent_max = defaults.delivery.urgent_max_delay_secs,
+        urgent_multiplier = defaults.delivery.urgent_backoff_multiplier,
+        maintenance_interval = defaults.delivery.maintenance_interval_hours,
+        maintenance_enabled = defaults.delivery.maintenance_enabled,
+        p2p_timeout = defaults.delivery.p2p_tier_timeout_ms,
+        internet_timeout = defaults.delivery.internet_tier_timeout_secs,
     )
 }
 
@@ -696,6 +885,11 @@ mod tests {
         assert!(toml.contains("tick_interval_secs"));
         assert!(toml.contains("ttl_days"));
         assert!(toml.contains("[[mqtt]]")); // Documentation for MQTT
+        assert!(toml.contains("[delivery]"));
+        assert!(toml.contains("quorum"));
+        assert!(toml.contains("tiered_enabled"));
+        assert!(toml.contains("urgent_initial_delay_secs"));
+        assert!(toml.contains("maintenance_interval_hours"));
     }
 
     #[test]
@@ -782,5 +976,60 @@ mod tests {
         assert_eq!(brokers[0].url, "mqtts://broker.example.com:8883");
         assert_eq!(brokers[0].client_id, Some("test-client".to_string()));
         std::env::remove_var("REME_MQTT");
+    }
+
+    #[test]
+    fn test_delivery_config_defaults() {
+        let config = DeliveryAppConfig::default();
+        assert_eq!(config.quorum, QuorumStrategyConfig::Any);
+        assert!(config.tiered_enabled);
+        assert_eq!(config.urgent_initial_delay_secs, 5);
+        assert_eq!(config.urgent_max_delay_secs, 60);
+        assert_eq!(config.urgent_backoff_multiplier, 2.0);
+        assert_eq!(config.maintenance_interval_hours, 4);
+        assert!(config.maintenance_enabled);
+        assert_eq!(config.p2p_tier_timeout_ms, 500);
+        assert_eq!(config.internet_tier_timeout_secs, 5);
+    }
+
+    #[test]
+    fn test_quorum_strategy_deserialize() {
+        // Test "any"
+        let json = r#""any""#;
+        let quorum: QuorumStrategyConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(quorum, QuorumStrategyConfig::Any);
+
+        // Test count
+        let json = r#"{"count": 2}"#;
+        let quorum: QuorumStrategyConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(quorum, QuorumStrategyConfig::Count(2));
+
+        // Test fraction
+        let json = r#"{"fraction": 0.5}"#;
+        let quorum: QuorumStrategyConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(quorum, QuorumStrategyConfig::Fraction(0.5));
+
+        // Test "all"
+        let json = r#""all""#;
+        let quorum: QuorumStrategyConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(quorum, QuorumStrategyConfig::All);
+    }
+
+    #[test]
+    fn test_delivery_config_deserialize() {
+        let json = r#"{
+            "quorum": {"count": 3},
+            "tiered_enabled": false,
+            "urgent_initial_delay_secs": 10,
+            "maintenance_interval_hours": 8
+        }"#;
+        let config: DeliveryAppConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.quorum, QuorumStrategyConfig::Count(3));
+        assert!(!config.tiered_enabled);
+        assert_eq!(config.urgent_initial_delay_secs, 10);
+        assert_eq!(config.maintenance_interval_hours, 8);
+        // Unspecified fields should get defaults
+        assert_eq!(config.urgent_max_delay_secs, 60);
+        assert!(config.maintenance_enabled);
     }
 }
