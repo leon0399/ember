@@ -938,6 +938,10 @@ fn transport_error_to_attempt_error(e: &TransportError) -> AttemptError {
             ),
             is_transient: false,
         },
+        TransportError::Timeout => AttemptError::Rejected {
+            message: "request timed out".to_string(),
+            is_transient: true,
+        },
     }
 }
 

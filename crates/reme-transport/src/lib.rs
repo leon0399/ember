@@ -5,6 +5,7 @@ use tokio::sync::mpsc;
 
 pub mod composite;
 pub mod coordinator;
+pub mod delivery;
 pub mod http;
 pub mod http_target;
 pub mod pool;
@@ -38,6 +39,10 @@ pub use tls::{
     VerifierBuildError,
 };
 pub use url_auth::{parse_url_with_auth, sanitize_url_for_logging, ParsedUrl};
+pub use delivery::{
+    DeliveryConfidence, DeliveryResult, DeliveryTier, QuorumStrategy, TargetOutcome,
+    TargetResult, TierResult, TieredDeliveryConfig,
+};
 
 #[cfg(feature = "mqtt")]
 pub use mqtt::{MqttBrokerSpec, MqttTransport};
@@ -46,7 +51,7 @@ pub use mqtt_receiver::{MultiBrokerReceiver, MqttReceiver, MqttReceiverConfig, M
 #[cfg(feature = "mqtt")]
 pub use mqtt_target::{MqttTarget, MqttTargetConfig};
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum TransportError {
     #[error("Network error: {0}")]
     Network(String),
@@ -75,6 +80,34 @@ pub enum TransportError {
         expected: String,
         actual: String,
     },
+
+    #[error("Request timed out")]
+    Timeout,
+}
+
+impl TransportError {
+    /// Check if this error is transient and the operation should be retried.
+    ///
+    /// Transient errors are temporary failures that may succeed on retry:
+    /// - Network errors (connection issues, DNS failures)
+    /// - Timeouts
+    /// - Server errors (5xx status codes)
+    ///
+    /// Non-transient errors should not be retried:
+    /// - Authentication failures
+    /// - Not found (4xx client errors)
+    /// - Serialization errors (data issues)
+    /// - TLS configuration errors
+    /// - Certificate pin mismatches (security failures)
+    pub fn is_transient(&self) -> bool {
+        matches!(
+            self,
+            TransportError::Network(_)
+                | TransportError::Timeout
+                | TransportError::ServerError(_)
+                | TransportError::ChannelClosed
+        )
+    }
 }
 
 /// Transport trait for sending messages (MIK-only, no prekeys)
