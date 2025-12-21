@@ -176,16 +176,24 @@ impl TargetHealth {
 
     /// Get the current health state.
     pub fn state(&self) -> HealthState {
-        // Check if recovery period has elapsed
-        let recovery_started = self.recovery_started.read().unwrap();
-        if let Some(started) = *recovery_started {
-            if started.elapsed() >= self.circuit_breaker_recovery {
-                // Recovery period elapsed, reset to healthy
-                drop(recovery_started);
-                self.reset_to_healthy();
-                return HealthState::Healthy;
+        // Check if recovery period has elapsed.
+        // IMPORTANT: We must drop the recovery_started lock before acquiring
+        // the state lock to prevent deadlock with record_failure(), which
+        // acquires locks in the opposite order (state first, then recovery_started).
+        let should_reset = {
+            let recovery_started = self.recovery_started.read().unwrap();
+            if let Some(started) = *recovery_started {
+                started.elapsed() >= self.circuit_breaker_recovery
+            } else {
+                false
             }
+        }; // recovery_started lock is dropped here
+
+        if should_reset {
+            self.reset_to_healthy();
+            return HealthState::Healthy;
         }
+
         *self.state.read().unwrap()
     }
 

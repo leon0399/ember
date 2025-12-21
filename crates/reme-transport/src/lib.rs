@@ -37,7 +37,7 @@ pub use tls::{
     build_pinning_config, build_pinning_config_single, CertPin, PinParseError, PinningVerifier,
     VerifierBuildError,
 };
-pub use url_auth::{parse_url_with_auth, ParsedUrl};
+pub use url_auth::{parse_url_with_auth, sanitize_url_for_logging, ParsedUrl};
 
 #[cfg(feature = "mqtt")]
 pub use mqtt::{MqttBrokerSpec, MqttTransport};

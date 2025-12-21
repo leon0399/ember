@@ -321,6 +321,10 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
     }
 
     /// Race message to all targets, return on first success.
+    ///
+    /// Runs all requests in parallel and returns as soon as one succeeds.
+    /// If one fails, continues polling remaining futures rather than
+    /// falling back to broadcast (which would restart all requests).
     async fn race_message(
         &self,
         targets: &[Arc<T>],
@@ -340,19 +344,29 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
             })
             .collect();
 
-        // Use select_all to get first completion
-        let (first_result, _index, remaining) = futures::future::select_all(futures).await;
+        // Poll futures until one succeeds or all fail
+        let mut remaining = futures;
+        let mut last_error = None;
 
-        // Drop remaining futures (cancels them)
-        drop(remaining);
+        while !remaining.is_empty() {
+            let (result, _index, rest) = futures::future::select_all(remaining).await;
 
-        // If first succeeded, we're done
-        if first_result.is_ok() {
-            return first_result;
+            match result {
+                Ok(()) => {
+                    // Success - cancel remaining futures and return
+                    drop(rest);
+                    return Ok(());
+                }
+                Err(e) => {
+                    // This target failed - continue polling the rest
+                    last_error = Some(e);
+                    remaining = rest;
+                }
+            }
         }
 
-        // First failed, but we cancelled others. Fall back to broadcast.
-        self.broadcast_message(targets, envelope).await
+        // All targets failed
+        Err(last_error.unwrap_or(TransportError::Network("All targets failed".to_string())))
     }
 
     /// Try targets in priority order, stop on first success.
@@ -417,6 +431,10 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
     }
 
     /// Race tombstone to all targets.
+    ///
+    /// Runs all requests in parallel and returns as soon as one succeeds.
+    /// If one fails, continues polling remaining futures rather than
+    /// falling back to broadcast (which would restart all requests).
     async fn race_tombstone(
         &self,
         targets: &[Arc<T>],
@@ -435,14 +453,29 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
             })
             .collect();
 
-        let (first_result, _index, remaining) = futures::future::select_all(futures).await;
-        drop(remaining);
+        // Poll futures until one succeeds or all fail
+        let mut remaining = futures;
+        let mut last_error = None;
 
-        if first_result.is_ok() {
-            return first_result;
+        while !remaining.is_empty() {
+            let (result, _index, rest) = futures::future::select_all(remaining).await;
+
+            match result {
+                Ok(()) => {
+                    // Success - cancel remaining futures and return
+                    drop(rest);
+                    return Ok(());
+                }
+                Err(e) => {
+                    // This target failed - continue polling the rest
+                    last_error = Some(e);
+                    remaining = rest;
+                }
+            }
         }
 
-        self.broadcast_tombstone(targets, tombstone).await
+        // All targets failed
+        Err(last_error.unwrap_or(TransportError::Network("All targets failed".to_string())))
     }
 
     /// Priority fallback for tombstone.
@@ -523,6 +556,7 @@ impl<T: TransportTarget> TransportPool<T> {
 // HTTP-specific pool methods for fetching messages
 use crate::http::NodeSpec;
 use crate::http_target::{HttpTarget, HttpTargetConfig};
+use crate::url_auth::sanitize_url_for_logging;
 use reme_message::{MessageID, RoutingKey};
 use std::collections::HashMap;
 use tracing::info;
@@ -567,19 +601,20 @@ impl TransportPool<HttpTarget> {
                 config = config.with_cert_pin(pin);
             }
 
-            // Log security warnings
+            // Log security warnings (sanitize URL to prevent credential exposure)
+            let safe_url = sanitize_url_for_logging(&node.url);
             if node.url.starts_with("http://") {
                 warn!(
                     "Node {} uses unencrypted HTTP - credentials and messages may be exposed",
-                    &node.url
+                    safe_url
                 );
             } else if node.url.starts_with("https://") && config.cert_pin.is_none() {
                 warn!(
                     "Node {} has no certificate pin - vulnerable to MITM attacks",
-                    &node.url
+                    safe_url
                 );
             } else if config.cert_pin.is_some() {
-                info!("Certificate pinning enabled for {}", &node.url);
+                info!("Certificate pinning enabled for {}", safe_url);
             }
 
             let target = HttpTarget::new(config)?;

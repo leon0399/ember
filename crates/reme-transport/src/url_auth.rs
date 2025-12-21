@@ -11,6 +11,34 @@
 use percent_encoding::percent_decode_str;
 use url::Url;
 
+/// Sanitize a URL for safe logging by removing any credentials.
+///
+/// Returns the URL with username and password stripped. If parsing fails,
+/// returns a redacted placeholder to avoid exposing credentials.
+///
+/// # Example
+///
+/// ```
+/// use reme_transport::url_auth::sanitize_url_for_logging;
+///
+/// assert_eq!(
+///     sanitize_url_for_logging("http://user:pass@example.com:3000/api"),
+///     "http://example.com:3000/api"
+/// );
+/// assert_eq!(
+///     sanitize_url_for_logging("http://example.com:3000/api"),
+///     "http://example.com:3000/api"
+/// );
+/// ```
+pub fn sanitize_url_for_logging(url_str: &str) -> String {
+    match parse_url_with_auth(url_str) {
+        Ok(parsed) => parsed.url,
+        // If we can't parse the URL, return a redacted version to avoid
+        // accidentally exposing credentials in malformed URLs
+        Err(_) => "[invalid URL redacted]".to_string(),
+    }
+}
+
 /// Parsed URL with optional credentials extracted.
 ///
 /// The `url` crate handles all the parsing - we just extract and strip credentials.
@@ -134,5 +162,30 @@ mod tests {
         let parsed = parse_url_with_auth("http://:secret@example.com:3000").unwrap();
         assert_eq!(parsed.url, "http://example.com:3000/");
         assert_eq!(parsed.auth, Some(("".to_string(), "secret".to_string())));
+    }
+
+    #[test]
+    fn test_sanitize_url_with_credentials() {
+        assert_eq!(
+            sanitize_url_for_logging("http://user:pass@example.com:3000/api"),
+            "http://example.com:3000/api"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_url_without_credentials() {
+        assert_eq!(
+            sanitize_url_for_logging("https://example.com:8443/path"),
+            "https://example.com:8443/path"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_invalid_url() {
+        // Invalid URLs should be redacted to prevent accidental credential exposure
+        assert_eq!(
+            sanitize_url_for_logging("not a valid url with user:pass"),
+            "[invalid URL redacted]"
+        );
     }
 }
