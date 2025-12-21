@@ -4,9 +4,13 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 
 pub mod composite;
+pub mod coordinator;
 pub mod http;
+pub mod http_target;
+pub mod pool;
 pub mod receiver;
 pub mod seen_cache;
+pub mod target;
 pub mod tls;
 pub mod url_auth;
 
@@ -14,21 +18,33 @@ pub mod url_auth;
 pub mod mqtt;
 #[cfg(feature = "mqtt")]
 pub mod mqtt_receiver;
+#[cfg(feature = "mqtt")]
+pub mod mqtt_target;
 
 pub use composite::CompositeTransport;
 pub use http::NodeSpec;
+pub use http_target::{HttpTarget, HttpTargetConfig};
 pub use receiver::{MessageReceiver, ReceiverConfig, ReceiverHandle};
 pub use seen_cache::{SeenCache, SharedSeenCache};
+pub use target::{
+    HealthState, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget,
+};
+pub use pool::{PoolConfig, PoolStrategy, TransportPool};
+pub use coordinator::{
+    CoordinatorConfig, CoordinatorHandle, CoordinatorHealth, RoutingStrategy, TransportCoordinator,
+};
 pub use tls::{
     build_pinning_config, build_pinning_config_single, CertPin, PinParseError, PinningVerifier,
     VerifierBuildError,
 };
-pub use url_auth::{parse_url_with_auth, ParsedUrl};
+pub use url_auth::{parse_url_with_auth, sanitize_url_for_logging, ParsedUrl};
 
 #[cfg(feature = "mqtt")]
 pub use mqtt::{MqttBrokerSpec, MqttTransport};
 #[cfg(feature = "mqtt")]
 pub use mqtt_receiver::{MultiBrokerReceiver, MqttReceiver, MqttReceiverConfig, MqttReceiverHandle};
+#[cfg(feature = "mqtt")]
+pub use mqtt_target::{MqttTarget, MqttTargetConfig};
 
 #[derive(Debug, Error)]
 pub enum TransportError {

@@ -11,7 +11,9 @@ use reme_identity::{Identity, PublicID};
 use reme_message::Content;
 use reme_outbox::{OutboxConfig, TransportRetryPolicy};
 use reme_storage::Storage;
-use reme_transport::http::{HttpTransport, NodeSpec};
+use reme_transport::http::NodeSpec;
+use reme_transport::http_target::HttpTarget;
+use reme_transport::pool::TransportPool;
 use reme_transport::{
     CertPin, CompositeTransport, MessageReceiver, MqttBrokerSpec, MqttTransport, ReceiverConfig,
     TransportEvent,
@@ -183,8 +185,8 @@ pub struct App<'a> {
     pub status: String,
     /// The messenger client (uses CompositeTransport for sending via HTTP and/or MQTT)
     client: Client<CompositeTransport>,
-    /// HTTP transport for message receiving (HTTP polling-based receiver)
-    http_transport: Arc<HttpTransport>,
+    /// HTTP transport pool for message receiving (HTTP polling-based receiver)
+    http_pool: Arc<TransportPool<HttpTarget>>,
     /// Contacts by name (for reverse lookup)
     contacts_by_id: HashMap<PublicID, String>,
     /// In-memory message cache per contact (until storage retrieval is implemented)
@@ -242,10 +244,10 @@ impl<'a> App<'a> {
             })
             .collect::<Result<Vec<_>, String>>()?;
 
-        // Create HTTP transport for both sending and receiving
-        let http_transport = if !node_specs.is_empty() {
-            let transport = HttpTransport::with_nodes_config(node_specs)?;
-            Some(Arc::new(transport))
+        // Create HTTP transport pool for both sending and receiving
+        let http_pool = if !node_specs.is_empty() {
+            let pool = TransportPool::from_node_specs(node_specs)?;
+            Some(Arc::new(pool))
         } else {
             None
         };
@@ -275,7 +277,7 @@ impl<'a> App<'a> {
 
         // Build composite transport for sending
         let mut composite = CompositeTransport::new();
-        if let Some(ref http) = http_transport {
+        if let Some(ref http) = http_pool {
             composite = composite.with_arc_transport(http.clone());
         }
         if let Some(mqtt) = mqtt_transport {
@@ -321,8 +323,8 @@ impl<'a> App<'a> {
         input.set_placeholder_text("Type a message...");
         input.set_cursor_line_style(Style::default());
 
-        // Ensure we have HTTP transport for message receiving
-        let http_transport_arc = http_transport.ok_or(
+        // Ensure we have HTTP transport pool for message receiving
+        let http_pool_arc = http_pool.ok_or(
             "No HTTP nodes configured. HTTP is required for message receiving.",
         )?;
 
@@ -336,7 +338,7 @@ impl<'a> App<'a> {
             input,
             status: HELP_HINT.to_string(),
             client,
-            http_transport: http_transport_arc,
+            http_pool: http_pool_arc,
             contacts_by_id: HashMap::new(),
             message_cache: HashMap::new(),
             show_add_contact_popup: false,
@@ -395,8 +397,8 @@ impl<'a> App<'a> {
         let mut event_handler = EventHandler::new(100);
         let mut last_outbox_tick = Instant::now();
 
-        // Setup message receiver for incoming messages (uses HTTP transport for polling)
-        let receiver = MessageReceiver::new(self.http_transport.clone());
+        // Setup message receiver for incoming messages (uses HTTP pool for polling)
+        let receiver = MessageReceiver::new(self.http_pool.clone());
         let config = ReceiverConfig::with_poll_interval(Duration::from_secs(2));
         let (mut msg_events, _handle) = receiver.subscribe(self.client.routing_key(), config);
 
