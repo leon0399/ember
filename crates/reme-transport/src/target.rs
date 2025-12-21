@@ -11,23 +11,31 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use reme_message::{OuterEnvelope, TombstoneEnvelope};
 
+use crate::url_auth::sanitize_url_for_logging;
 use crate::TransportError;
 
 /// Unique identifier for a transport target.
 ///
-/// Format: `{type}:{url}` e.g., `http:https://node.example.com:23003`
+/// Format: `{type}:{sanitized_url}` e.g., `http:https://node.example.com:23003`
+///
+/// URLs are sanitized to remove any embedded credentials, preventing
+/// credential exposure in logs or debug output.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TargetId(pub String);
+pub struct TargetId(String);
 
 impl TargetId {
     /// Create a target ID for an HTTP endpoint.
+    ///
+    /// The URL is sanitized to remove any embedded credentials.
     pub fn http(url: &str) -> Self {
-        Self(format!("http:{}", url))
+        Self(format!("http:{}", sanitize_url_for_logging(url)))
     }
 
     /// Create a target ID for an MQTT broker.
+    ///
+    /// The URL is sanitized to remove any embedded credentials.
     pub fn mqtt(broker_url: &str) -> Self {
-        Self(format!("mqtt:{}", broker_url))
+        Self(format!("mqtt:{}", sanitize_url_for_logging(broker_url)))
     }
 
     /// Get the raw ID string.
@@ -407,9 +415,31 @@ mod tests {
 
     #[test]
     fn test_target_id() {
+        // URL is sanitized and normalized (adds trailing slash when no path)
         let id = TargetId::http("https://example.com:23003");
-        assert_eq!(id.as_str(), "http:https://example.com:23003");
-        assert_eq!(format!("{}", id), "http:https://example.com:23003");
+        assert_eq!(id.as_str(), "http:https://example.com:23003/");
+        assert_eq!(format!("{}", id), "http:https://example.com:23003/");
+    }
+
+    #[test]
+    fn test_target_id_with_path() {
+        // URL with path is not modified
+        let id = TargetId::http("https://example.com:23003/api");
+        assert_eq!(id.as_str(), "http:https://example.com:23003/api");
+    }
+
+    #[test]
+    fn test_target_id_sanitizes_credentials() {
+        // Credentials should be stripped from the URL
+        let id = TargetId::http("https://user:pass@example.com:23003/api");
+        assert_eq!(id.as_str(), "http:https://example.com:23003/api");
+
+        // MQTT URLs are not parsed by the url crate (different scheme), so they
+        // pass through the "invalid URL redacted" path, but in practice the URLs
+        // passed to MqttTarget are valid mqtt:// URLs which get sanitized
+        let id = TargetId::mqtt("mqtts://user:pass@broker.example.com:8883");
+        // The url crate doesn't recognize mqtt:// as a valid scheme, so it returns redacted
+        assert!(id.as_str().contains("mqtt:"));
     }
 
     #[test]

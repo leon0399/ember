@@ -488,8 +488,12 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
 
         for target in targets {
             match target.submit_tombstone(tombstone.clone()).await {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    debug!("Tombstone sent via {}", target.id());
+                    return Ok(());
+                }
                 Err(e) => {
+                    warn!("Target {} failed tombstone, trying next: {}", target.id(), e);
                     last_error = Some(e);
                 }
             }
@@ -667,7 +671,7 @@ impl TransportPool<HttpTarget> {
         let mut last_error = None;
         let mut success_count = 0;
 
-        for result in results {
+        for (i, result) in results.into_iter().enumerate() {
             match result {
                 Ok(messages) => {
                     success_count += 1;
@@ -676,6 +680,7 @@ impl TransportPool<HttpTarget> {
                     }
                 }
                 Err(e) => {
+                    warn!("Target {} fetch failed: {}", targets[i].id(), e);
                     last_error = Some(e);
                 }
             }

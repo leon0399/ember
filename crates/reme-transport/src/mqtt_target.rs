@@ -10,9 +10,11 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use reme_message::{OuterEnvelope, RoutingKey, TombstoneEnvelope, WirePayload};
 use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS, Transport as MqttTransportType};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
 use crate::target::{HealthState, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget};
+use crate::url_auth::sanitize_url_for_logging;
 use crate::TransportError;
 
 /// Default topic prefix for REME messages.
@@ -78,10 +80,14 @@ impl MqttTargetConfig {
 /// - `AsyncClient` for publishing
 /// - Event loop task for connection management
 /// - Health tracking with circuit breaker
+///
+/// The event loop task is automatically stopped when the target is dropped.
 pub struct MqttTarget {
     config: MqttTargetConfig,
     client: AsyncClient,
     health: TargetHealth,
+    /// Cancellation token to stop the event loop task on drop.
+    shutdown: CancellationToken,
 }
 
 impl MqttTarget {
@@ -114,10 +120,13 @@ impl MqttTarget {
             config.base.circuit_breaker_recovery,
         );
 
+        let shutdown = CancellationToken::new();
+
         let target = Self {
             config,
             client,
             health,
+            shutdown,
         };
 
         // Spawn event loop task
@@ -127,25 +136,39 @@ impl MqttTarget {
     }
 
     /// Spawn the event loop task to drive the connection.
+    ///
+    /// The task will run until the shutdown token is cancelled (on drop).
     fn spawn_event_loop(&self, mut event_loop: EventLoop) {
-        let url = self.config.url.clone();
+        let url = sanitize_url_for_logging(&self.config.url);
+        let shutdown = self.shutdown.clone();
 
         tokio::spawn(async move {
             loop {
-                match event_loop.poll().await {
-                    Ok(Event::Incoming(Incoming::ConnAck(_))) => {
-                        debug!("MQTT connected to {}", url);
+                tokio::select! {
+                    biased;
+
+                    _ = shutdown.cancelled() => {
+                        debug!("MQTT event loop shutting down for {}", url);
+                        break;
                     }
-                    Ok(Event::Incoming(Incoming::PubAck(_))) => {
-                        trace!("MQTT PubAck received from {}", url);
-                    }
-                    Ok(Event::Incoming(Incoming::Disconnect)) => {
-                        warn!("MQTT disconnected from {}", url);
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        warn!("MQTT event loop error for {}: {}", url, e);
-                        tokio::time::sleep(Duration::from_secs(1)).await;
+
+                    result = event_loop.poll() => {
+                        match result {
+                            Ok(Event::Incoming(Incoming::ConnAck(_))) => {
+                                debug!("MQTT connected to {}", url);
+                            }
+                            Ok(Event::Incoming(Incoming::PubAck(_))) => {
+                                trace!("MQTT PubAck received from {}", url);
+                            }
+                            Ok(Event::Incoming(Incoming::Disconnect)) => {
+                                warn!("MQTT disconnected from {}", url);
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                warn!("MQTT event loop error for {}: {}", url, e);
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+                            }
+                        }
                     }
                 }
             }
@@ -190,13 +213,20 @@ impl MqttTarget {
             .map_err(|e| TransportError::Network(e.to_string()))
     }
 
-    /// Get a display label for logging.
+    /// Get a display label for logging (sanitized to prevent credential exposure).
     fn display_label(&self) -> String {
         if let Some(ref label) = self.config.base.label {
             label.clone()
         } else {
-            self.config.url.clone()
+            sanitize_url_for_logging(&self.config.url)
         }
+    }
+}
+
+impl Drop for MqttTarget {
+    fn drop(&mut self) {
+        // Cancel the event loop task to prevent resource leaks
+        self.shutdown.cancel();
     }
 }
 

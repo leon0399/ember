@@ -364,8 +364,15 @@ impl TransportCoordinator {
             if !ephemeral.is_empty() {
                 for target in ephemeral {
                     if target.is_available() {
-                        if target.submit_message(envelope.clone()).await.is_ok() {
-                            return Ok(());
+                        match target.submit_message(envelope.clone()).await {
+                            Ok(()) => return Ok(()),
+                            Err(e) => {
+                                debug!(
+                                    target = %target.id(),
+                                    error = %e,
+                                    "Ephemeral target failed, trying next"
+                                );
+                            }
                         }
                     }
                 }
@@ -383,8 +390,15 @@ impl TransportCoordinator {
             if !ephemeral.is_empty() {
                 for target in ephemeral {
                     if target.is_available() {
-                        if target.submit_tombstone(tombstone.clone()).await.is_ok() {
-                            return Ok(());
+                        match target.submit_tombstone(tombstone.clone()).await {
+                            Ok(()) => return Ok(()),
+                            Err(e) => {
+                                debug!(
+                                    target = %target.id(),
+                                    error = %e,
+                                    "Ephemeral target failed tombstone, trying next"
+                                );
+                            }
                         }
                     }
                 }
