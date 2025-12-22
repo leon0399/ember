@@ -373,6 +373,118 @@ impl<S: OutboxStore> ClientOutbox<S> {
         self.store.outbox_mark_expired(entry_id)
     }
 
+    // ========== Tiered Delivery Methods ==========
+
+    /// Record a tiered delivery result and update the state machine.
+    ///
+    /// This is the main entry point for recording delivery attempts from the
+    /// tiered delivery system. It:
+    /// 1. Adds successful targets to the success set
+    /// 2. Transitions from Urgent → Distributed if quorum is reached
+    /// 3. Schedules next retry based on phase
+    ///
+    /// # Arguments
+    /// * `entry_id` - Outbox entry ID
+    /// * `result` - Result from `TransportCoordinator::submit_tiered()`
+    /// * `config` - Tiered delivery configuration (for retry scheduling)
+    ///
+    /// # Returns
+    /// The new tiered delivery phase after processing
+    pub fn record_tiered_delivery_result(
+        &self,
+        entry_id: OutboxEntryId,
+        result: &DeliveryResult,
+        config: &TieredDeliveryConfig,
+    ) -> Result<TieredDeliveryPhase, S::Error> {
+        let now = now_ms();
+
+        // Add successful targets
+        for target_result in result.successful_targets() {
+            self.store.outbox_add_successful_target(entry_id, target_result)?;
+        }
+
+        // Check if we should transition to Distributed phase
+        if result.quorum_reached {
+            let new_phase = TieredDeliveryPhase::Distributed {
+                confidence: result.confidence.clone(),
+                reached_at_ms: now,
+                last_maintenance_ms: None,
+            };
+            self.store.outbox_update_tiered_phase(entry_id, &new_phase)?;
+
+            // Schedule maintenance (no urgent retry needed)
+            let next_maintenance = now + config.maintenance_interval.as_millis() as u64;
+            self.store.outbox_schedule_retry(&[entry_id], next_maintenance)?;
+
+            Ok(new_phase)
+        } else {
+            // Still in urgent phase - schedule next retry with backoff
+            let pending = self.store.outbox_get_by_id(entry_id)?;
+            let attempt_count = pending.map(|p| p.attempt_count()).unwrap_or(0) as u32;
+
+            let delay = config.calculate_retry_delay(attempt_count);
+            let next_retry = now + delay.as_millis() as u64;
+            self.store.outbox_schedule_retry(&[entry_id], next_retry)?;
+
+            Ok(TieredDeliveryPhase::Urgent)
+        }
+    }
+
+    /// Get urgent phase messages due for retry.
+    ///
+    /// These messages have not reached quorum and need aggressive retry.
+    pub fn get_urgent_retry_due(&self) -> Result<Vec<PendingMessage>, S::Error> {
+        let now = now_ms();
+        self.store.outbox_get_urgent_retry_due(now)
+    }
+
+    /// Get distributed phase messages due for maintenance refresh.
+    ///
+    /// These messages have reached quorum but need periodic refresh to ensure
+    /// copies still exist on storage nodes.
+    pub fn get_maintenance_due(
+        &self,
+        maintenance_interval_ms: u64,
+    ) -> Result<Vec<PendingMessage>, S::Error> {
+        let now = now_ms();
+        self.store.outbox_get_maintenance_due(now, maintenance_interval_ms)
+    }
+
+    /// Record a maintenance refresh and update the last maintenance time.
+    pub fn record_maintenance_refresh(&self, entry_id: OutboxEntryId) -> Result<(), S::Error> {
+        let now = now_ms();
+        self.store.outbox_update_last_maintenance(entry_id, now)
+    }
+
+    /// Upgrade a distributed message to direct delivery confidence.
+    ///
+    /// Called when P2P delivery succeeds during maintenance refresh.
+    /// Preserves the original `reached_at_ms` timestamp from when the message
+    /// first entered the Distributed phase.
+    pub fn upgrade_to_direct_delivery(
+        &self,
+        entry_id: OutboxEntryId,
+        target: &TargetId,
+    ) -> Result<(), S::Error> {
+        let now = now_ms();
+
+        // Get existing phase to preserve reached_at_ms
+        let pending = self.store.outbox_get_by_id(entry_id)?;
+        let reached_at_ms = match pending.as_ref().map(|p| &p.tiered_phase) {
+            Some(TieredDeliveryPhase::Distributed { reached_at_ms, .. }) => *reached_at_ms,
+            _ => now, // Fallback for non-distributed phases (shouldn't happen)
+        };
+
+        let new_phase = TieredDeliveryPhase::Distributed {
+            confidence: DeliveryConfidence::DirectDelivery {
+                target: target.clone(),
+            },
+            reached_at_ms,
+            last_maintenance_ms: Some(now),
+        };
+        self.store.outbox_update_tiered_phase(entry_id, &new_phase)
+    }
+
     /// Clean up old confirmed/expired entries.
     ///
     /// Removes entries that have been confirmed/expired for longer than
@@ -408,11 +520,15 @@ static DEFAULT_RETRY_POLICY: TransportRetryPolicy = TransportRetryPolicy {
 };
 
 /// Get current time in milliseconds since epoch.
+///
+/// # Panics
+/// Panics if system time is before Unix epoch, which indicates a serious
+/// system configuration error that would break all time-based operations.
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .expect("System time is before Unix epoch - check system clock configuration")
+        .as_millis() as u64
 }
 
 #[cfg(test)]
@@ -477,6 +593,8 @@ mod tests {
                 attempts: Vec::new(),
                 next_retry_at_ms: None,
                 confirmation: None,
+                successful_targets: std::collections::HashSet::new(),
+                tiered_phase: TieredDeliveryPhase::Urgent,
             };
 
             self.entries.borrow_mut().insert(id, msg);
@@ -625,6 +743,74 @@ mod tests {
                 }
             }
             Ok(count)
+        }
+
+        fn outbox_update_tiered_phase(
+            &self,
+            entry_id: OutboxEntryId,
+            phase: &TieredDeliveryPhase,
+        ) -> Result<(), Self::Error> {
+            if let Some(msg) = self.entries.borrow_mut().get_mut(&entry_id) {
+                msg.tiered_phase = phase.clone();
+            }
+            Ok(())
+        }
+
+        fn outbox_add_successful_target(
+            &self,
+            entry_id: OutboxEntryId,
+            target_id: &TargetId,
+        ) -> Result<(), Self::Error> {
+            if let Some(msg) = self.entries.borrow_mut().get_mut(&entry_id) {
+                msg.successful_targets.insert(target_id.clone());
+            }
+            Ok(())
+        }
+
+        fn outbox_get_urgent_retry_due(&self, now_ms: u64) -> Result<Vec<PendingMessage>, Self::Error> {
+            Ok(self
+                .entries
+                .borrow()
+                .values()
+                .filter(|m| m.is_urgent_retry_due(now_ms))
+                .cloned()
+                .collect())
+        }
+
+        fn outbox_get_maintenance_due(
+            &self,
+            now_ms: u64,
+            maintenance_interval_ms: u64,
+        ) -> Result<Vec<PendingMessage>, Self::Error> {
+            Ok(self
+                .entries
+                .borrow()
+                .values()
+                .filter(|m| m.is_maintenance_due(now_ms, maintenance_interval_ms))
+                .cloned()
+                .collect())
+        }
+
+        fn outbox_update_last_maintenance(
+            &self,
+            entry_id: OutboxEntryId,
+            last_maintenance_ms: u64,
+        ) -> Result<(), Self::Error> {
+            if let Some(msg) = self.entries.borrow_mut().get_mut(&entry_id) {
+                if let TieredDeliveryPhase::Distributed {
+                    confidence,
+                    reached_at_ms,
+                    ..
+                } = &msg.tiered_phase
+                {
+                    msg.tiered_phase = TieredDeliveryPhase::Distributed {
+                        confidence: confidence.clone(),
+                        reached_at_ms: *reached_at_ms,
+                        last_maintenance_ms: Some(last_maintenance_ms),
+                    };
+                }
+            }
+            Ok(())
         }
     }
 

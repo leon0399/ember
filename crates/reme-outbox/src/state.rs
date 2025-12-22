@@ -1,7 +1,15 @@
 //! Delivery state types for outbox tracking.
 
+use std::collections::HashSet;
+
 use reme_identity::PublicID;
 use reme_message::{ContentId, MessageID};
+
+// Re-export delivery types from reme-transport for convenience
+pub use reme_transport::{
+    DeliveryConfidence, DeliveryResult, DeliveryTier, QuorumStrategy, TargetId, TargetOutcome,
+    TargetResult, TierResult, TieredDeliveryConfig,
+};
 
 /// Unique identifier for an outbox entry (database row ID)
 pub type OutboxEntryId = i64;
@@ -172,6 +180,84 @@ pub enum DeliveryState {
     Expired,
 }
 
+/// Three-phase tiered delivery model.
+///
+/// Messages progress through these phases:
+/// 1. **Urgent**: Aggressive retry until quorum reached or direct delivery
+/// 2. **Distributed**: Periodic maintenance refresh, awaiting recipient ACK
+/// 3. **Confirmed**: Recipient acknowledged, ready for cleanup
+///
+/// Key guarantee: Client NEVER gives up. Message stays in outbox until recipient ACK.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TieredDeliveryPhase {
+    /// Phase 1: Quorum not yet reached, aggressive retries.
+    ///
+    /// Full pipeline retry: P2P → Internet → Radio.
+    /// Skip already-successful Internet targets.
+    Urgent,
+
+    /// Phase 2: Distributed (quorum OR direct delivery), periodic maintenance.
+    ///
+    /// Full pipeline refresh: P2P → Internet (refresh ALL targets).
+    /// Recipient may come online for direct delivery.
+    Distributed {
+        /// How confident are we in delivery?
+        confidence: DeliveryConfidence,
+        /// When we reached this phase (ms since epoch)
+        reached_at_ms: u64,
+        /// Last maintenance refresh time (ms since epoch)
+        last_maintenance_ms: Option<u64>,
+    },
+
+    /// Phase 3: Recipient confirmed receipt via DAG/tombstone.
+    ///
+    /// Ready for cleanup after delay.
+    Confirmed {
+        /// When confirmation was received (ms since epoch)
+        confirmed_at_ms: u64,
+    },
+}
+
+impl TieredDeliveryPhase {
+    /// Check if this message is in the urgent phase (needs aggressive retry).
+    pub fn is_urgent(&self) -> bool {
+        matches!(self, Self::Urgent)
+    }
+
+    /// Check if this message is distributed (needs periodic maintenance).
+    pub fn is_distributed(&self) -> bool {
+        matches!(self, Self::Distributed { .. })
+    }
+
+    /// Check if this message is confirmed (ready for cleanup).
+    pub fn is_confirmed(&self) -> bool {
+        matches!(self, Self::Confirmed { .. })
+    }
+
+    /// Get confidence level if distributed.
+    pub fn confidence(&self) -> Option<&DeliveryConfidence> {
+        match self {
+            Self::Distributed { confidence, .. } => Some(confidence),
+            _ => None,
+        }
+    }
+
+    /// Check if maintenance is due based on interval.
+    pub fn is_maintenance_due(&self, now_ms: u64, maintenance_interval_ms: u64) -> bool {
+        match self {
+            Self::Distributed {
+                last_maintenance_ms,
+                reached_at_ms,
+                ..
+            } => {
+                let last = last_maintenance_ms.unwrap_or(*reached_at_ms);
+                now_ms.saturating_sub(last) >= maintenance_interval_ms
+            }
+            _ => false,
+        }
+    }
+}
+
 /// A message pending delivery confirmation.
 #[derive(Debug, Clone)]
 pub struct PendingMessage {
@@ -199,6 +285,20 @@ pub struct PendingMessage {
     pub next_retry_at_ms: Option<u64>,
     /// Confirmation if delivered
     pub confirmation: Option<DeliveryConfirmation>,
+    /// Targets that have successfully received the message.
+    ///
+    /// Used for:
+    /// - Skipping already-successful targets in urgent retry
+    /// - Tracking quorum progress
+    /// - Determining which targets need refresh in maintenance
+    pub successful_targets: HashSet<TargetId>,
+    /// Current tiered delivery phase.
+    ///
+    /// Tracks the three-phase delivery model:
+    /// 1. Urgent: Aggressive retry until quorum/direct delivery
+    /// 2. Distributed: Periodic maintenance, awaiting ACK
+    /// 3. Confirmed: Ready for cleanup
+    pub tiered_phase: TieredDeliveryPhase,
 }
 
 impl PendingMessage {
@@ -265,6 +365,45 @@ impl PendingMessage {
             .rev()
             .find(|a| a.transport_id.starts_with(transport_prefix))
     }
+
+    /// Get the number of successful targets.
+    pub fn success_count(&self) -> usize {
+        self.successful_targets.len()
+    }
+
+    /// Check if a specific target has successfully received the message.
+    pub fn is_target_successful(&self, target_id: &TargetId) -> bool {
+        self.successful_targets.contains(target_id)
+    }
+
+    /// Get failed targets from a set of known targets.
+    ///
+    /// Returns targets that are NOT in the successful set.
+    pub fn failed_targets<'a>(
+        &self,
+        all_targets: impl Iterator<Item = &'a TargetId>,
+    ) -> Vec<TargetId> {
+        all_targets
+            .filter(|t| !self.successful_targets.contains(*t))
+            .cloned()
+            .collect()
+    }
+
+    /// Check if in urgent phase and due for retry.
+    pub fn is_urgent_retry_due(&self, now_ms: u64) -> bool {
+        self.tiered_phase.is_urgent()
+            && self.confirmation.is_none()
+            && self.expired_at_ms.is_none()
+            && self.is_due_for_retry(now_ms)
+    }
+
+    /// Check if in distributed phase and due for maintenance.
+    pub fn is_maintenance_due(&self, now_ms: u64, maintenance_interval_ms: u64) -> bool {
+        self.tiered_phase
+            .is_maintenance_due(now_ms, maintenance_interval_ms)
+            && self.confirmation.is_none()
+            && self.expired_at_ms.is_none()
+    }
 }
 
 #[cfg(test)]
@@ -285,6 +424,8 @@ mod tests {
             attempts: vec![],
             next_retry_at_ms: None,
             confirmation: None,
+            successful_targets: HashSet::new(),
+            tiered_phase: TieredDeliveryPhase::Urgent,
         }
     }
 
@@ -357,5 +498,161 @@ mod tests {
         assert!(AttemptError::Unavailable { message: "test".into() }.is_transient());
         assert!(!AttemptError::Encoding { message: "test".into() }.is_transient());
         assert!(AttemptError::TimedOut { timeout_ms: 1000 }.is_transient());
+    }
+
+    // ========== Tiered Delivery Phase Tests ==========
+
+    #[test]
+    fn test_tiered_phase_urgent() {
+        let phase = TieredDeliveryPhase::Urgent;
+        assert!(phase.is_urgent());
+        assert!(!phase.is_distributed());
+        assert!(!phase.is_confirmed());
+        assert!(phase.confidence().is_none());
+    }
+
+    #[test]
+    fn test_tiered_phase_distributed() {
+        let phase = TieredDeliveryPhase::Distributed {
+            confidence: DeliveryConfidence::QuorumReached {
+                count: 2,
+                required: 2,
+            },
+            reached_at_ms: 1000,
+            last_maintenance_ms: None,
+        };
+        assert!(!phase.is_urgent());
+        assert!(phase.is_distributed());
+        assert!(!phase.is_confirmed());
+        assert!(phase.confidence().is_some());
+    }
+
+    #[test]
+    fn test_tiered_phase_confirmed() {
+        let phase = TieredDeliveryPhase::Confirmed {
+            confirmed_at_ms: 5000,
+        };
+        assert!(!phase.is_urgent());
+        assert!(!phase.is_distributed());
+        assert!(phase.is_confirmed());
+    }
+
+    #[test]
+    fn test_maintenance_due() {
+        let phase = TieredDeliveryPhase::Distributed {
+            confidence: DeliveryConfidence::QuorumReached {
+                count: 2,
+                required: 2,
+            },
+            reached_at_ms: 1000,
+            last_maintenance_ms: None,
+        };
+
+        // Not due yet (only 1 hour elapsed, need 4 hours)
+        let maintenance_interval = 4 * 60 * 60 * 1000; // 4 hours
+        assert!(!phase.is_maintenance_due(3_600_000, maintenance_interval)); // 1 hour
+
+        // Due (5 hours elapsed)
+        assert!(phase.is_maintenance_due(5 * 3_600_000, maintenance_interval));
+    }
+
+    #[test]
+    fn test_maintenance_due_with_last_maintenance() {
+        let phase = TieredDeliveryPhase::Distributed {
+            confidence: DeliveryConfidence::QuorumReached {
+                count: 2,
+                required: 2,
+            },
+            reached_at_ms: 1000,
+            last_maintenance_ms: Some(10_000_000), // Last maintenance at 10,000 seconds
+        };
+
+        let maintenance_interval = 4 * 60 * 60 * 1000; // 4 hours
+
+        // Not due (only 1 hour since last maintenance)
+        assert!(!phase.is_maintenance_due(10_000_000 + 3_600_000, maintenance_interval));
+
+        // Due (5 hours since last maintenance)
+        assert!(phase.is_maintenance_due(10_000_000 + 5 * 3_600_000, maintenance_interval));
+    }
+
+    #[test]
+    fn test_successful_targets() {
+        let mut msg = make_pending_message(1);
+        assert_eq!(msg.success_count(), 0);
+
+        let node1 = TargetId::http("https://node1.example.com");
+        let node2 = TargetId::http("https://node2.example.com");
+        let node3 = TargetId::http("https://node3.example.com");
+
+        msg.successful_targets.insert(node1.clone());
+        msg.successful_targets.insert(node2.clone());
+
+        assert_eq!(msg.success_count(), 2);
+        assert!(msg.is_target_successful(&node1));
+        assert!(msg.is_target_successful(&node2));
+        assert!(!msg.is_target_successful(&node3));
+    }
+
+    #[test]
+    fn test_failed_targets() {
+        let mut msg = make_pending_message(1);
+
+        let node1 = TargetId::http("https://node1.example.com");
+        let node2 = TargetId::http("https://node2.example.com");
+        let node3 = TargetId::http("https://node3.example.com");
+
+        msg.successful_targets.insert(node1.clone());
+
+        let all_targets = vec![node1.clone(), node2.clone(), node3.clone()];
+
+        let failed = msg.failed_targets(all_targets.iter());
+        assert_eq!(failed.len(), 2);
+        assert!(failed.contains(&node2));
+        assert!(failed.contains(&node3));
+    }
+
+    #[test]
+    fn test_urgent_retry_due() {
+        let mut msg = make_pending_message(1);
+        msg.tiered_phase = TieredDeliveryPhase::Urgent;
+        msg.next_retry_at_ms = Some(1000);
+
+        // Due for retry
+        assert!(msg.is_urgent_retry_due(2000));
+
+        // Not due yet
+        assert!(!msg.is_urgent_retry_due(500));
+
+        // Distributed phase - not urgent
+        msg.tiered_phase = TieredDeliveryPhase::Distributed {
+            confidence: DeliveryConfidence::QuorumReached {
+                count: 2,
+                required: 2,
+            },
+            reached_at_ms: 1000,
+            last_maintenance_ms: None,
+        };
+        assert!(!msg.is_urgent_retry_due(2000));
+    }
+
+    #[test]
+    fn test_maintenance_due_pending_message() {
+        let mut msg = make_pending_message(1);
+        let maintenance_interval = 4 * 60 * 60 * 1000;
+
+        // Urgent phase - no maintenance
+        assert!(!msg.is_maintenance_due(10_000_000, maintenance_interval));
+
+        // Distributed phase - maintenance due
+        msg.tiered_phase = TieredDeliveryPhase::Distributed {
+            confidence: DeliveryConfidence::QuorumReached {
+                count: 2,
+                required: 2,
+            },
+            reached_at_ms: 1000,
+            last_maintenance_ms: None,
+        };
+        assert!(msg.is_maintenance_due(5 * 3_600_000, maintenance_interval));
     }
 }

@@ -2494,6 +2494,7 @@ dependencies = [
  "bincode",
  "reme-identity",
  "reme-message",
+ "reme-transport",
  "thiserror 2.0.17",
  "tokio",
 ]

@@ -1,8 +1,8 @@
 use reme_identity::{InvalidPublicKey, PublicID};
 use reme_message::{Content, ContentId, MessageID};
 use reme_outbox::{
-    AttemptError, AttemptResult, DeliveryConfirmation, OutboxEntryId, OutboxStore, PendingMessage,
-    TransportAttempt,
+    AttemptError, AttemptResult, DeliveryConfidence, DeliveryConfirmation, OutboxEntryId,
+    OutboxStore, PendingMessage, TargetId, TieredDeliveryPhase, TransportAttempt,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use thiserror::Error;
@@ -95,7 +95,14 @@ impl Storage {
                 confirmed_at_ms INTEGER,             -- NULL = not confirmed
                 expired_at_ms INTEGER,               -- NULL = not expired
                 confirmation_type TEXT,              -- 'dag', future: 'zk_receipt', 'p2p_ack'
-                confirmation_data BLOB               -- Type-specific confirmation data
+                confirmation_data BLOB,              -- Type-specific confirmation data
+                -- Tiered delivery phase tracking
+                delivery_phase TEXT DEFAULT 'urgent', -- 'urgent', 'distributed', 'confirmed'
+                quorum_reached_at_ms INTEGER,        -- When phase changed to 'distributed'
+                last_maintenance_ms INTEGER,         -- Last maintenance refresh
+                quorum_count INTEGER,                -- Number of successful targets for QuorumReached
+                quorum_required INTEGER,             -- Required targets for QuorumReached
+                direct_target_id TEXT                -- Target ID for DirectDelivery confidence
             );
 
             CREATE INDEX IF NOT EXISTS idx_outbox_content_id ON outbox(content_id);
@@ -103,6 +110,22 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_outbox_retry
                 ON outbox(next_retry_at_ms)
                 WHERE confirmed_at_ms IS NULL AND expired_at_ms IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_outbox_urgent_retry
+                ON outbox(next_retry_at_ms)
+                WHERE delivery_phase = 'urgent' AND confirmed_at_ms IS NULL AND expired_at_ms IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_outbox_maintenance
+                ON outbox(last_maintenance_ms)
+                WHERE delivery_phase = 'distributed' AND confirmed_at_ms IS NULL AND expired_at_ms IS NULL;
+
+            -- Per-target success tracking (which targets have this message)
+            CREATE TABLE IF NOT EXISTS outbox_successes (
+                outbox_id INTEGER NOT NULL REFERENCES outbox(id) ON DELETE CASCADE,
+                target_id TEXT NOT NULL,
+                succeeded_at_ms INTEGER NOT NULL,
+                PRIMARY KEY (outbox_id, target_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_successes_outbox ON outbox_successes(outbox_id);
 
             -- Delivery attempts (separate table for history)
             CREATE TABLE IF NOT EXISTS outbox_attempts (
@@ -419,6 +442,116 @@ impl Storage {
         }
     }
 
+    /// Load successful targets for an outbox entry
+    fn load_successful_targets(
+        &self,
+        outbox_id: i64,
+    ) -> Result<std::collections::HashSet<TargetId>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT target_id FROM outbox_successes WHERE outbox_id = ?",
+        )?;
+
+        let rows = stmt.query_map(params![outbox_id], |row| {
+            let target_id: String = row.get(0)?;
+            Ok(target_id)
+        })?;
+
+        let mut targets = std::collections::HashSet::new();
+        for row in rows {
+            let target_str = row?;
+            // Parse target_id string back to TargetId
+            // Format is "type:url" - we reconstruct using the appropriate constructor
+            if let Some(url) = target_str.strip_prefix("http:") {
+                targets.insert(TargetId::http(url));
+            } else if let Some(url) = target_str.strip_prefix("mqtt:") {
+                targets.insert(TargetId::mqtt(url));
+            } else {
+                return Err(StorageError::Serialization(format!(
+                    "Unknown target_id prefix in '{}'",
+                    target_str
+                )));
+            }
+        }
+
+        Ok(targets)
+    }
+
+    /// Load tiered delivery phase for an outbox entry
+    fn load_tiered_phase(&self, outbox_id: i64) -> Result<TieredDeliveryPhase, StorageError> {
+        let result: Option<(
+            String,           // delivery_phase
+            Option<u64>,      // quorum_reached_at_ms
+            Option<u64>,      // last_maintenance_ms
+            Option<u32>,      // quorum_count
+            Option<u32>,      // quorum_required
+            Option<String>,   // direct_target_id
+        )> = self
+            .conn
+            .query_row(
+                "SELECT delivery_phase, quorum_reached_at_ms, last_maintenance_ms,
+                        quorum_count, quorum_required, direct_target_id
+                 FROM outbox
+                 WHERE id = ?",
+                params![outbox_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?.unwrap_or_else(|| "urgent".to_string()),
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        match result {
+            Some((phase, reached_at_ms, last_maintenance_ms, quorum_count, quorum_required, direct_target_id)) => {
+                match phase.as_str() {
+                    "distributed" => {
+                        let confidence = if let Some(target_str) = direct_target_id {
+                            // Direct delivery - parse target
+                            let target = if let Some(url) = target_str.strip_prefix("http:") {
+                                TargetId::http(url)
+                            } else if let Some(url) = target_str.strip_prefix("mqtt:") {
+                                TargetId::mqtt(url)
+                            } else {
+                                return Err(StorageError::Serialization(format!(
+                                    "Unknown target_id prefix in '{}'",
+                                    target_str
+                                )));
+                            };
+                            DeliveryConfidence::DirectDelivery { target }
+                        } else {
+                            DeliveryConfidence::QuorumReached {
+                                count: quorum_count.unwrap_or(0),
+                                required: quorum_required.unwrap_or(1),
+                            }
+                        };
+                        Ok(TieredDeliveryPhase::Distributed {
+                            confidence,
+                            reached_at_ms: reached_at_ms.unwrap_or(0),
+                            last_maintenance_ms,
+                        })
+                    }
+                    "confirmed" => Ok(TieredDeliveryPhase::Confirmed {
+                        confirmed_at_ms: reached_at_ms.unwrap_or(0),
+                    }),
+                    "urgent" => Ok(TieredDeliveryPhase::Urgent),
+                    unknown => {
+                        tracing::warn!(
+                            phase = %unknown,
+                            "Unknown delivery phase in database, falling back to Urgent"
+                        );
+                        Ok(TieredDeliveryPhase::Urgent)
+                    }
+                }
+            }
+            None => Ok(TieredDeliveryPhase::Urgent),
+        }
+    }
+
     /// Load a PendingMessage from row data
     #[allow(clippy::too_many_arguments)]
     fn load_pending_message(
@@ -468,6 +601,12 @@ impl Storage {
         // Load confirmation
         let confirmation = Self::load_confirmation(confirmation_type, confirmation_data);
 
+        // Load successful targets
+        let successful_targets = self.load_successful_targets(id)?;
+
+        // Load tiered phase (defaults to Urgent for existing entries)
+        let tiered_phase = self.load_tiered_phase(id)?;
+
         Ok(PendingMessage {
             id,
             recipient,
@@ -481,6 +620,8 @@ impl Storage {
             attempts,
             next_retry_at_ms,
             confirmation,
+            successful_targets,
+            tiered_phase,
         })
     }
 }
@@ -503,8 +644,8 @@ impl OutboxStore for Storage {
     ) -> Result<OutboxEntryId, Self::Error> {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+            .expect("System time is before Unix epoch")
+            .as_millis() as u64;
 
         let recipient_bytes = recipient.to_bytes();
         let message_id_bytes = message_id.as_bytes();
@@ -915,7 +1056,12 @@ impl OutboxStore for Storage {
                 Ok(())
             }
             Err(e) => {
-                let _ = self.conn.execute("ROLLBACK", []);
+                if let Err(rollback_err) = self.conn.execute("ROLLBACK", []) {
+                    tracing::error!(
+                        "Transaction rollback failed after error: {} (rollback error: {})",
+                        e, rollback_err
+                    );
+                }
                 Err(e)
             }
         }
@@ -928,8 +1074,8 @@ impl OutboxStore for Storage {
     ) -> Result<(), Self::Error> {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+            .expect("System time is before Unix epoch")
+            .as_millis() as u64;
 
         let (confirmation_type, confirmation_data) = match confirmation {
             DeliveryConfirmation::Dag { observed_in_message_id } => {
@@ -949,8 +1095,8 @@ impl OutboxStore for Storage {
     fn outbox_mark_expired(&self, entry_id: OutboxEntryId) -> Result<(), Self::Error> {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+            .expect("System time is before Unix epoch")
+            .as_millis() as u64;
 
         self.conn.execute(
             "UPDATE outbox SET expired_at_ms = ?, next_retry_at_ms = NULL WHERE id = ?",
@@ -984,7 +1130,12 @@ impl OutboxStore for Storage {
                 Ok(())
             }
             Err(e) => {
-                let _ = self.conn.execute("ROLLBACK", []);
+                if let Err(rollback_err) = self.conn.execute("ROLLBACK", []) {
+                    tracing::error!(
+                        "Transaction rollback failed after error: {} (rollback error: {})",
+                        e, rollback_err
+                    );
+                }
                 Err(e)
             }
         }
@@ -1010,6 +1161,223 @@ impl OutboxStore for Storage {
         )?;
 
         Ok(count as u64)
+    }
+
+    // ========== Tiered Delivery Methods ==========
+
+    fn outbox_update_tiered_phase(
+        &self,
+        entry_id: OutboxEntryId,
+        phase: &TieredDeliveryPhase,
+    ) -> Result<(), Self::Error> {
+        match phase {
+            TieredDeliveryPhase::Urgent => {
+                self.conn.execute(
+                    "UPDATE outbox SET delivery_phase = 'urgent', quorum_reached_at_ms = NULL,
+                     last_maintenance_ms = NULL, quorum_count = NULL, quorum_required = NULL,
+                     direct_target_id = NULL
+                     WHERE id = ?",
+                    params![entry_id],
+                )?;
+            }
+            TieredDeliveryPhase::Distributed {
+                confidence,
+                reached_at_ms,
+                last_maintenance_ms,
+            } => {
+                let (quorum_count, quorum_required, direct_target_id) = match confidence {
+                    DeliveryConfidence::QuorumReached { count, required } => {
+                        (Some(*count), Some(*required), None)
+                    }
+                    DeliveryConfidence::DirectDelivery { target } => {
+                        (None, None, Some(target.as_str().to_string()))
+                    }
+                };
+                self.conn.execute(
+                    "UPDATE outbox SET delivery_phase = 'distributed', quorum_reached_at_ms = ?,
+                     last_maintenance_ms = ?, quorum_count = ?, quorum_required = ?,
+                     direct_target_id = ?
+                     WHERE id = ?",
+                    params![
+                        *reached_at_ms as i64,
+                        last_maintenance_ms.map(|v| v as i64),
+                        quorum_count,
+                        quorum_required,
+                        direct_target_id,
+                        entry_id,
+                    ],
+                )?;
+            }
+            TieredDeliveryPhase::Confirmed { confirmed_at_ms } => {
+                self.conn.execute(
+                    "UPDATE outbox SET delivery_phase = 'confirmed', quorum_reached_at_ms = ?
+                     WHERE id = ?",
+                    params![*confirmed_at_ms as i64, entry_id],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn outbox_add_successful_target(
+        &self,
+        entry_id: OutboxEntryId,
+        target_id: &TargetId,
+    ) -> Result<(), Self::Error> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("System time is before Unix epoch")
+            .as_millis() as u64;
+
+        self.conn.execute(
+            "INSERT OR REPLACE INTO outbox_successes (outbox_id, target_id, succeeded_at_ms)
+             VALUES (?, ?, ?)",
+            params![entry_id, target_id.as_str(), now_ms as i64],
+        )?;
+        Ok(())
+    }
+
+    fn outbox_get_urgent_retry_due(&self, now_ms: u64) -> Result<Vec<PendingMessage>, Self::Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, recipient_id, content_id, message_id, envelope_bytes, inner_bytes,
+                    created_at_ms, expires_at_ms, next_retry_at_ms, confirmation_type, confirmation_data
+             FROM outbox
+             WHERE confirmed_at_ms IS NULL
+               AND expired_at_ms IS NULL
+               AND (delivery_phase IS NULL OR delivery_phase = 'urgent')
+               AND (next_retry_at_ms IS NULL OR next_retry_at_ms <= ?)
+             ORDER BY created_at_ms ASC",
+        )?;
+
+        let rows = stmt.query_map(params![now_ms as i64], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
+                row.get::<_, Vec<u8>>(5)?,
+                row.get::<_, u64>(6)?,
+                row.get::<_, Option<u64>>(7)?,
+                row.get::<_, Option<u64>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<Vec<u8>>>(10)?,
+            ))
+        })?;
+
+        let mut messages = Vec::new();
+        for row in rows {
+            let (
+                id,
+                recipient_id,
+                content_id,
+                message_id,
+                envelope_bytes,
+                inner_bytes,
+                created_at_ms,
+                expires_at_ms,
+                next_retry_at_ms,
+                confirmation_type,
+                confirmation_data,
+            ) = row?;
+            messages.push(self.load_pending_message(
+                id,
+                recipient_id,
+                content_id,
+                message_id,
+                envelope_bytes,
+                inner_bytes,
+                created_at_ms,
+                expires_at_ms,
+                None,
+                next_retry_at_ms,
+                confirmation_type,
+                confirmation_data,
+            )?);
+        }
+
+        Ok(messages)
+    }
+
+    fn outbox_get_maintenance_due(
+        &self,
+        now_ms: u64,
+        maintenance_interval_ms: u64,
+    ) -> Result<Vec<PendingMessage>, Self::Error> {
+        let cutoff = now_ms.saturating_sub(maintenance_interval_ms);
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id, recipient_id, content_id, message_id, envelope_bytes, inner_bytes,
+                    created_at_ms, expires_at_ms, next_retry_at_ms, confirmation_type, confirmation_data
+             FROM outbox
+             WHERE confirmed_at_ms IS NULL
+               AND expired_at_ms IS NULL
+               AND delivery_phase = 'distributed'
+               AND (next_retry_at_ms IS NULL OR next_retry_at_ms <= ?)
+               AND (last_maintenance_ms IS NULL OR last_maintenance_ms <= ?)
+             ORDER BY last_maintenance_ms ASC NULLS FIRST",
+        )?;
+
+        let rows = stmt.query_map(params![now_ms as i64, cutoff as i64], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
+                row.get::<_, Vec<u8>>(5)?,
+                row.get::<_, u64>(6)?,
+                row.get::<_, Option<u64>>(7)?,
+                row.get::<_, Option<u64>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<Vec<u8>>>(10)?,
+            ))
+        })?;
+
+        let mut messages = Vec::new();
+        for row in rows {
+            let (
+                id,
+                recipient_id,
+                content_id,
+                message_id,
+                envelope_bytes,
+                inner_bytes,
+                created_at_ms,
+                expires_at_ms,
+                next_retry_at_ms,
+                confirmation_type,
+                confirmation_data,
+            ) = row?;
+            messages.push(self.load_pending_message(
+                id,
+                recipient_id,
+                content_id,
+                message_id,
+                envelope_bytes,
+                inner_bytes,
+                created_at_ms,
+                expires_at_ms,
+                None,
+                next_retry_at_ms,
+                confirmation_type,
+                confirmation_data,
+            )?);
+        }
+
+        Ok(messages)
+    }
+
+    fn outbox_update_last_maintenance(
+        &self,
+        entry_id: OutboxEntryId,
+        last_maintenance_ms: u64,
+    ) -> Result<(), Self::Error> {
+        self.conn.execute(
+            "UPDATE outbox SET last_maintenance_ms = ? WHERE id = ?",
+            params![last_maintenance_ms as i64, entry_id],
+        )?;
+        Ok(())
     }
 }
 

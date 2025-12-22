@@ -44,8 +44,10 @@
 use clap::Parser;
 use config::{Config, Environment, File, FileFormat};
 use directories::ProjectDirs;
+use reme_transport::{QuorumStrategy, TieredDeliveryConfig};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::time::Duration;
 use tracing::{warn, Level};
 
 /// CLI arguments for the client
@@ -161,6 +163,199 @@ impl Default for OutboxAppConfig {
             attempt_timeout_secs: default_outbox_attempt_timeout(),
             retry_initial_delay_secs: default_outbox_retry_initial_delay(),
             retry_max_delay_secs: default_outbox_retry_max_delay(),
+        }
+    }
+}
+
+/// Quorum strategy configuration.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QuorumStrategyConfig {
+    /// Any single transport success (legacy behavior).
+    Any,
+    /// Fixed count: at least N transports must succeed.
+    Count(u32),
+    /// Fraction of configured stable transports (e.g., 0.5 = majority).
+    Fraction(f32),
+    /// All configured stable transports must succeed.
+    All,
+}
+
+impl Default for QuorumStrategyConfig {
+    fn default() -> Self {
+        QuorumStrategyConfig::Any
+    }
+}
+
+impl QuorumStrategyConfig {
+    /// Validate the quorum strategy configuration.
+    ///
+    /// Returns an error message if the configuration is invalid.
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            QuorumStrategyConfig::Any | QuorumStrategyConfig::All => Ok(()),
+            QuorumStrategyConfig::Count(n) if *n == 0 => {
+                Err("Quorum count must be > 0".to_string())
+            }
+            QuorumStrategyConfig::Count(_) => Ok(()),
+            QuorumStrategyConfig::Fraction(f) if f.is_nan() || f.is_infinite() => {
+                Err(format!("Invalid quorum fraction {}: must be a finite number", f))
+            }
+            QuorumStrategyConfig::Fraction(f) if *f <= 0.0 || *f > 1.0 => {
+                Err(format!("Quorum fraction {} out of range: must be in (0.0, 1.0]", f))
+            }
+            QuorumStrategyConfig::Fraction(_) => Ok(()),
+        }
+    }
+}
+
+/// Tiered delivery configuration for quorum semantics.
+///
+/// This controls how messages flow through delivery tiers:
+/// - Tier 1 (Direct): Race all ephemeral targets, exit on any success
+/// - Tier 2 (Quorum): Broadcast to all stable targets, require quorum
+/// - Tier 3 (Best-Effort): Fire-and-forget delivery (future)
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DeliveryAppConfig {
+    /// Quorum strategy for Quorum tier.
+    #[serde(default)]
+    pub quorum: QuorumStrategyConfig,
+
+    // Phase 1 (Urgent) retry settings
+
+    /// Initial retry delay in seconds for urgent phase.
+    #[serde(default = "default_urgent_initial_delay")]
+    pub urgent_initial_delay_secs: u64,
+
+    /// Maximum retry delay in seconds for urgent phase.
+    #[serde(default = "default_urgent_max_delay")]
+    pub urgent_max_delay_secs: u64,
+
+    /// Backoff multiplier for urgent phase retries.
+    #[serde(default = "default_urgent_backoff_multiplier")]
+    pub urgent_backoff_multiplier: f32,
+
+    // Phase 2 (Maintenance) settings
+
+    /// Maintenance refresh interval in hours for distributed phase.
+    #[serde(default = "default_maintenance_interval_hours")]
+    pub maintenance_interval_hours: u64,
+
+    /// Enable maintenance refreshes (default: true).
+    #[serde(default = "default_maintenance_enabled")]
+    pub maintenance_enabled: bool,
+
+    // Tier timeouts
+
+    /// Direct tier timeout in milliseconds.
+    #[serde(default = "default_direct_tier_timeout_ms")]
+    pub direct_tier_timeout_ms: u64,
+
+    /// Quorum tier timeout in seconds.
+    #[serde(default = "default_quorum_tier_timeout_secs")]
+    pub quorum_tier_timeout_secs: u64,
+}
+
+fn default_urgent_initial_delay() -> u64 { 5 }
+fn default_urgent_max_delay() -> u64 { 60 }
+fn default_urgent_backoff_multiplier() -> f32 { 2.0 }
+fn default_maintenance_interval_hours() -> u64 { 4 }
+fn default_maintenance_enabled() -> bool { true }
+fn default_direct_tier_timeout_ms() -> u64 { 500 }
+fn default_quorum_tier_timeout_secs() -> u64 { 5 }
+
+impl Default for DeliveryAppConfig {
+    fn default() -> Self {
+        Self {
+            quorum: QuorumStrategyConfig::default(),
+            urgent_initial_delay_secs: default_urgent_initial_delay(),
+            urgent_max_delay_secs: default_urgent_max_delay(),
+            urgent_backoff_multiplier: default_urgent_backoff_multiplier(),
+            maintenance_interval_hours: default_maintenance_interval_hours(),
+            maintenance_enabled: default_maintenance_enabled(),
+            direct_tier_timeout_ms: default_direct_tier_timeout_ms(),
+            quorum_tier_timeout_secs: default_quorum_tier_timeout_secs(),
+        }
+    }
+}
+
+impl DeliveryAppConfig {
+    /// Validate all delivery configuration values.
+    ///
+    /// Returns a list of validation errors (empty if valid).
+    pub fn validate(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+
+        // Validate quorum strategy
+        if let Err(e) = self.quorum.validate() {
+            errors.push(e);
+        }
+
+        // Validate backoff multiplier
+        if self.urgent_backoff_multiplier <= 1.0 {
+            errors.push(format!(
+                "Backoff multiplier {} should be > 1.0 for exponential backoff",
+                self.urgent_backoff_multiplier
+            ));
+        }
+
+        // Validate delay ordering
+        if self.urgent_initial_delay_secs > self.urgent_max_delay_secs {
+            errors.push(format!(
+                "Initial delay {}s exceeds max delay {}s",
+                self.urgent_initial_delay_secs, self.urgent_max_delay_secs
+            ));
+        }
+
+        // Validate timeouts are non-zero
+        if self.direct_tier_timeout_ms == 0 {
+            errors.push("Direct tier timeout must be > 0".to_string());
+        }
+        if self.quorum_tier_timeout_secs == 0 {
+            errors.push("Quorum tier timeout must be > 0".to_string());
+        }
+
+        errors
+    }
+}
+
+/// Convert config quorum strategy to transport quorum strategy.
+impl From<QuorumStrategyConfig> for QuorumStrategy {
+    fn from(config: QuorumStrategyConfig) -> Self {
+        // Validate and log warnings for invalid values
+        if let Err(e) = config.validate() {
+            tracing::warn!("Invalid quorum strategy config: {} - using default", e);
+            return QuorumStrategy::Any;
+        }
+
+        match config {
+            QuorumStrategyConfig::Any => QuorumStrategy::Any,
+            QuorumStrategyConfig::Count(n) => QuorumStrategy::Count(n),
+            QuorumStrategyConfig::Fraction(f) => QuorumStrategy::Fraction(f),
+            QuorumStrategyConfig::All => QuorumStrategy::All,
+        }
+    }
+}
+
+/// Convert config delivery settings to transport tiered delivery config.
+impl From<DeliveryAppConfig> for TieredDeliveryConfig {
+    fn from(config: DeliveryAppConfig) -> Self {
+        // Validate and log warnings
+        let validation_errors = config.validate();
+        for error in &validation_errors {
+            tracing::warn!("Delivery config warning: {}", error);
+        }
+
+        TieredDeliveryConfig {
+            quorum: config.quorum.into(),
+            urgent_initial_delay: Duration::from_secs(config.urgent_initial_delay_secs),
+            urgent_max_delay: Duration::from_secs(config.urgent_max_delay_secs),
+            urgent_backoff_multiplier: config.urgent_backoff_multiplier,
+            maintenance_interval: Duration::from_secs(config.maintenance_interval_hours * 60 * 60),
+            maintenance_enabled: config.maintenance_enabled,
+            direct_tier_timeout: Duration::from_millis(config.direct_tier_timeout_ms),
+            quorum_tier_timeout: Duration::from_secs(config.quorum_tier_timeout_secs),
+            excluded_targets: std::collections::HashSet::new(),
         }
     }
 }
@@ -323,6 +518,10 @@ pub struct AppConfig {
     /// Outbox configuration
     #[serde(default)]
     pub outbox: OutboxAppConfig,
+
+    /// Tiered delivery configuration
+    #[serde(default)]
+    pub delivery: DeliveryAppConfig,
 }
 
 fn default_http() -> Vec<HttpEndpoint> {
@@ -337,6 +536,7 @@ impl Default for AppConfig {
             data_dir: default_data_dir(),
             log_level: "info".to_string(),
             outbox: OutboxAppConfig::default(),
+            delivery: DeliveryAppConfig::default(),
         }
     }
 }
@@ -365,6 +565,9 @@ struct RawConfig {
     /// Outbox config section
     #[serde(default)]
     outbox: RawOutboxConfig,
+    /// Delivery config section
+    #[serde(default)]
+    delivery: RawDeliveryConfig,
 }
 
 /// Parse HTTP endpoints from REME_HTTP environment variable (JSON format)
@@ -405,6 +608,19 @@ struct RawOutboxConfig {
     attempt_timeout_secs: Option<u64>,
     retry_initial_delay_secs: Option<u64>,
     retry_max_delay_secs: Option<u64>,
+}
+
+/// Raw delivery config from file/env
+#[derive(Debug, Clone, Deserialize, Default)]
+struct RawDeliveryConfig {
+    quorum: Option<QuorumStrategyConfig>,
+    urgent_initial_delay_secs: Option<u64>,
+    urgent_max_delay_secs: Option<u64>,
+    urgent_backoff_multiplier: Option<f32>,
+    maintenance_interval_hours: Option<u64>,
+    maintenance_enabled: Option<bool>,
+    direct_tier_timeout_ms: Option<u64>,
+    quorum_tier_timeout_secs: Option<u64>,
 }
 
 /// Load configuration from all sources with proper layering
@@ -556,12 +772,35 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
             .unwrap_or(outbox_defaults.retry_max_delay_secs),
     };
 
+    // Build delivery config from config file > defaults
+    // (No CLI arguments for delivery config - use config file or env vars)
+    let delivery_defaults = DeliveryAppConfig::default();
+    let delivery = DeliveryAppConfig {
+        quorum: raw.delivery.quorum
+            .unwrap_or(delivery_defaults.quorum),
+        urgent_initial_delay_secs: raw.delivery.urgent_initial_delay_secs
+            .unwrap_or(delivery_defaults.urgent_initial_delay_secs),
+        urgent_max_delay_secs: raw.delivery.urgent_max_delay_secs
+            .unwrap_or(delivery_defaults.urgent_max_delay_secs),
+        urgent_backoff_multiplier: raw.delivery.urgent_backoff_multiplier
+            .unwrap_or(delivery_defaults.urgent_backoff_multiplier),
+        maintenance_interval_hours: raw.delivery.maintenance_interval_hours
+            .unwrap_or(delivery_defaults.maintenance_interval_hours),
+        maintenance_enabled: raw.delivery.maintenance_enabled
+            .unwrap_or(delivery_defaults.maintenance_enabled),
+        direct_tier_timeout_ms: raw.delivery.direct_tier_timeout_ms
+            .unwrap_or(delivery_defaults.direct_tier_timeout_ms),
+        quorum_tier_timeout_secs: raw.delivery.quorum_tier_timeout_secs
+            .unwrap_or(delivery_defaults.quorum_tier_timeout_secs),
+    };
+
     Ok(AppConfig {
         http,
         mqtt,
         data_dir,
         log_level,
         outbox,
+        delivery,
     })
 }
 
@@ -583,6 +822,12 @@ fn dirs_home() -> Option<PathBuf> {
 /// Generate a default config file content
 pub fn default_config_toml() -> String {
     let defaults = AppConfig::default();
+    let quorum_str = match &defaults.delivery.quorum {
+        QuorumStrategyConfig::Any => "\"any\"".to_string(),
+        QuorumStrategyConfig::Count(n) => format!("{{ count = {} }}", n),
+        QuorumStrategyConfig::Fraction(f) => format!("{{ fraction = {} }}", f),
+        QuorumStrategyConfig::All => "\"all\"".to_string(),
+    };
     format!(
         r#"# Resilient Messenger Client Configuration
 #
@@ -606,7 +851,7 @@ pub fn default_config_toml() -> String {
 #
 # Without pinning (will warn):
 [[http]]
-url = "{}"
+url = "{url}"
 
 # MQTT broker configuration (optional)
 # Messages can be exchanged via MQTT in addition to or instead of HTTP.
@@ -618,34 +863,68 @@ url = "{}"
 
 # Directory for storing identity, keys, and messages
 # Use ~ for home directory
-data_dir = "{}"
+data_dir = "{data_dir}"
 
 # Log level: trace, debug, info, warn, error
-log_level = "{}"
+log_level = "{log_level}"
 
 # Outbox configuration for message delivery tracking and retries
 [outbox]
 # How often to check for pending retries (seconds)
-tick_interval_secs = {}
+tick_interval_secs = {tick_interval}
 
 # Message TTL in days (0 = never expire)
-ttl_days = {}
+ttl_days = {ttl_days}
 
 # How long a "sent" attempt stays in-flight before timing out (seconds)
-attempt_timeout_secs = {}
+attempt_timeout_secs = {attempt_timeout}
 
 # Retry backoff settings
-retry_initial_delay_secs = {}
-retry_max_delay_secs = {}
+retry_initial_delay_secs = {retry_initial}
+retry_max_delay_secs = {retry_max}
+
+# Tiered delivery configuration
+# Messages flow through delivery tiers: Direct -> Quorum -> Best-Effort
+# with configurable quorum requirements for the Quorum tier.
+[delivery]
+# Quorum strategy for Quorum tier:
+# - "any" = any single transport success (legacy behavior)
+# - {{ count = N }} = at least N transports must succeed
+# - {{ fraction = F }} = fraction of stable transports (e.g., 0.5 = majority)
+# - "all" = all configured stable transports must succeed
+quorum = {quorum}
+
+# Phase 1 (Urgent) retry settings
+# Aggressive retry until quorum is reached
+urgent_initial_delay_secs = {urgent_initial}
+urgent_max_delay_secs = {urgent_max}
+urgent_backoff_multiplier = {urgent_multiplier}
+
+# Phase 2 (Maintenance) settings
+# Periodic refresh of distributed messages awaiting ACK
+maintenance_interval_hours = {maintenance_interval}
+maintenance_enabled = {maintenance_enabled}
+
+# Tier timeouts
+direct_tier_timeout_ms = {direct_timeout}
+quorum_tier_timeout_secs = {quorum_timeout}
 "#,
-        defaults.http[0].url,
-        defaults.data_dir.to_string_lossy(),
-        defaults.log_level,
-        defaults.outbox.tick_interval_secs,
-        defaults.outbox.ttl_days,
-        defaults.outbox.attempt_timeout_secs,
-        defaults.outbox.retry_initial_delay_secs,
-        defaults.outbox.retry_max_delay_secs,
+        url = defaults.http[0].url,
+        data_dir = defaults.data_dir.to_string_lossy(),
+        log_level = defaults.log_level,
+        tick_interval = defaults.outbox.tick_interval_secs,
+        ttl_days = defaults.outbox.ttl_days,
+        attempt_timeout = defaults.outbox.attempt_timeout_secs,
+        retry_initial = defaults.outbox.retry_initial_delay_secs,
+        retry_max = defaults.outbox.retry_max_delay_secs,
+        quorum = quorum_str,
+        urgent_initial = defaults.delivery.urgent_initial_delay_secs,
+        urgent_max = defaults.delivery.urgent_max_delay_secs,
+        urgent_multiplier = defaults.delivery.urgent_backoff_multiplier,
+        maintenance_interval = defaults.delivery.maintenance_interval_hours,
+        maintenance_enabled = defaults.delivery.maintenance_enabled,
+        direct_timeout = defaults.delivery.direct_tier_timeout_ms,
+        quorum_timeout = defaults.delivery.quorum_tier_timeout_secs,
     )
 }
 
@@ -696,6 +975,10 @@ mod tests {
         assert!(toml.contains("tick_interval_secs"));
         assert!(toml.contains("ttl_days"));
         assert!(toml.contains("[[mqtt]]")); // Documentation for MQTT
+        assert!(toml.contains("[delivery]"));
+        assert!(toml.contains("quorum"));
+        assert!(toml.contains("urgent_initial_delay_secs"));
+        assert!(toml.contains("maintenance_interval_hours"));
     }
 
     #[test]
@@ -782,5 +1065,109 @@ mod tests {
         assert_eq!(brokers[0].url, "mqtts://broker.example.com:8883");
         assert_eq!(brokers[0].client_id, Some("test-client".to_string()));
         std::env::remove_var("REME_MQTT");
+    }
+
+    #[test]
+    fn test_delivery_config_defaults() {
+        let config = DeliveryAppConfig::default();
+        assert_eq!(config.quorum, QuorumStrategyConfig::Any);
+        assert_eq!(config.urgent_initial_delay_secs, 5);
+        assert_eq!(config.urgent_max_delay_secs, 60);
+        assert_eq!(config.urgent_backoff_multiplier, 2.0);
+        assert_eq!(config.maintenance_interval_hours, 4);
+        assert!(config.maintenance_enabled);
+        assert_eq!(config.direct_tier_timeout_ms, 500);
+        assert_eq!(config.quorum_tier_timeout_secs, 5);
+    }
+
+    #[test]
+    fn test_quorum_strategy_deserialize() {
+        // Test "any"
+        let json = r#""any""#;
+        let quorum: QuorumStrategyConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(quorum, QuorumStrategyConfig::Any);
+
+        // Test count
+        let json = r#"{"count": 2}"#;
+        let quorum: QuorumStrategyConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(quorum, QuorumStrategyConfig::Count(2));
+
+        // Test fraction
+        let json = r#"{"fraction": 0.5}"#;
+        let quorum: QuorumStrategyConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(quorum, QuorumStrategyConfig::Fraction(0.5));
+
+        // Test "all"
+        let json = r#""all""#;
+        let quorum: QuorumStrategyConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(quorum, QuorumStrategyConfig::All);
+    }
+
+    #[test]
+    fn test_delivery_config_deserialize() {
+        let json = r#"{
+            "quorum": {"count": 3},
+            "urgent_initial_delay_secs": 10,
+            "maintenance_interval_hours": 8
+        }"#;
+        let config: DeliveryAppConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.quorum, QuorumStrategyConfig::Count(3));
+        assert_eq!(config.urgent_initial_delay_secs, 10);
+        assert_eq!(config.maintenance_interval_hours, 8);
+        // Unspecified fields should get defaults
+        assert_eq!(config.urgent_max_delay_secs, 60);
+        assert!(config.maintenance_enabled);
+    }
+
+    #[test]
+    fn test_quorum_strategy_conversion() {
+        // Test Any
+        let config = QuorumStrategyConfig::Any;
+        let transport: QuorumStrategy = config.into();
+        assert!(matches!(transport, QuorumStrategy::Any));
+
+        // Test Count
+        let config = QuorumStrategyConfig::Count(5);
+        let transport: QuorumStrategy = config.into();
+        assert!(matches!(transport, QuorumStrategy::Count(5)));
+
+        // Test Fraction
+        let config = QuorumStrategyConfig::Fraction(0.75);
+        let transport: QuorumStrategy = config.into();
+        match transport {
+            QuorumStrategy::Fraction(f) => assert!((f - 0.75).abs() < 0.001),
+            _ => panic!("Expected Fraction"),
+        }
+
+        // Test All
+        let config = QuorumStrategyConfig::All;
+        let transport: QuorumStrategy = config.into();
+        assert!(matches!(transport, QuorumStrategy::All));
+    }
+
+    #[test]
+    fn test_delivery_config_conversion() {
+        let config = DeliveryAppConfig {
+            quorum: QuorumStrategyConfig::Count(2),
+            urgent_initial_delay_secs: 10,
+            urgent_max_delay_secs: 120,
+            urgent_backoff_multiplier: 1.5,
+            maintenance_interval_hours: 6,
+            maintenance_enabled: false,
+            direct_tier_timeout_ms: 1000,
+            quorum_tier_timeout_secs: 10,
+        };
+
+        let transport: TieredDeliveryConfig = config.into();
+
+        assert!(matches!(transport.quorum, QuorumStrategy::Count(2)));
+        assert_eq!(transport.urgent_initial_delay, Duration::from_secs(10));
+        assert_eq!(transport.urgent_max_delay, Duration::from_secs(120));
+        assert!((transport.urgent_backoff_multiplier - 1.5).abs() < 0.001);
+        assert_eq!(transport.maintenance_interval, Duration::from_secs(6 * 60 * 60));
+        assert!(!transport.maintenance_enabled);
+        assert_eq!(transport.direct_tier_timeout, Duration::from_millis(1000));
+        assert_eq!(transport.quorum_tier_timeout, Duration::from_secs(10));
+        assert!(transport.excluded_targets.is_empty());
     }
 }
