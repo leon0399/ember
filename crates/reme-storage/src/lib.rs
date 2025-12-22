@@ -82,27 +82,28 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
 
             -- Outbox for pending outgoing messages
+            -- message_id (MessageID) is the primary key, eliminating the need for a
+            -- separate database-generated ID.
             CREATE TABLE IF NOT EXISTS outbox (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                recipient_id BLOB NOT NULL,          -- PublicID (32 bytes)
-                content_id BLOB NOT NULL,            -- ContentId (8 bytes)
-                message_id BLOB NOT NULL,            -- MessageID (16 bytes)
-                envelope_bytes BLOB NOT NULL,        -- Serialized OuterEnvelope
-                inner_bytes BLOB NOT NULL,           -- Serialized InnerEnvelope
+                message_id BLOB PRIMARY KEY NOT NULL, -- MessageID (16 bytes) - also serves as entry_id
+                recipient_id BLOB NOT NULL,           -- PublicID (32 bytes)
+                content_id BLOB NOT NULL,             -- ContentId (8 bytes)
+                envelope_bytes BLOB NOT NULL,         -- Serialized OuterEnvelope
+                inner_bytes BLOB NOT NULL,            -- Serialized InnerEnvelope
                 created_at_ms INTEGER NOT NULL,
-                expires_at_ms INTEGER,               -- NULL = no expiry
-                next_retry_at_ms INTEGER,            -- NULL = immediate, used for scheduling
-                confirmed_at_ms INTEGER,             -- NULL = not confirmed
-                expired_at_ms INTEGER,               -- NULL = not expired
-                confirmation_type TEXT,              -- 'dag', future: 'zk_receipt', 'p2p_ack'
-                confirmation_data BLOB,              -- Type-specific confirmation data
+                expires_at_ms INTEGER,                -- NULL = no expiry
+                next_retry_at_ms INTEGER,             -- NULL = immediate, used for scheduling
+                confirmed_at_ms INTEGER,              -- NULL = not confirmed
+                expired_at_ms INTEGER,                -- NULL = not expired
+                confirmation_type TEXT,               -- 'dag', future: 'zk_receipt', 'p2p_ack'
+                confirmation_data BLOB,               -- Type-specific confirmation data
                 -- Tiered delivery phase tracking
                 delivery_phase TEXT DEFAULT 'urgent', -- 'urgent', 'distributed', 'confirmed'
-                quorum_reached_at_ms INTEGER,        -- When phase changed to 'distributed'
-                last_maintenance_ms INTEGER,         -- Last maintenance refresh
-                quorum_count INTEGER,                -- Number of successful targets for QuorumReached
-                quorum_required INTEGER,             -- Required targets for QuorumReached
-                direct_target_id TEXT                -- Target ID for DirectDelivery confidence
+                quorum_reached_at_ms INTEGER,         -- When phase changed to 'distributed'
+                last_maintenance_ms INTEGER,          -- Last maintenance refresh
+                quorum_count INTEGER,                 -- Number of successful targets for QuorumReached
+                quorum_required INTEGER,              -- Required targets for QuorumReached
+                direct_target_id TEXT                 -- Target ID for DirectDelivery confidence
             );
 
             CREATE INDEX IF NOT EXISTS idx_outbox_content_id ON outbox(content_id);
@@ -119,18 +120,18 @@ impl Storage {
 
             -- Per-target success tracking (which targets have this message)
             CREATE TABLE IF NOT EXISTS outbox_successes (
-                outbox_id INTEGER NOT NULL REFERENCES outbox(id) ON DELETE CASCADE,
+                message_id BLOB NOT NULL REFERENCES outbox(message_id) ON DELETE CASCADE,
                 target_id TEXT NOT NULL,
                 succeeded_at_ms INTEGER NOT NULL,
-                PRIMARY KEY (outbox_id, target_id)
+                PRIMARY KEY (message_id, target_id)
             );
 
-            CREATE INDEX IF NOT EXISTS idx_successes_outbox ON outbox_successes(outbox_id);
+            CREATE INDEX IF NOT EXISTS idx_successes_message ON outbox_successes(message_id);
 
             -- Delivery attempts (separate table for history)
             CREATE TABLE IF NOT EXISTS outbox_attempts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                outbox_id INTEGER NOT NULL REFERENCES outbox(id) ON DELETE CASCADE,
+                message_id BLOB NOT NULL REFERENCES outbox(message_id) ON DELETE CASCADE,
                 transport_id TEXT NOT NULL,          -- e.g., "http:node1.example.com"
                 attempted_at_ms INTEGER NOT NULL,
                 result_type TEXT NOT NULL,           -- 'sent', 'failed'
@@ -139,7 +140,7 @@ impl Storage {
                 error_transient INTEGER              -- 1 = transient, 0 = permanent
             );
 
-            CREATE INDEX IF NOT EXISTS idx_attempts_outbox ON outbox_attempts(outbox_id);
+            CREATE INDEX IF NOT EXISTS idx_attempts_message ON outbox_attempts(message_id);
             "#,
         )?;
         Ok(())
@@ -347,15 +348,16 @@ impl Storage {
     // ============================================
 
     /// Load attempts for an outbox entry
-    fn load_attempts(&self, outbox_id: i64) -> Result<Vec<TransportAttempt>, StorageError> {
+    fn load_attempts(&self, message_id: &MessageID) -> Result<Vec<TransportAttempt>, StorageError> {
+        let message_id_bytes = message_id.as_bytes();
         let mut stmt = self.conn.prepare(
             "SELECT transport_id, attempted_at_ms, result_type, error_type, error_message, error_transient
              FROM outbox_attempts
-             WHERE outbox_id = ?
+             WHERE message_id = ?
              ORDER BY attempted_at_ms ASC",
         )?;
 
-        let rows = stmt.query_map(params![outbox_id], |row| {
+        let rows = stmt.query_map(params![&message_id_bytes[..]], |row| {
             let transport_id: String = row.get(0)?;
             let attempted_at_ms: u64 = row.get(1)?;
             let result_type: String = row.get(2)?;
@@ -445,13 +447,14 @@ impl Storage {
     /// Load successful targets for an outbox entry
     fn load_successful_targets(
         &self,
-        outbox_id: i64,
+        message_id: &MessageID,
     ) -> Result<std::collections::HashSet<TargetId>, StorageError> {
+        let message_id_bytes = message_id.as_bytes();
         let mut stmt = self.conn.prepare(
-            "SELECT target_id FROM outbox_successes WHERE outbox_id = ?",
+            "SELECT target_id FROM outbox_successes WHERE message_id = ?",
         )?;
 
-        let rows = stmt.query_map(params![outbox_id], |row| {
+        let rows = stmt.query_map(params![&message_id_bytes[..]], |row| {
             let target_id: String = row.get(0)?;
             Ok(target_id)
         })?;
@@ -477,7 +480,8 @@ impl Storage {
     }
 
     /// Load tiered delivery phase for an outbox entry
-    fn load_tiered_phase(&self, outbox_id: i64) -> Result<TieredDeliveryPhase, StorageError> {
+    fn load_tiered_phase(&self, message_id: &MessageID) -> Result<TieredDeliveryPhase, StorageError> {
+        let message_id_bytes = message_id.as_bytes();
         let result: Option<(
             String,           // delivery_phase
             Option<u64>,      // quorum_reached_at_ms
@@ -491,8 +495,8 @@ impl Storage {
                 "SELECT delivery_phase, quorum_reached_at_ms, last_maintenance_ms,
                         quorum_count, quorum_required, direct_target_id
                  FROM outbox
-                 WHERE id = ?",
-                params![outbox_id],
+                 WHERE message_id = ?",
+                params![&message_id_bytes[..]],
                 |row| {
                     Ok((
                         row.get::<_, Option<String>>(0)?.unwrap_or_else(|| "urgent".to_string()),
@@ -553,13 +557,14 @@ impl Storage {
     }
 
     /// Load a PendingMessage from row data
+    ///
+    /// Note: `message_id` serves as both the primary key and the entry ID.
     #[allow(clippy::too_many_arguments)]
     fn load_pending_message(
         &self,
-        id: i64,
+        message_id: Vec<u8>,
         recipient_id: Vec<u8>,
         content_id: Vec<u8>,
-        message_id: Vec<u8>,
         envelope_bytes: Vec<u8>,
         inner_bytes: Vec<u8>,
         created_at_ms: u64,
@@ -569,6 +574,15 @@ impl Storage {
         confirmation_type: Option<String>,
         confirmation_data: Option<Vec<u8>>,
     ) -> Result<PendingMessage, StorageError> {
+        // Parse message_id (this is also the entry ID)
+        if message_id.len() != 16 {
+            return Err(StorageError::Serialization(
+                "Invalid message_id length".to_string(),
+            ));
+        }
+        let message_id_arr: [u8; 16] = message_id.try_into().unwrap();
+        let message_id = MessageID::from_bytes(message_id_arr);
+
         // Parse recipient
         if recipient_id.len() != 32 {
             return Err(StorageError::Serialization(
@@ -586,32 +600,22 @@ impl Storage {
         }
         let content_id_arr: ContentId = content_id.try_into().unwrap();
 
-        // Parse message_id
-        if message_id.len() != 16 {
-            return Err(StorageError::Serialization(
-                "Invalid message_id length".to_string(),
-            ));
-        }
-        let message_id_arr: [u8; 16] = message_id.try_into().unwrap();
-        let message_id = MessageID::from_bytes(message_id_arr);
-
         // Load attempts
-        let attempts = self.load_attempts(id)?;
+        let attempts = self.load_attempts(&message_id)?;
 
         // Load confirmation
         let confirmation = Self::load_confirmation(confirmation_type, confirmation_data);
 
         // Load successful targets
-        let successful_targets = self.load_successful_targets(id)?;
+        let successful_targets = self.load_successful_targets(&message_id)?;
 
         // Load tiered phase (defaults to Urgent for existing entries)
-        let tiered_phase = self.load_tiered_phase(id)?;
+        let tiered_phase = self.load_tiered_phase(&message_id)?;
 
         Ok(PendingMessage {
-            id,
+            id: message_id,
             recipient,
             content_id: content_id_arr,
-            message_id,
             envelope_bytes,
             inner_bytes,
             created_at_ms,
@@ -651,12 +655,12 @@ impl OutboxStore for Storage {
         let message_id_bytes = message_id.as_bytes();
 
         self.conn.execute(
-            "INSERT INTO outbox (recipient_id, content_id, message_id, envelope_bytes, inner_bytes, created_at_ms, expires_at_ms, next_retry_at_ms)
+            "INSERT INTO outbox (message_id, recipient_id, content_id, envelope_bytes, inner_bytes, created_at_ms, expires_at_ms, next_retry_at_ms)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             params![
+                &message_id_bytes[..],
                 &recipient_bytes[..],
                 &content_id[..],
-                &message_id_bytes[..],
                 envelope_bytes,
                 inner_bytes,
                 now_ms as i64,
@@ -665,12 +669,13 @@ impl OutboxStore for Storage {
             ],
         )?;
 
-        Ok(self.conn.last_insert_rowid())
+        // Return the message_id as the entry ID (it's the primary key now)
+        Ok(message_id)
     }
 
     fn outbox_get_pending(&self) -> Result<Vec<PendingMessage>, Self::Error> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, recipient_id, content_id, message_id, envelope_bytes, inner_bytes,
+            "SELECT message_id, recipient_id, content_id, envelope_bytes, inner_bytes,
                     created_at_ms, expires_at_ms, next_retry_at_ms, confirmation_type, confirmation_data
              FROM outbox
              WHERE confirmed_at_ms IS NULL AND expired_at_ms IS NULL
@@ -679,27 +684,25 @@ impl OutboxStore for Storage {
 
         let rows = stmt.query_map([], |row| {
             Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, Vec<u8>>(1)?,
-                row.get::<_, Vec<u8>>(2)?,
-                row.get::<_, Vec<u8>>(3)?,
-                row.get::<_, Vec<u8>>(4)?,
-                row.get::<_, Vec<u8>>(5)?,
-                row.get::<_, u64>(6)?,
-                row.get::<_, Option<u64>>(7)?,
-                row.get::<_, Option<u64>>(8)?,
-                row.get::<_, Option<String>>(9)?,
-                row.get::<_, Option<Vec<u8>>>(10)?,
+                row.get::<_, Vec<u8>>(0)?,  // message_id
+                row.get::<_, Vec<u8>>(1)?,  // recipient_id
+                row.get::<_, Vec<u8>>(2)?,  // content_id
+                row.get::<_, Vec<u8>>(3)?,  // envelope_bytes
+                row.get::<_, Vec<u8>>(4)?,  // inner_bytes
+                row.get::<_, u64>(5)?,      // created_at_ms
+                row.get::<_, Option<u64>>(6)?,  // expires_at_ms
+                row.get::<_, Option<u64>>(7)?,  // next_retry_at_ms
+                row.get::<_, Option<String>>(8)?,  // confirmation_type
+                row.get::<_, Option<Vec<u8>>>(9)?,  // confirmation_data
             ))
         })?;
 
         let mut messages = Vec::new();
         for row in rows {
             let (
-                id,
+                message_id,
                 recipient_id,
                 content_id,
-                message_id,
                 envelope_bytes,
                 inner_bytes,
                 created_at_ms,
@@ -710,10 +713,9 @@ impl OutboxStore for Storage {
             ) = row?;
 
             messages.push(self.load_pending_message(
-                id,
+                message_id,
                 recipient_id,
                 content_id,
-                message_id,
                 envelope_bytes,
                 inner_bytes,
                 created_at_ms,
@@ -732,7 +734,7 @@ impl OutboxStore for Storage {
         let recipient_bytes = recipient.to_bytes();
 
         let mut stmt = self.conn.prepare(
-            "SELECT id, recipient_id, content_id, message_id, envelope_bytes, inner_bytes,
+            "SELECT message_id, recipient_id, content_id, envelope_bytes, inner_bytes,
                     created_at_ms, expires_at_ms, next_retry_at_ms, confirmation_type, confirmation_data
              FROM outbox
              WHERE recipient_id = ? AND confirmed_at_ms IS NULL AND expired_at_ms IS NULL
@@ -741,27 +743,25 @@ impl OutboxStore for Storage {
 
         let rows = stmt.query_map(params![&recipient_bytes[..]], |row| {
             Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, Vec<u8>>(1)?,
-                row.get::<_, Vec<u8>>(2)?,
-                row.get::<_, Vec<u8>>(3)?,
-                row.get::<_, Vec<u8>>(4)?,
-                row.get::<_, Vec<u8>>(5)?,
-                row.get::<_, u64>(6)?,
-                row.get::<_, Option<u64>>(7)?,
-                row.get::<_, Option<u64>>(8)?,
-                row.get::<_, Option<String>>(9)?,
-                row.get::<_, Option<Vec<u8>>>(10)?,
+                row.get::<_, Vec<u8>>(0)?,  // message_id
+                row.get::<_, Vec<u8>>(1)?,  // recipient_id
+                row.get::<_, Vec<u8>>(2)?,  // content_id
+                row.get::<_, Vec<u8>>(3)?,  // envelope_bytes
+                row.get::<_, Vec<u8>>(4)?,  // inner_bytes
+                row.get::<_, u64>(5)?,      // created_at_ms
+                row.get::<_, Option<u64>>(6)?,  // expires_at_ms
+                row.get::<_, Option<u64>>(7)?,  // next_retry_at_ms
+                row.get::<_, Option<String>>(8)?,  // confirmation_type
+                row.get::<_, Option<Vec<u8>>>(9)?,  // confirmation_data
             ))
         })?;
 
         let mut messages = Vec::new();
         for row in rows {
             let (
-                id,
+                message_id,
                 recipient_id,
                 content_id,
-                message_id,
                 envelope_bytes,
                 inner_bytes,
                 created_at_ms,
@@ -772,10 +772,9 @@ impl OutboxStore for Storage {
             ) = row?;
 
             messages.push(self.load_pending_message(
-                id,
+                message_id,
                 recipient_id,
                 content_id,
-                message_id,
                 envelope_bytes,
                 inner_bytes,
                 created_at_ms,
@@ -792,7 +791,7 @@ impl OutboxStore for Storage {
 
     fn outbox_get_due_for_retry(&self, now_ms: u64) -> Result<Vec<PendingMessage>, Self::Error> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, recipient_id, content_id, message_id, envelope_bytes, inner_bytes,
+            "SELECT message_id, recipient_id, content_id, envelope_bytes, inner_bytes,
                     created_at_ms, expires_at_ms, next_retry_at_ms, confirmation_type, confirmation_data
              FROM outbox
              WHERE confirmed_at_ms IS NULL
@@ -804,27 +803,25 @@ impl OutboxStore for Storage {
 
         let rows = stmt.query_map(params![now_ms as i64, now_ms as i64], |row| {
             Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, Vec<u8>>(1)?,
-                row.get::<_, Vec<u8>>(2)?,
-                row.get::<_, Vec<u8>>(3)?,
-                row.get::<_, Vec<u8>>(4)?,
-                row.get::<_, Vec<u8>>(5)?,
-                row.get::<_, u64>(6)?,
-                row.get::<_, Option<u64>>(7)?,
-                row.get::<_, Option<u64>>(8)?,
-                row.get::<_, Option<String>>(9)?,
-                row.get::<_, Option<Vec<u8>>>(10)?,
+                row.get::<_, Vec<u8>>(0)?,  // message_id
+                row.get::<_, Vec<u8>>(1)?,  // recipient_id
+                row.get::<_, Vec<u8>>(2)?,  // content_id
+                row.get::<_, Vec<u8>>(3)?,  // envelope_bytes
+                row.get::<_, Vec<u8>>(4)?,  // inner_bytes
+                row.get::<_, u64>(5)?,      // created_at_ms
+                row.get::<_, Option<u64>>(6)?,  // expires_at_ms
+                row.get::<_, Option<u64>>(7)?,  // next_retry_at_ms
+                row.get::<_, Option<String>>(8)?,  // confirmation_type
+                row.get::<_, Option<Vec<u8>>>(9)?,  // confirmation_data
             ))
         })?;
 
         let mut messages = Vec::new();
         for row in rows {
             let (
-                id,
+                message_id,
                 recipient_id,
                 content_id,
-                message_id,
                 envelope_bytes,
                 inner_bytes,
                 created_at_ms,
@@ -835,10 +832,9 @@ impl OutboxStore for Storage {
             ) = row?;
 
             messages.push(self.load_pending_message(
-                id,
+                message_id,
                 recipient_id,
                 content_id,
-                message_id,
                 envelope_bytes,
                 inner_bytes,
                 created_at_ms,
@@ -854,27 +850,27 @@ impl OutboxStore for Storage {
     }
 
     fn outbox_get_by_id(&self, entry_id: OutboxEntryId) -> Result<Option<PendingMessage>, Self::Error> {
+        let entry_id_bytes = entry_id.as_bytes();
         let result: Option<(
-            i64,
-            Vec<u8>,
-            Vec<u8>,
-            Vec<u8>,
-            Vec<u8>,
-            Vec<u8>,
-            u64,
-            Option<u64>,
-            Option<u64>,
-            Option<u64>,
-            Option<String>,
-            Option<Vec<u8>>,
+            Vec<u8>,  // message_id
+            Vec<u8>,  // recipient_id
+            Vec<u8>,  // content_id
+            Vec<u8>,  // envelope_bytes
+            Vec<u8>,  // inner_bytes
+            u64,      // created_at_ms
+            Option<u64>,  // expires_at_ms
+            Option<u64>,  // expired_at_ms
+            Option<u64>,  // next_retry_at_ms
+            Option<String>,  // confirmation_type
+            Option<Vec<u8>>,  // confirmation_data
         )> = self
             .conn
             .query_row(
-                "SELECT id, recipient_id, content_id, message_id, envelope_bytes, inner_bytes,
+                "SELECT message_id, recipient_id, content_id, envelope_bytes, inner_bytes,
                         created_at_ms, expires_at_ms, expired_at_ms, next_retry_at_ms, confirmation_type, confirmation_data
                  FROM outbox
-                 WHERE id = ?",
-                params![entry_id],
+                 WHERE message_id = ?",
+                params![&entry_id_bytes[..]],
                 |row| {
                     Ok((
                         row.get(0)?,
@@ -888,7 +884,6 @@ impl OutboxStore for Storage {
                         row.get(8)?,
                         row.get(9)?,
                         row.get(10)?,
-                        row.get(11)?,
                     ))
                 },
             )
@@ -896,10 +891,9 @@ impl OutboxStore for Storage {
 
         match result {
             Some((
-                id,
+                message_id,
                 recipient_id,
                 content_id,
-                message_id,
                 envelope_bytes,
                 inner_bytes,
                 created_at_ms,
@@ -909,10 +903,9 @@ impl OutboxStore for Storage {
                 confirmation_type,
                 confirmation_data,
             )) => Ok(Some(self.load_pending_message(
-                id,
+                message_id,
                 recipient_id,
                 content_id,
-                message_id,
                 envelope_bytes,
                 inner_bytes,
                 created_at_ms,
@@ -928,21 +921,20 @@ impl OutboxStore for Storage {
 
     fn outbox_get_by_content_id(&self, content_id: ContentId) -> Result<Option<PendingMessage>, Self::Error> {
         let result: Option<(
-            i64,
-            Vec<u8>,
-            Vec<u8>,
-            Vec<u8>,
-            Vec<u8>,
-            Vec<u8>,
-            u64,
-            Option<u64>,
-            Option<u64>,
-            Option<String>,
-            Option<Vec<u8>>,
+            Vec<u8>,  // message_id
+            Vec<u8>,  // recipient_id
+            Vec<u8>,  // content_id
+            Vec<u8>,  // envelope_bytes
+            Vec<u8>,  // inner_bytes
+            u64,      // created_at_ms
+            Option<u64>,  // expires_at_ms
+            Option<u64>,  // next_retry_at_ms
+            Option<String>,  // confirmation_type
+            Option<Vec<u8>>,  // confirmation_data
         )> = self
             .conn
             .query_row(
-                "SELECT id, recipient_id, content_id, message_id, envelope_bytes, inner_bytes,
+                "SELECT message_id, recipient_id, content_id, envelope_bytes, inner_bytes,
                         created_at_ms, expires_at_ms, next_retry_at_ms, confirmation_type, confirmation_data
                  FROM outbox
                  WHERE content_id = ? AND confirmed_at_ms IS NULL AND expired_at_ms IS NULL",
@@ -959,7 +951,6 @@ impl OutboxStore for Storage {
                         row.get(7)?,
                         row.get(8)?,
                         row.get(9)?,
-                        row.get(10)?,
                     ))
                 },
             )
@@ -967,10 +958,9 @@ impl OutboxStore for Storage {
 
         match result {
             Some((
-                id,
+                message_id,
                 recipient_id,
                 content_id,
-                message_id,
                 envelope_bytes,
                 inner_bytes,
                 created_at_ms,
@@ -979,10 +969,9 @@ impl OutboxStore for Storage {
                 confirmation_type,
                 confirmation_data,
             )) => Ok(Some(self.load_pending_message(
-                id,
+                message_id,
                 recipient_id,
                 content_id,
-                message_id,
                 envelope_bytes,
                 inner_bytes,
                 created_at_ms,
@@ -1002,6 +991,8 @@ impl OutboxStore for Storage {
         attempt: &TransportAttempt,
         next_retry_at_ms: Option<u64>,
     ) -> Result<(), Self::Error> {
+        let entry_id_bytes = entry_id.as_bytes();
+
         // Determine error fields
         let (result_type, error_type, error_message, error_transient) = match &attempt.result {
             AttemptResult::Sent => ("sent", None, None, None),
@@ -1028,10 +1019,10 @@ impl OutboxStore for Storage {
         let result = (|| {
             // Insert attempt record
             self.conn.execute(
-                "INSERT INTO outbox_attempts (outbox_id, transport_id, attempted_at_ms, result_type, error_type, error_message, error_transient)
+                "INSERT INTO outbox_attempts (message_id, transport_id, attempted_at_ms, result_type, error_type, error_message, error_transient)
                  VALUES (?, ?, ?, ?, ?, ?, ?)",
                 params![
-                    entry_id,
+                    &entry_id_bytes[..],
                     &attempt.transport_id,
                     attempt.attempted_at_ms as i64,
                     result_type,
@@ -1043,8 +1034,8 @@ impl OutboxStore for Storage {
 
             // Update next_retry_at
             self.conn.execute(
-                "UPDATE outbox SET next_retry_at_ms = ? WHERE id = ?",
-                params![next_retry_at_ms.map(|v| v as i64), entry_id],
+                "UPDATE outbox SET next_retry_at_ms = ? WHERE message_id = ?",
+                params![next_retry_at_ms.map(|v| v as i64), &entry_id_bytes[..]],
             )?;
 
             Ok::<(), StorageError>(())
@@ -1072,6 +1063,7 @@ impl OutboxStore for Storage {
         entry_id: OutboxEntryId,
         confirmation: &DeliveryConfirmation,
     ) -> Result<(), Self::Error> {
+        let entry_id_bytes = entry_id.as_bytes();
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("System time is before Unix epoch")
@@ -1085,22 +1077,23 @@ impl OutboxStore for Storage {
 
         self.conn.execute(
             "UPDATE outbox SET confirmed_at_ms = ?, confirmation_type = ?, confirmation_data = ?, next_retry_at_ms = NULL
-             WHERE id = ?",
-            params![now_ms as i64, confirmation_type, confirmation_data, entry_id],
+             WHERE message_id = ?",
+            params![now_ms as i64, confirmation_type, confirmation_data, &entry_id_bytes[..]],
         )?;
 
         Ok(())
     }
 
     fn outbox_mark_expired(&self, entry_id: OutboxEntryId) -> Result<(), Self::Error> {
+        let entry_id_bytes = entry_id.as_bytes();
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("System time is before Unix epoch")
             .as_millis() as u64;
 
         self.conn.execute(
-            "UPDATE outbox SET expired_at_ms = ?, next_retry_at_ms = NULL WHERE id = ?",
-            params![now_ms as i64, entry_id],
+            "UPDATE outbox SET expired_at_ms = ?, next_retry_at_ms = NULL WHERE message_id = ?",
+            params![now_ms as i64, &entry_id_bytes[..]],
         )?;
 
         Ok(())
@@ -1116,9 +1109,10 @@ impl OutboxStore for Storage {
 
         let result = (|| {
             for id in entry_ids {
+                let id_bytes = id.as_bytes();
                 self.conn.execute(
-                    "UPDATE outbox SET next_retry_at_ms = ? WHERE id = ? AND confirmed_at_ms IS NULL AND expired_at_ms IS NULL",
-                    params![now_ms as i64, id],
+                    "UPDATE outbox SET next_retry_at_ms = ? WHERE message_id = ? AND confirmed_at_ms IS NULL AND expired_at_ms IS NULL",
+                    params![now_ms as i64, &id_bytes[..]],
                 )?;
             }
             Ok::<(), StorageError>(())
@@ -1170,14 +1164,15 @@ impl OutboxStore for Storage {
         entry_id: OutboxEntryId,
         phase: &TieredDeliveryPhase,
     ) -> Result<(), Self::Error> {
+        let entry_id_bytes = entry_id.as_bytes();
         match phase {
             TieredDeliveryPhase::Urgent => {
                 self.conn.execute(
                     "UPDATE outbox SET delivery_phase = 'urgent', quorum_reached_at_ms = NULL,
                      last_maintenance_ms = NULL, quorum_count = NULL, quorum_required = NULL,
                      direct_target_id = NULL
-                     WHERE id = ?",
-                    params![entry_id],
+                     WHERE message_id = ?",
+                    params![&entry_id_bytes[..]],
                 )?;
             }
             TieredDeliveryPhase::Distributed {
@@ -1197,22 +1192,22 @@ impl OutboxStore for Storage {
                     "UPDATE outbox SET delivery_phase = 'distributed', quorum_reached_at_ms = ?,
                      last_maintenance_ms = ?, quorum_count = ?, quorum_required = ?,
                      direct_target_id = ?
-                     WHERE id = ?",
+                     WHERE message_id = ?",
                     params![
                         *reached_at_ms as i64,
                         last_maintenance_ms.map(|v| v as i64),
                         quorum_count,
                         quorum_required,
                         direct_target_id,
-                        entry_id,
+                        &entry_id_bytes[..],
                     ],
                 )?;
             }
             TieredDeliveryPhase::Confirmed { confirmed_at_ms } => {
                 self.conn.execute(
                     "UPDATE outbox SET delivery_phase = 'confirmed', quorum_reached_at_ms = ?
-                     WHERE id = ?",
-                    params![*confirmed_at_ms as i64, entry_id],
+                     WHERE message_id = ?",
+                    params![*confirmed_at_ms as i64, &entry_id_bytes[..]],
                 )?;
             }
         }
@@ -1224,22 +1219,23 @@ impl OutboxStore for Storage {
         entry_id: OutboxEntryId,
         target_id: &TargetId,
     ) -> Result<(), Self::Error> {
+        let entry_id_bytes = entry_id.as_bytes();
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("System time is before Unix epoch")
             .as_millis() as u64;
 
         self.conn.execute(
-            "INSERT OR REPLACE INTO outbox_successes (outbox_id, target_id, succeeded_at_ms)
+            "INSERT OR REPLACE INTO outbox_successes (message_id, target_id, succeeded_at_ms)
              VALUES (?, ?, ?)",
-            params![entry_id, target_id.as_str(), now_ms as i64],
+            params![&entry_id_bytes[..], target_id.as_str(), now_ms as i64],
         )?;
         Ok(())
     }
 
     fn outbox_get_urgent_retry_due(&self, now_ms: u64) -> Result<Vec<PendingMessage>, Self::Error> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, recipient_id, content_id, message_id, envelope_bytes, inner_bytes,
+            "SELECT message_id, recipient_id, content_id, envelope_bytes, inner_bytes,
                     created_at_ms, expires_at_ms, next_retry_at_ms, confirmation_type, confirmation_data
              FROM outbox
              WHERE confirmed_at_ms IS NULL
@@ -1251,27 +1247,25 @@ impl OutboxStore for Storage {
 
         let rows = stmt.query_map(params![now_ms as i64], |row| {
             Ok((
-                row.get::<_, i64>(0)?,
+                row.get::<_, Vec<u8>>(0)?,
                 row.get::<_, Vec<u8>>(1)?,
                 row.get::<_, Vec<u8>>(2)?,
                 row.get::<_, Vec<u8>>(3)?,
                 row.get::<_, Vec<u8>>(4)?,
-                row.get::<_, Vec<u8>>(5)?,
-                row.get::<_, u64>(6)?,
+                row.get::<_, u64>(5)?,
+                row.get::<_, Option<u64>>(6)?,
                 row.get::<_, Option<u64>>(7)?,
-                row.get::<_, Option<u64>>(8)?,
-                row.get::<_, Option<String>>(9)?,
-                row.get::<_, Option<Vec<u8>>>(10)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<Vec<u8>>>(9)?,
             ))
         })?;
 
         let mut messages = Vec::new();
         for row in rows {
             let (
-                id,
+                message_id,
                 recipient_id,
                 content_id,
-                message_id,
                 envelope_bytes,
                 inner_bytes,
                 created_at_ms,
@@ -1281,10 +1275,9 @@ impl OutboxStore for Storage {
                 confirmation_data,
             ) = row?;
             messages.push(self.load_pending_message(
-                id,
+                message_id,
                 recipient_id,
                 content_id,
-                message_id,
                 envelope_bytes,
                 inner_bytes,
                 created_at_ms,
@@ -1307,7 +1300,7 @@ impl OutboxStore for Storage {
         let cutoff = now_ms.saturating_sub(maintenance_interval_ms);
 
         let mut stmt = self.conn.prepare(
-            "SELECT id, recipient_id, content_id, message_id, envelope_bytes, inner_bytes,
+            "SELECT message_id, recipient_id, content_id, envelope_bytes, inner_bytes,
                     created_at_ms, expires_at_ms, next_retry_at_ms, confirmation_type, confirmation_data
              FROM outbox
              WHERE confirmed_at_ms IS NULL
@@ -1320,27 +1313,25 @@ impl OutboxStore for Storage {
 
         let rows = stmt.query_map(params![now_ms as i64, cutoff as i64], |row| {
             Ok((
-                row.get::<_, i64>(0)?,
+                row.get::<_, Vec<u8>>(0)?,
                 row.get::<_, Vec<u8>>(1)?,
                 row.get::<_, Vec<u8>>(2)?,
                 row.get::<_, Vec<u8>>(3)?,
                 row.get::<_, Vec<u8>>(4)?,
-                row.get::<_, Vec<u8>>(5)?,
-                row.get::<_, u64>(6)?,
+                row.get::<_, u64>(5)?,
+                row.get::<_, Option<u64>>(6)?,
                 row.get::<_, Option<u64>>(7)?,
-                row.get::<_, Option<u64>>(8)?,
-                row.get::<_, Option<String>>(9)?,
-                row.get::<_, Option<Vec<u8>>>(10)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<Vec<u8>>>(9)?,
             ))
         })?;
 
         let mut messages = Vec::new();
         for row in rows {
             let (
-                id,
+                message_id,
                 recipient_id,
                 content_id,
-                message_id,
                 envelope_bytes,
                 inner_bytes,
                 created_at_ms,
@@ -1350,10 +1341,9 @@ impl OutboxStore for Storage {
                 confirmation_data,
             ) = row?;
             messages.push(self.load_pending_message(
-                id,
+                message_id,
                 recipient_id,
                 content_id,
-                message_id,
                 envelope_bytes,
                 inner_bytes,
                 created_at_ms,
@@ -1373,9 +1363,10 @@ impl OutboxStore for Storage {
         entry_id: OutboxEntryId,
         last_maintenance_ms: u64,
     ) -> Result<(), Self::Error> {
+        let entry_id_bytes = entry_id.as_bytes();
         self.conn.execute(
-            "UPDATE outbox SET last_maintenance_ms = ? WHERE id = ?",
-            params![last_maintenance_ms as i64, entry_id],
+            "UPDATE outbox SET last_maintenance_ms = ? WHERE message_id = ?",
+            params![last_maintenance_ms as i64, &entry_id_bytes[..]],
         )?;
         Ok(())
     }

@@ -603,7 +603,7 @@ async fn test_outbox_dag_confirmation() {
         .expect("get_pending_for failed");
     assert_eq!(alice_pending.len(), 1);
     let alice_entry_id = alice_pending[0].id;
-    println!("Alice's message is pending, entry_id: {}", alice_entry_id);
+    println!("Alice's message is pending, entry_id: {:?}", alice_entry_id);
 
     // Bob receives the message using push-based MessageReceiver
     let receiver = MessageReceiver::new(transport.clone());
@@ -701,7 +701,7 @@ async fn test_outbox_cleanup() {
         .expect("get_pending_for failed");
     assert_eq!(alice_pending.len(), 1);
     let entry_id = alice_pending[0].id;
-    println!("Alice's message is pending, entry_id: {}", entry_id);
+    println!("Alice's message is pending, entry_id: {:?}", entry_id);
 
     // Bob receives and replies (confirms Alice's message)
     let receiver = MessageReceiver::new(transport.clone());
@@ -748,7 +748,7 @@ async fn test_outbox_cleanup() {
         .expect("get_delivery_state failed")
         .expect("entry not found");
     assert_eq!(state, DeliveryState::Confirmed, "Message should be confirmed via DAG");
-    println!("Message confirmed, entry_id: {}", entry_id);
+    println!("Message confirmed, entry_id: {:?}", entry_id);
 
     // Cleanup should remove confirmed entries (cleanup_after_ms=0 means immediate cleanup)
     let cleaned = alice.outbox_cleanup().expect("cleanup failed");
@@ -785,7 +785,7 @@ async fn test_outbox_retry_mechanism() {
     let pending = alice.get_pending_messages().expect("get_pending failed");
     assert_eq!(pending.len(), 1);
     let entry_id = pending[0].id;
-    println!("Message is pending with entry_id: {}", entry_id);
+    println!("Message is pending with entry_id: {:?}", entry_id);
 
     // Verify the message state after send (should have at least one attempt)
     assert!(!pending[0].attempts.is_empty(), "Should have recorded an attempt");
@@ -795,7 +795,7 @@ async fn test_outbox_retry_mechanism() {
     alice
         .schedule_retry(entry_id)
         .expect("schedule_retry failed");
-    println!("Scheduled immediate retry for entry {}", entry_id);
+    println!("Scheduled immediate retry for entry {:?}", entry_id);
 
     // Get messages due for retry
     let due_for_retry = alice.get_ready_for_retry().expect("get_due failed");

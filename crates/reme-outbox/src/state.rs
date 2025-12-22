@@ -11,8 +11,12 @@ pub use reme_transport::{
     TargetResult, TierResult, TieredDeliveryConfig,
 };
 
-/// Unique identifier for an outbox entry (database row ID)
-pub type OutboxEntryId = i64;
+/// Unique identifier for an outbox entry.
+///
+/// This is the same as the `MessageID` from the envelope, providing a direct
+/// mapping between messages and their outbox entries without needing a separate
+/// database-generated ID.
+pub type OutboxEntryId = MessageID;
 
 /// Identifies a transport instance for attempt tracking.
 ///
@@ -261,14 +265,15 @@ impl TieredDeliveryPhase {
 /// A message pending delivery confirmation.
 #[derive(Debug, Clone)]
 pub struct PendingMessage {
-    /// Database ID
+    /// Message ID - serves as both the wire message identifier and the outbox entry key.
+    ///
+    /// This unifies the message identity: the same UUID is used for the wire format
+    /// (`MessageID`) and the database primary key (`OutboxEntryId`).
     pub id: OutboxEntryId,
     /// Recipient's public ID
     pub recipient: PublicID,
     /// Content ID for DAG tracking (used to detect confirmation)
     pub content_id: ContentId,
-    /// Wire message ID
-    pub message_id: MessageID,
     /// Serialized OuterEnvelope for fast retry
     pub envelope_bytes: Vec<u8>,
     /// Serialized InnerEnvelope for re-encryption if needed
@@ -410,12 +415,11 @@ impl PendingMessage {
 mod tests {
     use super::*;
 
-    fn make_pending_message(id: OutboxEntryId) -> PendingMessage {
+    fn make_pending_message() -> PendingMessage {
         PendingMessage {
-            id,
+            id: MessageID::new(),
             recipient: PublicID::try_from_bytes(&[1u8; 32]).unwrap(),
             content_id: [0u8; 8],
-            message_id: MessageID::new(),
             envelope_bytes: vec![],
             inner_bytes: vec![],
             created_at_ms: 1000,
@@ -431,13 +435,13 @@ mod tests {
 
     #[test]
     fn test_state_pending() {
-        let msg = make_pending_message(1);
+        let msg = make_pending_message();
         assert_eq!(msg.state(1000, 60_000), DeliveryState::Pending);
     }
 
     #[test]
     fn test_state_in_flight() {
-        let mut msg = make_pending_message(1);
+        let mut msg = make_pending_message();
         msg.attempts.push(TransportAttempt {
             transport_id: "http:test".to_string(),
             attempted_at_ms: 1000,
@@ -450,7 +454,7 @@ mod tests {
 
     #[test]
     fn test_state_awaiting_retry_timeout() {
-        let mut msg = make_pending_message(1);
+        let mut msg = make_pending_message();
         msg.attempts.push(TransportAttempt {
             transport_id: "http:test".to_string(),
             attempted_at_ms: 1000,
@@ -463,7 +467,7 @@ mod tests {
 
     #[test]
     fn test_state_awaiting_retry_failed() {
-        let mut msg = make_pending_message(1);
+        let mut msg = make_pending_message();
         msg.attempts.push(TransportAttempt {
             transport_id: "http:test".to_string(),
             attempted_at_ms: 1000,
@@ -475,7 +479,7 @@ mod tests {
 
     #[test]
     fn test_state_confirmed() {
-        let mut msg = make_pending_message(1);
+        let mut msg = make_pending_message();
         msg.confirmation = Some(DeliveryConfirmation::Dag {
             observed_in_message_id: [1u8; 8],
         });
@@ -485,7 +489,7 @@ mod tests {
 
     #[test]
     fn test_state_expired() {
-        let mut msg = make_pending_message(1);
+        let mut msg = make_pending_message();
         msg.expires_at_ms = Some(50_000);
 
         assert_eq!(msg.state(60_000, 60_000), DeliveryState::Expired);
@@ -578,7 +582,7 @@ mod tests {
 
     #[test]
     fn test_successful_targets() {
-        let mut msg = make_pending_message(1);
+        let mut msg = make_pending_message();
         assert_eq!(msg.success_count(), 0);
 
         let node1 = TargetId::http("https://node1.example.com");
@@ -596,7 +600,7 @@ mod tests {
 
     #[test]
     fn test_failed_targets() {
-        let mut msg = make_pending_message(1);
+        let mut msg = make_pending_message();
 
         let node1 = TargetId::http("https://node1.example.com");
         let node2 = TargetId::http("https://node2.example.com");
@@ -614,7 +618,7 @@ mod tests {
 
     #[test]
     fn test_urgent_retry_due() {
-        let mut msg = make_pending_message(1);
+        let mut msg = make_pending_message();
         msg.tiered_phase = TieredDeliveryPhase::Urgent;
         msg.next_retry_at_ms = Some(1000);
 
@@ -638,7 +642,7 @@ mod tests {
 
     #[test]
     fn test_maintenance_due_pending_message() {
-        let mut msg = make_pending_message(1);
+        let mut msg = make_pending_message();
         let maintenance_interval = 4 * 60 * 60 * 1000;
 
         // Urgent phase - no maintenance
