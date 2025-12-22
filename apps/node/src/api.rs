@@ -5,9 +5,12 @@
 //! - GET /api/v1/fetch/:routing_key - Fetch messages
 
 use crate::mqtt_bridge::MqttBridge;
+use crate::node_identity::NodeIdentity;
 use crate::persistent_store::{PersistentMailboxStore, PersistentStoreError};
 use crate::rate_limit::{KeyedLimiter, RateLimiters};
-use crate::replication::{ReplicationClient, FROM_NODE_HEADER};
+use crate::replication::ReplicationClient;
+use crate::signed_headers::{SignatureError, SignatureVerifier, HEADER_NODE_SIGNATURE};
+use reme_identity::PublicID;
 use axum::{
     body::Bytes,
     extract::{DefaultBodyLimit, Path, Request, State},
@@ -37,6 +40,12 @@ pub struct AppState {
     pub submit_key_limiter: Option<Arc<KeyedLimiter>>,
     /// Optional MQTT bridge for publishing messages to MQTT brokers
     pub mqtt_bridge: Option<Arc<MqttBridge>>,
+    /// Node's cryptographic identity for signing/verifying headers
+    pub identity: Option<Arc<NodeIdentity>>,
+    /// Canonical public hostname for signature destination verification
+    pub public_host: Option<String>,
+    /// Additional acceptable hostnames (for multi-homed, dev, migration)
+    pub additional_hosts: Vec<String>,
 }
 
 /// Maximum request body size (256 KiB)
@@ -140,6 +149,41 @@ async fn check_basic_auth(
 }
 
 // ============================================
+// Source identification
+// ============================================
+
+/// Identifies the source of an incoming request
+#[derive(Debug, Clone)]
+pub enum RequestSource {
+    /// Verified node with cryptographic identity
+    VerifiedNode(PublicID),
+    /// Client (no node headers)
+    Client,
+}
+
+impl RequestSource {
+    /// Check if this source is our own identity (for loop prevention)
+    pub fn is_self(&self, our_identity: Option<&NodeIdentity>) -> bool {
+        match (self, our_identity) {
+            (RequestSource::VerifiedNode(their_pubkey), Some(identity)) => {
+                their_pubkey == identity.public_id()
+            }
+            _ => false,
+        }
+    }
+
+    /// Get a string representation for logging/replication
+    pub fn to_from_node_string(&self) -> Option<String> {
+        match self {
+            RequestSource::VerifiedNode(pubkey) => {
+                Some(crate::node_identity::node_id_hex(pubkey))
+            }
+            RequestSource::Client => None,
+        }
+    }
+}
+
+// ============================================
 // Request/Response types
 // ============================================
 
@@ -176,6 +220,35 @@ pub struct ErrorResponse {
 // Handlers
 // ============================================
 
+/// Identify the source of a request by checking signed headers.
+///
+/// Returns:
+/// - `Ok(VerifiedNode)` if signed headers are present and valid
+/// - `Ok(Client)` if no node headers are present
+/// - `Err` if signed headers are present but invalid
+fn identify_request_source(
+    state: &AppState,
+    headers: &HeaderMap,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> Result<RequestSource, SignatureError> {
+    // Check if signed headers are present
+    if headers.contains_key(HEADER_NODE_SIGNATURE) {
+        // Signed headers present - must verify
+        let verifier = SignatureVerifier::new(
+            state.public_host.as_deref(),
+            &state.additional_hosts,
+        );
+        let public_id = verifier.verify(headers, method, path, body)?;
+        debug!("Verified signed request from node {}", crate::node_identity::node_id_hex(&public_id));
+        return Ok(RequestSource::VerifiedNode(public_id));
+    }
+
+    // No node headers - treat as client
+    Ok(RequestSource::Client)
+}
+
 /// Parse wire payload from body (plain text base64 of wire format bytes)
 fn parse_wire_payload(body: &Bytes) -> Result<(String, WirePayload), String> {
     let body_str = std::str::from_utf8(body)
@@ -198,11 +271,31 @@ fn parse_wire_payload(body: &Bytes) -> Result<(String, WirePayload), String> {
 /// Accepts base64-encoded wire format: `[type: u8][payload: bincode bytes]`
 /// - type 0x00: Message (OuterEnvelope)
 /// - type 0x01: Tombstone (TombstoneEnvelope) - TEMPORARILY DISABLED
+///
+/// ## Authentication
+///
+/// If `x-node-signature` header is present, verifies XEdDSA signature.
+/// Invalid signatures are rejected with 401 Unauthorized.
 async fn submit_payload(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
+    // Identify request source (verify signed headers if present)
+    let source = match identify_request_source(&state, &headers, "POST", "/api/v1/submit", &body) {
+        Ok(source) => source,
+        Err(e) => {
+            warn!("Signature verification failed: {}", e);
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse {
+                    error: format!("Signature verification failed: {}", e),
+                }),
+            )
+                .into_response();
+        }
+    };
+
     // Parse wire payload from body
     let (payload_b64, payload) = match parse_wire_payload(&body) {
         Ok(result) => result,
@@ -216,15 +309,12 @@ async fn submit_payload(
         }
     };
 
-    // Extract source node from header (if this came from a peer)
-    let from_node = headers
-        .get(FROM_NODE_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+    // Get from_node string for replication
+    let from_node = source.to_from_node_string();
 
     match payload {
         WirePayload::Message(envelope) => {
-            handle_message(state, envelope, payload_b64, from_node).await
+            handle_message(state, envelope, payload_b64, from_node, source).await
         }
         WirePayload::Tombstone(_) => {
             // Tombstones temporarily disabled pending refactor
@@ -245,7 +335,18 @@ async fn handle_message(
     envelope: OuterEnvelope,
     payload_b64: String,
     from_node: Option<String>,
+    source: RequestSource,
 ) -> axum::response::Response {
+    // Check for self-loop (message from ourselves)
+    if source.is_self(state.identity.as_deref()) {
+        debug!("Rejecting message from ourselves (loop prevention)");
+        return (
+            StatusCode::OK,
+            Json(SubmitResponse { status: "ok".to_string() }),
+        )
+            .into_response();
+    }
+
     let routing_key = envelope.routing_key;
     let message_id = envelope.message_id;
     // Clone envelope for MQTT publishing (enqueue takes ownership)

@@ -44,7 +44,16 @@ impl TestServer {
             "test-node".to_string(),
             vec![], // No peers for testing
         ));
-        let state = Arc::new(api::AppState { store, replication, auth: None, submit_key_limiter: None, mqtt_bridge: None });
+        let state = Arc::new(api::AppState {
+            store,
+            replication,
+            auth: None,
+            submit_key_limiter: None,
+            mqtt_bridge: None,
+            identity: None,
+            public_host: None,
+            additional_hosts: vec![],
+        });
         let app = api::router(state, None);
 
         // Spawn server in background
@@ -425,7 +434,16 @@ async fn test_multi_node_replication() {
         "node-1".to_string(),
         vec![url2.clone()],
     ));
-    let state1 = Arc::new(api::AppState { store: store1, replication: replication1, auth: None, submit_key_limiter: None, mqtt_bridge: None });
+    let state1 = Arc::new(api::AppState {
+        store: store1,
+        replication: replication1,
+        auth: None,
+        submit_key_limiter: None,
+        mqtt_bridge: None,
+        identity: None,
+        public_host: None,
+        additional_hosts: vec![],
+    });
     let app1 = api::router(state1, None);
 
     // Create node 2 with node 1 as peer
@@ -434,7 +452,16 @@ async fn test_multi_node_replication() {
         "node-2".to_string(),
         vec![url1.clone()],
     ));
-    let state2 = Arc::new(api::AppState { store: store2, replication: replication2, auth: None, submit_key_limiter: None, mqtt_bridge: None });
+    let state2 = Arc::new(api::AppState {
+        store: store2,
+        replication: replication2,
+        auth: None,
+        submit_key_limiter: None,
+        mqtt_bridge: None,
+        identity: None,
+        public_host: None,
+        additional_hosts: vec![],
+    });
     let app2 = api::router(state2, None);
 
     // Spawn both servers
