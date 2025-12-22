@@ -22,6 +22,9 @@
 //! - `REME_NODE_MQTT_BROKER` - Comma-separated MQTT broker URLs
 //! - `REME_NODE_MQTT_CLIENT_ID` - Comma-separated client IDs (paired with broker URLs)
 //! - `REME_NODE_MQTT_TOPIC_PREFIX` - MQTT topic prefix (default: "reme/v1")
+//! - `REME_NODE_IDENTITY_PATH` - Path to node identity key file
+//! - `REME_NODE_PUBLIC_HOST` - Canonical public hostname for signature verification
+//! - `REME_NODE_ADDITIONAL_HOSTS` - Comma-separated additional valid hostnames
 //!
 //! ## Config File
 //!
@@ -34,6 +37,13 @@
 //! default_ttl = 604800
 //! log_level = "info"
 //! storage_path = "/var/lib/reme/mailbox.db"  # Optional: enables persistent storage
+//!
+//! # Node identity for signed headers (auto-generated if not exists)
+//! identity_path = "/etc/reme/node-identity.key"
+//!
+//! # Public hostname for signature verification (required for secure mode)
+//! public_host = "node1.example.com:3000"
+//! additional_hosts = ["192.168.1.5:3000", "localhost:3000"]  # Optional: for multi-homed/dev
 //!
 //! [tls]
 //! enabled = true
@@ -328,6 +338,22 @@ pub struct CliArgs {
     /// MQTT topic prefix (default: reme/v1)
     #[arg(long, env = "REME_NODE_MQTT_TOPIC_PREFIX")]
     pub mqtt_topic_prefix: Option<String>,
+
+    // Node identity configuration
+    /// Path to node identity key file (32 bytes X25519 secret key)
+    /// Auto-generated if not exists. Default: ~/.config/reme/node-identity.key
+    #[arg(long, env = "REME_NODE_IDENTITY_PATH")]
+    pub identity_path: Option<PathBuf>,
+
+    /// Canonical public hostname for signature verification
+    /// Required for secure signature verification. Example: "node1.example.com:3000"
+    #[arg(long, env = "REME_NODE_PUBLIC_HOST")]
+    pub public_host: Option<String>,
+
+    /// Additional valid hostnames (comma-separated)
+    /// For multi-homed servers, dev, or migration scenarios
+    #[arg(long, env = "REME_NODE_ADDITIONAL_HOSTS", value_delimiter = ',')]
+    pub additional_hosts: Option<Vec<String>>,
 }
 
 /// Final resolved configuration
@@ -380,6 +406,19 @@ pub struct NodeConfig {
     /// MQTT bridge configuration
     #[serde(default)]
     pub mqtt: MqttBridgeConfig,
+
+    /// Path to node identity key file
+    #[serde(default)]
+    pub identity_path: Option<PathBuf>,
+
+    /// Canonical public hostname for signature verification
+    /// Example: "node1.example.com:3000"
+    #[serde(default)]
+    pub public_host: Option<String>,
+
+    /// Additional valid hostnames (for multi-homed servers, dev, migration)
+    #[serde(default)]
+    pub additional_hosts: Vec<String>,
 }
 
 impl Default for NodeConfig {
@@ -399,6 +438,9 @@ impl Default for NodeConfig {
             rate_limit: RateLimitConfig::default(),
             tls: TlsConfig::default(),
             mqtt: MqttBridgeConfig::default(),
+            identity_path: None,   // None means use default location
+            public_host: None,     // None means accept any (insecure mode)
+            additional_hosts: Vec::new(),
         }
     }
 }
@@ -406,6 +448,11 @@ impl Default for NodeConfig {
 /// Get the default config file path based on platform conventions
 fn default_config_path() -> Option<PathBuf> {
     ProjectDirs::from("com", "branch", "reme").map(|dirs| dirs.config_dir().join("node.toml"))
+}
+
+/// Get the default identity file path based on platform conventions
+pub fn default_identity_path() -> Option<PathBuf> {
+    ProjectDirs::from("com", "branch", "reme").map(|dirs| dirs.config_dir().join("node-identity.key"))
 }
 
 /// Safely convert i64 to u32, clamping negative values to 0.
@@ -677,6 +724,21 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         }
     };
 
+    // Extract identity config
+    let identity_path_from_config: Option<PathBuf> = config
+        .get::<String>("identity_path")
+        .ok()
+        .map(PathBuf::from);
+    let public_host_from_config: Option<String> = config.get("public_host").ok();
+    let additional_hosts_from_config: Vec<String> = config
+        .get::<Vec<String>>("additional_hosts")
+        .unwrap_or_default();
+
+    // Apply CLI overrides for identity
+    let identity_path = cli.identity_path.or(identity_path_from_config);
+    let public_host = cli.public_host.or(public_host_from_config);
+    let additional_hosts = cli.additional_hosts.unwrap_or(additional_hosts_from_config);
+
     Ok(NodeConfig {
         bind_addr,
         max_messages,
@@ -691,6 +753,9 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         rate_limit,
         tls,
         mqtt,
+        identity_path,
+        public_host,
+        additional_hosts,
     })
 }
 

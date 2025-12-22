@@ -5,6 +5,7 @@
 //! - GET /api/v1/fetch/:routing_key - Fetch messages
 
 use crate::mqtt_bridge::MqttBridge;
+use crate::node_identity::NodeIdentity;
 use crate::persistent_store::{PersistentMailboxStore, PersistentStoreError};
 use crate::rate_limit::{KeyedLimiter, RateLimiters};
 use crate::replication::{ReplicationClient, FROM_NODE_HEADER};
@@ -37,6 +38,12 @@ pub struct AppState {
     pub submit_key_limiter: Option<Arc<KeyedLimiter>>,
     /// Optional MQTT bridge for publishing messages to MQTT brokers
     pub mqtt_bridge: Option<Arc<MqttBridge>>,
+    /// Node's cryptographic identity for signing/verifying headers
+    pub identity: Option<Arc<NodeIdentity>>,
+    /// Canonical public hostname for signature destination verification
+    pub public_host: Option<String>,
+    /// Additional acceptable hostnames (for multi-homed, dev, migration)
+    pub additional_hosts: Vec<String>,
 }
 
 /// Maximum request body size (256 KiB)

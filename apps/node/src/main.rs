@@ -44,14 +44,17 @@ mod api;
 mod cleanup;
 mod config;
 mod mqtt_bridge;
+mod node_identity;
 mod persistent_store;
 mod rate_limit;
 mod replication;
+mod signed_headers;
 
 use api::AppState;
 use cleanup::run_cleanup_task;
-use config::{load_config, NodeConfig};
+use config::{default_identity_path, load_config, NodeConfig};
 use mqtt_bridge::MqttBridge;
+use node_identity::NodeIdentity;
 use persistent_store::{PersistentMailboxStore, PersistentStoreConfig};
 use rate_limit::RateLimiters;
 use replication::ReplicationClient;
@@ -121,6 +124,40 @@ async fn main() {
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     info!("Starting Branch Messenger Node v{}", env!("CARGO_PKG_VERSION"));
+
+    // Load or generate node identity
+    let identity_path = config.identity_path.clone().or_else(default_identity_path);
+    let identity = match identity_path {
+        Some(path) => {
+            info!("Identity path: {}", path.display());
+            match NodeIdentity::load_or_generate(&path) {
+                Ok(id) => {
+                    info!("Node ID: {}", id.node_id());
+                    Some(Arc::new(id))
+                }
+                Err(e) => {
+                    error!("Failed to load/generate node identity: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        None => {
+            warn!("No identity path configured and default location unavailable");
+            warn!("Node will run without cryptographic identity (signatures disabled)");
+            None
+        }
+    };
+
+    // Log public host configuration for signature verification
+    if let Some(ref host) = config.public_host {
+        info!("Public host: {}", host);
+        if !config.additional_hosts.is_empty() {
+            info!("Additional hosts: {:?}", config.additional_hosts);
+        }
+    } else if identity.is_some() {
+        warn!("No public_host configured - signature destination verification disabled (insecure)");
+    }
+
     info!("Bind address: {}", config.bind_addr);
     info!("Max messages per mailbox: {}", config.max_messages);
     info!("Default TTL: {} seconds", config.default_ttl);
@@ -233,6 +270,9 @@ async fn main() {
         auth,
         submit_key_limiter,
         mqtt_bridge,
+        identity,
+        public_host: config.public_host.clone(),
+        additional_hosts: config.additional_hosts.clone(),
     });
 
     // Create router with rate limiting

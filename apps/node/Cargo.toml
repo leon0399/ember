@@ -12,6 +12,7 @@ name = "node"
 path = "src/main.rs"
 
 [dependencies]
+reme-identity = { workspace = true }
 reme-message = { workspace = true }
 reme-transport = { workspace = true, features = ["mqtt"] }
 
@@ -25,6 +26,8 @@ tracing-subscriber = { workspace = true }
 
 # serialization
 base64 = { workspace = true }
+blake3 = { workspace = true }
+hex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
@@ -55,3 +58,4 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 reme-identity = { workspace = true }
+tempfile = "3"
