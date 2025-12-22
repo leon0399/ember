@@ -538,7 +538,14 @@ impl Storage {
                     "confirmed" => Ok(TieredDeliveryPhase::Confirmed {
                         confirmed_at_ms: reached_at_ms.unwrap_or(0),
                     }),
-                    _ => Ok(TieredDeliveryPhase::Urgent),
+                    "urgent" => Ok(TieredDeliveryPhase::Urgent),
+                    unknown => {
+                        tracing::warn!(
+                            phase = %unknown,
+                            "Unknown delivery phase in database, falling back to Urgent"
+                        );
+                        Ok(TieredDeliveryPhase::Urgent)
+                    }
                 }
             }
             None => Ok(TieredDeliveryPhase::Urgent),
@@ -637,8 +644,8 @@ impl OutboxStore for Storage {
     ) -> Result<OutboxEntryId, Self::Error> {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+            .expect("System time is before Unix epoch")
+            .as_millis() as u64;
 
         let recipient_bytes = recipient.to_bytes();
         let message_id_bytes = message_id.as_bytes();
@@ -1049,7 +1056,12 @@ impl OutboxStore for Storage {
                 Ok(())
             }
             Err(e) => {
-                let _ = self.conn.execute("ROLLBACK", []);
+                if let Err(rollback_err) = self.conn.execute("ROLLBACK", []) {
+                    tracing::error!(
+                        "Transaction rollback failed after error: {} (rollback error: {})",
+                        e, rollback_err
+                    );
+                }
                 Err(e)
             }
         }
@@ -1062,8 +1074,8 @@ impl OutboxStore for Storage {
     ) -> Result<(), Self::Error> {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+            .expect("System time is before Unix epoch")
+            .as_millis() as u64;
 
         let (confirmation_type, confirmation_data) = match confirmation {
             DeliveryConfirmation::Dag { observed_in_message_id } => {
@@ -1083,8 +1095,8 @@ impl OutboxStore for Storage {
     fn outbox_mark_expired(&self, entry_id: OutboxEntryId) -> Result<(), Self::Error> {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+            .expect("System time is before Unix epoch")
+            .as_millis() as u64;
 
         self.conn.execute(
             "UPDATE outbox SET expired_at_ms = ?, next_retry_at_ms = NULL WHERE id = ?",
@@ -1118,7 +1130,12 @@ impl OutboxStore for Storage {
                 Ok(())
             }
             Err(e) => {
-                let _ = self.conn.execute("ROLLBACK", []);
+                if let Err(rollback_err) = self.conn.execute("ROLLBACK", []) {
+                    tracing::error!(
+                        "Transaction rollback failed after error: {} (rollback error: {})",
+                        e, rollback_err
+                    );
+                }
                 Err(e)
             }
         }
@@ -1209,8 +1226,8 @@ impl OutboxStore for Storage {
     ) -> Result<(), Self::Error> {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+            .expect("System time is before Unix epoch")
+            .as_millis() as u64;
 
         self.conn.execute(
             "INSERT OR REPLACE INTO outbox_successes (outbox_id, target_id, succeeded_at_ms)

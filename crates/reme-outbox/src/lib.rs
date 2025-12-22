@@ -520,11 +520,15 @@ static DEFAULT_RETRY_POLICY: TransportRetryPolicy = TransportRetryPolicy {
 };
 
 /// Get current time in milliseconds since epoch.
+///
+/// # Panics
+/// Panics if system time is before Unix epoch, which indicates a serious
+/// system configuration error that would break all time-based operations.
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .expect("System time is before Unix epoch - check system clock configuration")
+        .as_millis() as u64
 }
 
 #[cfg(test)]

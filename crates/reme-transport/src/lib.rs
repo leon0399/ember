@@ -40,8 +40,8 @@ pub use tls::{
 };
 pub use url_auth::{parse_url_with_auth, sanitize_url_for_logging, ParsedUrl};
 pub use delivery::{
-    DeliveryConfidence, DeliveryResult, DeliveryTier, QuorumStrategy, TargetOutcome,
-    TargetResult, TierResult, TieredDeliveryConfig,
+    DeliveryConfidence, DeliveryResult, DeliveryTier, QuorumStrategy, QuorumStrategyError,
+    TargetOutcome, TargetResult, TierResult, TieredDeliveryConfig,
 };
 
 #[cfg(feature = "mqtt")]

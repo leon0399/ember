@@ -6,7 +6,7 @@ This document describes the tiered delivery system implemented in the Resilient 
 
 The delivery system is designed around a key principle: **the client never gives up**. Messages remain in the outbox until the recipient acknowledges receipt via the DAG (Directed Acyclic Graph) or tombstone mechanism.
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────┐
 │                           CLIENT                             │
 │  ┌──────────────────────────────────────────────────────────┐│
@@ -99,7 +99,7 @@ The Quorum tier requires a configurable number of transports to succeed before c
 
 Each message in the outbox goes through three phases:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │  PHASE 1: URGENT (Quorum not reached)                           │
 │  ├─ FULL PIPELINE RETRY: Direct → Quorum → Best-Effort          │
@@ -173,7 +173,7 @@ The system tracks confidence levels to understand delivery quality:
 
 ### Background Task Loop (Pseudocode)
 
-```
+```text
 LOOP forever:
     # Process all outbox operations in one tick
     (urgent_count, maintenance_count, expired_count) = tiered_outbox_tick()
@@ -219,17 +219,17 @@ quorum_tier_timeout_secs = 5
 
 ### Configuration Options
 
-| Option                       | Type    | Default | Description                            |
-|------------------------------|---------|---------|----------------------------------------|
-| `quorum`                     | string  | `"any"` | Quorum strategy for Quorum tier        |
-| `tiered_enabled`             | bool    | `true`  | Enable tiered delivery                 |
-| `urgent_initial_delay_secs`  | integer | `5`     | Initial retry delay in urgent phase    |
-| `urgent_max_delay_secs`      | integer | `60`    | Maximum retry delay in urgent phase    |
-| `urgent_backoff_multiplier`  | float   | `2.0`   | Backoff multiplier for urgent retries  |
-| `maintenance_interval_hours` | integer | `4`     | Hours between maintenance refreshes    |
-| `maintenance_enabled`        | bool    | `true`  | Enable maintenance refreshes           |
-| `direct_tier_timeout_ms`     | integer | `500`   | Direct tier timeout in milliseconds    |
-| `quorum_tier_timeout_secs`   | integer | `5`     | Quorum tier timeout in seconds         |
+| Option                       | Type          | Default | Description                                                               |
+|------------------------------|---------------|---------|---------------------------------------------------------------------------|
+| `quorum`                     | string/object | `"any"` | Quorum strategy: `"any"`, `"all"`, `{ count = N }`, or `{ fraction = F }` |
+| `tiered_enabled`             | bool          | `true`  | Enable tiered delivery                                                    |
+| `urgent_initial_delay_secs`  | integer       | `5`     | Initial retry delay in urgent phase                                       |
+| `urgent_max_delay_secs`      | integer       | `60`    | Maximum retry delay in urgent phase                                       |
+| `urgent_backoff_multiplier`  | float         | `2.0`   | Backoff multiplier for urgent retries                                     |
+| `maintenance_interval_hours` | integer       | `4`     | Hours between maintenance refreshes                                       |
+| `maintenance_enabled`        | bool          | `true`  | Enable maintenance refreshes                                              |
+| `direct_tier_timeout_ms`     | integer       | `500`   | Direct tier timeout in milliseconds                                       |
+| `quorum_tier_timeout_secs`   | integer       | `5`     | Quorum tier timeout in seconds                                            |
 
 ## Outbox Persistence
 
@@ -261,7 +261,7 @@ The outbox persists message delivery state to ensure reliability across restarts
 
 The architecture is designed for mailbox nodes to reuse the same transport coordinator:
 
-```
+```text
 ON message_received(envelope, source_target):
     # Store locally for recipient to fetch
     store.enqueue(envelope)

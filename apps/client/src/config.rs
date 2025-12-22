@@ -187,6 +187,28 @@ impl Default for QuorumStrategyConfig {
     }
 }
 
+impl QuorumStrategyConfig {
+    /// Validate the quorum strategy configuration.
+    ///
+    /// Returns an error message if the configuration is invalid.
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            QuorumStrategyConfig::Any | QuorumStrategyConfig::All => Ok(()),
+            QuorumStrategyConfig::Count(n) if *n == 0 => {
+                Err("Quorum count must be > 0".to_string())
+            }
+            QuorumStrategyConfig::Count(_) => Ok(()),
+            QuorumStrategyConfig::Fraction(f) if f.is_nan() || f.is_infinite() => {
+                Err(format!("Invalid quorum fraction {}: must be a finite number", f))
+            }
+            QuorumStrategyConfig::Fraction(f) if *f <= 0.0 || *f > 1.0 => {
+                Err(format!("Quorum fraction {} out of range: must be in (0.0, 1.0]", f))
+            }
+            QuorumStrategyConfig::Fraction(_) => Ok(()),
+        }
+    }
+}
+
 /// Tiered delivery configuration for quorum semantics.
 ///
 /// This controls how messages flow through delivery tiers:
@@ -264,9 +286,55 @@ impl Default for DeliveryAppConfig {
     }
 }
 
+impl DeliveryAppConfig {
+    /// Validate all delivery configuration values.
+    ///
+    /// Returns a list of validation errors (empty if valid).
+    pub fn validate(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+
+        // Validate quorum strategy
+        if let Err(e) = self.quorum.validate() {
+            errors.push(e);
+        }
+
+        // Validate backoff multiplier
+        if self.urgent_backoff_multiplier <= 1.0 {
+            errors.push(format!(
+                "Backoff multiplier {} should be > 1.0 for exponential backoff",
+                self.urgent_backoff_multiplier
+            ));
+        }
+
+        // Validate delay ordering
+        if self.urgent_initial_delay_secs > self.urgent_max_delay_secs {
+            errors.push(format!(
+                "Initial delay {}s exceeds max delay {}s",
+                self.urgent_initial_delay_secs, self.urgent_max_delay_secs
+            ));
+        }
+
+        // Validate timeouts are non-zero
+        if self.direct_tier_timeout_ms == 0 {
+            errors.push("Direct tier timeout must be > 0".to_string());
+        }
+        if self.quorum_tier_timeout_secs == 0 {
+            errors.push("Quorum tier timeout must be > 0".to_string());
+        }
+
+        errors
+    }
+}
+
 /// Convert config quorum strategy to transport quorum strategy.
 impl From<QuorumStrategyConfig> for QuorumStrategy {
     fn from(config: QuorumStrategyConfig) -> Self {
+        // Validate and log warnings for invalid values
+        if let Err(e) = config.validate() {
+            tracing::warn!("Invalid quorum strategy config: {} - using default", e);
+            return QuorumStrategy::Any;
+        }
+
         match config {
             QuorumStrategyConfig::Any => QuorumStrategy::Any,
             QuorumStrategyConfig::Count(n) => QuorumStrategy::Count(n),
@@ -279,6 +347,12 @@ impl From<QuorumStrategyConfig> for QuorumStrategy {
 /// Convert config delivery settings to transport tiered delivery config.
 impl From<DeliveryAppConfig> for TieredDeliveryConfig {
     fn from(config: DeliveryAppConfig) -> Self {
+        // Validate and log warnings
+        let validation_errors = config.validate();
+        for error in &validation_errors {
+            tracing::warn!("Delivery config warning: {}", error);
+        }
+
         TieredDeliveryConfig {
             tiered_enabled: config.tiered_enabled,
             quorum: config.quorum.into(),

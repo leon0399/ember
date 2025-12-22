@@ -135,6 +135,21 @@ pub struct Client<T: Transport> {
     tiered_config: TieredDeliveryConfig,
 }
 
+/// Prepared message ready for delivery.
+///
+/// This struct contains everything needed to send a message via any transport
+/// mechanism. The message has been encrypted and stored locally.
+struct PreparedMessage {
+    /// The outer envelope ready for transmission
+    outer: OuterEnvelope,
+    /// Message ID for return value and logging
+    message_id: MessageID,
+    /// Content ID for DAG tracking
+    content_id: ContentId,
+    /// Outbox entry ID for delivery tracking
+    entry_id: OutboxEntryId,
+}
+
 impl<T: Transport> Client<T> {
     /// Create a new client with the given identity, transport, and storage
     ///
@@ -386,34 +401,38 @@ impl<T: Transport> Client<T> {
         self.send_message_internal(to, content, false).await
     }
 
-    /// Send a message with arbitrary content (MIK-only encryption)
+    /// Prepare a message for delivery (common logic for all send methods).
     ///
-    /// # Arguments
-    /// * `to` - Recipient's public ID
-    /// * `content` - Message content
-    /// * `detached` - If true, send without DAG linkage (for constrained transports)
-    async fn send_message_internal(
+    /// This method handles:
+    /// - Message ID generation
+    /// - DAG field extraction
+    /// - Inner envelope creation and signing
+    /// - Encryption to recipient's MIK
+    /// - Outer envelope creation
+    /// - Local storage
+    /// - DAG state updates
+    /// - Outbox enqueueing
+    ///
+    /// After calling this, use the returned `PreparedMessage` with either
+    /// legacy single-target delivery or tiered delivery.
+    fn prepare_message(
         &self,
         to: &PublicID,
         content: Content,
         detached: bool,
-    ) -> Result<MessageID, ClientError> {
+    ) -> Result<PreparedMessage, ClientError> {
         // Generate message ID
         let outer_message_id = MessageID::new();
         let routing_key = to.routing_key();
 
-        // Get precise timestamp for inner envelope
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        // Get precise timestamp
+        let now = now_ms();
 
         // Get DAG fields from conversation state
         let contact_key = to.to_bytes();
         let (prev_self, observed_heads, epoch) = {
             let dag_state = self.dag_state.lock().unwrap();
             if detached {
-                // Detached messages have no DAG linkage
                 let epoch = dag_state.get(&contact_key).map(|d| d.epoch).unwrap_or(0);
                 (None, Vec::new(), epoch)
             } else if let Some(dag) = dag_state.get(&contact_key) {
@@ -426,7 +445,7 @@ impl<T: Transport> Client<T> {
         // Create inner envelope with DAG fields
         let mut inner = InnerEnvelope {
             from: *self.identity.public_id(),
-            created_at_ms: now_ms,
+            created_at_ms: now,
             content: content.clone(),
             signature: None,
             prev_self,
@@ -435,34 +454,33 @@ impl<T: Transport> Client<T> {
             flags: if detached { FLAG_DETACHED } else { 0 },
         };
 
-        // Compute content_id before signing (we need it for DAG tracking)
+        // Compute content_id before signing
         let content_id = inner.content_id();
 
-        // Sign the envelope with sender's private key (message_id included in signable bytes)
+        // Sign the envelope
         let signable = inner.signable_bytes(&outer_message_id);
         inner.signature = Some(InnerEnvelope::sign(&signable, &self.private_key()));
 
-        // Encrypt to recipient's MIK (stateless, returns ephemeral_key + ciphertext)
+        // Encrypt to recipient's MIK
         let (ephemeral_key, ciphertext) = encrypt_to_mik(&inner, to, &outer_message_id)?;
 
-        // Create outer envelope (must use same message_id as encryption!)
+        // Create outer envelope
         let outer = OuterEnvelope {
             version: CURRENT_VERSION,
             routing_key,
             timestamp_hours: reme_message::now_hours(),
-            ttl_hours: Some(7 * 24), // 7 days default TTL in hours
-            message_id: outer_message_id, // Must match the ID used for encryption
+            ttl_hours: Some(7 * 24), // 7 days default TTL
+            message_id: outer_message_id,
             ephemeral_key,
             inner_ciphertext: ciphertext,
         };
 
-        // Store locally first - we require local message history before transmitting.
+        // Store locally first
         let contact_id = self.storage.get_contact_id(to)?;
         self.storage
             .store_sent_message(contact_id, outer_message_id, &content)?;
 
-        // Update DAG tracking after successful storage
-        // Skip tracking for detached messages - they're not part of the chain
+        // Update DAG tracking (skip for detached)
         if !detached {
             let mut dag_state = self.dag_state.lock().unwrap();
             let dag = dag_state.entry(contact_key).or_insert_with(ConversationDag::new);
@@ -475,22 +493,45 @@ impl<T: Transport> Client<T> {
         let inner_bytes = bincode::encode_to_vec(&inner, bincode::config::standard())
             .map_err(|e| ClientError::Serialization(format!("inner: {}", e)))?;
 
-        // Enqueue to outbox for delivery tracking
+        // Enqueue to outbox
         let entry_id = self
             .outbox
             .enqueue(to, content_id, outer_message_id, &envelope_bytes, &inner_bytes, None)
             .map_err(ClientError::Outbox)?;
 
+        Ok(PreparedMessage {
+            outer,
+            message_id: outer_message_id,
+            content_id,
+            entry_id,
+        })
+    }
+
+    /// Send a message with arbitrary content (MIK-only encryption)
+    ///
+    /// # Arguments
+    /// * `to` - Recipient's public ID
+    /// * `content` - Message content
+    /// * `detached` - If true, send without DAG linkage (for constrained transports)
+    async fn send_message_internal(
+        &self,
+        to: &PublicID,
+        content: Content,
+        detached: bool,
+    ) -> Result<MessageID, ClientError> {
+        // Prepare message (common logic)
+        let prepared = self.prepare_message(to, content, detached)?;
+
         // Attempt delivery via current transport
         let transport_id = self.transport_id();
-        let attempt_result = match self.transport.submit_message(outer).await {
+        let attempt_result = match self.transport.submit_message(prepared.outer).await {
             Ok(()) => AttemptResult::Sent,
             Err(e) => AttemptResult::Failed(transport_error_to_attempt_error(&e)),
         };
 
         // Record the attempt (regardless of success/failure)
         self.outbox
-            .record_attempt(entry_id, &transport_id, attempt_result.clone())
+            .record_attempt(prepared.entry_id, &transport_id, attempt_result.clone())
             .map_err(ClientError::Outbox)?;
 
         // Log result
@@ -498,18 +539,18 @@ impl<T: Transport> Client<T> {
             AttemptResult::Sent => {
                 debug!(
                     "Message sent to contact (MIK-only encryption, content_id: {:?}, outbox_id: {})",
-                    content_id, entry_id
+                    prepared.content_id, prepared.entry_id
                 );
             }
             AttemptResult::Failed(e) => {
                 debug!(
                     "Message delivery failed, queued for retry (content_id: {:?}, outbox_id: {}, error: {})",
-                    content_id, entry_id, e
+                    prepared.content_id, prepared.entry_id, e
                 );
             }
         }
 
-        Ok(outer_message_id)
+        Ok(prepared.message_id)
     }
 
     // ========================================
@@ -650,21 +691,30 @@ impl<T: Transport> Client<T> {
                     }
                 }
                 Err(e) => {
-                    // Log but don't fail message processing for outbox errors
-                    debug!("Outbox confirmation check failed: {}", e);
+                    // Log at warn level - confirmation failures may indicate storage issues
+                    // that could prevent proper message acknowledgment
+                    warn!("Outbox confirmation check failed: {} - message may be re-sent", e);
                 }
             }
 
             // If gap detected and retry triggers are enabled, schedule retry for unacked messages
             if has_gaps {
-                if let Ok(unacked) = self.outbox.find_unacked_messages(&sender_id, &inner.observed_heads) {
-                    if !unacked.is_empty() {
+                match self.outbox.find_unacked_messages(&sender_id, &inner.observed_heads) {
+                    Ok(unacked) if !unacked.is_empty() => {
                         debug!(
                             "Gap detected: scheduling retry for {} unacknowledged messages",
                             unacked.len()
                         );
-                        // Ignore errors - this is opportunistic
-                        let _ = self.outbox.schedule_immediate_retry(&unacked);
+                        if let Err(e) = self.outbox.schedule_immediate_retry(&unacked) {
+                            warn!(
+                                "Failed to schedule immediate retry for {} messages: {}",
+                                unacked.len(), e
+                            );
+                        }
+                    }
+                    Ok(_) => {} // No unacked messages
+                    Err(e) => {
+                        warn!("Failed to find unacked messages for gap recovery: {}", e);
                     }
                 }
             }
@@ -987,11 +1037,15 @@ fn transport_error_to_attempt_error(e: &TransportError) -> AttemptError {
 }
 
 /// Get current time in milliseconds since epoch.
+///
+/// # Panics
+/// Panics if system time is before Unix epoch, which indicates a serious
+/// system configuration error that would break all time-based operations.
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .expect("System time is before Unix epoch - check system clock configuration")
+        .as_millis() as u64
 }
 
 // ========================================================================
@@ -1047,99 +1101,27 @@ impl Client<TransportCoordinator> {
         content: Content,
         detached: bool,
     ) -> Result<(MessageID, TieredDeliveryPhase), ClientError> {
-        // Generate message ID
-        let outer_message_id = MessageID::new();
-        let routing_key = to.routing_key();
-
-        // Get precise timestamp for inner envelope
-        let now = now_ms();
-
-        // Get DAG fields from conversation state
-        let contact_key = to.to_bytes();
-        let (prev_self, observed_heads, epoch) = {
-            let dag_state = self.dag_state.lock().unwrap();
-            if detached {
-                let epoch = dag_state.get(&contact_key).map(|d| d.epoch).unwrap_or(0);
-                (None, Vec::new(), epoch)
-            } else if let Some(dag) = dag_state.get(&contact_key) {
-                (dag.sender.head(), self.get_observed_heads(dag), dag.epoch)
-            } else {
-                (None, Vec::new(), 0)
-            }
-        };
-
-        // Create inner envelope with DAG fields
-        let mut inner = InnerEnvelope {
-            from: *self.identity.public_id(),
-            created_at_ms: now,
-            content: content.clone(),
-            signature: None,
-            prev_self,
-            observed_heads,
-            epoch,
-            flags: if detached { FLAG_DETACHED } else { 0 },
-        };
-
-        // Compute content_id before signing
-        let content_id = inner.content_id();
-
-        // Sign the envelope
-        let signable = inner.signable_bytes(&outer_message_id);
-        inner.signature = Some(InnerEnvelope::sign(&signable, &self.private_key()));
-
-        // Encrypt to recipient's MIK
-        let (ephemeral_key, ciphertext) = encrypt_to_mik(&inner, to, &outer_message_id)?;
-
-        // Create outer envelope
-        let outer = OuterEnvelope {
-            version: CURRENT_VERSION,
-            routing_key,
-            timestamp_hours: reme_message::now_hours(),
-            ttl_hours: Some(7 * 24), // 7 days default TTL
-            message_id: outer_message_id,
-            ephemeral_key,
-            inner_ciphertext: ciphertext,
-        };
-
-        // Store locally first
-        let contact_id = self.storage.get_contact_id(to)?;
-        self.storage
-            .store_sent_message(contact_id, outer_message_id, &content)?;
-
-        // Update DAG tracking (skip for detached)
-        if !detached {
-            let mut dag_state = self.dag_state.lock().unwrap();
-            let dag = dag_state.entry(contact_key).or_insert_with(ConversationDag::new);
-            dag.sender.on_send(content_id, prev_self);
-        }
-
-        // Serialize envelopes for outbox storage
-        let envelope_bytes = bincode::encode_to_vec(&outer, bincode::config::standard())
-            .map_err(|e| ClientError::Serialization(format!("envelope: {}", e)))?;
-        let inner_bytes = bincode::encode_to_vec(&inner, bincode::config::standard())
-            .map_err(|e| ClientError::Serialization(format!("inner: {}", e)))?;
-
-        // Enqueue to outbox
-        let entry_id = self
-            .outbox
-            .enqueue(to, content_id, outer_message_id, &envelope_bytes, &inner_bytes, None)
-            .map_err(ClientError::Outbox)?;
+        // Prepare message (common logic)
+        let prepared = self.prepare_message(to, content, detached)?;
 
         // Attempt tiered delivery
-        let result = self.transport.submit_tiered(&outer, &self.tiered_config).await;
+        let result = self
+            .transport
+            .submit_tiered(&prepared.outer, &self.tiered_config)
+            .await;
 
         // Record result in outbox and get new phase
         let phase = self
             .outbox
-            .record_tiered_delivery_result(entry_id, &result, &self.tiered_config)
+            .record_tiered_delivery_result(prepared.entry_id, &result, &self.tiered_config)
             .map_err(ClientError::Outbox)?;
 
         // Log result based on phase
         match &phase {
             TieredDeliveryPhase::Urgent => {
                 warn!(
-                    message_id = ?outer_message_id,
-                    content_id = ?content_id,
+                    message_id = ?prepared.message_id,
+                    content_id = ?prepared.content_id,
                     success_count = result.success_count(),
                     "Message quorum not reached, will retry"
                 );
@@ -1147,12 +1129,12 @@ impl Client<TransportCoordinator> {
             TieredDeliveryPhase::Distributed { confidence, .. } => {
                 if confidence.is_direct() {
                     info!(
-                        message_id = ?outer_message_id,
+                        message_id = ?prepared.message_id,
                         "Message delivered directly via P2P"
                     );
                 } else {
                     debug!(
-                        message_id = ?outer_message_id,
+                        message_id = ?prepared.message_id,
                         success_count = result.success_count(),
                         "Message distributed, awaiting ACK"
                     );
@@ -1163,7 +1145,7 @@ impl Client<TransportCoordinator> {
             }
         }
 
-        Ok((outer_message_id, phase))
+        Ok((prepared.message_id, phase))
     }
 
     /// Process urgent retries (Phase 1 messages).
@@ -1280,6 +1262,29 @@ impl Client<TransportCoordinator> {
         let all_quorum_targets = self.transport.quorum_target_ids(&self.tiered_config);
         let failed_targets: Vec<TargetId> = pending.failed_targets(all_quorum_targets.iter());
 
+        // Handle edge case: no quorum targets configured
+        if all_quorum_targets.is_empty() {
+            warn!(
+                entry_id = pending.id,
+                "No quorum targets available, scheduling retry with backoff"
+            );
+            // Build an empty result to trigger proper retry scheduling
+            let empty_result = DeliveryResult {
+                quorum_reached: false,
+                confidence: reme_transport::DeliveryConfidence::QuorumReached {
+                    count: 0,
+                    required: 1,
+                },
+                target_results: Vec::new(),
+                completed_tier: None,
+            };
+            let phase = self
+                .outbox
+                .record_tiered_delivery_result(pending.id, &empty_result, &self.tiered_config)
+                .map_err(ClientError::Outbox)?;
+            return Ok(phase);
+        }
+
         // If all targets succeeded, no need to retry Quorum tier
         if failed_targets.is_empty() {
             // Just record that we checked - outbox state unchanged
@@ -1362,18 +1367,45 @@ impl Client<TransportCoordinator> {
         }
 
         // Refresh ALL Quorum tier targets
-        let _quorum_result = self
+        let quorum_result = self
             .transport
             .try_quorum_tier_all(&outer, &self.tiered_config)
             .await;
 
-        // Record maintenance timestamp
+        // Check refresh results and log appropriately
+        let success_count = quorum_result.success_count();
+        let total_targets = quorum_result.results.len();
+
+        if success_count == 0 && total_targets > 0 {
+            // All targets failed - don't record maintenance so we retry sooner
+            warn!(
+                entry_id = pending.id,
+                total_targets,
+                "Maintenance refresh failed: all {} targets unreachable, will retry sooner",
+                total_targets
+            );
+            // Don't record maintenance - message will be picked up on next tick
+            return Ok(());
+        }
+
+        if success_count < total_targets as u32 {
+            debug!(
+                entry_id = pending.id,
+                success_count,
+                total_targets,
+                "Maintenance refresh partial: {}/{} targets succeeded",
+                success_count, total_targets
+            );
+        }
+
+        // Record maintenance timestamp (only if at least one target succeeded)
         self.outbox
             .record_maintenance_refresh(pending.id)
             .map_err(ClientError::Outbox)?;
 
         debug!(
             entry_id = pending.id,
+            success_count,
             "Maintenance refresh completed"
         );
 

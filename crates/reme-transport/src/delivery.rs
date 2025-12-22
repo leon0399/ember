@@ -10,6 +10,30 @@ use std::time::Duration;
 use crate::target::TargetId;
 use crate::TransportError;
 
+/// Error type for invalid quorum strategy configuration.
+#[derive(Debug, Clone, PartialEq)]
+pub enum QuorumStrategyError {
+    /// Invalid fraction value. Must be in range (0.0, 1.0].
+    InvalidFraction(f32),
+    /// Invalid count value. Must be > 0.
+    InvalidCount(u32),
+}
+
+impl std::fmt::Display for QuorumStrategyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            QuorumStrategyError::InvalidFraction(v) => {
+                write!(f, "Invalid quorum fraction {}: must be in range (0.0, 1.0]", v)
+            }
+            QuorumStrategyError::InvalidCount(v) => {
+                write!(f, "Invalid quorum count {}: must be > 0", v)
+            }
+        }
+    }
+}
+
+impl std::error::Error for QuorumStrategyError {}
+
 /// Delivery tiers in priority order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeliveryTier {
@@ -50,6 +74,50 @@ impl Default for QuorumStrategy {
 }
 
 impl QuorumStrategy {
+    /// Create a new Fraction strategy with validation.
+    ///
+    /// # Errors
+    /// Returns an error if the fraction is not in the range (0.0, 1.0].
+    pub fn fraction(f: f32) -> Result<Self, QuorumStrategyError> {
+        if f.is_nan() || f.is_infinite() {
+            return Err(QuorumStrategyError::InvalidFraction(f));
+        }
+        if f <= 0.0 || f > 1.0 {
+            return Err(QuorumStrategyError::InvalidFraction(f));
+        }
+        Ok(QuorumStrategy::Fraction(f))
+    }
+
+    /// Create a new Count strategy with validation.
+    ///
+    /// # Errors
+    /// Returns an error if count is 0.
+    pub fn count(n: u32) -> Result<Self, QuorumStrategyError> {
+        if n == 0 {
+            return Err(QuorumStrategyError::InvalidCount(n));
+        }
+        Ok(QuorumStrategy::Count(n))
+    }
+
+    /// Validate the quorum strategy.
+    ///
+    /// # Errors
+    /// Returns an error if the strategy contains invalid values.
+    pub fn validate(&self) -> Result<(), QuorumStrategyError> {
+        match self {
+            QuorumStrategy::Any | QuorumStrategy::All => Ok(()),
+            QuorumStrategy::Count(n) if *n == 0 => Err(QuorumStrategyError::InvalidCount(*n)),
+            QuorumStrategy::Count(_) => Ok(()),
+            QuorumStrategy::Fraction(f) if f.is_nan() || f.is_infinite() => {
+                Err(QuorumStrategyError::InvalidFraction(*f))
+            }
+            QuorumStrategy::Fraction(f) if *f <= 0.0 || *f > 1.0 => {
+                Err(QuorumStrategyError::InvalidFraction(*f))
+            }
+            QuorumStrategy::Fraction(_) => Ok(()),
+        }
+    }
+
     /// Check if quorum is satisfied given success count and total targets.
     pub fn is_satisfied(&self, success: u32, total: u32) -> bool {
         if total == 0 {
@@ -60,7 +128,12 @@ impl QuorumStrategy {
     }
 
     /// Get the required count for this strategy given total targets.
+    ///
+    /// Returns 0 when `total` is 0 (you can't require anything from nothing).
     pub fn required_count(&self, total: u32) -> u32 {
+        if total == 0 {
+            return 0;
+        }
         match self {
             QuorumStrategy::Any => 1,
             QuorumStrategy::Count(n) => (*n).min(total),
