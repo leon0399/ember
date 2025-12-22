@@ -44,6 +44,7 @@ reqwest = { workspace = true, features = ["json"] }
 # security
 subtle = "2"
 zeroize = "1"
+rand = { workspace = true }
 
 # rate limiting
 tower_governor = "0.8"
@@ -57,5 +58,5 @@ directories = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-reme-identity = { workspace = true }
 tempfile = "3"
+reqwest = { workspace = true }

@@ -68,12 +68,21 @@ async fn start_test_node(
     });
     let app = api::router(state, None);
 
+    let url_clone = url.clone();
     let handle = tokio::spawn(async move {
         axum::serve(listener, app).await.expect("Server failed");
     });
 
-    // Small delay to ensure server is ready
-    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    // Wait for server readiness with retry loop instead of fixed delay
+    let health_url = format!("{}/api/v1/health", url_clone);
+    let client = reqwest::Client::new();
+    for _ in 0..50 {
+        // 50 * 10ms = 500ms max wait
+        if client.get(&health_url).send().await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
 
     (url, handle)
 }

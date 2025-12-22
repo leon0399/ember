@@ -78,8 +78,17 @@ fn generate_and_save_identity(path: &Path) -> Result<Identity, NodeIdentityError
         }
     }
 
-    // Write to temp file first, then rename for atomicity
-    let temp_path = path.with_extension("tmp");
+    // Write to temp file first, then rename for atomicity.
+    // Use random suffix to avoid race conditions between processes.
+    let random_suffix: u64 = rand::random();
+    let temp_name = format!(
+        "{}.{:016x}.tmp",
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("identity"),
+        random_suffix
+    );
+    let temp_path = path.with_file_name(&temp_name);
     fs::write(&temp_path, identity.to_bytes()).map_err(NodeIdentityError::WriteError)?;
     fs::rename(&temp_path, path).map_err(NodeIdentityError::WriteError)?;
 
