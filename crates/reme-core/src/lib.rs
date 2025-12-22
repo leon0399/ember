@@ -142,11 +142,11 @@ pub struct Client<T: Transport> {
 struct PreparedMessage {
     /// The outer envelope ready for transmission
     outer: OuterEnvelope,
-    /// Message ID for return value and logging
-    message_id: MessageID,
     /// Content ID for DAG tracking
     content_id: ContentId,
-    /// Outbox entry ID for delivery tracking
+    /// Message/outbox entry ID (unified identity)
+    ///
+    /// This is both the wire message ID and the outbox entry key.
     entry_id: OutboxEntryId,
 }
 
@@ -501,7 +501,6 @@ impl<T: Transport> Client<T> {
 
         Ok(PreparedMessage {
             outer,
-            message_id: outer_message_id,
             content_id,
             entry_id,
         })
@@ -538,19 +537,19 @@ impl<T: Transport> Client<T> {
         match &attempt_result {
             AttemptResult::Sent => {
                 debug!(
-                    "Message sent to contact (MIK-only encryption, content_id: {:?}, outbox_id: {})",
+                    "Message sent to contact (MIK-only encryption, content_id: {:?}, outbox_id: {:?})",
                     prepared.content_id, prepared.entry_id
                 );
             }
             AttemptResult::Failed(e) => {
                 debug!(
-                    "Message delivery failed, queued for retry (content_id: {:?}, outbox_id: {}, error: {})",
+                    "Message delivery failed, queued for retry (content_id: {:?}, outbox_id: {:?}, error: {})",
                     prepared.content_id, prepared.entry_id, e
                 );
             }
         }
 
-        Ok(prepared.message_id)
+        Ok(prepared.entry_id)
     }
 
     // ========================================
@@ -973,7 +972,7 @@ impl<T: Transport> Client<T> {
                         }
                         Err(e) => {
                             // Log error but continue processing other messages
-                            warn!(entry_id = pending.id, error = %e, "Outbox tick: delivery attempt failed");
+                            warn!(entry_id = ?pending.id, error = %e, "Outbox tick: delivery attempt failed");
                         }
                     }
                 }
@@ -1120,7 +1119,7 @@ impl Client<TransportCoordinator> {
         match &phase {
             TieredDeliveryPhase::Urgent => {
                 warn!(
-                    message_id = ?prepared.message_id,
+                    message_id = ?prepared.entry_id,
                     content_id = ?prepared.content_id,
                     success_count = result.success_count(),
                     "Message quorum not reached, will retry"
@@ -1129,12 +1128,12 @@ impl Client<TransportCoordinator> {
             TieredDeliveryPhase::Distributed { confidence, .. } => {
                 if confidence.is_direct() {
                     info!(
-                        message_id = ?prepared.message_id,
+                        message_id = ?prepared.entry_id,
                         "Message delivered directly via P2P"
                     );
                 } else {
                     debug!(
-                        message_id = ?prepared.message_id,
+                        message_id = ?prepared.entry_id,
                         success_count = result.success_count(),
                         "Message distributed, awaiting ACK"
                     );
@@ -1145,7 +1144,7 @@ impl Client<TransportCoordinator> {
             }
         }
 
-        Ok((prepared.message_id, phase))
+        Ok((prepared.entry_id, phase))
     }
 
     /// Process urgent retries (Phase 1 messages).
@@ -1167,7 +1166,7 @@ impl Client<TransportCoordinator> {
                 }
                 Err(e) => {
                     warn!(
-                        entry_id = pending.id,
+                        entry_id = ?pending.id,
                         error = %e,
                         "Urgent retry failed"
                     );
@@ -1205,7 +1204,7 @@ impl Client<TransportCoordinator> {
                 }
                 Err(e) => {
                     warn!(
-                        entry_id = pending.id,
+                        entry_id = ?pending.id,
                         error = %e,
                         "Maintenance refresh failed"
                     );
@@ -1243,7 +1242,7 @@ impl Client<TransportCoordinator> {
                     .map_err(ClientError::Outbox)?;
 
                 info!(
-                    entry_id = pending.id,
+                    entry_id = ?pending.id,
                     target = %target,
                     "Upgraded to direct delivery via Direct tier"
                 );
@@ -1265,7 +1264,7 @@ impl Client<TransportCoordinator> {
         // Handle edge case: no quorum targets configured
         if all_quorum_targets.is_empty() {
             warn!(
-                entry_id = pending.id,
+                entry_id = ?pending.id,
                 "No quorum targets available, scheduling retry with backoff"
             );
             // Build an empty result to trigger proper retry scheduling
@@ -1357,7 +1356,7 @@ impl Client<TransportCoordinator> {
                     .map_err(ClientError::Outbox)?;
 
                 info!(
-                    entry_id = pending.id,
+                    entry_id = ?pending.id,
                     target = %target,
                     "Maintenance: upgraded to direct delivery"
                 );
@@ -1379,7 +1378,7 @@ impl Client<TransportCoordinator> {
         if success_count == 0 && total_targets > 0 {
             // All targets failed - don't record maintenance so we retry sooner
             warn!(
-                entry_id = pending.id,
+                entry_id = ?pending.id,
                 total_targets,
                 "Maintenance refresh failed: all {} targets unreachable, will retry sooner",
                 total_targets
@@ -1390,7 +1389,7 @@ impl Client<TransportCoordinator> {
 
         if success_count < total_targets as u32 {
             debug!(
-                entry_id = pending.id,
+                entry_id = ?pending.id,
                 success_count,
                 total_targets,
                 "Maintenance refresh partial: {}/{} targets succeeded",
@@ -1404,7 +1403,7 @@ impl Client<TransportCoordinator> {
             .map_err(ClientError::Outbox)?;
 
         debug!(
-            entry_id = pending.id,
+            entry_id = ?pending.id,
             success_count,
             "Maintenance refresh completed"
         );

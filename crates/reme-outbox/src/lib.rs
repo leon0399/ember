@@ -541,14 +541,12 @@ mod tests {
     /// Mock storage for testing
     struct MockOutboxStore {
         entries: RefCell<HashMap<OutboxEntryId, PendingMessage>>,
-        next_id: RefCell<OutboxEntryId>,
     }
 
     impl MockOutboxStore {
         fn new() -> Self {
             Self {
                 entries: RefCell::new(HashMap::new()),
-                next_id: RefCell::new(1),
             }
         }
     }
@@ -576,15 +574,11 @@ mod tests {
             inner_bytes: &[u8],
             expires_at_ms: Option<u64>,
         ) -> Result<OutboxEntryId, Self::Error> {
-            let mut next_id = self.next_id.borrow_mut();
-            let id = *next_id;
-            *next_id += 1;
-
+            // message_id IS the entry_id (unified identity)
             let msg = PendingMessage {
-                id,
+                id: message_id,
                 recipient: *recipient,
                 content_id,
-                message_id,
                 envelope_bytes: envelope_bytes.to_vec(),
                 inner_bytes: inner_bytes.to_vec(),
                 created_at_ms: now_ms(),
@@ -597,8 +591,8 @@ mod tests {
                 tiered_phase: TieredDeliveryPhase::Urgent,
             };
 
-            self.entries.borrow_mut().insert(id, msg);
-            Ok(id)
+            self.entries.borrow_mut().insert(message_id, msg);
+            Ok(message_id)
         }
 
         fn outbox_get_pending(&self) -> Result<Vec<PendingMessage>, Self::Error> {
