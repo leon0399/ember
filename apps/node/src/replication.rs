@@ -188,23 +188,14 @@ impl ReplicationClient {
 
 /// Extract host:port from a URL for signature destination binding.
 ///
-/// Returns `Some("host:port")` or `Some("host")` if default port.
-fn extract_host_from_url(url: &str) -> Option<String> {
-    // Simple URL parsing: extract host from http(s)://host(:port)/...
-    let without_scheme = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))?;
+/// Returns `Some("host:port")` or `Some("host")` if no explicit port.
+/// Uses the `url` crate for robust parsing of all URL formats including IPv6.
+fn extract_host_from_url(url_str: &str) -> Option<String> {
+    let parsed = url::Url::parse(url_str).ok()?;
+    let host = parsed.host_str()?;
 
-    // Find path start
-    let host_part = match without_scheme.find('/') {
-        Some(pos) => &without_scheme[..pos],
-        None => without_scheme,
-    };
-
-    // Return host (possibly with port)
-    if host_part.is_empty() {
-        None
-    } else {
-        Some(host_part.to_string())
+    match parsed.port() {
+        Some(port) => Some(format!("{}:{}", host, port)),
+        None => Some(host.to_string()),
     }
 }
