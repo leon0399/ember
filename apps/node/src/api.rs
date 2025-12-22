@@ -8,7 +8,7 @@ use crate::mqtt_bridge::MqttBridge;
 use crate::node_identity::NodeIdentity;
 use crate::persistent_store::{PersistentMailboxStore, PersistentStoreError};
 use crate::rate_limit::{KeyedLimiter, RateLimiters};
-use crate::replication::{ReplicationClient, FROM_NODE_HEADER};
+use crate::replication::ReplicationClient;
 use crate::signed_headers::{SignatureError, SignatureVerifier, HEADER_NODE_SIGNATURE};
 use reme_identity::PublicID;
 use axum::{
@@ -157,8 +157,6 @@ async fn check_basic_auth(
 pub enum RequestSource {
     /// Verified node with cryptographic identity
     VerifiedNode(PublicID),
-    /// Legacy node using unverified header
-    LegacyNode(String),
     /// Client (no node headers)
     Client,
 }
@@ -170,7 +168,6 @@ impl RequestSource {
             (RequestSource::VerifiedNode(their_pubkey), Some(identity)) => {
                 their_pubkey == identity.public_id()
             }
-            // Legacy: can't do cryptographic self-check
             _ => false,
         }
     }
@@ -181,7 +178,6 @@ impl RequestSource {
             RequestSource::VerifiedNode(pubkey) => {
                 Some(crate::node_identity::node_id_hex(pubkey))
             }
-            RequestSource::LegacyNode(id) => Some(id.clone()),
             RequestSource::Client => None,
         }
     }
@@ -248,15 +244,6 @@ fn identify_request_source(
         let public_id = verifier.verify(headers, method, path, body)?;
         debug!("Verified signed request from node {}", crate::node_identity::node_id_hex(&public_id));
         return Ok(RequestSource::VerifiedNode(public_id));
-    }
-
-    // Check for legacy FROM_NODE_HEADER
-    if let Some(from_node) = headers
-        .get(FROM_NODE_HEADER)
-        .and_then(|v| v.to_str().ok())
-    {
-        debug!("Legacy FROM_NODE_HEADER from: {}", from_node);
-        return Ok(RequestSource::LegacyNode(from_node.to_string()));
     }
 
     // No node headers - treat as client

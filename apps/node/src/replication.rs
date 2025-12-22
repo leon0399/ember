@@ -26,9 +26,6 @@ use reqwest::Client;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
-/// Header name for legacy source node identification (deprecated, use signed headers)
-pub const FROM_NODE_HEADER: &str = "X-From-Node";
-
 /// Client for replicating data to peer nodes
 pub struct ReplicationClient {
     client: Client,
@@ -117,9 +114,6 @@ impl ReplicationClient {
                         request = request.header(header_name, header_value);
                     }
                     debug!("Signed replication request to {}", dest);
-                } else {
-                    // Fallback to legacy header if no identity
-                    request = request.header(FROM_NODE_HEADER, &this.node_id);
                 }
 
                 request = request
