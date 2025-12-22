@@ -143,18 +143,20 @@ impl SignedHeaders {
 }
 
 /// Verification context for incoming signed requests.
-pub struct SignatureVerifier {
+///
+/// Uses references to avoid cloning on the hot path.
+pub struct SignatureVerifier<'a> {
     /// Canonical public hostname
-    public_host: Option<String>,
+    public_host: Option<&'a str>,
     /// Additional acceptable hostnames
-    additional_hosts: Vec<String>,
+    additional_hosts: &'a [String],
 }
 
-impl SignatureVerifier {
+impl<'a> SignatureVerifier<'a> {
     /// Create a new verifier.
     ///
     /// If `public_host` is None, destination verification is skipped (insecure).
-    pub fn new(public_host: Option<String>, additional_hosts: Vec<String>) -> Self {
+    pub fn new(public_host: Option<&'a str>, additional_hosts: &'a [String]) -> Self {
         Self {
             public_host,
             additional_hosts,
@@ -293,7 +295,7 @@ impl SignatureVerifier {
     /// Verify destination matches our configured hostname.
     fn verify_destination(&self, dest_host: &str) -> Result<(), SignatureError> {
         // If no public_host configured, skip verification (insecure mode)
-        let Some(ref public_host) = self.public_host else {
+        let Some(public_host) = self.public_host else {
             return Ok(());
         };
 
@@ -306,7 +308,7 @@ impl SignatureVerifier {
         }
 
         // Check additional hosts
-        for host in &self.additional_hosts {
+        for host in self.additional_hosts {
             if canonical_dest == canonicalize_host(host) {
                 return Ok(());
             }
@@ -314,7 +316,7 @@ impl SignatureVerifier {
 
         // Build expected list for error message
         let mut expected = vec![canonical_public];
-        for host in &self.additional_hosts {
+        for host in self.additional_hosts {
             expected.push(canonicalize_host(host));
         }
 
@@ -469,7 +471,7 @@ mod tests {
         }
 
         // Verify
-        let verifier = SignatureVerifier::new(Some(dest_host.to_string()), vec![]);
+        let verifier = SignatureVerifier::new(Some(dest_host), &[]);
         let result = verifier.verify(&header_map, method, path, body);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), *identity.public_id());
@@ -494,7 +496,7 @@ mod tests {
         }
 
         // Try to verify with tampered body
-        let verifier = SignatureVerifier::new(Some(dest_host.to_string()), vec![]);
+        let verifier = SignatureVerifier::new(Some(dest_host), &[]);
         let result = verifier.verify(&header_map, method, path, b"tampered body");
         assert_eq!(result, Err(SignatureError::InvalidSignature));
     }
@@ -525,7 +527,7 @@ mod tests {
             );
         }
 
-        let verifier = SignatureVerifier::new(Some(dest_host.to_string()), vec![]);
+        let verifier = SignatureVerifier::new(Some(dest_host), &[]);
         let result = verifier.verify(&header_map, method, path, body);
         assert_eq!(result, Err(SignatureError::TimestampExpired));
     }
@@ -556,7 +558,7 @@ mod tests {
             );
         }
 
-        let verifier = SignatureVerifier::new(Some(dest_host.to_string()), vec![]);
+        let verifier = SignatureVerifier::new(Some(dest_host), &[]);
         let result = verifier.verify(&header_map, method, path, body);
         assert_eq!(result, Err(SignatureError::TimestampFuture));
     }
@@ -580,7 +582,7 @@ mod tests {
         }
 
         // Verify with different destination
-        let verifier = SignatureVerifier::new(Some("node3.example.com:3000".to_string()), vec![]);
+        let verifier = SignatureVerifier::new(Some("node3.example.com:3000"), &[]);
         let result = verifier.verify(&header_map, method, path, body);
         assert!(matches!(result, Err(SignatureError::DestinationMismatch { .. })));
     }
@@ -604,10 +606,8 @@ mod tests {
         }
 
         // Verify with additional_hosts including the IP
-        let verifier = SignatureVerifier::new(
-            Some("node.example.com:3000".to_string()),
-            vec!["192.168.1.5:3000".to_string()],
-        );
+        let additional = vec!["192.168.1.5:3000".to_string()];
+        let verifier = SignatureVerifier::new(Some("node.example.com:3000"), &additional);
         let result = verifier.verify(&header_map, method, path, body);
         assert!(result.is_ok());
     }
@@ -677,7 +677,7 @@ mod tests {
             );
         }
 
-        let verifier = SignatureVerifier::new(Some(dest_host.to_string()), vec![]);
+        let verifier = SignatureVerifier::new(Some(dest_host), &[]);
         let result = verifier.verify(&header_map, method, path, body);
         assert_eq!(result, Err(SignatureError::NodeIdMismatch));
     }
@@ -706,7 +706,7 @@ mod tests {
             "duplicate_value".parse().unwrap(),
         );
 
-        let verifier = SignatureVerifier::new(Some(dest_host.to_string()), vec![]);
+        let verifier = SignatureVerifier::new(Some(dest_host), &[]);
         let result = verifier.verify(&header_map, method, path, body);
         assert_eq!(result, Err(SignatureError::DuplicateHeader(HEADER_NODE_SIGNATURE)));
     }
@@ -730,7 +730,7 @@ mod tests {
         }
 
         // No public_host configured - should accept any destination
-        let verifier = SignatureVerifier::new(None, vec![]);
+        let verifier = SignatureVerifier::new(None, &[]);
         let result = verifier.verify(&header_map, method, path, body);
         assert!(result.is_ok());
     }

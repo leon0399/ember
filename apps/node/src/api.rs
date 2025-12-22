@@ -242,8 +242,8 @@ fn identify_request_source(
     if headers.contains_key(HEADER_NODE_SIGNATURE) {
         // Signed headers present - must verify
         let verifier = SignatureVerifier::new(
-            state.public_host.clone(),
-            state.additional_hosts.clone(),
+            state.public_host.as_deref(),
+            &state.additional_hosts,
         );
         let public_id = verifier.verify(headers, method, path, body)?;
         debug!("Verified signed request from node {}", crate::node_identity::node_id_hex(&public_id));
