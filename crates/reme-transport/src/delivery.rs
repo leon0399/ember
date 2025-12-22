@@ -184,9 +184,15 @@ impl DeliveryConfidence {
     }
 
     /// Check if quorum was reached.
+    ///
+    /// Returns `false` when `required == 0` (no quorum targets configured).
+    /// This keeps semantics consistent with `DeliveryResult.quorum_reached`.
     pub fn is_quorum_reached(&self) -> bool {
         match self {
-            DeliveryConfidence::QuorumReached { count, required } => count >= required,
+            DeliveryConfidence::QuorumReached { count, required } => {
+                // Treat "no required quorum" (required == 0) as not reached.
+                *required > 0 && *count >= *required
+            }
             DeliveryConfidence::DirectDelivery { .. } => true,
         }
     }
@@ -625,6 +631,27 @@ mod tests {
         };
         assert!(direct.is_direct());
         assert!(direct.is_quorum_reached());
+
+        // Edge case: 0/0 should NOT be considered quorum reached
+        // (consistent with DeliveryResult.quorum_reached = false for partial results)
+        let zero_zero = DeliveryConfidence::QuorumReached {
+            count: 0,
+            required: 0,
+        };
+        assert!(
+            !zero_zero.is_quorum_reached(),
+            "0/0 should not be considered quorum reached"
+        );
+
+        // Partial quorum (not enough successes)
+        let partial = DeliveryConfidence::QuorumReached {
+            count: 1,
+            required: 2,
+        };
+        assert!(
+            !partial.is_quorum_reached(),
+            "1/2 should not be considered quorum reached"
+        );
     }
 
     #[test]

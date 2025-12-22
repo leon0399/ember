@@ -578,10 +578,12 @@ impl TransportCoordinator {
         use std::future::Future;
         use std::pin::Pin;
         use std::time::{Duration, Instant};
+        use tokio::time::timeout;
 
         debug!("Using broadcast-all mode (tiered delivery disabled)");
 
         let mut all_results: Vec<TargetResult> = Vec::new();
+        let tier_timeout = config.quorum_tier_timeout;
 
         // Use boxed futures to allow heterogeneous async blocks
         type BoxedFuture =
@@ -598,9 +600,15 @@ impl TransportCoordinator {
 
                     futures.push(Box::pin(async move {
                         let start = Instant::now();
-                        let result = target_clone.submit_message(envelope_clone).await;
+                        let result =
+                            timeout(tier_timeout, target_clone.submit_message(envelope_clone))
+                                .await;
                         let latency = start.elapsed();
-                        (target_id, result, latency)
+                        let mapped = match result {
+                            Ok(inner) => inner,
+                            Err(_) => Err(TransportError::Timeout),
+                        };
+                        (target_id, mapped, latency)
                     }));
                 }
             }
@@ -617,9 +625,15 @@ impl TransportCoordinator {
 
                     futures.push(Box::pin(async move {
                         let start = Instant::now();
-                        let result = target_clone.submit_message(envelope_clone).await;
+                        let result =
+                            timeout(tier_timeout, target_clone.submit_message(envelope_clone))
+                                .await;
                         let latency = start.elapsed();
-                        (target_id, result, latency)
+                        let mapped = match result {
+                            Ok(inner) => inner,
+                            Err(_) => Err(TransportError::Timeout),
+                        };
+                        (target_id, mapped, latency)
                     }));
                 }
             }
@@ -781,9 +795,11 @@ impl TransportCoordinator {
         filter_ids: Option<&[TargetId]>,
     ) -> TierResult {
         use std::time::Instant;
+        use tokio::time::timeout;
 
         let mut tier_result = TierResult::new(DeliveryTier::Quorum);
         let tier = DeliveryTier::Quorum;
+        let tier_timeout = config.quorum_tier_timeout;
 
         // Collect HTTP stable targets
         let http_targets: Vec<Arc<HttpTarget>> = self.http_pool
@@ -816,7 +832,7 @@ impl TransportCoordinator {
             })
             .unwrap_or_default();
 
-        // Build futures for HTTP targets
+        // Build futures for HTTP targets (with timeout)
         let http_futures: Vec<_> = http_targets
             .into_iter()
             .map(|target| {
@@ -824,14 +840,19 @@ impl TransportCoordinator {
                 let env = envelope.clone();
                 async move {
                     let start = Instant::now();
-                    let result = target.submit_message(env).await;
+                    let result = timeout(tier_timeout, target.submit_message(env)).await;
                     let latency = start.elapsed();
-                    (target_id, result, latency)
+                    // Map timeout to TransportError::Timeout
+                    let mapped = match result {
+                        Ok(inner) => inner,
+                        Err(_) => Err(TransportError::Timeout),
+                    };
+                    (target_id, mapped, latency)
                 }
             })
             .collect();
 
-        // Build futures for MQTT targets
+        // Build futures for MQTT targets (with timeout)
         #[cfg(feature = "mqtt")]
         let mqtt_futures: Vec<_> = mqtt_targets
             .into_iter()
@@ -840,9 +861,14 @@ impl TransportCoordinator {
                 let env = envelope.clone();
                 async move {
                     let start = Instant::now();
-                    let result = target.submit_message(env).await;
+                    let result = timeout(tier_timeout, target.submit_message(env)).await;
                     let latency = start.elapsed();
-                    (target_id, result, latency)
+                    // Map timeout to TransportError::Timeout
+                    let mapped = match result {
+                        Ok(inner) => inner,
+                        Err(_) => Err(TransportError::Timeout),
+                    };
+                    (target_id, mapped, latency)
                 }
             })
             .collect();
