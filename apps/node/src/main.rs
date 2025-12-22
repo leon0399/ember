@@ -52,7 +52,7 @@ mod signed_headers;
 
 use api::AppState;
 use cleanup::run_cleanup_task;
-use config::{default_identity_path, load_config, NodeConfig};
+use config::{default_identity_path, load_config};
 use mqtt_bridge::MqttBridge;
 use node_identity::NodeIdentity;
 use persistent_store::{PersistentMailboxStore, PersistentStoreConfig};
@@ -109,12 +109,17 @@ fn parse_log_level(level: &str) -> Level {
 #[tokio::main]
 async fn main() {
     // Load configuration from all sources
+    // Configuration errors are fatal - we don't fall back to defaults as that
+    // could result in unexpected security settings or behavior.
     let config = match load_config() {
         Ok(config) => config,
         Err(e) => {
-            eprintln!("Failed to load configuration: {}", e);
-            eprintln!("Using default configuration...");
-            NodeConfig::default()
+            eprintln!("ERROR: Failed to load configuration: {}", e);
+            eprintln!();
+            eprintln!("The node cannot start with invalid configuration.");
+            eprintln!("Please fix the configuration error above, or delete the config file");
+            eprintln!("to start with default settings.");
+            std::process::exit(1);
         }
     };
 

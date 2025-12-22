@@ -59,6 +59,9 @@ pub enum SignatureError {
 
     #[error("Invalid signature")]
     InvalidSignature,
+
+    #[error("System clock error: time is before UNIX epoch")]
+    SystemClockError,
 }
 
 /// Signed headers for outgoing requests
@@ -89,7 +92,7 @@ impl SignedHeaders {
     ) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("system time before unix epoch")
+            .expect("system clock is before UNIX epoch (1970-01-01) - check system time configuration")
             .as_secs();
 
         Self::sign_with_timestamp(identity, method, path, body, dest_host, timestamp)
@@ -161,17 +164,6 @@ impl<'a> SignatureVerifier<'a> {
             public_host,
             additional_hosts,
         }
-    }
-
-    /// Check if incoming headers indicate a node-to-node request.
-    ///
-    /// Returns true if any X-Node-* headers are present.
-    pub fn has_node_headers(&self, headers: &axum::http::HeaderMap) -> bool {
-        headers.contains_key(HEADER_NODE_ID)
-            || headers.contains_key(HEADER_NODE_PUBKEY)
-            || headers.contains_key(HEADER_NODE_TIMESTAMP)
-            || headers.contains_key(HEADER_NODE_DEST)
-            || headers.contains_key(HEADER_NODE_SIGNATURE)
     }
 
     /// Verify signed headers on an incoming request.
@@ -276,7 +268,7 @@ impl<'a> SignatureVerifier<'a> {
     fn verify_timestamp(&self, timestamp: u64) -> Result<(), SignatureError> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("system time before unix epoch")
+            .map_err(|_| SignatureError::SystemClockError)?
             .as_secs();
 
         // Check for future timestamps

@@ -101,19 +101,34 @@ impl ReplicationClient {
 
                 let mut request = this.client.post(&submit_url);
 
-                // Sign request if identity is available
-                if let (Some(ref identity), Some(ref dest)) = (&this.identity, &dest_host) {
-                    let signed = SignedHeaders::sign(
-                        identity,
-                        "POST",
-                        path,
-                        payload_b64.as_bytes(),
-                        dest,
-                    );
-                    for (header_name, header_value) in signed.to_headers() {
-                        request = request.header(header_name, header_value);
+                // Sign request if identity and destination are available
+                match (&this.identity, &dest_host) {
+                    (Some(ref identity), Some(ref dest)) => {
+                        let signed = SignedHeaders::sign(
+                            identity,
+                            "POST",
+                            path,
+                            payload_b64.as_bytes(),
+                            dest,
+                        );
+                        for (header_name, header_value) in signed.to_headers() {
+                            request = request.header(header_name, header_value);
+                        }
+                        debug!("Signed replication request to {}", dest);
                     }
-                    debug!("Signed replication request to {}", dest);
+                    (None, _) => {
+                        // No identity configured - request will be unsigned
+                        // This is logged once at startup, so only debug here
+                        debug!("Sending unsigned replication request (no identity configured)");
+                    }
+                    (Some(_), None) => {
+                        // Identity available but couldn't extract host from URL
+                        // This is a configuration error that should be visible
+                        warn!(
+                            "Cannot sign replication request: failed to extract host from peer URL. \
+                             Request will be sent unsigned."
+                        );
+                    }
                 }
 
                 request = request

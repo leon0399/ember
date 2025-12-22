@@ -69,6 +69,11 @@ fn load_identity(path: &Path) -> Result<Identity, NodeIdentityError> {
 /// Uses temp-file-then-rename pattern to prevent race conditions
 /// and ensure atomic writes. The file is created with restricted
 /// permissions (0o600 on Unix) to protect the secret key.
+///
+/// If another process creates the identity file between our initial check
+/// and the rename, we detect this, discard our generated identity, and
+/// load the existing one instead. This ensures consistent identity across
+/// concurrent startups.
 fn generate_and_save_identity(path: &Path) -> Result<Identity, NodeIdentityError> {
     let identity = Identity::generate();
 
@@ -93,6 +98,18 @@ fn generate_and_save_identity(path: &Path) -> Result<Identity, NodeIdentityError
 
     // Write with restricted permissions to protect the secret key
     write_secret_file(&temp_path, &identity.to_bytes())?;
+
+    // Check if another process created the file while we were generating.
+    // If so, use their identity instead of overwriting it.
+    if path.exists() {
+        // Clean up our temp file
+        let _ = fs::remove_file(&temp_path);
+        tracing::debug!(
+            "Identity file was created by another process, loading existing identity"
+        );
+        return load_identity(path);
+    }
+
     fs::rename(&temp_path, path).map_err(NodeIdentityError::WriteError)?;
 
     tracing::info!(
@@ -126,9 +143,15 @@ fn write_secret_file(path: &Path, data: &[u8]) -> Result<(), NodeIdentityError> 
 
 #[cfg(not(unix))]
 fn write_secret_file(path: &Path, data: &[u8]) -> Result<(), NodeIdentityError> {
-    // On Windows, files are created with user-only access by default.
-    // For additional security, we could use platform-specific ACL APIs,
-    // but the default behavior is already reasonably secure.
+    // On Windows, files inherit ACLs from parent directory.
+    // In most user directories, this means only the current user has access.
+    // For maximum security, consider:
+    // 1. Storing the identity file in %APPDATA% (user-specific, not shared)
+    // 2. Using Windows DPAPI for encryption at rest
+    // 3. Using the `windows` crate to set explicit DACLs
+    //
+    // TODO: Implement explicit DACL with GENERIC_READ | GENERIC_WRITE for owner only
+    // using SetSecurityInfo or CreateFile with SECURITY_ATTRIBUTES.
     let mut file = File::options()
         .write(true)
         .create(true)
@@ -138,6 +161,11 @@ fn write_secret_file(path: &Path, data: &[u8]) -> Result<(), NodeIdentityError> 
 
     file.write_all(data).map_err(NodeIdentityError::WriteError)?;
     file.sync_all().map_err(NodeIdentityError::WriteError)?;
+
+    tracing::debug!(
+        "Identity file created at {:?}. On Windows, verify file permissions manually.",
+        path
+    );
     Ok(())
 }
 

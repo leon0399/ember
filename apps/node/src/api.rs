@@ -224,7 +224,6 @@ pub struct ErrorResponse {
 ///
 /// Returns:
 /// - `Ok(VerifiedNode)` if signed headers are present and valid
-/// - `Ok(LegacyNode)` if only legacy FROM_NODE_HEADER is present
 /// - `Ok(Client)` if no node headers are present
 /// - `Err` if signed headers are present but invalid
 fn identify_request_source(
