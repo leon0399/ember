@@ -3,6 +3,11 @@
 //! This module handles replicating payloads (messages/tombstones) to peer nodes.
 //! Uses fire-and-forget pattern to avoid blocking the client response.
 //!
+//! ## Signed Requests
+//!
+//! When a node identity is configured, outgoing requests are signed with XEdDSA
+//! signatures. Peer nodes verify these signatures to authenticate the source.
+//!
 //! ## Per-Peer Authentication
 //!
 //! Supports URL-embedded credentials for per-peer authentication:
@@ -14,12 +19,14 @@
 //! ]
 //! ```
 
+use crate::node_identity::NodeIdentity;
+use crate::signed_headers::SignedHeaders;
 use reme_transport::parse_url_with_auth;
 use reqwest::Client;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
-/// Header name for source node identification
+/// Header name for legacy source node identification (deprecated, use signed headers)
 pub const FROM_NODE_HEADER: &str = "X-From-Node";
 
 /// Client for replicating data to peer nodes
@@ -27,6 +34,8 @@ pub struct ReplicationClient {
     client: Client,
     peer_urls: Vec<String>,
     node_id: String,
+    /// Optional node identity for signing requests
+    identity: Option<Arc<NodeIdentity>>,
 }
 
 impl ReplicationClient {
@@ -36,12 +45,28 @@ impl ReplicationClient {
             client: Client::new(),
             peer_urls,
             node_id,
+            identity: None,
+        }
+    }
+
+    /// Create a new replication client with signing identity
+    pub fn with_identity(
+        node_id: String,
+        peer_urls: Vec<String>,
+        identity: Option<Arc<NodeIdentity>>,
+    ) -> Self {
+        Self {
+            client: Client::new(),
+            peer_urls,
+            node_id,
+            identity,
         }
     }
 
     /// Replicate a wire payload (message or tombstone) to all peer nodes (except the source)
     ///
     /// Uses fire-and-forget pattern - spawns tasks and returns immediately.
+    /// Signs requests with XEdDSA if node identity is configured.
     /// Supports URL-embedded credentials for per-peer authentication.
     pub fn replicate_payload(self: &Arc<Self>, payload_b64: String, from_node: Option<String>) {
         if self.peer_urls.is_empty() {
@@ -51,7 +76,9 @@ impl ReplicationClient {
         let this = Arc::clone(self);
         tokio::spawn(async move {
             for peer_url in &this.peer_urls {
-                // Skip replicating back to the source node
+                // Skip replicating back to the source node (legacy string matching)
+                // Note: Cryptographic loop prevention is done by the receiving node
+                // by checking if the verified source identity matches their own.
                 if let Some(ref from) = from_node {
                     if peer_url.contains(from) {
                         debug!("Skipping replication to source node: {}", peer_url);
@@ -69,12 +96,33 @@ impl ReplicationClient {
                     }
                 };
 
-                let url = format!("{}/api/v1/submit", parsed.url.trim_end_matches('/'));
+                let submit_url = format!("{}/api/v1/submit", parsed.url.trim_end_matches('/'));
+                let path = "/api/v1/submit";
 
-                let mut request = this
-                    .client
-                    .post(&url)
-                    .header(FROM_NODE_HEADER, &this.node_id)
+                // Extract destination host for signature binding
+                let dest_host = extract_host_from_url(&parsed.url);
+
+                let mut request = this.client.post(&submit_url);
+
+                // Sign request if identity is available
+                if let (Some(ref identity), Some(ref dest)) = (&this.identity, &dest_host) {
+                    let signed = SignedHeaders::sign(
+                        identity,
+                        "POST",
+                        path,
+                        payload_b64.as_bytes(),
+                        dest,
+                    );
+                    for (header_name, header_value) in signed.to_headers() {
+                        request = request.header(header_name, header_value);
+                    }
+                    debug!("Signed replication request to {}", dest);
+                } else {
+                    // Fallback to legacy header if no identity
+                    request = request.header(FROM_NODE_HEADER, &this.node_id);
+                }
+
+                request = request
                     .header("Content-Type", "text/plain")
                     .body(payload_b64.clone());
 
@@ -91,7 +139,7 @@ impl ReplicationClient {
                     }
                     Ok(resp) if resp.status() == reqwest::StatusCode::UNAUTHORIZED => {
                         error!(
-                            "Authentication failed for peer {} - check credentials",
+                            "Authentication failed for peer {} - check credentials or signature",
                             parsed.url
                         );
                     }
@@ -135,5 +183,28 @@ impl ReplicationClient {
                 info!("    - {}", display_url);
             }
         }
+    }
+}
+
+/// Extract host:port from a URL for signature destination binding.
+///
+/// Returns `Some("host:port")` or `Some("host")` if default port.
+fn extract_host_from_url(url: &str) -> Option<String> {
+    // Simple URL parsing: extract host from http(s)://host(:port)/...
+    let without_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+
+    // Find path start
+    let host_part = match without_scheme.find('/') {
+        Some(pos) => &without_scheme[..pos],
+        None => without_scheme,
+    };
+
+    // Return host (possibly with port)
+    if host_part.is_empty() {
+        None
+    } else {
+        Some(host_part.to_string())
     }
 }

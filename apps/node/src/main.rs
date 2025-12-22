@@ -194,8 +194,12 @@ async fn main() {
         }
     };
 
-    // Create replication client
-    let replication = Arc::new(ReplicationClient::new(config.node_id, config.peers));
+    // Create replication client with signing identity
+    let replication = Arc::new(ReplicationClient::with_identity(
+        config.node_id,
+        config.peers,
+        identity.clone(),
+    ));
     replication.log_config();
 
     // Log cleanup configuration
