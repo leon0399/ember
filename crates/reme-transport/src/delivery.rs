@@ -1,9 +1,9 @@
 //! Tiered delivery types with quorum semantics.
 //!
 //! This module defines the types for the tiered delivery system:
-//! - Tier 1 (P2P): Race all ephemeral targets, exit on any success
-//! - Tier 2 (Internet): Broadcast to all stable targets, require quorum
-//! - Tier 3 (Radio): Best effort delivery (future)
+//! - Tier 1 (Direct): Race all ephemeral targets, exit on any success
+//! - Tier 2 (Quorum): Broadcast to all stable targets, require quorum
+//! - Tier 3 (Best-Effort): Fire-and-forget delivery (future)
 
 use std::time::Duration;
 
@@ -13,17 +13,17 @@ use crate::TransportError;
 /// Delivery tiers in priority order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeliveryTier {
-    /// Direct peer-to-peer delivery (mDNS, DHT, Iroh).
+    /// Direct delivery to recipient or their peer (mDNS, DHT, Iroh).
     /// Highest priority - if successful, recipient has the message.
-    P2P,
+    Direct,
 
-    /// Internet-based store-and-forward (HTTP mailboxes, MQTT brokers).
-    /// Requires quorum for reliability.
-    Internet,
+    /// Store-and-forward delivery with quorum (HTTP mailboxes, MQTT brokers).
+    /// Requires configurable quorum for reliability.
+    Quorum,
 
-    /// Local radio delivery (BLE mesh, LoRa/Meshtastic).
-    /// Best effort, no confirmation expected.
-    Radio,
+    /// Best-effort delivery over constrained networks (BLE mesh, LoRa/Meshtastic).
+    /// Fire and forget, no confirmation expected.
+    BestEffort,
 }
 
 /// Quorum strategy for determining delivery success.
@@ -289,13 +289,13 @@ pub struct DeliveryResult {
 }
 
 impl DeliveryResult {
-    /// Create a successful P2P delivery result.
+    /// Create a successful Direct tier delivery result.
     pub fn direct_delivery(target: TargetId, results: Vec<TargetResult>) -> Self {
         Self {
             quorum_reached: true,
             confidence: DeliveryConfidence::DirectDelivery { target },
             target_results: results,
-            completed_tier: Some(DeliveryTier::P2P),
+            completed_tier: Some(DeliveryTier::Direct),
         }
     }
 
@@ -357,7 +357,7 @@ impl DeliveryResult {
 /// Configuration for tiered delivery.
 #[derive(Debug, Clone)]
 pub struct TieredDeliveryConfig {
-    /// Quorum strategy for Internet tier.
+    /// Quorum strategy for Quorum tier.
     pub quorum: QuorumStrategy,
 
     /// Phase 1 (Urgent) retry settings.
@@ -370,8 +370,8 @@ pub struct TieredDeliveryConfig {
     pub maintenance_enabled: bool,
 
     /// Per-tier timeouts (how long to wait before trying next tier).
-    pub p2p_tier_timeout: Duration,
-    pub internet_tier_timeout: Duration,
+    pub direct_tier_timeout: Duration,
+    pub quorum_tier_timeout: Duration,
 
     /// Targets to exclude from delivery (used for replication to avoid echo).
     pub excluded_targets: std::collections::HashSet<TargetId>,
@@ -386,8 +386,8 @@ impl Default for TieredDeliveryConfig {
             urgent_backoff_multiplier: 2.0,
             maintenance_interval: Duration::from_secs(4 * 60 * 60), // 4 hours
             maintenance_enabled: true,
-            p2p_tier_timeout: Duration::from_millis(500),
-            internet_tier_timeout: Duration::from_secs(5),
+            direct_tier_timeout: Duration::from_millis(500),
+            quorum_tier_timeout: Duration::from_secs(5),
             excluded_targets: std::collections::HashSet::new(),
         }
     }
@@ -406,15 +406,15 @@ impl TieredDeliveryConfig {
         self
     }
 
-    /// Set P2P tier timeout.
-    pub fn with_p2p_timeout(mut self, timeout: Duration) -> Self {
-        self.p2p_tier_timeout = timeout;
+    /// Set Direct tier timeout.
+    pub fn with_direct_timeout(mut self, timeout: Duration) -> Self {
+        self.direct_tier_timeout = timeout;
         self
     }
 
-    /// Set Internet tier timeout.
-    pub fn with_internet_timeout(mut self, timeout: Duration) -> Self {
-        self.internet_tier_timeout = timeout;
+    /// Set Quorum tier timeout.
+    pub fn with_quorum_timeout(mut self, timeout: Duration) -> Self {
+        self.quorum_tier_timeout = timeout;
         self
     }
 
@@ -499,7 +499,7 @@ mod tests {
 
     #[test]
     fn test_tier_result() {
-        let mut tier = TierResult::new(DeliveryTier::Internet);
+        let mut tier = TierResult::new(DeliveryTier::Quorum);
 
         let target1 = TargetId::http("https://node1.example.com");
         let target2 = TargetId::http("https://node2.example.com");
@@ -507,17 +507,17 @@ mod tests {
 
         tier.push(TargetResult::success(
             target1.clone(),
-            DeliveryTier::Internet,
+            DeliveryTier::Quorum,
             Duration::from_millis(100),
         ));
         tier.push(TargetResult::failed(
             target2.clone(),
-            DeliveryTier::Internet,
+            DeliveryTier::Quorum,
             TransportError::Timeout,
         ));
         tier.push(TargetResult::success(
             target3.clone(),
-            DeliveryTier::Internet,
+            DeliveryTier::Quorum,
             Duration::from_millis(150),
         ));
 

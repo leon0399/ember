@@ -499,9 +499,9 @@ impl TransportCoordinator {
     /// Submit message through delivery tiers with quorum semantics.
     ///
     /// Tiers are attempted in order:
-    /// 1. **P2P (Ephemeral)**: Race all ephemeral targets, exit on any success
-    /// 2. **Internet (Stable)**: Broadcast to all stable targets, require quorum
-    /// 3. **Radio**: Future expansion (BLE, LoRa)
+    /// 1. **Direct**: Race all ephemeral targets, exit on any success
+    /// 2. **Quorum**: Broadcast to all stable targets, require quorum
+    /// 3. **Best-Effort**: Future expansion (BLE, LoRa)
     ///
     /// Returns a `DeliveryResult` with per-target outcomes and confidence level.
     pub async fn submit_tiered(
@@ -511,24 +511,24 @@ impl TransportCoordinator {
     ) -> DeliveryResult {
         let mut all_results: Vec<TargetResult> = Vec::new();
 
-        // Tier 1: P2P (race all ephemeral targets)
-        let p2p_result = self.try_p2p_tier(envelope, config).await;
-        let p2p_success = p2p_result.any_success();
-        let p2p_target = p2p_result.first_success_target();
-        all_results.extend(p2p_result.results);
+        // Tier 1: Direct (race all ephemeral targets)
+        let direct_result = self.try_direct_tier(envelope, config).await;
+        let direct_success = direct_result.any_success();
+        let direct_target = direct_result.first_success_target();
+        all_results.extend(direct_result.results);
 
-        if p2p_success {
-            if let Some(target) = p2p_target {
-                debug!(target = %target, "P2P tier succeeded - direct delivery");
+        if direct_success {
+            if let Some(target) = direct_target {
+                debug!(target = %target, "Direct tier succeeded");
                 return DeliveryResult::direct_delivery(target, all_results);
             }
         }
 
-        // Tier 2: Internet (broadcast all stable targets, require quorum)
-        let internet_result = self.try_internet_tier_all(envelope, config).await;
-        let success_count = internet_result.success_count();
-        let total_targets = self.internet_target_count(config);
-        all_results.extend(internet_result.results);
+        // Tier 2: Quorum (broadcast all stable targets, require quorum)
+        let quorum_result = self.try_quorum_tier_all(envelope, config).await;
+        let success_count = quorum_result.success_count();
+        let total_targets = self.quorum_target_count(config);
+        all_results.extend(quorum_result.results);
 
         let required = config.quorum.required_count(total_targets);
 
@@ -537,18 +537,18 @@ impl TransportCoordinator {
                 success = success_count,
                 required = required,
                 total = total_targets,
-                "Internet tier quorum reached"
+                "Quorum tier succeeded"
             );
             return DeliveryResult::quorum_delivery(
                 success_count,
                 required,
-                DeliveryTier::Internet,
+                DeliveryTier::Quorum,
                 all_results,
             );
         }
 
-        // Tier 3: Radio (future - BLE, LoRa)
-        // Would add radio tier here when implemented
+        // Tier 3: Best-Effort (future - BLE, LoRa)
+        // Would add best-effort tier here when implemented
 
         // Quorum not reached
         debug!(
@@ -560,16 +560,16 @@ impl TransportCoordinator {
         DeliveryResult::partial(success_count, required, all_results)
     }
 
-    /// Try P2P tier: race all ephemeral targets, return on first success.
+    /// Try Direct tier: race all ephemeral targets, return on first success.
     ///
-    /// This tier is for direct peer-to-peer delivery where the recipient
+    /// This tier is for direct delivery where the recipient
     /// (or their proxy) directly receives the message.
-    pub async fn try_p2p_tier(
+    pub async fn try_direct_tier(
         &self,
         envelope: &OuterEnvelope,
         config: &TieredDeliveryConfig,
     ) -> TierResult {
-        let mut tier_result = TierResult::new(DeliveryTier::P2P);
+        let mut tier_result = TierResult::new(DeliveryTier::Direct);
 
         // Collect all ephemeral targets from HTTP pool
         let mut targets: Vec<Arc<HttpTarget>> = Vec::new();
@@ -582,7 +582,7 @@ impl TransportCoordinator {
         }
 
         if targets.is_empty() {
-            trace!("P2P tier: no ephemeral targets available");
+            trace!("Direct tier: no ephemeral targets available");
             return tier_result;
         }
 
@@ -594,7 +594,7 @@ impl TransportCoordinator {
 
             // Try each target with the tier timeout
             let result = timeout(
-                config.p2p_tier_timeout,
+                config.direct_tier_timeout,
                 target.submit_message(envelope.clone()),
             )
             .await;
@@ -604,20 +604,20 @@ impl TransportCoordinator {
                     // Success! Record and return immediately
                     tier_result.push(TargetResult::success(
                         target_id,
-                        DeliveryTier::P2P,
-                        config.p2p_tier_timeout, // Approximate latency
+                        DeliveryTier::Direct,
+                        config.direct_tier_timeout, // Approximate latency
                     ));
                     return tier_result;
                 }
                 Ok(Err(e)) => {
                     tier_result.push(TargetResult::failed(
                         target_id,
-                        DeliveryTier::P2P,
+                        DeliveryTier::Direct,
                         e,
                     ));
                 }
                 Err(_) => {
-                    tier_result.push(TargetResult::timeout(target_id, DeliveryTier::P2P));
+                    tier_result.push(TargetResult::timeout(target_id, DeliveryTier::Direct));
                 }
             }
         }
@@ -625,35 +625,35 @@ impl TransportCoordinator {
         tier_result
     }
 
-    /// Try Internet tier: broadcast to ALL stable targets.
+    /// Try Quorum tier: broadcast to ALL stable targets.
     ///
     /// This tier sends to all HTTP mailboxes and MQTT brokers in parallel.
     /// Used for initial delivery and maintenance refreshes.
-    pub async fn try_internet_tier_all(
+    pub async fn try_quorum_tier_all(
         &self,
         envelope: &OuterEnvelope,
         config: &TieredDeliveryConfig,
     ) -> TierResult {
-        self.submit_to_internet_targets(envelope, config, None).await
+        self.submit_to_quorum_targets(envelope, config, None).await
     }
 
-    /// Try Internet tier: broadcast to SELECTED targets only.
+    /// Try Quorum tier: broadcast to SELECTED targets only.
     ///
     /// This is more efficient for retries where some targets already succeeded.
     /// Only attempts delivery to the specified target IDs.
-    pub async fn try_internet_tier_selective(
+    pub async fn try_quorum_tier_selective(
         &self,
         envelope: &OuterEnvelope,
         target_ids: &[TargetId],
         config: &TieredDeliveryConfig,
     ) -> TierResult {
-        self.submit_to_internet_targets(envelope, config, Some(target_ids)).await
+        self.submit_to_quorum_targets(envelope, config, Some(target_ids)).await
     }
 
-    /// Submit envelope to Internet tier targets (HTTP stable + MQTT) in parallel.
+    /// Submit envelope to Quorum tier targets (HTTP stable + MQTT) in parallel.
     ///
     /// If `filter_ids` is Some, only targets with matching IDs are attempted.
-    async fn submit_to_internet_targets(
+    async fn submit_to_quorum_targets(
         &self,
         envelope: &OuterEnvelope,
         config: &TieredDeliveryConfig,
@@ -661,8 +661,8 @@ impl TransportCoordinator {
     ) -> TierResult {
         use std::time::Instant;
 
-        let mut tier_result = TierResult::new(DeliveryTier::Internet);
-        let tier = DeliveryTier::Internet;
+        let mut tier_result = TierResult::new(DeliveryTier::Quorum);
+        let tier = DeliveryTier::Quorum;
 
         // Collect HTTP stable targets
         let http_targets: Vec<Arc<HttpTarget>> = self.http_pool
@@ -751,8 +751,8 @@ impl TransportCoordinator {
         tier_result
     }
 
-    /// Get count of Internet tier targets (for quorum calculation).
-    pub fn internet_target_count(&self, config: &TieredDeliveryConfig) -> u32 {
+    /// Get count of Quorum tier targets (for quorum calculation).
+    pub fn quorum_target_count(&self, config: &TieredDeliveryConfig) -> u32 {
         let mut count = 0u32;
 
         // Count HTTP stable targets
@@ -777,10 +777,10 @@ impl TransportCoordinator {
         count
     }
 
-    /// Get all Internet tier target IDs (for filtering in retry logic).
+    /// Get all Quorum tier target IDs (for filtering in retry logic).
     ///
     /// Returns target IDs of all stable HTTP and MQTT targets.
-    pub fn internet_target_ids(&self, config: &TieredDeliveryConfig) -> Vec<TargetId> {
+    pub fn quorum_target_ids(&self, config: &TieredDeliveryConfig) -> Vec<TargetId> {
         let mut ids = Vec::new();
 
         // HTTP stable target IDs
@@ -879,17 +879,17 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_internet_target_count_empty() {
+    fn test_quorum_target_count_empty() {
         let coordinator = TransportCoordinator::with_defaults();
         let config = TieredDeliveryConfig::default();
-        assert_eq!(coordinator.internet_target_count(&config), 0);
+        assert_eq!(coordinator.quorum_target_count(&config), 0);
     }
 
     #[test]
-    fn test_internet_target_ids_empty() {
+    fn test_quorum_target_ids_empty() {
         let coordinator = TransportCoordinator::with_defaults();
         let config = TieredDeliveryConfig::default();
-        assert!(coordinator.internet_target_ids(&config).is_empty());
+        assert!(coordinator.quorum_target_ids(&config).is_empty());
     }
 
     #[test]
@@ -940,7 +940,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_p2p_tier_empty() {
+    async fn test_direct_tier_empty() {
         use reme_message::{OuterEnvelope, RoutingKey, MessageID, CURRENT_VERSION};
 
         let coordinator = TransportCoordinator::with_defaults();
@@ -956,7 +956,7 @@ mod tests {
             inner_ciphertext: vec![1, 2, 3],
         };
 
-        let result = coordinator.try_p2p_tier(&envelope, &config).await;
+        let result = coordinator.try_direct_tier(&envelope, &config).await;
 
         assert!(!result.any_success());
         assert_eq!(result.success_count(), 0);
@@ -964,7 +964,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_internet_tier_empty() {
+    async fn test_quorum_tier_empty() {
         use reme_message::{OuterEnvelope, RoutingKey, MessageID, CURRENT_VERSION};
 
         let coordinator = TransportCoordinator::with_defaults();
@@ -980,7 +980,7 @@ mod tests {
             inner_ciphertext: vec![1, 2, 3],
         };
 
-        let result = coordinator.try_internet_tier_all(&envelope, &config).await;
+        let result = coordinator.try_quorum_tier_all(&envelope, &config).await;
 
         assert!(!result.any_success());
         assert_eq!(result.success_count(), 0);

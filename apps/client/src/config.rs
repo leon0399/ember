@@ -190,12 +190,12 @@ impl Default for QuorumStrategyConfig {
 /// Tiered delivery configuration for quorum semantics.
 ///
 /// This controls how messages flow through delivery tiers:
-/// - Tier 1 (P2P): Race all ephemeral targets, exit on any success
-/// - Tier 2 (Internet): Broadcast to all stable targets, require quorum
-/// - Tier 3 (Radio): Best effort delivery (future)
+/// - Tier 1 (Direct): Race all ephemeral targets, exit on any success
+/// - Tier 2 (Quorum): Broadcast to all stable targets, require quorum
+/// - Tier 3 (Best-Effort): Fire-and-forget delivery (future)
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DeliveryAppConfig {
-    /// Quorum strategy for Internet tier.
+    /// Quorum strategy for Quorum tier.
     #[serde(default)]
     pub quorum: QuorumStrategyConfig,
 
@@ -230,13 +230,13 @@ pub struct DeliveryAppConfig {
 
     // Tier timeouts
 
-    /// P2P tier timeout in milliseconds.
-    #[serde(default = "default_p2p_tier_timeout_ms")]
-    pub p2p_tier_timeout_ms: u64,
+    /// Direct tier timeout in milliseconds.
+    #[serde(default = "default_direct_tier_timeout_ms")]
+    pub direct_tier_timeout_ms: u64,
 
-    /// Internet tier timeout in seconds.
-    #[serde(default = "default_internet_tier_timeout_secs")]
-    pub internet_tier_timeout_secs: u64,
+    /// Quorum tier timeout in seconds.
+    #[serde(default = "default_quorum_tier_timeout_secs")]
+    pub quorum_tier_timeout_secs: u64,
 }
 
 fn default_tiered_enabled() -> bool { true }
@@ -245,8 +245,8 @@ fn default_urgent_max_delay() -> u64 { 60 }
 fn default_urgent_backoff_multiplier() -> f32 { 2.0 }
 fn default_maintenance_interval_hours() -> u64 { 4 }
 fn default_maintenance_enabled() -> bool { true }
-fn default_p2p_tier_timeout_ms() -> u64 { 500 }
-fn default_internet_tier_timeout_secs() -> u64 { 5 }
+fn default_direct_tier_timeout_ms() -> u64 { 500 }
+fn default_quorum_tier_timeout_secs() -> u64 { 5 }
 
 impl Default for DeliveryAppConfig {
     fn default() -> Self {
@@ -258,8 +258,8 @@ impl Default for DeliveryAppConfig {
             urgent_backoff_multiplier: default_urgent_backoff_multiplier(),
             maintenance_interval_hours: default_maintenance_interval_hours(),
             maintenance_enabled: default_maintenance_enabled(),
-            p2p_tier_timeout_ms: default_p2p_tier_timeout_ms(),
-            internet_tier_timeout_secs: default_internet_tier_timeout_secs(),
+            direct_tier_timeout_ms: default_direct_tier_timeout_ms(),
+            quorum_tier_timeout_secs: default_quorum_tier_timeout_secs(),
         }
     }
 }
@@ -286,8 +286,8 @@ impl From<DeliveryAppConfig> for TieredDeliveryConfig {
             urgent_backoff_multiplier: config.urgent_backoff_multiplier,
             maintenance_interval: Duration::from_secs(config.maintenance_interval_hours * 60 * 60),
             maintenance_enabled: config.maintenance_enabled,
-            p2p_tier_timeout: Duration::from_millis(config.p2p_tier_timeout_ms),
-            internet_tier_timeout: Duration::from_secs(config.internet_tier_timeout_secs),
+            direct_tier_timeout: Duration::from_millis(config.direct_tier_timeout_ms),
+            quorum_tier_timeout: Duration::from_secs(config.quorum_tier_timeout_secs),
             excluded_targets: std::collections::HashSet::new(),
         }
     }
@@ -553,8 +553,8 @@ struct RawDeliveryConfig {
     urgent_backoff_multiplier: Option<f32>,
     maintenance_interval_hours: Option<u64>,
     maintenance_enabled: Option<bool>,
-    p2p_tier_timeout_ms: Option<u64>,
-    internet_tier_timeout_secs: Option<u64>,
+    direct_tier_timeout_ms: Option<u64>,
+    quorum_tier_timeout_secs: Option<u64>,
 }
 
 /// Load configuration from all sources with proper layering
@@ -724,10 +724,10 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
             .unwrap_or(delivery_defaults.maintenance_interval_hours),
         maintenance_enabled: raw.delivery.maintenance_enabled
             .unwrap_or(delivery_defaults.maintenance_enabled),
-        p2p_tier_timeout_ms: raw.delivery.p2p_tier_timeout_ms
-            .unwrap_or(delivery_defaults.p2p_tier_timeout_ms),
-        internet_tier_timeout_secs: raw.delivery.internet_tier_timeout_secs
-            .unwrap_or(delivery_defaults.internet_tier_timeout_secs),
+        direct_tier_timeout_ms: raw.delivery.direct_tier_timeout_ms
+            .unwrap_or(delivery_defaults.direct_tier_timeout_ms),
+        quorum_tier_timeout_secs: raw.delivery.quorum_tier_timeout_secs
+            .unwrap_or(delivery_defaults.quorum_tier_timeout_secs),
     };
 
     Ok(AppConfig {
@@ -820,10 +820,10 @@ retry_initial_delay_secs = {retry_initial}
 retry_max_delay_secs = {retry_max}
 
 # Tiered delivery configuration
-# Messages flow through delivery tiers: P2P -> Internet -> Radio
-# with configurable quorum requirements for the Internet tier.
+# Messages flow through delivery tiers: Direct -> Quorum -> Best-Effort
+# with configurable quorum requirements for the Quorum tier.
 [delivery]
-# Quorum strategy for Internet tier:
+# Quorum strategy for Quorum tier:
 # - "any" = any single transport success (legacy behavior)
 # - {{ count = N }} = at least N transports must succeed
 # - {{ fraction = F }} = fraction of stable transports (e.g., 0.5 = majority)
@@ -846,8 +846,8 @@ maintenance_interval_hours = {maintenance_interval}
 maintenance_enabled = {maintenance_enabled}
 
 # Tier timeouts
-p2p_tier_timeout_ms = {p2p_timeout}
-internet_tier_timeout_secs = {internet_timeout}
+direct_tier_timeout_ms = {direct_timeout}
+quorum_tier_timeout_secs = {quorum_timeout}
 "#,
         url = defaults.http[0].url,
         data_dir = defaults.data_dir.to_string_lossy(),
@@ -864,8 +864,8 @@ internet_tier_timeout_secs = {internet_timeout}
         urgent_multiplier = defaults.delivery.urgent_backoff_multiplier,
         maintenance_interval = defaults.delivery.maintenance_interval_hours,
         maintenance_enabled = defaults.delivery.maintenance_enabled,
-        p2p_timeout = defaults.delivery.p2p_tier_timeout_ms,
-        internet_timeout = defaults.delivery.internet_tier_timeout_secs,
+        direct_timeout = defaults.delivery.direct_tier_timeout_ms,
+        quorum_timeout = defaults.delivery.quorum_tier_timeout_secs,
     )
 }
 
@@ -1019,8 +1019,8 @@ mod tests {
         assert_eq!(config.urgent_backoff_multiplier, 2.0);
         assert_eq!(config.maintenance_interval_hours, 4);
         assert!(config.maintenance_enabled);
-        assert_eq!(config.p2p_tier_timeout_ms, 500);
-        assert_eq!(config.internet_tier_timeout_secs, 5);
+        assert_eq!(config.direct_tier_timeout_ms, 500);
+        assert_eq!(config.quorum_tier_timeout_secs, 5);
     }
 
     #[test]
@@ -1100,8 +1100,8 @@ mod tests {
             urgent_backoff_multiplier: 1.5,
             maintenance_interval_hours: 6,
             maintenance_enabled: false,
-            p2p_tier_timeout_ms: 1000,
-            internet_tier_timeout_secs: 10,
+            direct_tier_timeout_ms: 1000,
+            quorum_tier_timeout_secs: 10,
         };
 
         let transport: TieredDeliveryConfig = config.into();
@@ -1112,8 +1112,8 @@ mod tests {
         assert!((transport.urgent_backoff_multiplier - 1.5).abs() < 0.001);
         assert_eq!(transport.maintenance_interval, Duration::from_secs(6 * 60 * 60));
         assert!(!transport.maintenance_enabled);
-        assert_eq!(transport.p2p_tier_timeout, Duration::from_millis(1000));
-        assert_eq!(transport.internet_tier_timeout, Duration::from_secs(10));
+        assert_eq!(transport.direct_tier_timeout, Duration::from_millis(1000));
+        assert_eq!(transport.quorum_tier_timeout, Duration::from_secs(10));
         assert!(transport.excluded_targets.is_empty());
     }
 }

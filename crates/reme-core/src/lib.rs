@@ -1250,12 +1250,12 @@ impl Client<TransportCoordinator> {
         .map(|(envelope, _)| envelope)
         .map_err(|e| ClientError::Serialization(format!("envelope: {}", e)))?;
 
-        // Try P2P tier first - recipient may be online now
-        let p2p_result = self.transport.try_p2p_tier(&outer, &self.tiered_config).await;
+        // Try Direct tier first - recipient may be online now
+        let direct_result = self.transport.try_direct_tier(&outer, &self.tiered_config).await;
 
-        if p2p_result.any_success() {
+        if direct_result.any_success() {
             // Direct delivery! Upgrade to DirectDelivery confidence
-            if let Some(target) = p2p_result.first_success_target() {
+            if let Some(target) = direct_result.first_success_target() {
                 self.outbox
                     .upgrade_to_direct_delivery(pending.id, &target)
                     .map_err(ClientError::Outbox)?;
@@ -1263,7 +1263,7 @@ impl Client<TransportCoordinator> {
                 info!(
                     entry_id = pending.id,
                     target = %target,
-                    "Upgraded to direct delivery via P2P"
+                    "Upgraded to direct delivery via Direct tier"
                 );
 
                 return Ok(TieredDeliveryPhase::Distributed {
@@ -1276,11 +1276,11 @@ impl Client<TransportCoordinator> {
             }
         }
 
-        // Get all Internet tier targets and filter to failed ones
-        let all_internet_targets = self.transport.internet_target_ids(&self.tiered_config);
-        let failed_targets: Vec<TargetId> = pending.failed_targets(all_internet_targets.iter());
+        // Get all Quorum tier targets and filter to failed ones
+        let all_quorum_targets = self.transport.quorum_target_ids(&self.tiered_config);
+        let failed_targets: Vec<TargetId> = pending.failed_targets(all_quorum_targets.iter());
 
-        // If all targets succeeded, no need to retry Internet tier
+        // If all targets succeeded, no need to retry Quorum tier
         if failed_targets.is_empty() {
             // Just record that we checked - outbox state unchanged
             return self
@@ -1291,20 +1291,20 @@ impl Client<TransportCoordinator> {
                 .ok_or(ClientError::OutboxEntryNotFound);
         }
 
-        // Retry failed Internet tier targets only
-        let internet_result = self
+        // Retry failed Quorum tier targets only
+        let quorum_result = self
             .transport
-            .try_internet_tier_selective(&outer, &failed_targets, &self.tiered_config)
+            .try_quorum_tier_selective(&outer, &failed_targets, &self.tiered_config)
             .await;
 
         // Calculate combined success count before moving results
-        let internet_success_count = internet_result.success_count();
-        let total_success = pending.success_count() as u32 + internet_success_count;
-        let total_targets = self.transport.internet_target_count(&self.tiered_config);
+        let quorum_success_count = quorum_result.success_count();
+        let total_success = pending.success_count() as u32 + quorum_success_count;
+        let total_targets = self.transport.quorum_target_count(&self.tiered_config);
 
-        // Combine P2P and Internet results
-        let mut all_results = p2p_result.results;
-        all_results.extend(internet_result.results);
+        // Combine Direct and Quorum results
+        let mut all_results = direct_result.results;
+        all_results.extend(quorum_result.results);
 
         let combined_result = DeliveryResult {
             quorum_reached: self.tiered_config.quorum.is_satisfied(total_success, total_targets),
@@ -1313,8 +1313,8 @@ impl Client<TransportCoordinator> {
                 required: self.tiered_config.quorum.required_count(total_targets),
             },
             target_results: all_results,
-            completed_tier: if internet_success_count > 0 {
-                Some(reme_transport::DeliveryTier::Internet)
+            completed_tier: if quorum_success_count > 0 {
+                Some(reme_transport::DeliveryTier::Quorum)
             } else {
                 None
             },
@@ -1331,7 +1331,7 @@ impl Client<TransportCoordinator> {
 
     /// Attempt maintenance refresh for a distributed message.
     ///
-    /// Refreshes ALL Internet tier targets to ensure copies still exist.
+    /// Refreshes ALL Quorum tier targets to ensure copies still exist.
     async fn attempt_maintenance_refresh(&self, pending: &PendingMessage) -> Result<(), ClientError> {
         // Deserialize the outer envelope
         let outer: OuterEnvelope = bincode::decode_from_slice(
@@ -1341,12 +1341,12 @@ impl Client<TransportCoordinator> {
         .map(|(envelope, _)| envelope)
         .map_err(|e| ClientError::Serialization(format!("envelope: {}", e)))?;
 
-        // Try P2P tier first - recipient may be online now
-        let p2p_result = self.transport.try_p2p_tier(&outer, &self.tiered_config).await;
+        // Try Direct tier first - recipient may be online now
+        let direct_result = self.transport.try_direct_tier(&outer, &self.tiered_config).await;
 
-        if p2p_result.any_success() {
+        if direct_result.any_success() {
             // Upgrade to direct delivery
-            if let Some(target) = p2p_result.first_success_target() {
+            if let Some(target) = direct_result.first_success_target() {
                 self.outbox
                     .upgrade_to_direct_delivery(pending.id, &target)
                     .map_err(ClientError::Outbox)?;
@@ -1361,10 +1361,10 @@ impl Client<TransportCoordinator> {
             }
         }
 
-        // Refresh ALL Internet tier targets
-        let _internet_result = self
+        // Refresh ALL Quorum tier targets
+        let _quorum_result = self
             .transport
-            .try_internet_tier_all(&outer, &self.tiered_config)
+            .try_quorum_tier_all(&outer, &self.tiered_config)
             .await;
 
         // Record maintenance timestamp
