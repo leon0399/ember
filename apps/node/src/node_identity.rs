@@ -6,8 +6,8 @@
 //! - Cryptographic loop prevention (identifying self by public key)
 
 use reme_identity::{Identity, InvalidPublicKey, PublicID};
-use std::fs;
-use std::io;
+use std::fs::{self, File};
+use std::io::{self, Write};
 use std::path::Path;
 
 /// Errors that can occur during node identity operations.
@@ -67,7 +67,8 @@ fn load_identity(path: &Path) -> Result<Identity, NodeIdentityError> {
 /// Generate a new identity and save it atomically.
 ///
 /// Uses temp-file-then-rename pattern to prevent race conditions
-/// and ensure atomic writes.
+/// and ensure atomic writes. The file is created with restricted
+/// permissions (0o600 on Unix) to protect the secret key.
 fn generate_and_save_identity(path: &Path) -> Result<Identity, NodeIdentityError> {
     let identity = Identity::generate();
 
@@ -89,7 +90,9 @@ fn generate_and_save_identity(path: &Path) -> Result<Identity, NodeIdentityError
         random_suffix
     );
     let temp_path = path.with_file_name(&temp_name);
-    fs::write(&temp_path, identity.to_bytes()).map_err(NodeIdentityError::WriteError)?;
+
+    // Write with restricted permissions to protect the secret key
+    write_secret_file(&temp_path, &identity.to_bytes())?;
     fs::rename(&temp_path, path).map_err(NodeIdentityError::WriteError)?;
 
     tracing::info!(
@@ -98,6 +101,44 @@ fn generate_and_save_identity(path: &Path) -> Result<Identity, NodeIdentityError
     );
 
     Ok(identity)
+}
+
+/// Write secret key material to a file with restricted permissions.
+///
+/// On Unix: Creates file with mode 0o600 (owner read/write only).
+/// On other platforms: Uses default permissions (typically user-only on Windows).
+#[cfg(unix)]
+fn write_secret_file(path: &Path, data: &[u8]) -> Result<(), NodeIdentityError> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = File::options()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600) // Owner read/write only
+        .open(path)
+        .map_err(NodeIdentityError::WriteError)?;
+
+    file.write_all(data).map_err(NodeIdentityError::WriteError)?;
+    file.sync_all().map_err(NodeIdentityError::WriteError)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_secret_file(path: &Path, data: &[u8]) -> Result<(), NodeIdentityError> {
+    // On Windows, files are created with user-only access by default.
+    // For additional security, we could use platform-specific ACL APIs,
+    // but the default behavior is already reasonably secure.
+    let mut file = File::options()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .map_err(NodeIdentityError::WriteError)?;
+
+    file.write_all(data).map_err(NodeIdentityError::WriteError)?;
+    file.sync_all().map_err(NodeIdentityError::WriteError)?;
+    Ok(())
 }
 
 /// Derive the node ID from a public identity.
