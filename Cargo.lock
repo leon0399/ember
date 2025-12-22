@@ -1834,6 +1834,7 @@ dependencies = [
  "governor",
  "hex",
  "http",
+ "rand 0.9.2",
  "reme-identity",
  "reme-message",
  "reme-transport",
@@ -1849,6 +1850,7 @@ dependencies = [
  "tower_governor",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
  "zeroize",
 ]
@@ -2488,6 +2490,17 @@ dependencies = [
  "uuid",
  "x25519-dalek",
  "xeddsa",
+]
+
+[[package]]
+name = "reme-node-core"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "reme-message",
+ "rusqlite",
+ "thiserror 2.0.17",
+ "tracing",
 ]
 
 [[package]]

@@ -1,0 +1,17 @@
+[package]
+name = "reme-node-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core node functionality for embedded and standalone mailbox nodes"
+
+[dependencies]
+# Internal crates
+reme-message = { workspace = true }
+
+# Storage
+rusqlite = { version = "0.32", features = ["bundled"] }
+bincode = { workspace = true }
+
+# Error handling & logging
+thiserror = { workspace = true }
+tracing = { workspace = true }

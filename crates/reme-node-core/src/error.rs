@@ -1,0 +1,34 @@
+//! Error types for node operations
+
+use thiserror::Error;
+
+/// Errors from the mailbox store
+#[derive(Debug, Error)]
+pub enum NodeError {
+    /// Database error
+    #[error("Database error: {0}")]
+    Database(#[from] rusqlite::Error),
+
+    /// Serialization error
+    #[error("Serialization error: {0}")]
+    Serialization(String),
+
+    /// Lock poisoned
+    #[error("Lock poisoned")]
+    LockPoisoned,
+
+    /// Mailbox full
+    #[error("Mailbox full")]
+    MailboxFull,
+
+    /// Message not found
+    #[error("Message not found")]
+    MessageNotFound,
+
+    /// Invalid message format
+    #[error("Invalid message: {0}")]
+    InvalidMessage(String),
+}
+
+/// Result type for node operations
+pub type NodeResult<T> = Result<T, NodeError>;
