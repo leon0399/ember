@@ -15,6 +15,7 @@ path = "src/main.rs"
 reme-identity = { workspace = true }
 reme-message = { workspace = true }
 reme-transport = { workspace = true, features = ["mqtt"] }
+reme-node-core = { workspace = true }
 
 # storage
 rusqlite = { version = "0.32", features = ["bundled"] }

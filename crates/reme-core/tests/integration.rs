@@ -27,7 +27,7 @@ struct TestServer {
 impl TestServer {
     /// Start a test server on a random available port
     async fn start() -> Self {
-        use node::{api, persistent_store, replication};
+        use node::{api, replication, PersistentMailboxStore, PersistentStoreConfig};
 
         // Bind to port 0 to get a random available port
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind");
@@ -35,11 +35,11 @@ impl TestServer {
         let url = format!("http://{}", addr);
 
         // Create minimal node components (in-memory SQLite for testing)
-        let config = persistent_store::PersistentStoreConfig {
+        let config = PersistentStoreConfig {
             max_messages_per_mailbox: 1000,
             default_ttl_secs: 3600,
         };
-        let store = Arc::new(persistent_store::PersistentMailboxStore::open(":memory:", config).unwrap());
+        let store = Arc::new(PersistentMailboxStore::open(":memory:", config).unwrap());
         let replication = Arc::new(replication::ReplicationClient::new(
             "test-node".to_string(),
             vec![], // No peers for testing
@@ -408,7 +408,7 @@ async fn test_tombstone_with_status() {
 /// Test multi-node replication: messages sent to one node replicate to peers
 #[tokio::test]
 async fn test_multi_node_replication() {
-    use node::{api, persistent_store, replication};
+    use node::{api, replication, PersistentMailboxStore, PersistentStoreConfig};
 
     // Start two nodes
     let listener1 = TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind node1");
@@ -423,13 +423,13 @@ async fn test_multi_node_replication() {
     println!("Node 2: {}", url2);
 
     // Create store config for both nodes (in-memory SQLite for testing)
-    let config = persistent_store::PersistentStoreConfig {
+    let config = PersistentStoreConfig {
         max_messages_per_mailbox: 1000,
         default_ttl_secs: 3600,
     };
 
     // Create node 1 with node 2 as peer
-    let store1 = Arc::new(persistent_store::PersistentMailboxStore::open(":memory:", config.clone()).unwrap());
+    let store1 = Arc::new(PersistentMailboxStore::open(":memory:", config.clone()).unwrap());
     let replication1 = Arc::new(replication::ReplicationClient::new(
         "node-1".to_string(),
         vec![url2.clone()],
@@ -447,7 +447,7 @@ async fn test_multi_node_replication() {
     let app1 = api::router(state1, None);
 
     // Create node 2 with node 1 as peer
-    let store2 = Arc::new(persistent_store::PersistentMailboxStore::open(":memory:", config).unwrap());
+    let store2 = Arc::new(PersistentMailboxStore::open(":memory:", config).unwrap());
     let replication2 = Arc::new(replication::ReplicationClient::new(
         "node-2".to_string(),
         vec![url1.clone()],

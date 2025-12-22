@@ -7,7 +7,7 @@
 //! of expired messages for self-healing. This background task handles global
 //! cleanup across all mailboxes periodically.
 
-use crate::persistent_store::PersistentMailboxStore;
+use reme_node_core::{MailboxStore, PersistentMailboxStore};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;

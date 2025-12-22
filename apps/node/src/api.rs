@@ -6,8 +6,8 @@
 
 use crate::mqtt_bridge::MqttBridge;
 use crate::node_identity::NodeIdentity;
-use crate::persistent_store::{PersistentMailboxStore, PersistentStoreError};
 use crate::rate_limit::{KeyedLimiter, RateLimiters};
+use reme_node_core::{MailboxStore, NodeError, PersistentMailboxStore};
 use crate::replication::ReplicationClient;
 use crate::signed_headers::{SignatureError, SignatureVerifier, HEADER_NODE_SIGNATURE};
 use reme_identity::PublicID;
@@ -409,7 +409,7 @@ async fn handle_message(
         Err(e) => {
             error!("Failed to enqueue message: {}", e);
             let status = match e {
-                PersistentStoreError::MailboxFull => StatusCode::INSUFFICIENT_STORAGE,
+                NodeError::MailboxFull => StatusCode::INSUFFICIENT_STORAGE,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
             (status, Json(ErrorResponse { error: e.to_string() })).into_response()
