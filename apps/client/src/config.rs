@@ -221,11 +221,6 @@ pub struct DeliveryAppConfig {
     #[serde(default)]
     pub quorum: QuorumStrategyConfig,
 
-    /// Enable tiered delivery (default: true).
-    /// When disabled, uses simple broadcast-all behavior.
-    #[serde(default = "default_tiered_enabled")]
-    pub tiered_enabled: bool,
-
     // Phase 1 (Urgent) retry settings
 
     /// Initial retry delay in seconds for urgent phase.
@@ -261,7 +256,6 @@ pub struct DeliveryAppConfig {
     pub quorum_tier_timeout_secs: u64,
 }
 
-fn default_tiered_enabled() -> bool { true }
 fn default_urgent_initial_delay() -> u64 { 5 }
 fn default_urgent_max_delay() -> u64 { 60 }
 fn default_urgent_backoff_multiplier() -> f32 { 2.0 }
@@ -274,7 +268,6 @@ impl Default for DeliveryAppConfig {
     fn default() -> Self {
         Self {
             quorum: QuorumStrategyConfig::default(),
-            tiered_enabled: default_tiered_enabled(),
             urgent_initial_delay_secs: default_urgent_initial_delay(),
             urgent_max_delay_secs: default_urgent_max_delay(),
             urgent_backoff_multiplier: default_urgent_backoff_multiplier(),
@@ -354,7 +347,6 @@ impl From<DeliveryAppConfig> for TieredDeliveryConfig {
         }
 
         TieredDeliveryConfig {
-            tiered_enabled: config.tiered_enabled,
             quorum: config.quorum.into(),
             urgent_initial_delay: Duration::from_secs(config.urgent_initial_delay_secs),
             urgent_max_delay: Duration::from_secs(config.urgent_max_delay_secs),
@@ -622,7 +614,6 @@ struct RawOutboxConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 struct RawDeliveryConfig {
     quorum: Option<QuorumStrategyConfig>,
-    tiered_enabled: Option<bool>,
     urgent_initial_delay_secs: Option<u64>,
     urgent_max_delay_secs: Option<u64>,
     urgent_backoff_multiplier: Option<f32>,
@@ -787,8 +778,6 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
     let delivery = DeliveryAppConfig {
         quorum: raw.delivery.quorum
             .unwrap_or(delivery_defaults.quorum),
-        tiered_enabled: raw.delivery.tiered_enabled
-            .unwrap_or(delivery_defaults.tiered_enabled),
         urgent_initial_delay_secs: raw.delivery.urgent_initial_delay_secs
             .unwrap_or(delivery_defaults.urgent_initial_delay_secs),
         urgent_max_delay_secs: raw.delivery.urgent_max_delay_secs
@@ -905,10 +894,6 @@ retry_max_delay_secs = {retry_max}
 # - "all" = all configured stable transports must succeed
 quorum = {quorum}
 
-# Enable tiered delivery (default: true)
-# When disabled, uses simple broadcast-all behavior
-tiered_enabled = {tiered_enabled}
-
 # Phase 1 (Urgent) retry settings
 # Aggressive retry until quorum is reached
 urgent_initial_delay_secs = {urgent_initial}
@@ -933,7 +918,6 @@ quorum_tier_timeout_secs = {quorum_timeout}
         retry_initial = defaults.outbox.retry_initial_delay_secs,
         retry_max = defaults.outbox.retry_max_delay_secs,
         quorum = quorum_str,
-        tiered_enabled = defaults.delivery.tiered_enabled,
         urgent_initial = defaults.delivery.urgent_initial_delay_secs,
         urgent_max = defaults.delivery.urgent_max_delay_secs,
         urgent_multiplier = defaults.delivery.urgent_backoff_multiplier,
@@ -993,7 +977,6 @@ mod tests {
         assert!(toml.contains("[[mqtt]]")); // Documentation for MQTT
         assert!(toml.contains("[delivery]"));
         assert!(toml.contains("quorum"));
-        assert!(toml.contains("tiered_enabled"));
         assert!(toml.contains("urgent_initial_delay_secs"));
         assert!(toml.contains("maintenance_interval_hours"));
     }
@@ -1088,7 +1071,6 @@ mod tests {
     fn test_delivery_config_defaults() {
         let config = DeliveryAppConfig::default();
         assert_eq!(config.quorum, QuorumStrategyConfig::Any);
-        assert!(config.tiered_enabled);
         assert_eq!(config.urgent_initial_delay_secs, 5);
         assert_eq!(config.urgent_max_delay_secs, 60);
         assert_eq!(config.urgent_backoff_multiplier, 2.0);
@@ -1125,13 +1107,11 @@ mod tests {
     fn test_delivery_config_deserialize() {
         let json = r#"{
             "quorum": {"count": 3},
-            "tiered_enabled": false,
             "urgent_initial_delay_secs": 10,
             "maintenance_interval_hours": 8
         }"#;
         let config: DeliveryAppConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.quorum, QuorumStrategyConfig::Count(3));
-        assert!(!config.tiered_enabled);
         assert_eq!(config.urgent_initial_delay_secs, 10);
         assert_eq!(config.maintenance_interval_hours, 8);
         // Unspecified fields should get defaults
@@ -1169,7 +1149,6 @@ mod tests {
     fn test_delivery_config_conversion() {
         let config = DeliveryAppConfig {
             quorum: QuorumStrategyConfig::Count(2),
-            tiered_enabled: false,
             urgent_initial_delay_secs: 10,
             urgent_max_delay_secs: 120,
             urgent_backoff_multiplier: 1.5,

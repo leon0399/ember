@@ -509,11 +509,6 @@ impl TransportCoordinator {
         envelope: &OuterEnvelope,
         config: &TieredDeliveryConfig,
     ) -> DeliveryResult {
-        // When tiered delivery is disabled, use simple broadcast-all behavior
-        if !config.tiered_enabled {
-            return self.submit_broadcast_all(envelope, config).await;
-        }
-
         let mut all_results: Vec<TargetResult> = Vec::new();
 
         // Tier 1: Direct (race all ephemeral targets)
@@ -563,125 +558,6 @@ impl TransportCoordinator {
             "Quorum not reached"
         );
         DeliveryResult::partial(success_count, required, all_results)
-    }
-
-    /// Simple broadcast-all behavior when tiered delivery is disabled.
-    ///
-    /// Sends to all available targets (both ephemeral and stable) in parallel.
-    /// Returns success if any target succeeds (equivalent to QuorumStrategy::Any).
-    async fn submit_broadcast_all(
-        &self,
-        envelope: &OuterEnvelope,
-        config: &TieredDeliveryConfig,
-    ) -> DeliveryResult {
-        use futures::future::join_all;
-        use std::future::Future;
-        use std::pin::Pin;
-        use std::time::{Duration, Instant};
-        use tokio::time::timeout;
-
-        debug!("Using broadcast-all mode (tiered delivery disabled)");
-
-        let mut all_results: Vec<TargetResult> = Vec::new();
-        let tier_timeout = config.quorum_tier_timeout;
-
-        // Use boxed futures to allow heterogeneous async blocks
-        type BoxedFuture =
-            Pin<Box<dyn Future<Output = (TargetId, Result<(), TransportError>, Duration)> + Send>>;
-        let mut futures: Vec<BoxedFuture> = Vec::new();
-
-        // Collect all HTTP targets (both ephemeral and stable)
-        if let Some(ref pool) = self.http_pool {
-            for target in pool.healthy_targets() {
-                if !config.is_excluded(target.id()) {
-                    let target_id = target.id().clone();
-                    let envelope_clone = envelope.clone();
-                    let target_clone = target.clone();
-
-                    futures.push(Box::pin(async move {
-                        let start = Instant::now();
-                        let result =
-                            timeout(tier_timeout, target_clone.submit_message(envelope_clone))
-                                .await;
-                        let latency = start.elapsed();
-                        let mapped = match result {
-                            Ok(inner) => inner,
-                            Err(_) => Err(TransportError::Timeout),
-                        };
-                        (target_id, mapped, latency)
-                    }));
-                }
-            }
-        }
-
-        // Collect all MQTT targets
-        #[cfg(feature = "mqtt")]
-        if let Some(ref pool) = self.mqtt_pool {
-            for target in pool.healthy_targets() {
-                if !config.is_excluded(target.id()) {
-                    let target_id = target.id().clone();
-                    let envelope_clone = envelope.clone();
-                    let target_clone = target.clone();
-
-                    futures.push(Box::pin(async move {
-                        let start = Instant::now();
-                        let result =
-                            timeout(tier_timeout, target_clone.submit_message(envelope_clone))
-                                .await;
-                        let latency = start.elapsed();
-                        let mapped = match result {
-                            Ok(inner) => inner,
-                            Err(_) => Err(TransportError::Timeout),
-                        };
-                        (target_id, mapped, latency)
-                    }));
-                }
-            }
-        }
-
-        if futures.is_empty() {
-            debug!("Broadcast-all: no targets available");
-            return DeliveryResult::partial(0, 1, all_results);
-        }
-
-        // Execute all in parallel
-        let results = join_all(futures).await;
-
-        let mut success_count = 0u32;
-        let total = results.len() as u32;
-
-        for (target_id, result, latency) in results {
-            match result {
-                Ok(()) => {
-                    success_count += 1;
-                    all_results.push(TargetResult::success(
-                        target_id,
-                        DeliveryTier::Quorum, // Use Quorum tier for consistency
-                        latency,
-                    ));
-                }
-                Err(e) => {
-                    all_results.push(TargetResult::failed(
-                        target_id,
-                        DeliveryTier::Quorum,
-                        e,
-                    ));
-                }
-            }
-        }
-
-        // Any success counts as quorum in broadcast-all mode
-        if success_count > 0 {
-            debug!(
-                success = success_count,
-                total = total,
-                "Broadcast-all succeeded"
-            );
-            DeliveryResult::quorum_delivery(success_count, 1, DeliveryTier::Quorum, all_results)
-        } else {
-            debug!(total = total, "Broadcast-all failed: no targets succeeded");
-            DeliveryResult::partial(0, 1, all_results)
-        }
     }
 
     /// Try Direct tier: race all ephemeral targets, return on first success.
@@ -1135,34 +1011,5 @@ mod tests {
         assert!(!result.any_success());
         assert_eq!(result.success_count(), 0);
         assert!(result.results.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_tiered_disabled_uses_broadcast_all() {
-        use reme_message::{MessageID, OuterEnvelope, RoutingKey, CURRENT_VERSION};
-
-        let coordinator = TransportCoordinator::with_defaults();
-
-        // Disable tiered delivery
-        let config = TieredDeliveryConfig {
-            tiered_enabled: false,
-            ..Default::default()
-        };
-
-        let envelope = OuterEnvelope {
-            version: CURRENT_VERSION,
-            routing_key: RoutingKey::from_bytes([1u8; 16]),
-            message_id: MessageID::from_bytes([2u8; 16]),
-            timestamp_hours: 0,
-            ttl_hours: None,
-            ephemeral_key: [3u8; 32],
-            inner_ciphertext: vec![1, 2, 3],
-        };
-
-        // With no transports, broadcast-all should return partial result
-        let result = coordinator.submit_tiered(&envelope, &config).await;
-
-        assert!(!result.quorum_reached);
-        assert!(result.target_results.is_empty());
     }
 }

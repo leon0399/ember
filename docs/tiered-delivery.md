@@ -200,9 +200,6 @@ END LOOP
 # Quorum strategy for Quorum tier
 quorum = "any"  # or { count = 2 }, { fraction = 0.5 }, "all"
 
-# Enable tiered delivery
-tiered_enabled = true
-
 # Phase 1 (Urgent) retry settings
 urgent_initial_delay_secs = 5
 urgent_max_delay_secs = 60
@@ -222,7 +219,6 @@ quorum_tier_timeout_secs = 5
 | Option                       | Type          | Default | Description                                                               |
 |------------------------------|---------------|---------|---------------------------------------------------------------------------|
 | `quorum`                     | string/object | `"any"` | Quorum strategy: `"any"`, `"all"`, `{ count = N }`, or `{ fraction = F }` |
-| `tiered_enabled`             | bool          | `true`  | Enable tiered delivery                                                    |
 | `urgent_initial_delay_secs`  | integer       | `5`     | Initial retry delay in urgent phase                                       |
 | `urgent_max_delay_secs`      | integer       | `60`    | Maximum retry delay in urgent phase                                       |
 | `urgent_backoff_multiplier`  | float         | `2.0`   | Backoff multiplier for urgent retries                                     |
