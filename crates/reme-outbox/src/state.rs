@@ -564,7 +564,7 @@ mod tests {
                 required: 2,
             },
             reached_at_ms: 1000,
-            last_maintenance_ms: Some(10_000_000), // Last maintenance at 10 seconds
+            last_maintenance_ms: Some(10_000_000), // Last maintenance at 10,000 seconds
         };
 
         let maintenance_interval = 4 * 60 * 60 * 1000; // 4 hours

@@ -357,6 +357,10 @@ impl DeliveryResult {
 /// Configuration for tiered delivery.
 #[derive(Debug, Clone)]
 pub struct TieredDeliveryConfig {
+    /// Enable tiered delivery (default: true).
+    /// When disabled, uses simple broadcast-all behavior.
+    pub tiered_enabled: bool,
+
     /// Quorum strategy for Quorum tier.
     pub quorum: QuorumStrategy,
 
@@ -380,6 +384,7 @@ pub struct TieredDeliveryConfig {
 impl Default for TieredDeliveryConfig {
     fn default() -> Self {
         Self {
+            tiered_enabled: true,
             quorum: QuorumStrategy::default(),
             urgent_initial_delay: Duration::from_secs(5),
             urgent_max_delay: Duration::from_secs(60),

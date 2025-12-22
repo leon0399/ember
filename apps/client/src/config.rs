@@ -280,6 +280,7 @@ impl From<QuorumStrategyConfig> for QuorumStrategy {
 impl From<DeliveryAppConfig> for TieredDeliveryConfig {
     fn from(config: DeliveryAppConfig) -> Self {
         TieredDeliveryConfig {
+            tiered_enabled: config.tiered_enabled,
             quorum: config.quorum.into(),
             urgent_initial_delay: Duration::from_secs(config.urgent_initial_delay_secs),
             urgent_max_delay: Duration::from_secs(config.urgent_max_delay_secs),

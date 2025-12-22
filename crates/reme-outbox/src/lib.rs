@@ -422,7 +422,7 @@ impl<S: OutboxStore> ClientOutbox<S> {
             let pending = self.store.outbox_get_by_id(entry_id)?;
             let attempt_count = pending.map(|p| p.attempt_count()).unwrap_or(0) as u32;
 
-            let delay = calculate_urgent_backoff(attempt_count, config);
+            let delay = config.calculate_retry_delay(attempt_count);
             let next_retry = now + delay.as_millis() as u64;
             self.store.outbox_schedule_retry(&[entry_id], next_retry)?;
 
@@ -459,17 +459,27 @@ impl<S: OutboxStore> ClientOutbox<S> {
     /// Upgrade a distributed message to direct delivery confidence.
     ///
     /// Called when P2P delivery succeeds during maintenance refresh.
+    /// Preserves the original `reached_at_ms` timestamp from when the message
+    /// first entered the Distributed phase.
     pub fn upgrade_to_direct_delivery(
         &self,
         entry_id: OutboxEntryId,
         target: &TargetId,
     ) -> Result<(), S::Error> {
         let now = now_ms();
+
+        // Get existing phase to preserve reached_at_ms
+        let pending = self.store.outbox_get_by_id(entry_id)?;
+        let reached_at_ms = match pending.as_ref().map(|p| &p.tiered_phase) {
+            Some(TieredDeliveryPhase::Distributed { reached_at_ms, .. }) => *reached_at_ms,
+            _ => now, // Fallback for non-distributed phases (shouldn't happen)
+        };
+
         let new_phase = TieredDeliveryPhase::Distributed {
             confidence: DeliveryConfidence::DirectDelivery {
                 target: target.clone(),
             },
-            reached_at_ms: now,
+            reached_at_ms,
             last_maintenance_ms: Some(now),
         };
         self.store.outbox_update_tiered_phase(entry_id, &new_phase)
@@ -515,15 +525,6 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
-}
-
-/// Calculate exponential backoff delay for urgent phase retries.
-fn calculate_urgent_backoff(attempt_count: u32, config: &TieredDeliveryConfig) -> Duration {
-    let base = config.urgent_initial_delay.as_millis() as f64;
-    let multiplier = config.urgent_backoff_multiplier.powf(attempt_count as f32) as f64;
-    let delay_ms = (base * multiplier) as u64;
-    let max_ms = config.urgent_max_delay.as_millis() as u64;
-    Duration::from_millis(delay_ms.min(max_ms))
 }
 
 #[cfg(test)]

@@ -461,12 +461,16 @@ impl Storage {
             let target_str = row?;
             // Parse target_id string back to TargetId
             // Format is "type:url" - we reconstruct using the appropriate constructor
-            if target_str.starts_with("http:") {
-                targets.insert(TargetId::http(&target_str[5..]));
-            } else if target_str.starts_with("mqtt:") {
-                targets.insert(TargetId::mqtt(&target_str[5..]));
+            if let Some(url) = target_str.strip_prefix("http:") {
+                targets.insert(TargetId::http(url));
+            } else if let Some(url) = target_str.strip_prefix("mqtt:") {
+                targets.insert(TargetId::mqtt(url));
+            } else {
+                return Err(StorageError::Serialization(format!(
+                    "Unknown target_id prefix in '{}'",
+                    target_str
+                )));
             }
-            // Other target types would be handled here as they're added
         }
 
         Ok(targets)
@@ -508,12 +512,15 @@ impl Storage {
                     "distributed" => {
                         let confidence = if let Some(target_str) = direct_target_id {
                             // Direct delivery - parse target
-                            let target = if target_str.starts_with("http:") {
-                                TargetId::http(&target_str[5..])
-                            } else if target_str.starts_with("mqtt:") {
-                                TargetId::mqtt(&target_str[5..])
+                            let target = if let Some(url) = target_str.strip_prefix("http:") {
+                                TargetId::http(url)
+                            } else if let Some(url) = target_str.strip_prefix("mqtt:") {
+                                TargetId::mqtt(url)
                             } else {
-                                TargetId::http(&target_str)
+                                return Err(StorageError::Serialization(format!(
+                                    "Unknown target_id prefix in '{}'",
+                                    target_str
+                                )));
                             };
                             DeliveryConfidence::DirectDelivery { target }
                         } else {
@@ -1289,11 +1296,12 @@ impl OutboxStore for Storage {
              WHERE confirmed_at_ms IS NULL
                AND expired_at_ms IS NULL
                AND delivery_phase = 'distributed'
+               AND (next_retry_at_ms IS NULL OR next_retry_at_ms <= ?)
                AND (last_maintenance_ms IS NULL OR last_maintenance_ms <= ?)
              ORDER BY last_maintenance_ms ASC NULLS FIRST",
         )?;
 
-        let rows = stmt.query_map(params![cutoff as i64], |row| {
+        let rows = stmt.query_map(params![now_ms as i64, cutoff as i64], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, Vec<u8>>(1)?,

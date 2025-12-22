@@ -99,13 +99,13 @@ impl TransportError {
     /// - Serialization errors (data issues)
     /// - TLS configuration errors
     /// - Certificate pin mismatches (security failures)
+    /// - Channel closed (sender/receiver dropped - permanent state)
     pub fn is_transient(&self) -> bool {
         matches!(
             self,
             TransportError::Network(_)
                 | TransportError::Timeout
                 | TransportError::ServerError(_)
-                | TransportError::ChannelClosed
         )
     }
 }

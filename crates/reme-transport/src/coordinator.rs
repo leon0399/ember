@@ -563,12 +563,17 @@ impl TransportCoordinator {
     /// Try Direct tier: race all ephemeral targets, return on first success.
     ///
     /// This tier is for direct delivery where the recipient
-    /// (or their proxy) directly receives the message.
+    /// (or their proxy) directly receives the message. All targets are
+    /// attempted in parallel, and we return as soon as any one succeeds.
     pub async fn try_direct_tier(
         &self,
         envelope: &OuterEnvelope,
         config: &TieredDeliveryConfig,
     ) -> TierResult {
+        use futures::stream::{FuturesUnordered, StreamExt};
+        use std::time::Instant;
+        use tokio::time::timeout;
+
         let mut tier_result = TierResult::new(DeliveryTier::Direct);
 
         // Collect all ephemeral targets from HTTP pool
@@ -586,26 +591,32 @@ impl TransportCoordinator {
             return tier_result;
         }
 
-        // Race all targets - first success wins
-        use tokio::time::timeout;
+        // Race all targets in parallel - first success wins
+        let tier_timeout = config.direct_tier_timeout;
+        let mut futures = FuturesUnordered::new();
 
         for target in targets {
             let target_id = target.id().clone();
+            let envelope_clone = envelope.clone();
+            let target_clone = target.clone();
 
-            // Try each target with the tier timeout
-            let result = timeout(
-                config.direct_tier_timeout,
-                target.submit_message(envelope.clone()),
-            )
-            .await;
+            futures.push(async move {
+                let start = Instant::now();
+                let result = timeout(tier_timeout, target_clone.submit_message(envelope_clone)).await;
+                let latency = start.elapsed();
+                (target_id, result, latency)
+            });
+        }
 
+        // Poll futures until we get a success or all have completed
+        while let Some((target_id, result, latency)) = futures.next().await {
             match result {
                 Ok(Ok(())) => {
                     // Success! Record and return immediately
                     tier_result.push(TargetResult::success(
                         target_id,
                         DeliveryTier::Direct,
-                        config.direct_tier_timeout, // Approximate latency
+                        latency,
                     ));
                     return tier_result;
                 }
