@@ -350,58 +350,35 @@ fn build_signed_message(
 
 /// Canonicalize a hostname for consistent comparison.
 ///
-/// - Lowercase
-/// - Remove trailing dot from hostname part
-/// - Strip default port (:80 for HTTP, :443 for HTTPS)
-/// - Handle IPv6 addresses like `[::1]:3000` or `[2001:db8::1]:8080`
+/// Only performs safe, scheme-independent transformations:
+/// - Lowercase (DNS is case-insensitive)
+/// - Remove trailing dot from hostname (DNS FQDN notation)
+///
+/// Ports are preserved as-is. Operators must ensure `public_host` config
+/// matches exactly what peers use in URLs (including port if non-default).
+/// We intentionally do NOT strip "default" ports (80/443) because:
+/// 1. We don't have scheme information to know what's "default"
+/// 2. A service could run on port 443 without HTTPS
 fn canonicalize_host(host: &str) -> String {
     let result = host.to_lowercase();
 
     // Handle IPv6 addresses: [host]:port format
-    // The port separator for IPv6 is "]:port" not just ":"
-    let (host_part, port_part) = if result.starts_with('[') {
-        // IPv6 address in brackets
-        if let Some(bracket_end) = result.find(']') {
-            if result.len() > bracket_end + 1 && result.as_bytes()[bracket_end + 1] == b':' {
-                // Has port after bracket
-                let port = &result[bracket_end + 2..];
-                if port == "80" || port == "443" {
-                    (&result[..bracket_end + 1], None)
-                } else {
-                    (&result[..bracket_end + 1], Some(&result[bracket_end + 1..]))
-                }
-            } else {
-                // No port, just bracketed IPv6
-                (&result[..bracket_end + 1], None)
-            }
-        } else {
-            // Malformed, treat as-is
-            (result.as_str(), None)
-        }
-    } else if let Some(colon_pos) = result.rfind(':') {
-        // IPv4 or hostname with port
-        let port = &result[colon_pos + 1..];
-        if port == "80" || port == "443" {
-            (&result[..colon_pos], None)
-        } else {
-            (&result[..colon_pos], Some(&result[colon_pos..]))
-        }
-    } else {
-        (result.as_str(), None)
-    };
+    if result.starts_with('[') {
+        // IPv6 in brackets - trailing dot doesn't apply, return as-is (lowercased)
+        return result;
+    }
 
-    // Remove trailing dot from hostname (DNS FQDN notation)
-    // For IPv6, trailing dot doesn't apply to bracketed addresses
-    let host_clean = if host_part.starts_with('[') {
-        host_part
+    // For IPv4/hostname, check for trailing dot before any port
+    // Format is either "hostname" or "hostname:port" or "hostname.:port"
+    if let Some(colon_pos) = result.rfind(':') {
+        // Has port - check for trailing dot on hostname part
+        let hostname = &result[..colon_pos];
+        let port_part = &result[colon_pos..]; // includes the colon
+        let hostname_clean = hostname.strip_suffix('.').unwrap_or(hostname);
+        format!("{}{}", hostname_clean, port_part)
     } else {
-        host_part.strip_suffix('.').unwrap_or(host_part)
-    };
-
-    // Reassemble
-    match port_part {
-        Some(port) => format!("{}{}", host_clean, port),
-        None => host_clean.to_string(),
+        // No port - just strip trailing dot if present
+        result.strip_suffix('.').unwrap_or(&result).to_string()
     }
 }
 
@@ -617,19 +594,19 @@ mod tests {
         // Lowercase
         assert_eq!(canonicalize_host("Node.Example.COM:3000"), "node.example.com:3000");
 
-        // Strip default ports
-        assert_eq!(canonicalize_host("example.com:80"), "example.com");
-        assert_eq!(canonicalize_host("example.com:443"), "example.com");
+        // Ports are preserved (no scheme-dependent stripping)
+        assert_eq!(canonicalize_host("example.com:80"), "example.com:80");
+        assert_eq!(canonicalize_host("example.com:443"), "example.com:443");
         assert_eq!(canonicalize_host("example.com:8080"), "example.com:8080");
 
         // Remove trailing dot
         assert_eq!(canonicalize_host("example.com."), "example.com");
-        assert_eq!(canonicalize_host("example.com.:443"), "example.com");
+        assert_eq!(canonicalize_host("example.com.:443"), "example.com:443");
 
         // IPv6 addresses
         assert_eq!(canonicalize_host("[::1]:3000"), "[::1]:3000");
-        assert_eq!(canonicalize_host("[::1]:80"), "[::1]");
-        assert_eq!(canonicalize_host("[::1]:443"), "[::1]");
+        assert_eq!(canonicalize_host("[::1]:80"), "[::1]:80");
+        assert_eq!(canonicalize_host("[::1]:443"), "[::1]:443");
         assert_eq!(canonicalize_host("[2001:db8::1]:8080"), "[2001:db8::1]:8080");
         assert_eq!(canonicalize_host("[2001:DB8::1]:8080"), "[2001:db8::1]:8080"); // lowercase
         assert_eq!(canonicalize_host("[::1]"), "[::1]"); // no port
