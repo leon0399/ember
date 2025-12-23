@@ -26,7 +26,7 @@ The delivery system is designed around a key principle: **the client never gives
 │     │ Direct  │         │ Quorum   │         │ BestEffort│   │
 │     │         │         │          │         │           │   │
 │     │ Race    │         │ Broadcast│         │ Fire &    │   │
-│     │ Exit on │ ──────▶ │ Require  │ ──────▶ │ Forget    │   │
+│     │ Exit on │ ──────> │ Require  │ ──────> │ Forget    │   │
 │     │ ANY     │  fail   │ Quorum   │  fail   │           │   │
 │     └─────────┘         └──────────┘         └───────────┘   │
 └──────────────────────────────────────────────────────────────┘
@@ -284,3 +284,4 @@ END
 3. **Priority Queues**: Urgent messages get preferential retry scheduling
 4. **Compression**: Reduce message size for constrained transports
 5. **Adaptive Timeouts**: Adjust tier timeouts based on historical latency
+6. **Transition to Confirmed** after Urgent phase succeeds: Add receipts to verify that receipt is actually received by intended party and skip broadcasting
