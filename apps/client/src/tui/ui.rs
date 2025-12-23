@@ -13,7 +13,7 @@ use ratatui::{
     Frame,
 };
 
-use super::app::{AddContactField, AddUpstreamField, App, Focus, UpstreamType};
+use super::app::{AddContactField, AddUpstreamField, App, Focus, UpstreamSource, UpstreamType};
 
 /// Render the entire UI
 pub fn render(frame: &mut Frame, app: &App) {
@@ -57,6 +57,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
     if app.show_add_upstream_popup {
         render_add_upstream_popup(frame, app);
+    }
+    if app.show_upstreams_popup {
+        render_upstreams_popup(frame, app);
     }
 }
 
@@ -483,4 +486,92 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
     frame.render_widget(hints, chunks[4]);
+}
+
+/// Render the view upstreams popup
+fn render_upstreams_popup(frame: &mut Frame, app: &App) {
+    // Calculate height based on number of upstreams (min 5, max 15 rows for list)
+    let list_height = (app.upstreams.len() as u16).clamp(1, 12);
+    // Total: border(2) + margin(2) + title_row(1) + list + hints(1) = 6 + list_height
+    let total_height = 6 + list_height;
+    let area = popup_area_fixed(frame.area(), 70, total_height);
+
+    // Clear the background
+    frame.render_widget(Clear, area);
+
+    // Popup container block
+    let popup_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" Configured Upstreams ");
+
+    let inner = popup_block.inner(area);
+    frame.render_widget(popup_block, area);
+
+    // Layout inside popup
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Min(1),    // Upstream list
+            Constraint::Length(1), // Hints
+        ])
+        .split(inner);
+
+    // Build upstream list
+    if app.upstreams.is_empty() {
+        let empty_text = Paragraph::new("No upstreams configured")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center);
+        frame.render_widget(empty_text, chunks[0]);
+    } else {
+        let items: Vec<ListItem> = app
+            .upstreams
+            .iter()
+            .map(|upstream| {
+                let type_str = match upstream.transport_type {
+                    UpstreamType::Http => "HTTP",
+                    UpstreamType::Mqtt => "MQTT",
+                };
+                let source_str = match upstream.source {
+                    UpstreamSource::Config => "config",
+                    UpstreamSource::Ephemeral => "session",
+                };
+                let type_style = match upstream.transport_type {
+                    UpstreamType::Http => Style::default().fg(Color::Blue),
+                    UpstreamType::Mqtt => Style::default().fg(Color::Magenta),
+                };
+                let source_style = match upstream.source {
+                    UpstreamSource::Config => Style::default().fg(Color::Green),
+                    UpstreamSource::Ephemeral => Style::default().fg(Color::Yellow),
+                };
+
+                let label_part = if let Some(ref label) = upstream.label {
+                    format!(" ({})", label)
+                } else {
+                    String::new()
+                };
+
+                let line = Line::from(vec![
+                    Span::styled(format!("[{}]", type_str), type_style),
+                    Span::raw(" "),
+                    Span::styled(&upstream.url, Style::default().fg(Color::White)),
+                    Span::styled(label_part, Style::default().fg(Color::DarkGray)),
+                    Span::raw(" "),
+                    Span::styled(format!("[{}]", source_str), source_style),
+                ]);
+
+                ListItem::new(line)
+            })
+            .collect();
+
+        let list = List::new(items);
+        frame.render_widget(list, chunks[0]);
+    }
+
+    // Hints
+    let hints = Paragraph::new("Esc to close")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    frame.render_widget(hints, chunks[1]);
 }

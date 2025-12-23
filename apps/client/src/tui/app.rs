@@ -34,7 +34,7 @@ pub type AppResult<T> = Result<T, Box<dyn std::error::Error>>;
 const PUBLIC_ID_HEX_LENGTH: usize = 64;
 
 /// Help text shown in status bar (Alt+H or initial startup)
-const HELP_TEXT: &str = "Alt+A/F2: add | Alt+U/F4: upstream | Alt+I/F3: identity | Tab: switch | Ctrl+Q: quit";
+const HELP_TEXT: &str = "Alt+A/F2: add | Alt+U/F4: upstream | Alt+V/F5: view | Alt+I/F3: identity | Ctrl+Q: quit";
 
 /// Short help hint for status bar
 const HELP_HINT: &str = "Alt+H for help";
@@ -261,6 +261,28 @@ impl<'a> AddUpstreamPopup<'a> {
     }
 }
 
+/// Source of a configured upstream
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpstreamSource {
+    /// Configured in config file
+    Config,
+    /// Added at runtime via popup
+    Ephemeral,
+}
+
+/// Information about a configured upstream transport
+#[derive(Debug, Clone)]
+pub struct UpstreamInfo {
+    /// Transport type
+    pub transport_type: UpstreamType,
+    /// URL or address
+    pub url: String,
+    /// Source (config or ephemeral)
+    pub source: UpstreamSource,
+    /// Optional label
+    pub label: Option<String>,
+}
+
 /// A conversation/contact entry
 #[derive(Debug, Clone)]
 pub struct Conversation {
@@ -322,6 +344,10 @@ pub struct App<'a> {
     pub show_add_upstream_popup: bool,
     /// Add upstream popup state
     pub add_upstream_popup: AddUpstreamPopup<'a>,
+    /// Whether the view upstreams popup is visible
+    pub show_upstreams_popup: bool,
+    /// List of configured upstreams (for display)
+    pub upstreams: Vec<UpstreamInfo>,
     /// Composite transport for runtime addition of upstreams
     composite_transport: Arc<CompositeTransport>,
     /// Outbox tick interval from config
@@ -430,14 +456,38 @@ impl<'a> App<'a> {
             (None, None, None)
         };
 
-        // Build composite transport for sending
+        // Build composite transport for sending and track upstream info for display
         let mut composite = CompositeTransport::new();
+        let mut upstreams = Vec::new();
+
+        // Add HTTP nodes from config
         if let Some(ref http) = http_pool {
             composite = composite.with_arc_transport(http.clone());
+            // Track each HTTP endpoint
+            for node in &config.http {
+                upstreams.push(UpstreamInfo {
+                    transport_type: UpstreamType::Http,
+                    url: node.url.clone(),
+                    source: UpstreamSource::Config,
+                    label: node.label.clone(),
+                });
+            }
         }
+
+        // Add MQTT brokers from config
         if let Some(mqtt) = mqtt_transport {
             composite = composite.with_transport(mqtt);
+            // Track each MQTT broker
+            for broker in &config.mqtt {
+                upstreams.push(UpstreamInfo {
+                    transport_type: UpstreamType::Mqtt,
+                    url: broker.url.clone(),
+                    source: UpstreamSource::Config,
+                    label: broker.label.clone(),
+                });
+            }
         }
+
         // Note: Embedded node is intentionally NOT added to CompositeTransport here.
         // In Phase 5, the embedded node has no HTTP server - storing messages locally
         // would mask remote delivery failures since recipients can't fetch from us.
@@ -456,6 +506,13 @@ impl<'a> App<'a> {
                         "Added direct peer"
                     );
                     composite = composite.with_transport(target);
+                    // Track as config-based (direct_peers are in config)
+                    upstreams.push(UpstreamInfo {
+                        transport_type: UpstreamType::Http,
+                        url: peer.address.clone(),
+                        source: UpstreamSource::Config,
+                        label: peer.name.clone(),
+                    });
                 }
                 Err(e) => {
                     warn!(
@@ -533,6 +590,8 @@ impl<'a> App<'a> {
             show_my_id_popup: false,
             show_add_upstream_popup: false,
             add_upstream_popup: AddUpstreamPopup::default(),
+            show_upstreams_popup: false,
+            upstreams,
             composite_transport: transport,
             outbox_tick_interval,
         };
@@ -781,6 +840,9 @@ impl<'a> App<'a> {
         if self.show_add_upstream_popup {
             return self.handle_add_upstream_popup_key_event(key).await;
         }
+        if self.show_upstreams_popup {
+            return self.handle_upstreams_popup_key_event(key);
+        }
 
         // Global shortcuts
         if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -816,6 +878,11 @@ impl<'a> App<'a> {
                     self.status = "Add Upstream (Tab: switch, ←/→: type, Enter: add, Esc: cancel)".to_string();
                     return Ok(());
                 }
+                KeyCode::Char('v') | KeyCode::Char('V') => {
+                    // Alt+V: View upstreams
+                    self.show_upstreams_popup = true;
+                    return Ok(());
+                }
                 KeyCode::Char('h') | KeyCode::Char('H') => {
                     // Alt+H: Show help
                     self.status = HELP_TEXT.to_string();
@@ -844,6 +911,11 @@ impl<'a> App<'a> {
                 self.show_add_upstream_popup = true;
                 self.add_upstream_popup.reset();
                 self.status = "Add Upstream (Tab: switch, ←/→: type, Enter: add, Esc: cancel)".to_string();
+                return Ok(());
+            }
+            KeyCode::F(5) => {
+                // F5: View upstreams (fallback for Alt+V)
+                self.show_upstreams_popup = true;
                 return Ok(());
             }
             _ => {}
@@ -1107,6 +1179,18 @@ impl<'a> App<'a> {
         Ok(())
     }
 
+    /// Handle key events when view upstreams popup is visible
+    fn handle_upstreams_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('v') => {
+                // Close popup
+                self.show_upstreams_popup = false;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Handle key events when add upstream popup is visible
     async fn handle_add_upstream_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
         match key.code {
@@ -1175,7 +1259,9 @@ impl<'a> App<'a> {
 
     /// Add an upstream transport at runtime
     async fn add_upstream(&mut self, url: &str) -> Result<(), String> {
-        match self.add_upstream_popup.transport_type {
+        let transport_type = self.add_upstream_popup.transport_type;
+
+        match transport_type {
             UpstreamType::Http => {
                 // Create HTTP target with ephemeral kind
                 let config = HttpTargetConfig::new(url, TargetKind::Ephemeral)
@@ -1186,7 +1272,6 @@ impl<'a> App<'a> {
                 // Add to composite transport
                 self.composite_transport.add_transport(target).await;
                 info!(url = %url, "Added ephemeral HTTP upstream");
-                Ok(())
             }
             UpstreamType::Mqtt => {
                 // Create MQTT transport
@@ -1201,9 +1286,18 @@ impl<'a> App<'a> {
                 // Add to composite transport
                 self.composite_transport.add_transport(transport).await;
                 info!(url = %url, "Added ephemeral MQTT upstream");
-                Ok(())
             }
         }
+
+        // Track in upstreams list for display
+        self.upstreams.push(UpstreamInfo {
+            transport_type,
+            url: url.to_string(),
+            source: UpstreamSource::Ephemeral,
+            label: None,
+        });
+
+        Ok(())
     }
 }
 
