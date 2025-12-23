@@ -9,15 +9,17 @@ use ratatui::prelude::*;
 use reme_core::Client;
 use reme_identity::{Identity, PublicID};
 use reme_message::Content;
+use reme_node_core::{EmbeddedNode, EmbeddedNodeHandle, NodeEvent, PersistentMailboxStore, PersistentStoreConfig};
 use reme_outbox::{OutboxConfig, TransportRetryPolicy};
 use reme_storage::Storage;
 use reme_transport::http::NodeSpec;
 use reme_transport::http_target::HttpTarget;
 use reme_transport::pool::TransportPool;
 use reme_transport::{
-    CertPin, CompositeTransport, MessageReceiver, MqttBrokerSpec, MqttTransport, ReceiverConfig,
-    TransportEvent,
+    CertPin, CompositeTransport, EmbeddedTarget, MessageReceiver, MqttBrokerSpec, MqttTransport,
+    ReceiverConfig, TransportEvent,
 };
+use tokio::sync::mpsc;
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::sync::Arc;
@@ -187,6 +189,10 @@ pub struct App<'a> {
     client: Client<CompositeTransport>,
     /// HTTP transport pool for message receiving (HTTP polling-based receiver)
     http_pool: Arc<TransportPool<HttpTarget>>,
+    /// Embedded node handle (for shutdown)
+    embedded_node_handle: Option<EmbeddedNodeHandle>,
+    /// Embedded node event receiver (for incoming LAN messages)
+    node_event_rx: Option<mpsc::Receiver<NodeEvent>>,
     /// Contacts by name (for reverse lookup)
     contacts_by_id: HashMap<PublicID, String>,
     /// In-memory message cache per contact (until storage retrieval is implemented)
@@ -275,6 +281,34 @@ impl<'a> App<'a> {
             None
         };
 
+        // Create embedded node if enabled
+        let (embedded_node_handle, node_event_rx) = if config.embedded_node.enabled {
+            info!("Starting embedded node...");
+
+            // Create persistent store config from app config
+            let store_config = PersistentStoreConfig::new(
+                config.embedded_node.max_messages as usize,
+                config.embedded_node.default_ttl_secs,
+            ).map_err(|e| format!("Invalid embedded node config: {}", e))?;
+
+            // Create mailbox store in the same data directory
+            let mailbox_db_path = config.data_dir.join("mailbox.db");
+            let mailbox_db_str = mailbox_db_path
+                .to_str()
+                .ok_or("Mailbox database path contains invalid UTF-8 characters")?;
+            let mailbox_store = PersistentMailboxStore::open(mailbox_db_str, store_config)
+                .map_err(|e| format!("Failed to open mailbox store: {}", e))?;
+
+            // Create and spawn embedded node
+            let (node, handle, event_rx) = EmbeddedNode::new(mailbox_store);
+            tokio::spawn(async move { node.run().await });
+
+            info!("Embedded node started");
+            (Some(handle), Some(event_rx))
+        } else {
+            (None, None)
+        };
+
         // Build composite transport for sending
         let mut composite = CompositeTransport::new();
         if let Some(ref http) = http_pool {
@@ -282,6 +316,11 @@ impl<'a> App<'a> {
         }
         if let Some(mqtt) = mqtt_transport {
             composite = composite.with_transport(mqtt);
+        }
+        // Add embedded node as highest-priority transport if enabled
+        if let Some(ref handle) = embedded_node_handle {
+            let embedded_target = EmbeddedTarget::new(handle.clone());
+            composite = composite.with_transport(embedded_target);
         }
         let transport = Arc::new(composite);
 
@@ -339,6 +378,8 @@ impl<'a> App<'a> {
             status: HELP_HINT.to_string(),
             client,
             http_pool: http_pool_arc,
+            embedded_node_handle,
+            node_event_rx,
             contacts_by_id: HashMap::new(),
             message_cache: HashMap::new(),
             show_add_contact_popup: false,

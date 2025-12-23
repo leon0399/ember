@@ -7,7 +7,8 @@ edition = "2021"
 reme-identity = { workspace = true }
 reme-message = { workspace = true }
 reme-encryption = { workspace = true }
-reme-transport = { workspace = true, features = ["mqtt"] }
+reme-transport = { workspace = true, features = ["mqtt", "embedded"] }
+reme-node-core = { workspace = true }
 reme-storage = { workspace = true }
 reme-outbox = { workspace = true }
 reme-core = { workspace = true }

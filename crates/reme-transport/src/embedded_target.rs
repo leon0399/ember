@@ -188,6 +188,21 @@ impl TransportTarget for EmbeddedTarget {
     }
 }
 
+/// Implement `Transport` trait for compatibility with `CompositeTransport`.
+///
+/// This allows `EmbeddedTarget` to be used alongside `HttpTransport` and `MqttTransport`
+/// in the composite transport for multi-transport message delivery.
+#[async_trait]
+impl crate::Transport for EmbeddedTarget {
+    async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
+        <Self as TransportTarget>::submit_message(self, envelope).await
+    }
+
+    async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
+        <Self as TransportTarget>::submit_tombstone(self, tombstone).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
