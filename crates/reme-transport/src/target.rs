@@ -38,6 +38,11 @@ impl TargetId {
         Self(format!("mqtt:{}", sanitize_url_for_logging(broker_url)))
     }
 
+    /// Create a target ID for an embedded node (in-process).
+    pub fn embedded() -> Self {
+        Self("embedded:local".to_string())
+    }
+
     /// Get the raw ID string.
     pub fn as_str(&self) -> &str {
         &self.0
@@ -444,6 +449,12 @@ mod tests {
         // MQTT without credentials: Passes through unchanged
         let id = TargetId::mqtt("mqtts://broker.example.com:8883");
         assert_eq!(id.as_str(), "mqtt:mqtts://broker.example.com:8883");
+    }
+
+    #[test]
+    fn test_target_id_embedded() {
+        let id = TargetId::embedded();
+        assert_eq!(id.as_str(), "embedded:local");
     }
 
     #[test]
