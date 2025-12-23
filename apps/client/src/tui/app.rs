@@ -17,8 +17,8 @@ use reme_transport::http_target::{HttpTarget, HttpTargetConfig};
 use reme_transport::pool::TransportPool;
 use reme_transport::target::TargetKind;
 use reme_transport::{
-    CertPin, CompositeTransport, MessageReceiver, MqttBrokerSpec, MqttTransport,
-    ReceiverConfig, TransportEvent,
+    CertPin, CompositeTransport, DeliveryTier, MessageReceiver, MqttBrokerSpec, MqttTransport,
+    ReceiverConfig, TargetId, TransportEvent, TransportRegistry, TransportTarget,
 };
 use tokio::sync::mpsc;
 use std::collections::{HashMap, VecDeque};
@@ -84,6 +84,7 @@ impl UpstreamType {
 pub enum AddUpstreamField {
     #[default]
     Type,
+    Tier,
     Url,
 }
 
@@ -181,6 +182,8 @@ pub struct AddUpstreamPopup<'a> {
     pub focused_field: AddUpstreamField,
     /// Selected transport type
     pub transport_type: UpstreamType,
+    /// Selected delivery tier
+    pub tier: DeliveryTier,
     /// URL input
     pub url_input: TextArea<'a>,
     /// Error message to display
@@ -196,6 +199,7 @@ impl<'a> Default for AddUpstreamPopup<'a> {
         Self {
             focused_field: AddUpstreamField::Type,
             transport_type: UpstreamType::Http,
+            tier: DeliveryTier::Direct,
             url_input,
             error: None,
         }
@@ -211,8 +215,18 @@ impl<'a> AddUpstreamPopup<'a> {
     /// Toggle focus between fields
     pub fn toggle_field(&mut self) {
         self.focused_field = match self.focused_field {
-            AddUpstreamField::Type => AddUpstreamField::Url,
+            AddUpstreamField::Type => AddUpstreamField::Tier,
+            AddUpstreamField::Tier => AddUpstreamField::Url,
             AddUpstreamField::Url => AddUpstreamField::Type,
+        };
+    }
+
+    /// Toggle the delivery tier
+    pub fn toggle_tier(&mut self) {
+        self.tier = match self.tier {
+            DeliveryTier::Direct => DeliveryTier::Quorum,
+            DeliveryTier::Quorum => DeliveryTier::BestEffort,
+            DeliveryTier::BestEffort => DeliveryTier::Direct,
         };
     }
 
@@ -256,31 +270,6 @@ impl<'a> AddUpstreamPopup<'a> {
     }
 }
 
-/// Delivery tier for an upstream transport
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UpstreamTier {
-    /// Tier 2: Stable infrastructure (HTTP mailboxes, MQTT brokers)
-    /// Messages stored for later retrieval by recipient
-    Quorum,
-    /// Tier 1: Direct peers (LAN P2P connections)
-    /// Direct delivery to recipient's embedded node
-    Direct,
-}
-
-/// Information about a configured upstream transport
-#[derive(Debug, Clone)]
-pub struct UpstreamInfo {
-    /// Transport type
-    pub transport_type: UpstreamType,
-    /// URL or address
-    pub url: String,
-    /// Delivery tier (quorum vs direct)
-    pub tier: UpstreamTier,
-    /// Whether this is ephemeral (runtime-added, not persisted)
-    pub ephemeral: bool,
-    /// Optional label
-    pub label: Option<String>,
-}
 
 /// A conversation/contact entry
 #[derive(Debug, Clone)]
@@ -345,10 +334,8 @@ pub struct App<'a> {
     pub add_upstream_popup: AddUpstreamPopup<'a>,
     /// Whether the view upstreams popup is visible
     pub show_upstreams_popup: bool,
-    /// List of configured upstreams (for display)
-    pub upstreams: Vec<UpstreamInfo>,
-    /// Composite transport for runtime addition of upstreams
-    composite_transport: Arc<CompositeTransport>,
+    /// Transport registry for querying and managing transports
+    pub registry: TransportRegistry,
     /// Outbox tick interval from config
     outbox_tick_interval: Duration,
 }
@@ -455,38 +442,17 @@ impl<'a> App<'a> {
             (None, None, None)
         };
 
-        // Build composite transport for sending and track upstream info for display
+        // Build composite transport for sending
         let mut composite = CompositeTransport::new();
-        let mut upstreams = Vec::new();
 
         // Add HTTP nodes from config
         if let Some(ref http) = http_pool {
             composite = composite.with_arc_transport(http.clone());
-            // Track each HTTP endpoint
-            for node in &config.http {
-                upstreams.push(UpstreamInfo {
-                    transport_type: UpstreamType::Http,
-                    url: node.url.clone(),
-                    tier: UpstreamTier::Quorum,
-                    ephemeral: false,
-                    label: node.label.clone(),
-                });
-            }
         }
 
         // Add MQTT brokers from config
         if let Some(mqtt) = mqtt_transport {
             composite = composite.with_transport(mqtt);
-            // Track each MQTT broker
-            for broker in &config.mqtt {
-                upstreams.push(UpstreamInfo {
-                    transport_type: UpstreamType::Mqtt,
-                    url: broker.url.clone(),
-                    tier: UpstreamTier::Quorum,
-                    ephemeral: false,
-                    label: broker.label.clone(),
-                });
-            }
         }
 
         // Note: Embedded node is intentionally NOT added to CompositeTransport here.
@@ -495,6 +461,7 @@ impl<'a> App<'a> {
         // Phase 6 will add HTTP server for inbound LAN messages, enabling bidirectional P2P.
 
         // Add direct peers as ephemeral targets for LAN P2P messaging
+        let mut direct_peer_ids: Vec<(TargetId, Option<String>)> = Vec::new();
         for peer in &config.direct_peers {
             let target_config = HttpTargetConfig::new(&peer.address, TargetKind::Ephemeral)
                 .with_label(peer.name.as_deref().unwrap_or(&peer.address));
@@ -506,15 +473,8 @@ impl<'a> App<'a> {
                         name = peer.name.as_deref().unwrap_or("(unnamed)"),
                         "Added direct peer"
                     );
+                    direct_peer_ids.push((target.id().clone(), peer.name.clone()));
                     composite = composite.with_transport(target);
-                    // Track as direct peer (Tier 1 - LAN P2P)
-                    upstreams.push(UpstreamInfo {
-                        transport_type: UpstreamType::Http,
-                        url: peer.address.clone(),
-                        tier: UpstreamTier::Direct,
-                        ephemeral: false,
-                        label: peer.name.clone(),
-                    });
                 }
                 Err(e) => {
                     warn!(
@@ -527,6 +487,23 @@ impl<'a> App<'a> {
         }
 
         let transport = Arc::new(composite);
+
+        // Create transport registry for UI queries
+        let mut registry = TransportRegistry::with_composite(transport.clone());
+        if let Some(ref http) = http_pool {
+            registry.set_http_pool(http.clone());
+        }
+
+        // Register MQTT brokers for display (they're in composite but not in a pool)
+        for broker in &config.mqtt {
+            let id = TargetId::mqtt(&broker.url);
+            registry.register_stable(id, broker.label.clone(), DeliveryTier::Quorum);
+        }
+
+        // Register direct peers for display
+        for (id, label) in direct_peer_ids {
+            registry.register_stable(id, label, DeliveryTier::Direct);
+        }
 
         // Ensure we have at least one transport
         if transport.is_empty() {
@@ -593,8 +570,7 @@ impl<'a> App<'a> {
             show_add_upstream_popup: false,
             add_upstream_popup: AddUpstreamPopup::default(),
             show_upstreams_popup: false,
-            upstreams,
-            composite_transport: transport,
+            registry,
             outbox_tick_interval,
         };
 
@@ -1207,16 +1183,27 @@ impl<'a> App<'a> {
                 self.add_upstream_popup.toggle_field();
             }
             KeyCode::Left | KeyCode::Right => {
-                // Toggle transport type when focused on Type field
-                if self.add_upstream_popup.focused_field == AddUpstreamField::Type {
-                    self.add_upstream_popup.transport_type.toggle();
-                    self.add_upstream_popup.error = None;
-                    // Update placeholder based on type
-                    let placeholder = match self.add_upstream_popup.transport_type {
-                        UpstreamType::Http => "http://192.168.1.50:23003",
-                        UpstreamType::Mqtt => "mqtt://192.168.1.50:1883",
-                    };
-                    self.add_upstream_popup.url_input.set_placeholder_text(placeholder);
+                match self.add_upstream_popup.focused_field {
+                    AddUpstreamField::Type => {
+                        // Toggle transport type
+                        self.add_upstream_popup.transport_type.toggle();
+                        self.add_upstream_popup.error = None;
+                        // Update placeholder based on type
+                        let placeholder = match self.add_upstream_popup.transport_type {
+                            UpstreamType::Http => "http://192.168.1.50:23003",
+                            UpstreamType::Mqtt => "mqtt://192.168.1.50:1883",
+                        };
+                        self.add_upstream_popup.url_input.set_placeholder_text(placeholder);
+                    }
+                    AddUpstreamField::Tier => {
+                        // Toggle delivery tier
+                        self.add_upstream_popup.toggle_tier();
+                        self.add_upstream_popup.error = None;
+                    }
+                    AddUpstreamField::Url => {
+                        // Pass to text input
+                        self.add_upstream_popup.url_input.input(Input::from(key));
+                    }
                 }
             }
             KeyCode::Enter => {
@@ -1262,17 +1249,15 @@ impl<'a> App<'a> {
     /// Add an upstream transport at runtime
     async fn add_upstream(&mut self, url: &str) -> Result<(), String> {
         let transport_type = self.add_upstream_popup.transport_type;
+        let tier = self.add_upstream_popup.tier;
 
         match transport_type {
             UpstreamType::Http => {
-                // Create HTTP target with ephemeral kind
-                let config = HttpTargetConfig::new(url, TargetKind::Ephemeral)
-                    .with_label(url);
-                let target = HttpTarget::new(config)
+                // Use registry to add HTTP target (handles both composite and metadata)
+                self.registry
+                    .add_http_target(url, None, tier)
+                    .await
                     .map_err(|e| format!("Failed to create HTTP transport: {}", e))?;
-
-                // Add to composite transport
-                self.composite_transport.add_transport(target).await;
                 info!(url = %url, "Added ephemeral HTTP upstream");
             }
             UpstreamType::Mqtt => {
@@ -1285,22 +1270,16 @@ impl<'a> App<'a> {
                     .await
                     .map_err(|e| format!("Failed to connect to MQTT broker: {}", e))?;
 
-                // Add to composite transport
-                self.composite_transport.add_transport(transport).await;
+                // Add to composite transport via registry
+                self.registry.composite().add_transport(transport).await;
+
+                // Register in metadata for display
+                let id = TargetId::mqtt(url);
+                self.registry.register_ephemeral(id, None, tier);
+
                 info!(url = %url, "Added ephemeral MQTT upstream");
             }
         }
-
-        // Track in upstreams list for display
-        // Runtime-added upstreams default to Direct (typically LAN peers)
-        // User can add Quorum infrastructure via config file
-        self.upstreams.push(UpstreamInfo {
-            transport_type,
-            url: url.to_string(),
-            tier: UpstreamTier::Direct,
-            ephemeral: true,
-            label: None,
-        });
 
         Ok(())
     }

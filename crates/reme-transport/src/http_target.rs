@@ -14,7 +14,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
-use crate::target::{HealthState, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget};
+use crate::target::{HealthData, HealthState, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget};
 use crate::tls::{CertPin, PinningVerifier};
 use crate::url_auth::parse_url_with_auth;
 use crate::TransportError;
@@ -313,6 +313,10 @@ impl TransportTarget for HttpTarget {
 
     fn is_available(&self) -> bool {
         self.health.is_available()
+    }
+
+    fn health_data(&self) -> HealthData {
+        self.health.to_health_data()
     }
 
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {

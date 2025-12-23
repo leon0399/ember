@@ -13,7 +13,8 @@ use ratatui::{
     Frame,
 };
 
-use super::app::{AddContactField, AddUpstreamField, App, Focus, UpstreamTier, UpstreamType};
+use super::app::{AddContactField, AddUpstreamField, App, Focus, UpstreamType};
+use reme_transport::DeliveryTier;
 
 /// Render the entire UI
 pub fn render(frame: &mut Frame, app: &App) {
@@ -384,8 +385,8 @@ fn render_my_id_popup(frame: &mut Frame, app: &App) {
 
 /// Render the add upstream popup
 fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
-    // Fixed height: border(2) + margin(2) + instructions(1) + type(3) + url(3) + error(1) + hints(1) = 13
-    let area = popup_area_fixed(frame.area(), 60, 13);
+    // Fixed height: border(2) + margin(2) + instructions(1) + type(3) + tier(3) + url(3) + error(1) + hints(1) = 16
+    let area = popup_area_fixed(frame.area(), 60, 16);
 
     // Clear the background
     frame.render_widget(Clear, area);
@@ -399,13 +400,14 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
     let inner = popup_block.inner(area);
     frame.render_widget(popup_block, area);
 
-    // Layout inside popup: instructions, type selector, URL field, error, buttons
+    // Layout inside popup: instructions, type selector, tier selector, URL field, error, buttons
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
             Constraint::Length(1), // Instructions
             Constraint::Length(3), // Type selector
+            Constraint::Length(3), // Tier selector
             Constraint::Length(3), // URL input
             Constraint::Length(1), // Error message area
             Constraint::Length(1), // Button hints
@@ -458,6 +460,54 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
     let type_selector = Paragraph::new(type_line).alignment(Alignment::Center);
     frame.render_widget(type_selector, type_inner);
 
+    // Tier selector
+    let tier_focused = app.add_upstream_popup.focused_field == AddUpstreamField::Tier;
+    let tier_border_style = if tier_focused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let direct_style = if app.add_upstream_popup.tier == DeliveryTier::Direct {
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let quorum_style = if app.add_upstream_popup.tier == DeliveryTier::Quorum {
+        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let besteffort_style = if app.add_upstream_popup.tier == DeliveryTier::BestEffort {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let tier_line = Line::from(vec![
+        Span::styled("[", Style::default().fg(Color::DarkGray)),
+        Span::styled(" Direct ", direct_style),
+        Span::styled("]", Style::default().fg(Color::DarkGray)),
+        Span::raw(" "),
+        Span::styled("[", Style::default().fg(Color::DarkGray)),
+        Span::styled(" Quorum ", quorum_style),
+        Span::styled("]", Style::default().fg(Color::DarkGray)),
+        Span::raw(" "),
+        Span::styled("[", Style::default().fg(Color::DarkGray)),
+        Span::styled(" Best-Effort ", besteffort_style),
+        Span::styled("]", Style::default().fg(Color::DarkGray)),
+    ]);
+
+    let tier_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(tier_border_style)
+        .title(" Tier (←/→ to switch) ");
+    let tier_inner = tier_block.inner(chunks[2]);
+    frame.render_widget(tier_block, chunks[2]);
+
+    let tier_selector = Paragraph::new(tier_line).alignment(Alignment::Center);
+    frame.render_widget(tier_selector, tier_inner);
+
     // URL field
     let url_focused = app.add_upstream_popup.focused_field == AddUpstreamField::Url;
     let url_border_style = if url_focused {
@@ -469,8 +519,8 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(url_border_style)
         .title(" URL ");
-    let url_inner = url_block.inner(chunks[2]);
-    frame.render_widget(url_block, chunks[2]);
+    let url_inner = url_block.inner(chunks[3]);
+    frame.render_widget(url_block, chunks[3]);
     frame.render_widget(&app.add_upstream_popup.url_input, url_inner);
 
     // Error message
@@ -478,23 +528,28 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
         let error_text = Paragraph::new(error.as_str())
             .style(Style::default().fg(Color::Red))
             .wrap(Wrap { trim: true });
-        frame.render_widget(error_text, chunks[3]);
+        frame.render_widget(error_text, chunks[4]);
     }
 
     // Button hints
-    let hints = Paragraph::new("Tab: switch | ←/→: type | Enter: add | Esc: cancel")
+    let hints = Paragraph::new("Tab: switch | ←/→: select | Enter: add | Esc: cancel")
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
-    frame.render_widget(hints, chunks[4]);
+    frame.render_widget(hints, chunks[5]);
 }
 
 /// Render the view upstreams popup
 fn render_upstreams_popup(frame: &mut Frame, app: &App) {
+    use reme_transport::HealthState;
+
+    // Query the registry for current targets
+    let targets = app.registry.list_all_targets();
+
     // Calculate height based on number of upstreams (clamp to 1-12 rows)
-    let list_height = (app.upstreams.len() as u16).clamp(1, 12);
-    // Total: border(2) + margin(2) + list + legend(1) + hints(1) + padding(1) = 7 + list_height
-    let total_height = 7 + list_height;
-    let area = popup_area_fixed(frame.area(), 70, total_height);
+    let list_height = (targets.len() as u16).clamp(1, 12);
+    // Total: border(2) + margin(2) + list + legend(2) + hints(1) + padding(1) = 8 + list_height
+    let total_height = 8 + list_height;
+    let area = popup_area_fixed(frame.area(), 80, total_height);
 
     // Clear the background
     frame.render_widget(Clear, area);
@@ -514,52 +569,85 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
         .margin(1)
         .constraints([
             Constraint::Min(1),    // Upstream list
-            Constraint::Length(1), // Legend
+            Constraint::Length(2), // Legend (2 lines for health + tier)
             Constraint::Length(1), // Hints
         ])
         .split(inner);
 
     // Build upstream list
-    if app.upstreams.is_empty() {
+    if targets.is_empty() {
         let empty_text = Paragraph::new("No upstreams configured")
             .style(Style::default().fg(Color::DarkGray))
             .alignment(Alignment::Center);
         frame.render_widget(empty_text, chunks[0]);
     } else {
-        let items: Vec<ListItem> = app
-            .upstreams
+        let items: Vec<ListItem> = targets
             .iter()
-            .map(|upstream| {
-                let type_str = match upstream.transport_type {
-                    UpstreamType::Http => "HTTP",
-                    UpstreamType::Mqtt => "MQTT",
+            .map(|enriched| {
+                // Derive transport type from target ID prefix
+                let transport_type = enriched.snapshot.transport_type();
+                let type_str = transport_type.to_uppercase();
+
+                // Health status indicator
+                let (health_icon, health_style) = match enriched.snapshot.health {
+                    HealthState::Healthy => ("●", Style::default().fg(Color::Green)),
+                    HealthState::Degraded => ("◐", Style::default().fg(Color::Yellow)),
+                    HealthState::Unhealthy => ("○", Style::default().fg(Color::Red)),
                 };
-                let tier_str = match upstream.tier {
-                    UpstreamTier::Quorum => "quorum",
-                    UpstreamTier::Direct => "direct",
+
+                let tier_str = match enriched.tier {
+                    DeliveryTier::Quorum => "Q",
+                    DeliveryTier::Direct => "D",
+                    DeliveryTier::BestEffort => "B",
                 };
-                let type_style = match upstream.transport_type {
-                    UpstreamType::Http => Style::default().fg(Color::Blue),
-                    UpstreamType::Mqtt => Style::default().fg(Color::Magenta),
+                let type_style = match transport_type {
+                    "http" => Style::default().fg(Color::Blue),
+                    "mqtt" => Style::default().fg(Color::Magenta),
+                    "embedded" => Style::default().fg(Color::Yellow),
+                    _ => Style::default().fg(Color::White),
                 };
-                let tier_style = match upstream.tier {
-                    UpstreamTier::Quorum => Style::default().fg(Color::Green),
-                    UpstreamTier::Direct => Style::default().fg(Color::Cyan),
+                let tier_style = match enriched.tier {
+                    DeliveryTier::Quorum => Style::default().fg(Color::Green),
+                    DeliveryTier::Direct => Style::default().fg(Color::Cyan),
+                    DeliveryTier::BestEffort => Style::default().fg(Color::Yellow),
                 };
                 // Add asterisk for ephemeral (runtime-added) upstreams
-                let ephemeral_marker = if upstream.ephemeral { "*" } else { "" };
+                let ephemeral_marker = if enriched.ephemeral { "*" } else { "" };
 
-                let label_part = if let Some(ref label) = upstream.label {
-                    format!(" ({})", label)
+                // Use display_label which prefers custom_label over snapshot label
+                let display_label = enriched.display_label();
+                let address = enriched.snapshot.address();
+
+                // Show label if different from address
+                let label_part = if display_label != address {
+                    format!(" ({})", display_label)
+                } else {
+                    String::new()
+                };
+
+                // Latency info (if available)
+                let latency_str = if enriched.snapshot.avg_latency_ms > 0 {
+                    format!(" {}ms", enriched.snapshot.avg_latency_ms)
+                } else {
+                    String::new()
+                };
+
+                // Failure count (if any)
+                let failure_str = if enriched.snapshot.consecutive_failures > 0 {
+                    format!(" {}x", enriched.snapshot.consecutive_failures)
                 } else {
                     String::new()
                 };
 
                 let line = Line::from(vec![
+                    Span::styled(health_icon, health_style),
+                    Span::raw(" "),
                     Span::styled(format!("[{}]", type_str), type_style),
                     Span::raw(" "),
-                    Span::styled(&upstream.url, Style::default().fg(Color::White)),
+                    Span::styled(address, Style::default().fg(Color::White)),
                     Span::styled(label_part, Style::default().fg(Color::DarkGray)),
+                    Span::styled(latency_str, Style::default().fg(Color::DarkGray)),
+                    Span::styled(failure_str, Style::default().fg(Color::Red)),
                     Span::raw(" "),
                     Span::styled(format!("[{}{}]", tier_str, ephemeral_marker), tier_style),
                 ]);
@@ -572,16 +660,28 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
         frame.render_widget(list, chunks[0]);
     }
 
-    // Legend: tier explanations with colors
-    let legend = Line::from(vec![
-        Span::styled("quorum", Style::default().fg(Color::Green)),
-        Span::raw("=mailbox  "),
-        Span::styled("direct", Style::default().fg(Color::Cyan)),
-        Span::raw("=peer  "),
-        Span::raw("*"),
-        Span::raw("=runtime"),
-    ]);
-    let legend_para = Paragraph::new(legend).alignment(Alignment::Center);
+    // Legend: health + tier explanations (2 lines)
+    let legend_lines = vec![
+        Line::from(vec![
+            Span::styled("●", Style::default().fg(Color::Green)),
+            Span::raw("=healthy "),
+            Span::styled("◐", Style::default().fg(Color::Yellow)),
+            Span::raw("=degraded "),
+            Span::styled("○", Style::default().fg(Color::Red)),
+            Span::raw("=unhealthy  "),
+            Span::raw("*"),
+            Span::raw("=runtime"),
+        ]),
+        Line::from(vec![
+            Span::styled("D", Style::default().fg(Color::Cyan)),
+            Span::raw("=direct "),
+            Span::styled("Q", Style::default().fg(Color::Green)),
+            Span::raw("=quorum "),
+            Span::styled("B", Style::default().fg(Color::Yellow)),
+            Span::raw("=best-effort"),
+        ]),
+    ];
+    let legend_para = Paragraph::new(legend_lines).alignment(Alignment::Center);
     frame.render_widget(legend_para, chunks[1]);
 
     // Hints

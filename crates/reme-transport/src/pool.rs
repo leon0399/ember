@@ -11,6 +11,7 @@ use futures::future::join_all;
 use reme_message::{OuterEnvelope, TombstoneEnvelope};
 use tracing::{debug, warn};
 
+use crate::query::{HealthSummary, TargetSnapshot, TransportQuery};
 use crate::seen_cache::SharedSeenCache;
 use crate::target::{HealthState, TargetId, TargetKind, TransportTarget};
 use crate::{Transport, TransportError};
@@ -554,6 +555,32 @@ impl<T: TransportTarget> TransportPool<T> {
         }
 
         summary
+    }
+}
+
+/// Implement `TransportQuery` for UI and monitoring access.
+impl<T: TransportTarget + 'static> TransportQuery for TransportPool<T> {
+    fn list_targets(&self) -> Vec<TargetSnapshot> {
+        self.targets
+            .read()
+            .unwrap()
+            .iter()
+            .map(|t| TargetSnapshot::from_target(t.as_ref()))
+            .collect()
+    }
+
+    fn health_summary(&self) -> HealthSummary {
+        let pool_summary = TransportPool::health_summary(self);
+        HealthSummary {
+            total: pool_summary.total,
+            healthy: pool_summary.healthy,
+            degraded: pool_summary.degraded,
+            unhealthy: pool_summary.unhealthy,
+        }
+    }
+
+    fn has_available(&self) -> bool {
+        TransportPool::has_available(self)
     }
 }
 
