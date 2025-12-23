@@ -537,7 +537,7 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
                 let tier_str = match upstream.tier {
                     UpstreamTier::Quorum => "quorum",
                     UpstreamTier::Direct => "direct",
-                    UpstreamTier::Ephemeral => "session",
+                    UpstreamTier::Ephemeral => "ephemeral",
                 };
                 let type_style = match upstream.transport_type {
                     UpstreamType::Http => Style::default().fg(Color::Blue),
@@ -578,8 +578,8 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
         Span::raw("=mailbox  "),
         Span::styled("direct", Style::default().fg(Color::Cyan)),
         Span::raw("=LAN peer  "),
-        Span::styled("session", Style::default().fg(Color::Yellow)),
-        Span::raw("=temporary"),
+        Span::styled("ephemeral", Style::default().fg(Color::Yellow)),
+        Span::raw("=runtime"),
     ]);
     let legend_para = Paragraph::new(legend).alignment(Alignment::Center);
     frame.render_widget(legend_para, chunks[1]);
