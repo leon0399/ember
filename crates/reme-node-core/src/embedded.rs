@@ -362,7 +362,7 @@ mod tests {
         node_task.await.unwrap();
 
         // Channel should be closed after node stops
-        // Note: is_running checks if requests channel is closed
+        assert!(!handle.is_running(), "Node should not be running after shutdown");
     }
 
     #[tokio::test]
