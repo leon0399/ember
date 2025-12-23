@@ -59,17 +59,15 @@ const DEFAULT_CHANNEL_SIZE: usize = 256;
 
 /// Embedded mailbox node that runs within the client process.
 ///
-/// Processes requests from the client and emits events for incoming
-/// messages (e.g., from HTTP server receiving LAN peer messages).
+/// Processes requests from the client via channels. External message
+/// notifications (e.g., from HTTP server receiving LAN peer messages)
+/// are handled by [`EmbeddedNodeHandle::notify_message_received`].
 pub struct EmbeddedNode<S: MailboxStore> {
     /// The mailbox storage backend.
     store: Arc<S>,
 
     /// Channel for receiving requests from client/handle.
     requests: mpsc::Receiver<NodeRequest>,
-
-    /// Channel for emitting events to the client.
-    events: mpsc::Sender<NodeEvent>,
 }
 
 impl<S: MailboxStore + 'static> EmbeddedNode<S> {
@@ -90,7 +88,6 @@ impl<S: MailboxStore + 'static> EmbeddedNode<S> {
         let node = Self {
             store: Arc::clone(&store),
             requests: request_rx,
-            events: event_tx.clone(),
         };
 
         let handle = EmbeddedNodeHandle {
@@ -172,34 +169,6 @@ impl<S: MailboxStore + 'static> EmbeddedNode<S> {
         debug!(count = messages.len(), "Fetched messages");
         Ok(messages)
     }
-
-    /// Notify the client that a message was received from an external source.
-    ///
-    /// This is called by the HTTP server when a LAN peer sends a message.
-    /// The message is:
-    /// 1. Stored in the mailbox
-    /// 2. Pushed to the client via the event channel
-    ///
-    /// This allows the client to immediately process incoming messages
-    /// without polling.
-    pub fn notify_message_received(&self, envelope: OuterEnvelope) -> Result<(), NodeError> {
-        let routing_key = envelope.routing_key;
-        let message_id = envelope.message_id;
-
-        // Store the message
-        trace!(?message_id, "Storing message from external source");
-        self.store.enqueue(routing_key, envelope.clone())?;
-
-        // Push event to client
-        if let Err(e) = self.events.try_send(NodeEvent::MessageReceived(envelope)) {
-            warn!(?message_id, error = %e, "Failed to send message event to client");
-            // Don't fail - message is stored, client can fetch later
-        } else {
-            debug!(?message_id, "Message event sent to client");
-        }
-
-        Ok(())
-    }
 }
 
 /// Handle for interacting with an embedded node.
@@ -228,9 +197,9 @@ impl EmbeddedNodeHandle {
                 response: tx,
             })
             .await
-            .map_err(|_| NodeError::LockPoisoned)?;
+            .map_err(|_| NodeError::ChannelClosed)?;
 
-        rx.await.map_err(|_| NodeError::LockPoisoned)?
+        rx.await.map_err(|_| NodeError::ChannelClosed)?
     }
 
     /// Submit a tombstone to the embedded node.
@@ -242,9 +211,9 @@ impl EmbeddedNodeHandle {
                 response: tx,
             })
             .await
-            .map_err(|_| NodeError::LockPoisoned)?;
+            .map_err(|_| NodeError::ChannelClosed)?;
 
-        rx.await.map_err(|_| NodeError::LockPoisoned)?
+        rx.await.map_err(|_| NodeError::ChannelClosed)?
     }
 
     /// Fetch messages for a routing key from the embedded node.
@@ -256,9 +225,9 @@ impl EmbeddedNodeHandle {
                 response: tx,
             })
             .await
-            .map_err(|_| NodeError::LockPoisoned)?;
+            .map_err(|_| NodeError::ChannelClosed)?;
 
-        rx.await.map_err(|_| NodeError::LockPoisoned)?
+        rx.await.map_err(|_| NodeError::ChannelClosed)?
     }
 
     /// Request graceful shutdown of the embedded node.
@@ -266,7 +235,7 @@ impl EmbeddedNodeHandle {
         self.requests
             .send(NodeRequest::Shutdown)
             .await
-            .map_err(|_| NodeError::LockPoisoned)
+            .map_err(|_| NodeError::ChannelClosed)
     }
 
     /// Notify the client that a message was received from an external source.

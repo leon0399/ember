@@ -33,6 +33,10 @@ pub enum NodeError {
     /// Invalid configuration
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
+
+    /// Channel closed (embedded node communication failure)
+    #[error("Channel closed")]
+    ChannelClosed,
 }
 
 /// Result type for node operations
