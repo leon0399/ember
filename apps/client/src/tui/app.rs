@@ -192,6 +192,8 @@ pub struct App<'a> {
     http_pool: Arc<TransportPool<HttpTarget>>,
     /// Embedded node handle (for shutdown)
     embedded_node_handle: Option<EmbeddedNodeHandle>,
+    /// Embedded node task join handle (for awaiting shutdown)
+    embedded_node_task: Option<tokio::task::JoinHandle<()>>,
     /// Embedded node event receiver (for incoming LAN messages)
     node_event_rx: Option<mpsc::Receiver<NodeEvent>>,
     /// Contacts by name (for reverse lookup)
@@ -283,7 +285,7 @@ impl<'a> App<'a> {
         };
 
         // Create embedded node if enabled
-        let (embedded_node_handle, node_event_rx) = if config.embedded_node.enabled {
+        let (embedded_node_handle, embedded_node_task, node_event_rx) = if config.embedded_node.enabled {
             info!("Starting embedded node...");
 
             // Create persistent store config from app config
@@ -300,14 +302,14 @@ impl<'a> App<'a> {
             let mailbox_store = PersistentMailboxStore::open(mailbox_db_str, store_config)
                 .map_err(|e| format!("Failed to open mailbox store: {}", e))?;
 
-            // Create and spawn embedded node
+            // Create and spawn embedded node, keeping JoinHandle for graceful shutdown
             let (node, handle, event_rx) = EmbeddedNode::new(mailbox_store);
-            tokio::spawn(async move { node.run().await });
+            let join_handle = tokio::spawn(async move { node.run().await });
 
             info!("Embedded node started");
-            (Some(handle), Some(event_rx))
+            (Some(handle), Some(join_handle), Some(event_rx))
         } else {
-            (None, None)
+            (None, None, None)
         };
 
         // Build composite transport for sending
@@ -404,6 +406,7 @@ impl<'a> App<'a> {
             client,
             http_pool: http_pool_arc,
             embedded_node_handle,
+            embedded_node_task,
             node_event_rx,
             contacts_by_id: HashMap::new(),
             message_cache: HashMap::new(),
@@ -540,11 +543,22 @@ impl<'a> App<'a> {
     }
 
     /// Shutdown the embedded node gracefully.
-    async fn shutdown_embedded_node(&self) {
+    ///
+    /// First signals the node to shutdown via the handle, then awaits
+    /// the background task to ensure it has fully completed.
+    async fn shutdown_embedded_node(&mut self) {
         if let Some(ref handle) = self.embedded_node_handle {
             debug!("Shutting down embedded node...");
             if let Err(e) = handle.shutdown().await {
-                warn!(error = %e, "Failed to shutdown embedded node gracefully");
+                warn!(error = %e, "Failed to signal embedded node shutdown");
+            }
+        }
+
+        // Await the background task to ensure it has fully completed
+        if let Some(join_handle) = self.embedded_node_task.take() {
+            debug!("Waiting for embedded node task to complete...");
+            if let Err(e) = join_handle.await {
+                warn!(error = %e, "Embedded node task panicked during shutdown");
             } else {
                 info!("Embedded node shutdown complete");
             }
