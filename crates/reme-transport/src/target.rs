@@ -452,6 +452,12 @@ mod tests {
     }
 
     #[test]
+    fn test_target_id_embedded() {
+        let id = TargetId::embedded();
+        assert_eq!(id.as_str(), "embedded:local");
+    }
+
+    #[test]
     fn test_target_kind_defaults() {
         assert_eq!(TargetKind::Stable.default_priority(), 100);
         assert_eq!(TargetKind::Ephemeral.default_priority(), 200);

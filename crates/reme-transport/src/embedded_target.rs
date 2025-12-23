@@ -108,7 +108,7 @@ fn convert_error(error: NodeError) -> TransportError {
     match error {
         NodeError::ChannelClosed => TransportError::ChannelClosed,
         NodeError::Serialization(msg) => TransportError::Serialization(msg),
-        NodeError::Deserialization(msg) => TransportError::Serialization(msg),
+        NodeError::Deserialization(msg) => TransportError::Serialization(format!("deserialization: {}", msg)),
         NodeError::Database(e) => TransportError::ServerError(format!("database error: {}", e)),
         NodeError::LockPoisoned => TransportError::ServerError("lock poisoned".to_string()),
         NodeError::MailboxFull => TransportError::ServerError("mailbox full".to_string()),
@@ -284,5 +284,33 @@ mod tests {
         // Cleanup
         handle.shutdown().await.unwrap();
         node_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_embedded_target_failure_handling() {
+        let store_config = PersistentStoreConfig::default();
+        let store = PersistentMailboxStore::in_memory(store_config).unwrap();
+
+        let (node, handle, _event_rx) = EmbeddedNode::new(store);
+        let node_task = tokio::spawn(async move { node.run().await });
+
+        let target = EmbeddedTarget::new(handle.clone());
+
+        // Shutdown node before submitting
+        handle.shutdown().await.unwrap();
+        node_task.await.unwrap();
+
+        // Target should report as unavailable
+        assert!(!target.is_node_running());
+        assert!(!target.is_available());
+        assert_eq!(target.health(), HealthState::Unhealthy);
+
+        // Attempting to submit should fail with ChannelClosed
+        let routing_key = RoutingKey::from_bytes([1u8; 16]);
+        let envelope = create_test_envelope(routing_key);
+        let result = target.submit_message(envelope).await;
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), TransportError::ChannelClosed));
     }
 }
