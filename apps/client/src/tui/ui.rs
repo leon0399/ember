@@ -492,8 +492,8 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
 fn render_upstreams_popup(frame: &mut Frame, app: &App) {
     // Calculate height based on number of upstreams (min 5, max 15 rows for list)
     let list_height = (app.upstreams.len() as u16).clamp(1, 12);
-    // Total: border(2) + margin(2) + title_row(1) + list + hints(1) = 6 + list_height
-    let total_height = 6 + list_height;
+    // Total: border(2) + margin(2) + list + legend(1) + hints(1) = 7 + list_height
+    let total_height = 7 + list_height;
     let area = popup_area_fixed(frame.area(), 70, total_height);
 
     // Clear the background
@@ -514,6 +514,7 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
         .margin(1)
         .constraints([
             Constraint::Min(1),    // Upstream list
+            Constraint::Length(1), // Legend
             Constraint::Length(1), // Hints
         ])
         .split(inner);
@@ -571,9 +572,21 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
         frame.render_widget(list, chunks[0]);
     }
 
+    // Legend: tier explanations with colors
+    let legend = Line::from(vec![
+        Span::styled("quorum", Style::default().fg(Color::Green)),
+        Span::raw("=mailbox  "),
+        Span::styled("direct", Style::default().fg(Color::Cyan)),
+        Span::raw("=LAN peer  "),
+        Span::styled("session", Style::default().fg(Color::Yellow)),
+        Span::raw("=temporary"),
+    ]);
+    let legend_para = Paragraph::new(legend).alignment(Alignment::Center);
+    frame.render_widget(legend_para, chunks[1]);
+
     // Hints
     let hints = Paragraph::new("Esc to close")
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
-    frame.render_widget(hints, chunks[1]);
+    frame.render_widget(hints, chunks[2]);
 }
