@@ -2498,9 +2498,11 @@ name = "reme-node-core"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "reme-identity",
  "reme-message",
  "rusqlite",
  "thiserror 2.0.17",
+ "tokio",
  "tracing",
 ]
 

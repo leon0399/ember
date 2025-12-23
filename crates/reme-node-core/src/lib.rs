@@ -9,8 +9,10 @@
 //! The crate is organized into:
 //! - [`error`]: Error types for node operations
 //! - [`mailbox_store`]: Storage trait and SQLite implementation
+//! - [`request`]: Request and event types for embedded node communication
+//! - [`embedded`]: Embedded node for in-process mailbox functionality
 //!
-//! # Example
+//! # Standalone Node Example
 //!
 //! ```ignore
 //! use reme_node_core::{MailboxStore, PersistentMailboxStore, PersistentStoreConfig};
@@ -25,9 +27,30 @@
 //! // Fetch messages for a routing key
 //! let messages = store.fetch(&routing_key)?;
 //! ```
+//!
+//! # Embedded Node Example
+//!
+//! ```ignore
+//! use reme_node_core::{EmbeddedNode, PersistentMailboxStore, PersistentStoreConfig};
+//!
+//! // Create mailbox store
+//! let config = PersistentStoreConfig::default();
+//! let store = PersistentMailboxStore::in_memory(config)?;
+//!
+//! // Create and run embedded node
+//! let (node, handle) = EmbeddedNode::new(store);
+//! tokio::spawn(async move { node.run().await });
+//!
+//! // Use handle to interact with node
+//! handle.submit_message(envelope).await?;
+//! ```
 
+pub mod embedded;
 pub mod error;
 pub mod mailbox_store;
+pub mod request;
 
+pub use embedded::*;
 pub use error::*;
 pub use mailbox_store::*;
+pub use request::*;

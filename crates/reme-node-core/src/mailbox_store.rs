@@ -93,6 +93,11 @@ pub trait MailboxStore: Send + Sync {
     /// Check if a message with the given ID exists for the routing key
     fn has_message(&self, routing_key: &RoutingKey, message_id: &MessageID) -> Result<bool, NodeError>;
 
+    /// Delete a message by ID (for tombstone support)
+    ///
+    /// Returns `Ok(true)` if a message was deleted, `Ok(false)` if not found.
+    fn delete_message(&self, message_id: &MessageID) -> Result<bool, NodeError>;
+
     /// Remove expired messages
     fn cleanup_expired(&self) -> Result<usize, NodeError>;
 }
@@ -480,6 +485,23 @@ impl MailboxStore for PersistentMailboxStore {
             .unwrap_or(false);
 
         Ok(exists)
+    }
+
+    fn delete_message(&self, message_id: &MessageID) -> Result<bool, NodeError> {
+        let message_id_bytes = message_id.as_bytes();
+
+        let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
+
+        let deleted = conn.execute(
+            "DELETE FROM mailbox_messages WHERE message_id = ?",
+            params![&message_id_bytes[..]],
+        )?;
+
+        if deleted > 0 {
+            debug!(?message_id, "message deleted via trait method");
+        }
+
+        Ok(deleted > 0)
     }
 
     fn cleanup_expired(&self) -> Result<usize, NodeError> {
