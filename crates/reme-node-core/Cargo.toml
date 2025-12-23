@@ -12,6 +12,14 @@ reme-message = { workspace = true }
 rusqlite = { workspace = true }
 bincode = { workspace = true }
 
+# Async (for embedded node channels)
+tokio = { workspace = true, features = ["sync"] }
+
 # Error handling & logging
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+# Required for async tests
+tokio = { workspace = true, features = ["sync", "rt", "macros"] }
+reme-identity = { workspace = true }

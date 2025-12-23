@@ -1,12 +1,17 @@
 use reme_identity::{InvalidPublicKey, PublicID};
 use reme_message::{Content, ContentId, MessageID};
+use reme_node_core::{NodeError, PersistentMailboxStore, PersistentStoreConfig};
 use reme_outbox::{
     AttemptError, AttemptResult, DeliveryConfidence, DeliveryConfirmation, OutboxEntryId,
     OutboxStore, PendingMessage, TargetId, TieredDeliveryPhase, TransportAttempt,
 };
 use rusqlite::{params, Connection, OptionalExtension};
+use std::path::PathBuf;
 use thiserror::Error;
 use tracing::{debug, trace};
+
+// Re-export mailbox types for embedded node functionality
+pub use reme_node_core::{MailboxStore, PersistentStoreStats};
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -24,11 +29,19 @@ pub enum StorageError {
 
     #[error("Already exists")]
     AlreadyExists,
+
+    #[error("Node error: {0}")]
+    Node(#[from] NodeError),
 }
 
 /// Simple SQLite storage for desktop v0.1
+///
+/// Supports unified storage for both client data (contacts, messages, outbox)
+/// and embedded node mailbox data.
 pub struct Storage {
     conn: Connection,
+    /// Path to the database file (None for in-memory)
+    path: Option<PathBuf>,
 }
 
 impl Storage {
@@ -36,7 +49,10 @@ impl Storage {
     pub fn open(path: &str) -> Result<Self, StorageError> {
         debug!(path = %path, "opening storage database");
         let conn = Connection::open(path)?;
-        let storage = Self { conn };
+        let storage = Self {
+            conn,
+            path: Some(PathBuf::from(path)),
+        };
         storage.init_schema()?;
         debug!("storage database initialized");
         Ok(storage)
@@ -46,9 +62,14 @@ impl Storage {
     pub fn in_memory() -> Result<Self, StorageError> {
         trace!("creating in-memory storage database");
         let conn = Connection::open_in_memory()?;
-        let storage = Self { conn };
+        let storage = Self { conn, path: None };
         storage.init_schema()?;
         Ok(storage)
+    }
+
+    /// Get the database path (None for in-memory databases)
+    pub fn path(&self) -> Option<&PathBuf> {
+        self.path.as_ref()
     }
 
     /// Initialize database schema
@@ -144,6 +165,93 @@ impl Storage {
             "#,
         )?;
         Ok(())
+    }
+
+    // ============================================
+    // Mailbox schema (for embedded node)
+    // ============================================
+
+    /// Initialize mailbox schema for embedded node functionality.
+    ///
+    /// This creates the tables needed for the embedded mailbox node to store
+    /// incoming messages from LAN peers. Call this after opening the storage
+    /// if you want to use embedded node features.
+    ///
+    /// The mailbox tables are separate from client tables (contacts, messages, outbox)
+    /// but share the same database file for unified storage.
+    pub fn init_mailbox_schema(&self) -> Result<(), StorageError> {
+        debug!("initializing mailbox schema for embedded node");
+        self.conn.execute_batch(
+            r#"
+            -- Mailbox messages table for embedded node
+            -- Stores incoming messages from LAN peers until fetched
+            CREATE TABLE IF NOT EXISTS mailbox_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                routing_key BLOB NOT NULL,
+                message_id BLOB NOT NULL UNIQUE,
+                envelope_data BLOB NOT NULL,
+                expires_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_mailbox_routing_key
+                ON mailbox_messages(routing_key);
+
+            CREATE INDEX IF NOT EXISTS idx_mailbox_expires_at
+                ON mailbox_messages(expires_at);
+
+            CREATE INDEX IF NOT EXISTS idx_mailbox_message_id
+                ON mailbox_messages(message_id);
+
+            -- Mailbox schema version for future migrations
+            CREATE TABLE IF NOT EXISTS mailbox_schema_version (
+                version INTEGER PRIMARY KEY
+            );
+
+            INSERT OR IGNORE INTO mailbox_schema_version (version) VALUES (1);
+            "#,
+        )?;
+        debug!("mailbox schema initialized");
+        Ok(())
+    }
+
+    /// Create a mailbox store for embedded node functionality.
+    ///
+    /// This creates a new `PersistentMailboxStore` that connects to the same
+    /// database file with its own connection. Both connections can safely
+    /// coexist using SQLite's WAL mode.
+    ///
+    /// # Note
+    /// For in-memory databases (testing mode), this creates a separate in-memory
+    /// mailbox store that does not share data with the main Storage connection.
+    ///
+    /// # Errors
+    /// Returns an error if opening the database connection fails.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let storage = Storage::open("client.db")?;
+    /// storage.init_mailbox_schema()?;
+    /// let mailbox_store = storage.mailbox_store(PersistentStoreConfig::default())?;
+    /// ```
+    pub fn mailbox_store(
+        &self,
+        config: PersistentStoreConfig,
+    ) -> Result<PersistentMailboxStore, StorageError> {
+        match &self.path {
+            Some(path) => {
+                debug!(path = %path.display(), "creating mailbox store for embedded node");
+                let store = PersistentMailboxStore::open(path, config)?;
+                Ok(store)
+            }
+            None => {
+                // For in-memory databases, create an in-memory mailbox store
+                // Note: This won't share data with the main connection
+                debug!("creating in-memory mailbox store (testing mode)");
+                let store = PersistentMailboxStore::in_memory(config)?;
+                Ok(store)
+            }
+        }
     }
 
     // ============================================
@@ -1406,5 +1514,93 @@ mod tests {
         storage.store_sent_message(contact_id, msg_id, &content).unwrap();
         storage.mark_delivered(msg_id).unwrap();
         storage.mark_read(msg_id).unwrap();
+    }
+
+    #[test]
+    fn test_unified_mailbox_storage() {
+        use reme_message::{OuterEnvelope, RoutingKey, CURRENT_VERSION};
+
+        // Create storage and initialize mailbox schema
+        let storage = Storage::in_memory().unwrap();
+        storage.init_mailbox_schema().unwrap();
+
+        // Verify path() returns None for in-memory
+        assert!(storage.path().is_none());
+
+        // Create mailbox store (in-memory mode for testing)
+        let config = PersistentStoreConfig::default();
+        let mailbox = storage.mailbox_store(config).unwrap();
+
+        // Create a test envelope
+        let routing_key = RoutingKey::from_bytes([42u8; 16]);
+        let envelope = OuterEnvelope {
+            version: CURRENT_VERSION,
+            routing_key,
+            timestamp_hours: 482253,
+            ttl_hours: Some(24),
+            message_id: MessageID::new(),
+            ephemeral_key: [0u8; 32],
+            inner_ciphertext: vec![1, 2, 3, 4],
+        };
+        let msg_id = envelope.message_id;
+
+        // Enqueue message
+        mailbox.enqueue(routing_key, envelope).unwrap();
+
+        // Verify message exists
+        assert!(mailbox.has_message(&routing_key, &msg_id).unwrap());
+
+        // Fetch and verify
+        let fetched = mailbox.fetch(&routing_key).unwrap();
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(fetched[0].message_id, msg_id);
+    }
+
+    #[test]
+    fn test_file_based_unified_storage() {
+        use reme_message::{OuterEnvelope, RoutingKey, CURRENT_VERSION};
+        use tempfile::tempdir;
+
+        // Create a temp directory for the test database
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("unified.db");
+        let db_path_str = db_path.to_str().unwrap();
+
+        // Create storage and initialize mailbox schema
+        let storage = Storage::open(db_path_str).unwrap();
+        storage.init_mailbox_schema().unwrap();
+
+        // Verify path() returns the correct path
+        assert_eq!(storage.path().unwrap().as_os_str(), db_path.as_os_str());
+
+        // Add a contact to the client storage
+        let contact = Identity::generate();
+        let contact_id = storage.add_contact(contact.public_id(), Some("Test")).unwrap();
+        assert!(contact_id > 0);
+
+        // Create mailbox store using the same database
+        let config = PersistentStoreConfig::default();
+        let mailbox = storage.mailbox_store(config).unwrap();
+
+        // Enqueue a message via the mailbox store
+        let routing_key = RoutingKey::from_bytes([99u8; 16]);
+        let envelope = OuterEnvelope {
+            version: CURRENT_VERSION,
+            routing_key,
+            timestamp_hours: 482253,
+            ttl_hours: Some(1),
+            message_id: MessageID::new(),
+            ephemeral_key: [0u8; 32],
+            inner_ciphertext: vec![5, 6, 7, 8],
+        };
+
+        mailbox.enqueue(routing_key, envelope.clone()).unwrap();
+
+        // Verify both client and mailbox data coexist
+        let contacts = storage.list_contacts().unwrap();
+        assert_eq!(contacts.len(), 1);
+
+        let fetched = mailbox.fetch(&routing_key).unwrap();
+        assert_eq!(fetched.len(), 1);
     }
 }
