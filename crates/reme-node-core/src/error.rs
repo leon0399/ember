@@ -25,10 +25,6 @@ pub enum NodeError {
     #[error("Mailbox full")]
     MailboxFull,
 
-    /// Message not found
-    #[error("Message not found")]
-    MessageNotFound,
-
     /// Invalid message format
     #[error("Invalid message: {0}")]
     InvalidMessage(String),
