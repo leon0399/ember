@@ -13,7 +13,7 @@ use ratatui::{
     Frame,
 };
 
-use super::app::{AddContactField, App, Focus};
+use super::app::{AddContactField, AddUpstreamField, App, Focus, UpstreamType};
 
 /// Render the entire UI
 pub fn render(frame: &mut Frame, app: &App) {
@@ -54,6 +54,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
     if app.show_my_id_popup {
         render_my_id_popup(frame, app);
+    }
+    if app.show_add_upstream_popup {
+        render_add_upstream_popup(frame, app);
     }
 }
 
@@ -373,4 +376,110 @@ fn render_my_id_popup(frame: &mut Frame, app: &App) {
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
     frame.render_widget(hints, chunks[3]);
+}
+
+/// Render the add upstream popup
+fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
+    // Calculate popup area (60% width, 45% height, centered)
+    let area = popup_area(frame.area(), 60, 45);
+
+    // Clear the background
+    frame.render_widget(Clear, area);
+
+    // Popup container block
+    let popup_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" Add Upstream ");
+
+    let inner = popup_block.inner(area);
+    frame.render_widget(popup_block, area);
+
+    // Layout inside popup: instructions, type selector, URL field, error, buttons
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(2), // Instructions
+            Constraint::Length(3), // Type selector
+            Constraint::Length(3), // URL input
+            Constraint::Length(2), // Error message area
+            Constraint::Length(1), // Button hints
+        ])
+        .split(inner);
+
+    // Instructions
+    let instructions =
+        Paragraph::new("Add an ephemeral HTTP or MQTT upstream for this session")
+            .style(Style::default().fg(Color::DarkGray))
+            .wrap(Wrap { trim: true });
+    frame.render_widget(instructions, chunks[0]);
+
+    // Type selector
+    let type_focused = app.add_upstream_popup.focused_field == AddUpstreamField::Type;
+    let type_border_style = if type_focused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let http_style = if app.add_upstream_popup.transport_type == UpstreamType::Http {
+        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let mqtt_style = if app.add_upstream_popup.transport_type == UpstreamType::Mqtt {
+        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let type_line = Line::from(vec![
+        Span::styled("[", Style::default().fg(Color::DarkGray)),
+        Span::styled(" HTTP ", http_style),
+        Span::styled("]", Style::default().fg(Color::DarkGray)),
+        Span::raw("  "),
+        Span::styled("[", Style::default().fg(Color::DarkGray)),
+        Span::styled(" MQTT ", mqtt_style),
+        Span::styled("]", Style::default().fg(Color::DarkGray)),
+    ]);
+
+    let type_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(type_border_style)
+        .title(" Type (←/→ to switch) ");
+    let type_inner = type_block.inner(chunks[1]);
+    frame.render_widget(type_block, chunks[1]);
+
+    let type_selector = Paragraph::new(type_line).alignment(Alignment::Center);
+    frame.render_widget(type_selector, type_inner);
+
+    // URL field
+    let url_focused = app.add_upstream_popup.focused_field == AddUpstreamField::Url;
+    let url_border_style = if url_focused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let url_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(url_border_style)
+        .title(" URL ");
+    let url_inner = url_block.inner(chunks[2]);
+    frame.render_widget(url_block, chunks[2]);
+    frame.render_widget(&app.add_upstream_popup.url_input, url_inner);
+
+    // Error message
+    if let Some(ref error) = app.add_upstream_popup.error {
+        let error_text = Paragraph::new(error.as_str())
+            .style(Style::default().fg(Color::Red))
+            .wrap(Wrap { trim: true });
+        frame.render_widget(error_text, chunks[3]);
+    }
+
+    // Button hints
+    let hints = Paragraph::new("Tab: switch | ←/→: type | Enter: add | Esc: cancel")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    frame.render_widget(hints, chunks[4]);
 }

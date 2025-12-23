@@ -34,7 +34,7 @@ pub type AppResult<T> = Result<T, Box<dyn std::error::Error>>;
 const PUBLIC_ID_HEX_LENGTH: usize = 64;
 
 /// Help text shown in status bar (Alt+H or initial startup)
-const HELP_TEXT: &str = "Alt+A: add | Alt+I: identity | Alt+H: help | Tab: switch | Ctrl+Q: quit";
+const HELP_TEXT: &str = "Alt+A: add | Alt+U: upstream | Alt+I: identity | Alt+H: help | Tab: switch | Ctrl+Q: quit";
 
 /// Short help hint for status bar
 const HELP_HINT: &str = "Alt+H for help";
@@ -59,6 +59,32 @@ pub enum AddContactField {
     #[default]
     PublicId,
     Name,
+}
+
+/// Transport type for ephemeral upstream
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UpstreamType {
+    #[default]
+    Http,
+    Mqtt,
+}
+
+impl UpstreamType {
+    /// Toggle between HTTP and MQTT
+    pub fn toggle(&mut self) {
+        *self = match self {
+            UpstreamType::Http => UpstreamType::Mqtt,
+            UpstreamType::Mqtt => UpstreamType::Http,
+        };
+    }
+}
+
+/// Which field is focused in the add upstream popup
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AddUpstreamField {
+    #[default]
+    Type,
+    Url,
 }
 
 /// State for the add contact popup
@@ -149,6 +175,92 @@ impl<'a> AddContactPopup<'a> {
     }
 }
 
+/// State for the add upstream popup
+pub struct AddUpstreamPopup<'a> {
+    /// Currently focused field
+    pub focused_field: AddUpstreamField,
+    /// Selected transport type
+    pub transport_type: UpstreamType,
+    /// URL input
+    pub url_input: TextArea<'a>,
+    /// Error message to display
+    pub error: Option<String>,
+}
+
+impl<'a> Default for AddUpstreamPopup<'a> {
+    fn default() -> Self {
+        let mut url_input = TextArea::default();
+        url_input.set_placeholder_text("http://192.168.1.50:23003");
+        url_input.set_cursor_line_style(Style::default());
+
+        Self {
+            focused_field: AddUpstreamField::Type,
+            transport_type: UpstreamType::Http,
+            url_input,
+            error: None,
+        }
+    }
+}
+
+impl<'a> AddUpstreamPopup<'a> {
+    /// Reset the popup to initial state
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Toggle focus between fields
+    pub fn toggle_field(&mut self) {
+        self.focused_field = match self.focused_field {
+            AddUpstreamField::Type => AddUpstreamField::Url,
+            AddUpstreamField::Url => AddUpstreamField::Type,
+        };
+    }
+
+    /// Get the URL input (trimmed)
+    pub fn get_url(&self) -> String {
+        self.url_input.lines().join("").trim().to_string()
+    }
+
+    /// Validate the URL input
+    pub fn validate_url(&self) -> Result<String, String> {
+        let url = self.get_url();
+
+        if url.is_empty() {
+            return Err("URL is required".to_string());
+        }
+
+        // Basic URL validation
+        match self.transport_type {
+            UpstreamType::Http => {
+                if !url.starts_with("http://") && !url.starts_with("https://") {
+                    return Err("HTTP URL must start with http:// or https://".to_string());
+                }
+                // Basic sanity check: must have host after scheme
+                let after_scheme = url.strip_prefix("http://")
+                    .or_else(|| url.strip_prefix("https://"))
+                    .unwrap_or("");
+                if after_scheme.is_empty() || after_scheme.starts_with('/') {
+                    return Err("Invalid HTTP URL: missing host".to_string());
+                }
+            }
+            UpstreamType::Mqtt => {
+                if !url.starts_with("mqtt://") && !url.starts_with("mqtts://") {
+                    return Err("MQTT URL must start with mqtt:// or mqtts://".to_string());
+                }
+                // Basic sanity check: must have host after scheme
+                let after_scheme = url.strip_prefix("mqtt://")
+                    .or_else(|| url.strip_prefix("mqtts://"))
+                    .unwrap_or("");
+                if after_scheme.is_empty() || after_scheme.starts_with('/') {
+                    return Err("Invalid MQTT URL: missing host".to_string());
+                }
+            }
+        }
+
+        Ok(url)
+    }
+}
+
 /// A conversation/contact entry
 #[derive(Debug, Clone)]
 pub struct Conversation {
@@ -206,6 +318,12 @@ pub struct App<'a> {
     pub add_contact_popup: AddContactPopup<'a>,
     /// Whether the "my identity" popup is visible
     pub show_my_id_popup: bool,
+    /// Whether the add upstream popup is visible
+    pub show_add_upstream_popup: bool,
+    /// Add upstream popup state
+    pub add_upstream_popup: AddUpstreamPopup<'a>,
+    /// Composite transport for runtime addition of upstreams
+    composite_transport: Arc<CompositeTransport>,
     /// Outbox tick interval from config
     outbox_tick_interval: Duration,
 }
@@ -413,6 +531,9 @@ impl<'a> App<'a> {
             show_add_contact_popup: false,
             add_contact_popup: AddContactPopup::default(),
             show_my_id_popup: false,
+            show_add_upstream_popup: false,
+            add_upstream_popup: AddUpstreamPopup::default(),
+            composite_transport: transport,
             outbox_tick_interval,
         };
 
@@ -657,6 +778,9 @@ impl<'a> App<'a> {
         if self.show_my_id_popup {
             return self.handle_my_id_popup_key_event(key);
         }
+        if self.show_add_upstream_popup {
+            return self.handle_add_upstream_popup_key_event(key).await;
+        }
 
         // Global shortcuts
         if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -682,6 +806,13 @@ impl<'a> App<'a> {
                 KeyCode::Char('i') => {
                     // Alt+I: Show identity
                     self.show_my_id_popup = true;
+                    return Ok(());
+                }
+                KeyCode::Char('u') => {
+                    // Alt+U: Add upstream
+                    self.show_add_upstream_popup = true;
+                    self.add_upstream_popup.reset();
+                    self.status = "Add Upstream (Tab: switch, ←/→: type, Enter: add, Esc: cancel)".to_string();
                     return Ok(());
                 }
                 KeyCode::Char('h') => {
@@ -949,6 +1080,105 @@ impl<'a> App<'a> {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Handle key events when add upstream popup is visible
+    async fn handle_add_upstream_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
+        match key.code {
+            KeyCode::Esc => {
+                // Cancel
+                self.show_add_upstream_popup = false;
+                self.add_upstream_popup.reset();
+                self.status = HELP_HINT.to_string();
+            }
+            KeyCode::Tab => {
+                // Toggle field focus
+                self.add_upstream_popup.toggle_field();
+            }
+            KeyCode::Left | KeyCode::Right => {
+                // Toggle transport type when focused on Type field
+                if self.add_upstream_popup.focused_field == AddUpstreamField::Type {
+                    self.add_upstream_popup.transport_type.toggle();
+                    self.add_upstream_popup.error = None;
+                    // Update placeholder based on type
+                    let placeholder = match self.add_upstream_popup.transport_type {
+                        UpstreamType::Http => "http://192.168.1.50:23003",
+                        UpstreamType::Mqtt => "mqtt://192.168.1.50:1883",
+                    };
+                    self.add_upstream_popup.url_input.set_placeholder_text(placeholder);
+                }
+            }
+            KeyCode::Enter => {
+                // Try to add the upstream
+                match self.add_upstream_popup.validate_url() {
+                    Ok(url) => {
+                        let result = self.add_upstream(&url).await;
+                        match result {
+                            Ok(()) => {
+                                let transport_type = self.add_upstream_popup.transport_type;
+                                self.show_add_upstream_popup = false;
+                                self.add_upstream_popup.reset();
+                                self.status = format!(
+                                    "Added {} upstream: {}",
+                                    match transport_type {
+                                        UpstreamType::Http => "HTTP",
+                                        UpstreamType::Mqtt => "MQTT",
+                                    },
+                                    url
+                                );
+                            }
+                            Err(e) => {
+                                self.add_upstream_popup.error = Some(e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.add_upstream_popup.error = Some(e);
+                    }
+                }
+            }
+            _ => {
+                // Pass other keys to URL input when focused
+                if self.add_upstream_popup.focused_field == AddUpstreamField::Url {
+                    self.add_upstream_popup.url_input.input(Input::from(key));
+                    self.add_upstream_popup.error = None;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Add an upstream transport at runtime
+    async fn add_upstream(&mut self, url: &str) -> Result<(), String> {
+        match self.add_upstream_popup.transport_type {
+            UpstreamType::Http => {
+                // Create HTTP target with ephemeral kind
+                let config = HttpTargetConfig::new(url, TargetKind::Ephemeral)
+                    .with_label(url);
+                let target = HttpTarget::new(config)
+                    .map_err(|e| format!("Failed to create HTTP transport: {}", e))?;
+
+                // Add to composite transport
+                self.composite_transport.add_transport(target).await;
+                info!(url = %url, "Added ephemeral HTTP upstream");
+                Ok(())
+            }
+            UpstreamType::Mqtt => {
+                // Create MQTT transport
+                let broker_spec = MqttBrokerSpec {
+                    url: url.to_string(),
+                    client_id: None, // Auto-generated
+                };
+                let transport = MqttTransport::new(vec![broker_spec])
+                    .await
+                    .map_err(|e| format!("Failed to connect to MQTT broker: {}", e))?;
+
+                // Add to composite transport
+                self.composite_transport.add_transport(transport).await;
+                info!(url = %url, "Added ephemeral MQTT upstream");
+                Ok(())
+            }
+        }
     }
 }
 
