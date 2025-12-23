@@ -537,7 +537,6 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
                 let tier_str = match upstream.tier {
                     UpstreamTier::Quorum => "quorum",
                     UpstreamTier::Direct => "direct",
-                    UpstreamTier::Ephemeral => "ephemeral",
                 };
                 let type_style = match upstream.transport_type {
                     UpstreamType::Http => Style::default().fg(Color::Blue),
@@ -546,8 +545,9 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
                 let tier_style = match upstream.tier {
                     UpstreamTier::Quorum => Style::default().fg(Color::Green),
                     UpstreamTier::Direct => Style::default().fg(Color::Cyan),
-                    UpstreamTier::Ephemeral => Style::default().fg(Color::Yellow),
                 };
+                // Add asterisk for ephemeral (runtime-added) upstreams
+                let ephemeral_marker = if upstream.ephemeral { "*" } else { "" };
 
                 let label_part = if let Some(ref label) = upstream.label {
                     format!(" ({})", label)
@@ -561,7 +561,7 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
                     Span::styled(&upstream.url, Style::default().fg(Color::White)),
                     Span::styled(label_part, Style::default().fg(Color::DarkGray)),
                     Span::raw(" "),
-                    Span::styled(format!("[{}]", tier_str), tier_style),
+                    Span::styled(format!("[{}{}]", tier_str, ephemeral_marker), tier_style),
                 ]);
 
                 ListItem::new(line)
@@ -577,8 +577,8 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
         Span::styled("quorum", Style::default().fg(Color::Green)),
         Span::raw("=mailbox  "),
         Span::styled("direct", Style::default().fg(Color::Cyan)),
-        Span::raw("=LAN peer  "),
-        Span::styled("ephemeral", Style::default().fg(Color::Yellow)),
+        Span::raw("=peer  "),
+        Span::raw("*"),
         Span::raw("=runtime"),
     ]);
     let legend_para = Paragraph::new(legend).alignment(Alignment::Center);

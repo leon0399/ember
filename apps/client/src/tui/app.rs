@@ -267,11 +267,9 @@ pub enum UpstreamTier {
     /// Tier 2: Stable infrastructure (HTTP mailboxes, MQTT brokers)
     /// Messages stored for later retrieval by recipient
     Quorum,
-    /// Tier 1: Direct peers (LAN P2P via direct_peers config)
+    /// Tier 1: Direct peers (LAN P2P connections)
     /// Direct delivery to recipient's embedded node
     Direct,
-    /// Runtime-added ephemeral transport (session-only)
-    Ephemeral,
 }
 
 /// Information about a configured upstream transport
@@ -281,8 +279,10 @@ pub struct UpstreamInfo {
     pub transport_type: UpstreamType,
     /// URL or address
     pub url: String,
-    /// Delivery tier
+    /// Delivery tier (quorum vs direct)
     pub tier: UpstreamTier,
+    /// Whether this is ephemeral (runtime-added, not persisted)
+    pub ephemeral: bool,
     /// Optional label
     pub label: Option<String>,
 }
@@ -473,6 +473,7 @@ impl<'a> App<'a> {
                     transport_type: UpstreamType::Http,
                     url: node.url.clone(),
                     tier: UpstreamTier::Quorum,
+                    ephemeral: false,
                     label: node.label.clone(),
                 });
             }
@@ -487,6 +488,7 @@ impl<'a> App<'a> {
                     transport_type: UpstreamType::Mqtt,
                     url: broker.url.clone(),
                     tier: UpstreamTier::Quorum,
+                    ephemeral: false,
                     label: broker.label.clone(),
                 });
             }
@@ -515,6 +517,7 @@ impl<'a> App<'a> {
                         transport_type: UpstreamType::Http,
                         url: peer.address.clone(),
                         tier: UpstreamTier::Direct,
+                        ephemeral: false,
                         label: peer.name.clone(),
                     });
                 }
@@ -1293,11 +1296,12 @@ impl<'a> App<'a> {
             }
         }
 
-        // Track in upstreams list for display
+        // Track in upstreams list for display (runtime-added = direct + ephemeral)
         self.upstreams.push(UpstreamInfo {
             transport_type,
             url: url.to_string(),
-            tier: UpstreamTier::Ephemeral,
+            tier: UpstreamTier::Direct,
+            ephemeral: true,
             label: None,
         });
 
