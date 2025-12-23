@@ -316,7 +316,7 @@ mod tests {
         let store = PersistentMailboxStore::in_memory(config).unwrap();
 
         let (node, handle, mut event_rx) = EmbeddedNode::new(store);
-        let _node_task = tokio::spawn(async move { node.run().await });
+        let node_task = tokio::spawn(async move { node.run().await });
 
         let routing_key = RoutingKey::from_bytes([99u8; 16]);
         let envelope = create_test_envelope(routing_key);
@@ -339,6 +339,10 @@ mod tests {
             }
             _ => panic!("Expected MessageReceived event"),
         }
+
+        // Shutdown for proper resource cleanup
+        handle.shutdown().await.unwrap();
+        node_task.await.unwrap();
     }
 
     #[tokio::test]
