@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 reme-message = { workspace = true }
+reme-node-core = { workspace = true, optional = true }
 
 thiserror = { workspace = true }
 async-trait = { workspace = true }
@@ -41,6 +42,7 @@ default = ["http-client"]
 http-client = []
 http-server = ["axum", "tower"]
 mqtt = ["rumqttc", "hex", "uuid"]
+embedded = ["reme-node-core"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

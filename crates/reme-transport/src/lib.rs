@@ -22,6 +22,9 @@ pub mod mqtt_receiver;
 #[cfg(feature = "mqtt")]
 pub mod mqtt_target;
 
+#[cfg(feature = "embedded")]
+pub mod embedded_target;
+
 pub use composite::CompositeTransport;
 pub use http::NodeSpec;
 pub use http_target::{HttpTarget, HttpTargetConfig};
@@ -50,6 +53,9 @@ pub use mqtt::{MqttBrokerSpec, MqttTransport};
 pub use mqtt_receiver::{MultiBrokerReceiver, MqttReceiver, MqttReceiverConfig, MqttReceiverHandle};
 #[cfg(feature = "mqtt")]
 pub use mqtt_target::{MqttTarget, MqttTargetConfig};
+
+#[cfg(feature = "embedded")]
+pub use embedded_target::{EmbeddedTarget, EmbeddedTargetConfig};
 
 #[derive(Debug, Error, Clone)]
 pub enum TransportError {
