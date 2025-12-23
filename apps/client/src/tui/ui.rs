@@ -244,8 +244,9 @@ fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
 
 /// Render the add contact popup
 fn render_add_contact_popup(frame: &mut Frame, app: &App) {
-    // Calculate popup area (60% width, 50% height, centered)
-    let area = popup_area(frame.area(), 60, 50);
+    // Calculate popup area (60% width, 60% height, centered)
+    // Minimum height needed: border(2) + margin(2) + instructions(2) + public_id(3) + name(3) + error(2) + hints(1) = 15
+    let area = popup_area(frame.area(), 60, 60);
 
     // Clear the background
     frame.render_widget(Clear, area);
@@ -380,8 +381,9 @@ fn render_my_id_popup(frame: &mut Frame, app: &App) {
 
 /// Render the add upstream popup
 fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
-    // Calculate popup area (60% width, 45% height, centered)
-    let area = popup_area(frame.area(), 60, 45);
+    // Calculate popup area (60% width, 60% height, centered)
+    // Minimum height needed: border(2) + margin(2) + instructions(2) + type(3) + url(3) + error(2) + hints(1) = 15
+    let area = popup_area(frame.area(), 60, 60);
 
     // Clear the background
     frame.render_widget(Clear, area);
