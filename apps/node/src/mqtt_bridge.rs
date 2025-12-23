@@ -6,7 +6,7 @@
 //! - Uses message ID deduplication to prevent loops in mesh topologies
 
 use crate::config::{MqttBridgeConfig, MqttBrokerConfig};
-use crate::persistent_store::PersistentMailboxStore;
+use reme_node_core::{MailboxStore, PersistentMailboxStore};
 use reme_message::OuterEnvelope;
 use reme_transport::{
     MqttBrokerSpec, MqttReceiverConfig, MqttTransport, MultiBrokerReceiver, SharedSeenCache,
@@ -23,7 +23,7 @@ pub enum MqttBridgeError {
     Transport(#[from] reme_transport::TransportError),
 
     #[error("Store error: {0}")]
-    Store(#[from] crate::persistent_store::PersistentStoreError),
+    Store(#[from] reme_node_core::NodeError),
 }
 
 /// MQTT Bridge for bidirectional HTTP <-> MQTT message exchange.

@@ -2,7 +2,7 @@
 //!
 //! Tests cryptographic identity and signature verification between nodes.
 
-use node::{api, node_identity::NodeIdentity, persistent_store, replication};
+use node::{api, node_identity::NodeIdentity, replication, PersistentMailboxStore, PersistentStoreConfig};
 use reme_identity::Identity;
 use reme_message::OuterEnvelope;
 use reme_transport::http_target::HttpTarget;
@@ -33,12 +33,12 @@ async fn start_test_node(
     let url = format!("http://{}", addr);
     let host = addr.to_string(); // "127.0.0.1:PORT"
 
-    let config = persistent_store::PersistentStoreConfig {
+    let config = PersistentStoreConfig {
         max_messages_per_mailbox: 1000,
         default_ttl_secs: 3600,
     };
     let store = Arc::new(
-        persistent_store::PersistentMailboxStore::open(":memory:", config)
+        PersistentMailboxStore::open(":memory:", config)
             .expect("Failed to create store"),
     );
 

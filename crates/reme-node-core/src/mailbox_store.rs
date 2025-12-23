@@ -1,7 +1,7 @@
 //! Persistent mailbox storage using SQLite
 //!
 //! This module provides durable storage for message envelopes that survives
-//! node restarts. Tombstones are not yet included (Phase 2).
+//! node restarts.
 //!
 //! ## Design Decisions
 //!
@@ -11,11 +11,7 @@
 //! - **Serialized access**: A `Mutex` ensures thread-safe access to the database connection
 //! - **Per-mailbox self-healing**: The `enqueue` operation performs lightweight cleanup
 //!   of expired messages for the target mailbox only, preventing unbounded growth even
-//!   if the background cleanup task is delayed. This adds minimal latency since it only
-//!   affects the single routing key being written to.
-//!
-//! Note: The current `Mutex`-based approach serializes all database operations.
-//! For higher concurrency, consider using a connection pool (e.g., r2d2-sqlite).
+//!   if the background cleanup task is delayed.
 
 use bincode::config;
 use reme_message::{MessageID, OuterEnvelope, RoutingKey};
@@ -23,27 +19,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use thiserror::Error;
 use tracing::{debug, info, trace, warn};
 
-/// Errors from the persistent store
-#[derive(Debug, Error)]
-pub enum PersistentStoreError {
-    #[error("Database error: {0}")]
-    Database(#[from] rusqlite::Error),
-
-    #[error("Serialization error: {0}")]
-    Serialization(String),
-
-    #[error("Lock poisoned")]
-    LockPoisoned,
-
-    #[error("Mailbox full")]
-    MailboxFull,
-
-    #[error("Message not found")]
-    MessageNotFound,
-}
+use crate::error::NodeError;
 
 /// Configuration for the persistent store
 #[derive(Debug, Clone)]
@@ -63,6 +41,32 @@ impl Default for PersistentStoreConfig {
     }
 }
 
+/// Trait for mailbox storage backends
+///
+/// This trait abstracts the storage layer for mailbox nodes, allowing
+/// different implementations (SQLite, in-memory, etc.)
+pub trait MailboxStore: Send + Sync {
+    /// Store a message in the mailbox for the given routing key
+    fn enqueue(&self, routing_key: RoutingKey, envelope: OuterEnvelope) -> Result<(), NodeError>;
+
+    /// Fetch and remove all messages for the given routing key
+    fn fetch(&self, routing_key: &RoutingKey) -> Result<Vec<OuterEnvelope>, NodeError>;
+
+    /// Check if a message with the given ID exists for the routing key
+    fn has_message(&self, routing_key: &RoutingKey, message_id: &MessageID) -> Result<bool, NodeError>;
+
+    /// Remove expired messages
+    fn cleanup_expired(&self) -> Result<usize, NodeError>;
+}
+
+/// Statistics about the persistent store
+#[derive(Debug, Clone)]
+pub struct PersistentStoreStats {
+    pub mailbox_count: usize,
+    pub total_messages: usize,
+    pub expired_pending_cleanup: usize,
+}
+
 /// Persistent mailbox store backed by SQLite
 pub struct PersistentMailboxStore {
     conn: Mutex<Connection>,
@@ -71,7 +75,7 @@ pub struct PersistentMailboxStore {
 
 impl PersistentMailboxStore {
     /// Open or create a persistent store at the given path
-    pub fn open<P: AsRef<Path>>(path: P, config: PersistentStoreConfig) -> Result<Self, PersistentStoreError> {
+    pub fn open<P: AsRef<Path>>(path: P, config: PersistentStoreConfig) -> Result<Self, NodeError> {
         let path = path.as_ref();
         info!(path = %path.display(), "opening persistent mailbox store");
 
@@ -95,7 +99,7 @@ impl PersistentMailboxStore {
     }
 
     /// Create an in-memory store (for testing)
-    pub fn in_memory(config: PersistentStoreConfig) -> Result<Self, PersistentStoreError> {
+    pub fn in_memory(config: PersistentStoreConfig) -> Result<Self, NodeError> {
         trace!("creating in-memory persistent store");
         let conn = Connection::open_in_memory()?;
         let store = Self {
@@ -108,8 +112,8 @@ impl PersistentMailboxStore {
     }
 
     /// Configure SQLite connection for optimal performance
-    fn configure_connection(&self) -> Result<(), PersistentStoreError> {
-        let conn = self.conn.lock().map_err(|_| PersistentStoreError::LockPoisoned)?;
+    fn configure_connection(&self) -> Result<(), NodeError> {
+        let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
 
         // Enable WAL mode for better concurrent performance
         conn.execute_batch(
@@ -126,8 +130,8 @@ impl PersistentMailboxStore {
     }
 
     /// Initialize database schema
-    fn init_schema(&self) -> Result<(), PersistentStoreError> {
-        let conn = self.conn.lock().map_err(|_| PersistentStoreError::LockPoisoned)?;
+    fn init_schema(&self) -> Result<(), NodeError> {
+        let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
 
         conn.execute_batch(
             r#"
@@ -163,9 +167,6 @@ impl PersistentMailboxStore {
     }
 
     /// Get current Unix timestamp in seconds
-    ///
-    /// Returns 0 if system clock is before UNIX_EPOCH (misconfigured clock).
-    /// This matches the behavior in `reme-message::now_secs()`.
     fn now_secs() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -174,25 +175,131 @@ impl PersistentMailboxStore {
     }
 
     /// Serialize an OuterEnvelope to bytes
-    fn serialize_envelope(envelope: &OuterEnvelope) -> Result<Vec<u8>, PersistentStoreError> {
+    fn serialize_envelope(envelope: &OuterEnvelope) -> Result<Vec<u8>, NodeError> {
         let bincode_config = config::standard();
         bincode::encode_to_vec(envelope, bincode_config)
-            .map_err(|e| PersistentStoreError::Serialization(e.to_string()))
+            .map_err(|e| NodeError::Serialization(e.to_string()))
     }
 
     /// Deserialize bytes to an OuterEnvelope
-    fn deserialize_envelope(data: &[u8]) -> Result<OuterEnvelope, PersistentStoreError> {
+    fn deserialize_envelope(data: &[u8]) -> Result<OuterEnvelope, NodeError> {
         let bincode_config = config::standard();
         let (envelope, _): (OuterEnvelope, _) = bincode::decode_from_slice(data, bincode_config)
-            .map_err(|e| PersistentStoreError::Serialization(e.to_string()))?;
+            .map_err(|e| NodeError::Deserialization(e.to_string()))?;
         Ok(envelope)
     }
 
-    /// Enqueue a message for a routing key
-    ///
-    /// This operation is atomic: cleanup, capacity check, and insert are wrapped
-    /// in a single transaction.
-    pub fn enqueue(&self, routing_key: RoutingKey, envelope: OuterEnvelope) -> Result<(), PersistentStoreError> {
+    /// Get all message IDs for a routing key (for sync protocol)
+    pub fn get_message_ids(&self, routing_key: &RoutingKey) -> Result<Vec<MessageID>, NodeError> {
+        let now = Self::now_secs();
+
+        let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
+
+        let mut stmt = conn.prepare(
+            "SELECT message_id FROM mailbox_messages
+             WHERE routing_key = ? AND expires_at > ?",
+        )?;
+
+        let rows = stmt.query_map(params![&routing_key[..], now as i64], |row| {
+            let bytes: Vec<u8> = row.get(0)?;
+            Ok(bytes)
+        })?;
+
+        let mut ids = Vec::new();
+        for row in rows {
+            let bytes = row?;
+            if bytes.len() == 16 {
+                let arr: [u8; 16] = bytes.try_into().unwrap();
+                ids.push(MessageID::from_bytes(arr));
+            } else {
+                warn!(
+                    len = bytes.len(),
+                    "invalid message_id length in database, expected 16 bytes"
+                );
+            }
+        }
+
+        Ok(ids)
+    }
+
+    /// Get a specific message by ID (for sync protocol)
+    pub fn get_message(&self, message_id: &MessageID) -> Result<Option<OuterEnvelope>, NodeError> {
+        let now = Self::now_secs();
+        let message_id_bytes = message_id.as_bytes();
+
+        let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
+
+        let result: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT envelope_data FROM mailbox_messages
+                 WHERE message_id = ? AND expires_at > ?",
+                params![&message_id_bytes[..], now as i64],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        match result {
+            Some(data) => Ok(Some(Self::deserialize_envelope(&data)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Delete a message by ID (for tombstone support)
+    pub fn delete_message(&self, message_id: &MessageID) -> Result<bool, NodeError> {
+        let message_id_bytes = message_id.as_bytes();
+
+        let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
+
+        let deleted = conn.execute(
+            "DELETE FROM mailbox_messages WHERE message_id = ?",
+            params![&message_id_bytes[..]],
+        )?;
+
+        Ok(deleted > 0)
+    }
+
+    /// Get store statistics
+    pub fn stats(&self) -> Result<PersistentStoreStats, NodeError> {
+        let now = Self::now_secs();
+
+        let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
+
+        let total_messages: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM mailbox_messages WHERE expires_at > ?",
+            params![now as i64],
+            |row| row.get(0),
+        )?;
+
+        let mailbox_count: i64 = conn.query_row(
+            "SELECT COUNT(DISTINCT routing_key) FROM mailbox_messages WHERE expires_at > ?",
+            params![now as i64],
+            |row| row.get(0),
+        )?;
+
+        let expired_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM mailbox_messages WHERE expires_at <= ?",
+            params![now as i64],
+            |row| row.get(0),
+        )?;
+
+        Ok(PersistentStoreStats {
+            mailbox_count: mailbox_count as usize,
+            total_messages: total_messages as usize,
+            expired_pending_cleanup: expired_count as usize,
+        })
+    }
+
+    /// Checkpoint WAL to main database file
+    pub fn checkpoint(&self) -> Result<(), NodeError> {
+        let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        debug!("WAL checkpoint completed");
+        Ok(())
+    }
+}
+
+impl MailboxStore for PersistentMailboxStore {
+    fn enqueue(&self, routing_key: RoutingKey, envelope: OuterEnvelope) -> Result<(), NodeError> {
         let now = Self::now_secs();
 
         // Calculate expiration
@@ -205,7 +312,7 @@ impl PersistentMailboxStore {
         let envelope_data = Self::serialize_envelope(&envelope)?;
         let message_id_bytes = envelope.message_id.as_bytes();
 
-        let mut conn = self.conn.lock().map_err(|_| PersistentStoreError::LockPoisoned)?;
+        let mut conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
 
         // Use a transaction to ensure atomicity of cleanup + capacity check + insert
         let tx = conn.transaction()?;
@@ -229,8 +336,7 @@ impl PersistentMailboxStore {
                 count = count,
                 "mailbox full"
             );
-            // Transaction automatically rolls back on drop
-            return Err(PersistentStoreError::MailboxFull);
+            return Err(NodeError::MailboxFull);
         }
 
         // Insert the message
@@ -259,31 +365,10 @@ impl PersistentMailboxStore {
         Ok(())
     }
 
-    /// Check if a message with the given ID already exists for the routing key
-    pub fn has_message(&self, routing_key: &RoutingKey, message_id: &MessageID) -> Result<bool, PersistentStoreError> {
-        let now = Self::now_secs();
-        let message_id_bytes = message_id.as_bytes();
-
-        let conn = self.conn.lock().map_err(|_| PersistentStoreError::LockPoisoned)?;
-
-        let exists: bool = conn
-            .query_row(
-                "SELECT 1 FROM mailbox_messages
-                 WHERE routing_key = ? AND message_id = ? AND expires_at > ?",
-                params![&routing_key[..], &message_id_bytes[..], now as i64],
-                |_| Ok(true),
-            )
-            .optional()?
-            .unwrap_or(false);
-
-        Ok(exists)
-    }
-
-    /// Fetch and remove all messages for a routing key
-    pub fn fetch(&self, routing_key: &RoutingKey) -> Result<Vec<OuterEnvelope>, PersistentStoreError> {
+    fn fetch(&self, routing_key: &RoutingKey) -> Result<Vec<OuterEnvelope>, NodeError> {
         let now = Self::now_secs();
 
-        let conn = self.conn.lock().map_err(|_| PersistentStoreError::LockPoisoned)?;
+        let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
 
         // Fetch all non-expired messages
         let mut stmt = conn.prepare(
@@ -340,80 +425,29 @@ impl PersistentMailboxStore {
         Ok(envelopes)
     }
 
-    /// Get all message IDs for a routing key (for sync protocol)
-    pub fn get_message_ids(&self, routing_key: &RoutingKey) -> Result<Vec<MessageID>, PersistentStoreError> {
-        let now = Self::now_secs();
-
-        let conn = self.conn.lock().map_err(|_| PersistentStoreError::LockPoisoned)?;
-
-        let mut stmt = conn.prepare(
-            "SELECT message_id FROM mailbox_messages
-             WHERE routing_key = ? AND expires_at > ?",
-        )?;
-
-        let rows = stmt.query_map(params![&routing_key[..], now as i64], |row| {
-            let bytes: Vec<u8> = row.get(0)?;
-            Ok(bytes)
-        })?;
-
-        let mut ids = Vec::new();
-        for row in rows {
-            let bytes = row?;
-            if bytes.len() == 16 {
-                let arr: [u8; 16] = bytes.try_into().unwrap();
-                ids.push(MessageID::from_bytes(arr));
-            } else {
-                warn!(
-                    len = bytes.len(),
-                    "invalid message_id length in database, expected 16 bytes"
-                );
-            }
-        }
-
-        Ok(ids)
-    }
-
-    /// Get a specific message by ID (for sync protocol)
-    pub fn get_message(&self, message_id: &MessageID) -> Result<Option<OuterEnvelope>, PersistentStoreError> {
+    fn has_message(&self, routing_key: &RoutingKey, message_id: &MessageID) -> Result<bool, NodeError> {
         let now = Self::now_secs();
         let message_id_bytes = message_id.as_bytes();
 
-        let conn = self.conn.lock().map_err(|_| PersistentStoreError::LockPoisoned)?;
+        let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
 
-        let result: Option<Vec<u8>> = conn
+        let exists: bool = conn
             .query_row(
-                "SELECT envelope_data FROM mailbox_messages
-                 WHERE message_id = ? AND expires_at > ?",
-                params![&message_id_bytes[..], now as i64],
-                |row| row.get(0),
+                "SELECT 1 FROM mailbox_messages
+                 WHERE routing_key = ? AND message_id = ? AND expires_at > ?",
+                params![&routing_key[..], &message_id_bytes[..], now as i64],
+                |_| Ok(true),
             )
-            .optional()?;
+            .optional()?
+            .unwrap_or(false);
 
-        match result {
-            Some(data) => Ok(Some(Self::deserialize_envelope(&data)?)),
-            None => Ok(None),
-        }
+        Ok(exists)
     }
 
-    /// Delete a message by ID (for tombstone support)
-    pub fn delete_message(&self, message_id: &MessageID) -> Result<bool, PersistentStoreError> {
-        let message_id_bytes = message_id.as_bytes();
-
-        let conn = self.conn.lock().map_err(|_| PersistentStoreError::LockPoisoned)?;
-
-        let deleted = conn.execute(
-            "DELETE FROM mailbox_messages WHERE message_id = ?",
-            params![&message_id_bytes[..]],
-        )?;
-
-        Ok(deleted > 0)
-    }
-
-    /// Cleanup expired messages across all mailboxes
-    pub fn cleanup_expired(&self) -> Result<usize, PersistentStoreError> {
+    fn cleanup_expired(&self) -> Result<usize, NodeError> {
         let now = Self::now_secs();
 
-        let conn = self.conn.lock().map_err(|_| PersistentStoreError::LockPoisoned)?;
+        let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
 
         let deleted = conn.execute(
             "DELETE FROM mailbox_messages WHERE expires_at <= ?",
@@ -426,53 +460,6 @@ impl PersistentMailboxStore {
 
         Ok(deleted)
     }
-
-    /// Get store statistics
-    pub fn stats(&self) -> Result<PersistentStoreStats, PersistentStoreError> {
-        let now = Self::now_secs();
-
-        let conn = self.conn.lock().map_err(|_| PersistentStoreError::LockPoisoned)?;
-
-        let total_messages: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM mailbox_messages WHERE expires_at > ?",
-            params![now as i64],
-            |row| row.get(0),
-        )?;
-
-        let mailbox_count: i64 = conn.query_row(
-            "SELECT COUNT(DISTINCT routing_key) FROM mailbox_messages WHERE expires_at > ?",
-            params![now as i64],
-            |row| row.get(0),
-        )?;
-
-        let expired_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM mailbox_messages WHERE expires_at <= ?",
-            params![now as i64],
-            |row| row.get(0),
-        )?;
-
-        Ok(PersistentStoreStats {
-            mailbox_count: mailbox_count as usize,
-            total_messages: total_messages as usize,
-            expired_pending_cleanup: expired_count as usize,
-        })
-    }
-
-    /// Checkpoint WAL to main database file
-    pub fn checkpoint(&self) -> Result<(), PersistentStoreError> {
-        let conn = self.conn.lock().map_err(|_| PersistentStoreError::LockPoisoned)?;
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
-        debug!("WAL checkpoint completed");
-        Ok(())
-    }
-}
-
-/// Statistics about the persistent store
-#[derive(Debug, Clone)]
-pub struct PersistentStoreStats {
-    pub mailbox_count: usize,
-    pub total_messages: usize,
-    pub expired_pending_cleanup: usize,
 }
 
 #[cfg(test)]
@@ -528,7 +515,7 @@ mod tests {
 
         // Third should fail
         let result = store.enqueue(routing_key, create_test_envelope(routing_key, Some(1)));
-        assert!(matches!(result, Err(PersistentStoreError::MailboxFull)));
+        assert!(matches!(result, Err(NodeError::MailboxFull)));
     }
 
     #[test]
@@ -538,7 +525,6 @@ mod tests {
         let routing_key = RoutingKey::from_bytes([5u8; 16]);
 
         let envelope = create_test_envelope(routing_key, Some(1));
-        let message_id = envelope.message_id;
 
         // First insert succeeds
         store.enqueue(routing_key, envelope.clone()).unwrap();
