@@ -434,6 +434,62 @@ impl HttpEndpoint {
     }
 }
 
+/// Embedded node configuration for in-process mailbox.
+///
+/// When enabled, the client runs an embedded mailbox node that can:
+/// - Store messages locally for direct LAN P2P delivery
+/// - Optionally expose an HTTP server for peers on the same network
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct EmbeddedNodeConfig {
+    /// Enable the embedded node (default: false).
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// HTTP bind address for LAN peers (e.g., "0.0.0.0:23004").
+    /// If not set, no HTTP server is started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_bind: Option<String>,
+
+    /// Maximum number of messages to store (default: 1000).
+    #[serde(default = "default_embedded_max_messages")]
+    pub max_messages: u32,
+
+    /// Default message TTL in seconds (default: 86400 = 24 hours).
+    #[serde(default = "default_embedded_ttl_secs")]
+    pub default_ttl_secs: u64,
+}
+
+fn default_embedded_max_messages() -> u32 { 1000 }
+fn default_embedded_ttl_secs() -> u64 { 86400 }
+
+impl Default for EmbeddedNodeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            http_bind: None,
+            max_messages: default_embedded_max_messages(),
+            default_ttl_secs: default_embedded_ttl_secs(),
+        }
+    }
+}
+
+/// Direct peer configuration for LAN P2P messaging.
+///
+/// Peers configured here are added as ephemeral targets with high priority,
+/// enabling direct message delivery without going through quorum nodes.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct DirectPeerConfig {
+    /// The peer's public ID (base64-encoded 32-byte public key).
+    pub public_id: String,
+
+    /// HTTP address of the peer's embedded node (e.g., "http://192.168.1.101:23004").
+    pub address: String,
+
+    /// Human-readable name for the peer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
 /// MQTT broker configuration
 ///
 /// Note: MQTT uses system root certificates for TLS verification.
@@ -509,6 +565,14 @@ pub struct AppConfig {
     #[serde(default)]
     pub mqtt: Vec<MqttBroker>,
 
+    /// Embedded node configuration for in-process mailbox
+    #[serde(default)]
+    pub embedded_node: EmbeddedNodeConfig,
+
+    /// Direct peers for LAN P2P messaging
+    #[serde(default)]
+    pub direct_peers: Vec<DirectPeerConfig>,
+
     /// Directory for storing identity, keys, and messages
     pub data_dir: PathBuf,
 
@@ -533,6 +597,8 @@ impl Default for AppConfig {
         Self {
             http: default_http(),
             mqtt: Vec::new(),
+            embedded_node: EmbeddedNodeConfig::default(),
+            direct_peers: Vec::new(),
             data_dir: default_data_dir(),
             log_level: "info".to_string(),
             outbox: OutboxAppConfig::default(),
@@ -562,6 +628,10 @@ struct RawConfig {
     http: Option<Vec<HttpEndpoint>>,
     /// MQTT broker configurations
     mqtt: Option<Vec<MqttBroker>>,
+    /// Embedded node configuration
+    embedded_node: Option<EmbeddedNodeConfig>,
+    /// Direct peers for LAN P2P
+    direct_peers: Option<Vec<DirectPeerConfig>>,
     /// Outbox config section
     #[serde(default)]
     outbox: RawOutboxConfig,
@@ -794,9 +864,17 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
             .unwrap_or(delivery_defaults.quorum_tier_timeout_secs),
     };
 
+    // Resolve embedded node config from config file > defaults
+    let embedded_node = raw.embedded_node.unwrap_or_default();
+
+    // Resolve direct peers from config file > defaults (empty)
+    let direct_peers = raw.direct_peers.unwrap_or_default();
+
     Ok(AppConfig {
         http,
         mqtt,
+        embedded_node,
+        direct_peers,
         data_dir,
         log_level,
         outbox,
@@ -908,6 +986,26 @@ maintenance_enabled = {maintenance_enabled}
 # Tier timeouts
 direct_tier_timeout_ms = {direct_timeout}
 quorum_tier_timeout_secs = {quorum_timeout}
+
+# Embedded node configuration for LAN P2P messaging
+# When enabled, runs an in-process mailbox node for direct peer delivery.
+[embedded_node]
+# Enable the embedded node (default: false)
+enabled = false
+# HTTP bind address for accepting messages from LAN peers
+# Uncomment to enable: http_bind = "0.0.0.0:23004"
+# Maximum messages to store locally
+max_messages = {embedded_max_messages}
+# Default message TTL in seconds (24 hours)
+default_ttl_secs = {embedded_ttl_secs}
+
+# Direct peers for LAN P2P messaging (optional)
+# Messages to these peers will be delivered directly via their embedded node.
+#
+# [[direct_peers]]
+# public_id = "BASE64_ENCODED_PUBLIC_ID"
+# address = "http://192.168.1.101:23004"
+# name = "Bob (LAN)"
 "#,
         url = defaults.http[0].url,
         data_dir = defaults.data_dir.to_string_lossy(),
@@ -925,6 +1023,8 @@ quorum_tier_timeout_secs = {quorum_timeout}
         maintenance_enabled = defaults.delivery.maintenance_enabled,
         direct_timeout = defaults.delivery.direct_tier_timeout_ms,
         quorum_timeout = defaults.delivery.quorum_tier_timeout_secs,
+        embedded_max_messages = defaults.embedded_node.max_messages,
+        embedded_ttl_secs = defaults.embedded_node.default_ttl_secs,
     )
 }
 
@@ -951,6 +1051,8 @@ mod tests {
         assert_eq!(config.http[0].url, "http://localhost:23003");
         assert_eq!(config.http[0].cert_pin, None);
         assert!(config.mqtt.is_empty());
+        assert!(!config.embedded_node.enabled);
+        assert!(config.direct_peers.is_empty());
         assert_eq!(config.log_level, "info");
     }
 
