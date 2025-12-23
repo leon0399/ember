@@ -38,7 +38,7 @@
 //! let store = PersistentMailboxStore::in_memory(config)?;
 //!
 //! // Create and run embedded node
-//! let (node, handle) = EmbeddedNode::new(store);
+//! let (node, handle, _event_rx) = EmbeddedNode::new(store);
 //! tokio::spawn(async move { node.run().await });
 //!
 //! // Use handle to interact with node
