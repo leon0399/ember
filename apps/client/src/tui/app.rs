@@ -9,15 +9,18 @@ use ratatui::prelude::*;
 use reme_core::Client;
 use reme_identity::{Identity, PublicID};
 use reme_message::Content;
+use reme_node_core::{EmbeddedNode, EmbeddedNodeHandle, NodeEvent, PersistentMailboxStore, PersistentStoreConfig};
 use reme_outbox::{OutboxConfig, TransportRetryPolicy};
 use reme_storage::Storage;
 use reme_transport::http::NodeSpec;
-use reme_transport::http_target::HttpTarget;
+use reme_transport::http_target::{HttpTarget, HttpTargetConfig};
 use reme_transport::pool::TransportPool;
+use reme_transport::target::TargetKind;
 use reme_transport::{
-    CertPin, CompositeTransport, MessageReceiver, MqttBrokerSpec, MqttTransport, ReceiverConfig,
-    TransportEvent,
+    CertPin, CompositeTransport, MessageReceiver, MqttBrokerSpec, MqttTransport,
+    ReceiverConfig, TransportEvent,
 };
+use tokio::sync::mpsc;
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::sync::Arc;
@@ -187,6 +190,12 @@ pub struct App<'a> {
     client: Client<CompositeTransport>,
     /// HTTP transport pool for message receiving (HTTP polling-based receiver)
     http_pool: Arc<TransportPool<HttpTarget>>,
+    /// Embedded node handle (for shutdown)
+    embedded_node_handle: Option<EmbeddedNodeHandle>,
+    /// Embedded node task join handle (for awaiting shutdown)
+    embedded_node_task: Option<tokio::task::JoinHandle<()>>,
+    /// Embedded node event receiver (for incoming LAN messages)
+    node_event_rx: Option<mpsc::Receiver<NodeEvent>>,
     /// Contacts by name (for reverse lookup)
     contacts_by_id: HashMap<PublicID, String>,
     /// In-memory message cache per contact (until storage retrieval is implemented)
@@ -275,6 +284,34 @@ impl<'a> App<'a> {
             None
         };
 
+        // Create embedded node if enabled
+        let (embedded_node_handle, embedded_node_task, node_event_rx) = if config.embedded_node.enabled {
+            info!("Starting embedded node...");
+
+            // Create persistent store config from app config
+            let store_config = PersistentStoreConfig::new(
+                config.embedded_node.max_messages as usize,
+                config.embedded_node.default_ttl_secs,
+            ).map_err(|e| format!("Invalid embedded node config: {}", e))?;
+
+            // Create mailbox store in the same data directory
+            let mailbox_db_path = config.data_dir.join("mailbox.db");
+            let mailbox_db_str = mailbox_db_path
+                .to_str()
+                .ok_or("Mailbox database path contains invalid UTF-8 characters")?;
+            let mailbox_store = PersistentMailboxStore::open(mailbox_db_str, store_config)
+                .map_err(|e| format!("Failed to open mailbox store: {}", e))?;
+
+            // Create and spawn embedded node, keeping JoinHandle for graceful shutdown
+            let (node, handle, event_rx) = EmbeddedNode::new(mailbox_store);
+            let join_handle = tokio::spawn(async move { node.run().await });
+
+            info!("Embedded node started");
+            (Some(handle), Some(join_handle), Some(event_rx))
+        } else {
+            (None, None, None)
+        };
+
         // Build composite transport for sending
         let mut composite = CompositeTransport::new();
         if let Some(ref http) = http_pool {
@@ -283,6 +320,35 @@ impl<'a> App<'a> {
         if let Some(mqtt) = mqtt_transport {
             composite = composite.with_transport(mqtt);
         }
+        // Note: Embedded node is intentionally NOT added to CompositeTransport here.
+        // In Phase 5, the embedded node has no HTTP server - storing messages locally
+        // would mask remote delivery failures since recipients can't fetch from us.
+        // Phase 6 will add HTTP server for inbound LAN messages, enabling bidirectional P2P.
+
+        // Add direct peers as ephemeral targets for LAN P2P messaging
+        for peer in &config.direct_peers {
+            let target_config = HttpTargetConfig::new(&peer.address, TargetKind::Ephemeral)
+                .with_label(peer.name.as_deref().unwrap_or(&peer.address));
+
+            match HttpTarget::new(target_config) {
+                Ok(target) => {
+                    info!(
+                        address = %peer.address,
+                        name = peer.name.as_deref().unwrap_or("(unnamed)"),
+                        "Added direct peer"
+                    );
+                    composite = composite.with_transport(target);
+                }
+                Err(e) => {
+                    warn!(
+                        address = %peer.address,
+                        error = %e,
+                        "Failed to add direct peer, skipping"
+                    );
+                }
+            }
+        }
+
         let transport = Arc::new(composite);
 
         // Ensure we have at least one transport
@@ -339,6 +405,9 @@ impl<'a> App<'a> {
             status: HELP_HINT.to_string(),
             client,
             http_pool: http_pool_arc,
+            embedded_node_handle,
+            embedded_node_task,
+            node_event_rx,
             contacts_by_id: HashMap::new(),
             message_cache: HashMap::new(),
             show_add_contact_popup: false,
@@ -406,23 +475,34 @@ impl<'a> App<'a> {
             // Draw UI
             terminal.draw(|frame| ui::render(frame, self))?;
 
-            // Check for incoming messages (non-blocking)
+            // Check for incoming messages from HTTP polling (non-blocking)
             while let Ok(event) = msg_events.try_recv() {
                 if let TransportEvent::Message(envelope) = event {
-                    match self.client.process_message(&envelope).await {
-                        Ok(msg) => {
-                            let content = match &msg.content {
-                                Content::Text(t) => t.body.clone(),
-                                Content::Receipt(r) => format!("[Receipt: {:?}]", r.kind),
-                                _ => "[Unknown content]".to_string(),
-                            };
-                            self.handle_incoming_message(msg.from, content);
-                        }
-                        Err(e) => {
-                            // Log message processing failure (don't silently drop)
-                            tracing::warn!("Failed to process incoming message: {}", e);
-                            self.status = format!("Message decrypt failed: {}", e);
-                        }
+                    self.process_incoming_envelope(&envelope, "HTTP").await;
+                }
+            }
+
+            // Check for incoming messages from embedded node (non-blocking)
+            // Collect events first to avoid borrow conflicts
+            let node_events: Vec<NodeEvent> = if let Some(ref mut event_rx) = self.node_event_rx {
+                let mut events = Vec::new();
+                while let Ok(event) = event_rx.try_recv() {
+                    events.push(event);
+                }
+                events
+            } else {
+                Vec::new()
+            };
+
+            for event in node_events {
+                match event {
+                    NodeEvent::MessageReceived(envelope) => {
+                        debug!("Received message from embedded node");
+                        self.process_incoming_envelope(&envelope, "embedded node").await;
+                    }
+                    NodeEvent::Error(e) => {
+                        tracing::error!("Embedded node error: {}", e);
+                        self.status = format!("Node error: {}", e);
                     }
                 }
             }
@@ -456,7 +536,53 @@ impl<'a> App<'a> {
             }
         }
 
+        // Graceful shutdown of embedded node
+        self.shutdown_embedded_node().await;
+
         Ok(())
+    }
+
+    /// Shutdown the embedded node gracefully.
+    ///
+    /// First signals the node to shutdown via the handle, then awaits
+    /// the background task to ensure it has fully completed.
+    async fn shutdown_embedded_node(&mut self) {
+        if let Some(ref handle) = self.embedded_node_handle {
+            debug!("Shutting down embedded node...");
+            if let Err(e) = handle.shutdown().await {
+                warn!(error = %e, "Failed to signal embedded node shutdown");
+            }
+        }
+
+        // Await the background task to ensure it has fully completed
+        if let Some(join_handle) = self.embedded_node_task.take() {
+            debug!("Waiting for embedded node task to complete...");
+            if let Err(e) = join_handle.await {
+                warn!(error = %e, "Embedded node task panicked during shutdown");
+            } else {
+                info!("Embedded node shutdown complete");
+            }
+        }
+    }
+
+    /// Process an incoming envelope from any transport source.
+    ///
+    /// Decrypts the message, extracts content, and updates the UI.
+    async fn process_incoming_envelope(&mut self, envelope: &reme_message::OuterEnvelope, source: &str) {
+        match self.client.process_message(envelope).await {
+            Ok(msg) => {
+                let content = match &msg.content {
+                    Content::Text(t) => t.body.clone(),
+                    Content::Receipt(r) => format!("[Receipt: {:?}]", r.kind),
+                    _ => "[Unknown content]".to_string(),
+                };
+                self.handle_incoming_message(msg.from, content);
+            }
+            Err(e) => {
+                warn!("Failed to process {} message: {}", source, e);
+                self.status = format!("Message decrypt failed: {}", e);
+            }
+        }
     }
 
     /// Get or create a conversation for a contact, returns the index

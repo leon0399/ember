@@ -372,6 +372,21 @@ impl TransportTarget for HttpTarget {
     }
 }
 
+/// Implement `Transport` trait for compatibility with `CompositeTransport`.
+///
+/// This allows `HttpTarget` to be used directly in the composite transport
+/// for direct peer messaging, not just via `TransportPool`.
+#[async_trait]
+impl crate::Transport for HttpTarget {
+    async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
+        <Self as TransportTarget>::submit_message(self, envelope).await
+    }
+
+    async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
+        <Self as TransportTarget>::submit_tombstone(self, tombstone).await
+    }
+}
+
 /// Build a reqwest client for a specific HTTP target.
 fn build_target_client(config: &HttpTargetConfig) -> Result<Client, TransportError> {
     // Check if we need certificate pinning
