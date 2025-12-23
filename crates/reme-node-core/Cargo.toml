@@ -9,7 +9,7 @@ description = "Core node functionality for embedded and standalone mailbox nodes
 reme-message = { workspace = true }
 
 # Storage
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { workspace = true }
 bincode = { workspace = true }
 
 # Error handling & logging

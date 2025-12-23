@@ -1837,6 +1837,7 @@ dependencies = [
  "rand 0.9.2",
  "reme-identity",
  "reme-message",
+ "reme-node-core",
  "reme-transport",
  "reqwest",
  "rusqlite",

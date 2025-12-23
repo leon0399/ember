@@ -79,7 +79,7 @@ toml = "^0.8"
 directories = "^6.0"
 
 # sqlite
-rusqlite = "^0.34.0"
+rusqlite = { version = "^0.32.1", features = ["bundled"] }
 hkdf = "^0.12.4"
 sha2 = "^0.10.9"
 chacha20poly1305 = "^0.10.1"

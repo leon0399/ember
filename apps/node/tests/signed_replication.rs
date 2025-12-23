@@ -2,7 +2,7 @@
 //!
 //! Tests cryptographic identity and signature verification between nodes.
 
-use node::{api, node_identity::NodeIdentity, replication, MailboxStore, PersistentMailboxStore, PersistentStoreConfig};
+use node::{api, node_identity::NodeIdentity, replication, PersistentMailboxStore, PersistentStoreConfig};
 use reme_identity::Identity;
 use reme_message::OuterEnvelope;
 use reme_transport::http_target::HttpTarget;

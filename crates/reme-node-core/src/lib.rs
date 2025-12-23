@@ -19,8 +19,8 @@
 //! let config = PersistentStoreConfig::default();
 //! let store = PersistentMailboxStore::open("mailbox.db", config)?;
 //!
-//! // Enqueue a message
-//! store.enqueue(&routing_key, envelope)?;
+//! // Enqueue a message (routing_key passed by value)
+//! store.enqueue(routing_key, envelope)?;
 //!
 //! // Fetch messages for a routing key
 //! let messages = store.fetch(&routing_key)?;

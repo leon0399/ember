@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-/// Errors from the mailbox store
+/// Errors from node operations
 #[derive(Debug, Error)]
 pub enum NodeError {
     /// Database error
@@ -12,6 +12,10 @@ pub enum NodeError {
     /// Serialization error
     #[error("Serialization error: {0}")]
     Serialization(String),
+
+    /// Deserialization error
+    #[error("Deserialization error: {0}")]
+    Deserialization(String),
 
     /// Lock poisoned
     #[error("Lock poisoned")]

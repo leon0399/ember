@@ -185,7 +185,7 @@ impl PersistentMailboxStore {
     fn deserialize_envelope(data: &[u8]) -> Result<OuterEnvelope, NodeError> {
         let bincode_config = config::standard();
         let (envelope, _): (OuterEnvelope, _) = bincode::decode_from_slice(data, bincode_config)
-            .map_err(|e| NodeError::Serialization(e.to_string()))?;
+            .map_err(|e| NodeError::Deserialization(e.to_string()))?;
         Ok(envelope)
     }
 
