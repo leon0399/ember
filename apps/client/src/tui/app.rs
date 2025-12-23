@@ -13,8 +13,9 @@ use reme_node_core::{EmbeddedNode, EmbeddedNodeHandle, NodeEvent, PersistentMail
 use reme_outbox::{OutboxConfig, TransportRetryPolicy};
 use reme_storage::Storage;
 use reme_transport::http::NodeSpec;
-use reme_transport::http_target::HttpTarget;
+use reme_transport::http_target::{HttpTarget, HttpTargetConfig};
 use reme_transport::pool::TransportPool;
+use reme_transport::target::TargetKind;
 use reme_transport::{
     CertPin, CompositeTransport, EmbeddedTarget, MessageReceiver, MqttBrokerSpec, MqttTransport,
     ReceiverConfig, TransportEvent,
@@ -322,6 +323,31 @@ impl<'a> App<'a> {
             let embedded_target = EmbeddedTarget::new(handle.clone());
             composite = composite.with_transport(embedded_target);
         }
+
+        // Add direct peers as ephemeral targets for LAN P2P messaging
+        for peer in &config.direct_peers {
+            let target_config = HttpTargetConfig::new(&peer.address, TargetKind::Ephemeral)
+                .with_label(peer.name.as_deref().unwrap_or(&peer.address));
+
+            match HttpTarget::new(target_config) {
+                Ok(target) => {
+                    info!(
+                        address = %peer.address,
+                        name = peer.name.as_deref().unwrap_or("(unnamed)"),
+                        "Added direct peer"
+                    );
+                    composite = composite.with_transport(target);
+                }
+                Err(e) => {
+                    warn!(
+                        address = %peer.address,
+                        error = %e,
+                        "Failed to add direct peer, skipping"
+                    );
+                }
+            }
+        }
+
         let transport = Arc::new(composite);
 
         // Ensure we have at least one transport

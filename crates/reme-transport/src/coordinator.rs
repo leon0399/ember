@@ -378,7 +378,7 @@ impl TransportCoordinator {
             if !ephemeral.is_empty() {
                 for target in ephemeral {
                     if target.is_available() {
-                        match target.submit_message(envelope.clone()).await {
+                        match TransportTarget::submit_message(&*target, envelope.clone()).await {
                             Ok(()) => return Ok(()),
                             Err(e) => {
                                 debug!(
@@ -404,7 +404,7 @@ impl TransportCoordinator {
             if !ephemeral.is_empty() {
                 for target in ephemeral {
                     if target.is_available() {
-                        match target.submit_tombstone(tombstone.clone()).await {
+                        match TransportTarget::submit_tombstone(&*target, tombstone.clone()).await {
                             Ok(()) => return Ok(()),
                             Err(e) => {
                                 debug!(
@@ -602,7 +602,7 @@ impl TransportCoordinator {
 
             futures.push(async move {
                 let start = Instant::now();
-                let result = timeout(tier_timeout, target_clone.submit_message(envelope_clone)).await;
+                let result = timeout(tier_timeout, TransportTarget::submit_message(&*target_clone, envelope_clone)).await;
                 let latency = start.elapsed();
                 (target_id, result, latency)
             });
@@ -716,7 +716,7 @@ impl TransportCoordinator {
                 let env = envelope.clone();
                 async move {
                     let start = Instant::now();
-                    let result = timeout(tier_timeout, target.submit_message(env)).await;
+                    let result = timeout(tier_timeout, TransportTarget::submit_message(&*target, env)).await;
                     let latency = start.elapsed();
                     // Map timeout to TransportError::Timeout
                     let mapped = match result {
