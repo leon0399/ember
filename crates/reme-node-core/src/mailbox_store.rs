@@ -51,19 +51,22 @@ impl PersistentStoreConfig {
     /// Validate the configuration.
     ///
     /// # Errors
-    /// Returns `NodeError::InvalidConfig` if any value is invalid.
+    /// Returns `NodeError::InvalidConfig` with all validation errors combined.
     pub fn validate(&self) -> Result<(), NodeError> {
+        let mut errors = Vec::new();
+
         if self.max_messages_per_mailbox == 0 {
-            return Err(NodeError::InvalidConfig(
-                "max_messages_per_mailbox must be greater than 0".to_string(),
-            ));
+            errors.push("max_messages_per_mailbox must be greater than 0");
         }
         if self.default_ttl_secs == 0 {
-            return Err(NodeError::InvalidConfig(
-                "default_ttl_secs must be greater than 0".to_string(),
-            ));
+            errors.push("default_ttl_secs must be greater than 0");
         }
-        Ok(())
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(NodeError::InvalidConfig(errors.join(", ")))
+        }
     }
 }
 
@@ -662,6 +665,16 @@ mod tests {
         // Zero TTL should fail
         let zero_ttl = PersistentStoreConfig::new(100, 0);
         assert!(matches!(zero_ttl, Err(NodeError::InvalidConfig(_))));
+
+        // Both zero should report combined errors
+        let both_zero = PersistentStoreConfig::new(0, 0);
+        match both_zero {
+            Err(NodeError::InvalidConfig(msg)) => {
+                assert!(msg.contains("max_messages_per_mailbox"));
+                assert!(msg.contains("default_ttl_secs"));
+            }
+            _ => panic!("Expected InvalidConfig with both errors"),
+        }
 
         // Default should always be valid
         let default_config = PersistentStoreConfig::default();
