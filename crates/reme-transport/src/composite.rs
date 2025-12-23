@@ -2,18 +2,26 @@
 //!
 //! This module provides a transport that sends messages to multiple
 //! underlying transports (HTTP, MQTT, etc.) simultaneously.
+//!
+//! The composite transport supports runtime addition of new transports
+//! via the [`add_transport`](CompositeTransport::add_transport) method,
+//! enabling dynamic configuration through TUI popups or other interfaces.
 
 use crate::{Transport, TransportError};
 use async_trait::async_trait;
 use futures::future::join_all;
 use reme_message::{OuterEnvelope, TombstoneEnvelope};
 use std::sync::Arc;
-use tracing::{trace, warn};
+use tokio::sync::RwLock;
+use tracing::{debug, trace, warn};
 
 /// A transport that broadcasts to multiple underlying transports.
 ///
 /// Messages are sent to all configured transports in parallel.
 /// Success is reported if at least one transport succeeds.
+///
+/// The transport list can be modified at runtime using [`add_transport`](Self::add_transport),
+/// allowing dynamic addition of ephemeral upstreams discovered during operation.
 ///
 /// # Example
 /// ```ignore
@@ -25,29 +33,106 @@ use tracing::{trace, warn};
 /// let composite = CompositeTransport::new()
 ///     .with_transport(http)
 ///     .with_transport(mqtt);
+///
+/// // Later, add ephemeral transport at runtime
+/// composite.add_transport(another_http).await;
 /// ```
 pub struct CompositeTransport {
+    transports: RwLock<Vec<Arc<dyn Transport>>>,
+}
+
+/// Builder for constructing a [`CompositeTransport`].
+///
+/// Use [`CompositeTransport::builder()`] to create a builder,
+/// chain [`with_transport`](Self::with_transport) calls, then
+/// call [`build()`](Self::build) to create the final transport.
+pub struct CompositeTransportBuilder {
     transports: Vec<Arc<dyn Transport>>,
+}
+
+impl CompositeTransportBuilder {
+    fn new() -> Self {
+        Self {
+            transports: Vec::new(),
+        }
+    }
+
+    /// Add a transport to the builder.
+    pub fn with_transport<T: Transport + 'static>(mut self, transport: T) -> Self {
+        self.transports.push(Arc::new(transport));
+        self
+    }
+
+    /// Add an Arc-wrapped transport to the builder.
+    pub fn with_arc_transport(mut self, transport: Arc<dyn Transport>) -> Self {
+        self.transports.push(transport);
+        self
+    }
+
+    /// Build the final [`CompositeTransport`].
+    pub fn build(self) -> CompositeTransport {
+        CompositeTransport {
+            transports: RwLock::new(self.transports),
+        }
+    }
 }
 
 impl CompositeTransport {
     /// Create a new empty composite transport.
     pub fn new() -> Self {
         Self {
-            transports: Vec::new(),
+            transports: RwLock::new(Vec::new()),
         }
     }
 
-    /// Add a transport to the composite.
-    pub fn with_transport<T: Transport + 'static>(mut self, transport: T) -> Self {
-        self.transports.push(Arc::new(transport));
-        self
+    /// Create a builder for constructing a composite transport.
+    pub fn builder() -> CompositeTransportBuilder {
+        CompositeTransportBuilder::new()
     }
 
-    /// Add an Arc-wrapped transport to the composite.
-    pub fn with_arc_transport(mut self, transport: Arc<dyn Transport>) -> Self {
-        self.transports.push(transport);
-        self
+    /// Add a transport to the composite (builder pattern, sync).
+    ///
+    /// **Note**: This consumes and recreates the transport. For runtime addition
+    /// in async contexts, use [`add_transport`](Self::add_transport) instead.
+    pub fn with_transport<T: Transport + 'static>(self, transport: T) -> Self {
+        // Extract existing transports, add new one, return new composite
+        let mut transports = self.transports.into_inner();
+        transports.push(Arc::new(transport));
+        Self {
+            transports: RwLock::new(transports),
+        }
+    }
+
+    /// Add an Arc-wrapped transport to the composite (builder pattern, sync).
+    ///
+    /// **Note**: This consumes and recreates the transport. For runtime addition
+    /// in async contexts, use [`add_arc_transport`](Self::add_arc_transport) instead.
+    pub fn with_arc_transport(self, transport: Arc<dyn Transport>) -> Self {
+        let mut transports = self.transports.into_inner();
+        transports.push(transport);
+        Self {
+            transports: RwLock::new(transports),
+        }
+    }
+
+    /// Add a transport at runtime.
+    ///
+    /// This method can be called from async contexts to dynamically
+    /// add new transports discovered during operation.
+    pub async fn add_transport<T: Transport + 'static>(&self, transport: T) {
+        let mut transports = self.transports.write().await;
+        transports.push(Arc::new(transport));
+        debug!("Added transport at runtime, total: {}", transports.len());
+    }
+
+    /// Add an Arc-wrapped transport at runtime.
+    ///
+    /// This method can be called from async contexts to dynamically
+    /// add new transports discovered during operation.
+    pub async fn add_arc_transport(&self, transport: Arc<dyn Transport>) {
+        let mut transports = self.transports.write().await;
+        transports.push(transport);
+        debug!("Added transport at runtime, total: {}", transports.len());
     }
 
     /// Create a composite from two optional transports.
@@ -57,24 +142,48 @@ impl CompositeTransport {
         http: Option<H>,
         mqtt: Option<M>,
     ) -> Self {
-        let mut composite = Self::new();
+        let mut builder = Self::builder();
         if let Some(h) = http {
-            composite = composite.with_transport(h);
+            builder = builder.with_transport(h);
         }
         if let Some(m) = mqtt {
-            composite = composite.with_transport(m);
+            builder = builder.with_transport(m);
         }
-        composite
+        builder.build()
     }
 
-    /// Check if any transports are configured.
+    /// Check if any transports are configured (async version).
+    pub async fn is_empty_async(&self) -> bool {
+        self.transports.read().await.is_empty()
+    }
+
+    /// Check if any transports are configured (sync version).
+    ///
+    /// **Note**: This acquires a blocking read lock. Use in sync contexts only.
     pub fn is_empty(&self) -> bool {
-        self.transports.is_empty()
+        // Try to get lock without blocking if possible
+        match self.transports.try_read() {
+            Ok(guard) => guard.is_empty(),
+            Err(_) => {
+                // Fallback: assume not empty if we can't get lock
+                false
+            }
+        }
     }
 
-    /// Get the number of configured transports.
+    /// Get the number of configured transports (async version).
+    pub async fn len_async(&self) -> usize {
+        self.transports.read().await.len()
+    }
+
+    /// Get the number of configured transports (sync version).
+    ///
+    /// **Note**: This tries to acquire a read lock. Returns 0 if lock unavailable.
     pub fn len(&self) -> usize {
-        self.transports.len()
+        match self.transports.try_read() {
+            Ok(guard) => guard.len(),
+            Err(_) => 0,
+        }
     }
 
     /// Internal helper to broadcast an operation to all transports.
@@ -83,16 +192,18 @@ impl CompositeTransport {
         F: Fn(Arc<dyn Transport>) -> Fut,
         Fut: std::future::Future<Output = Result<(), TransportError>>,
     {
-        if self.transports.is_empty() {
+        // Take a read lock and clone the transport list
+        let transports = self.transports.read().await.clone();
+
+        if transports.is_empty() {
             return Err(TransportError::Network(
                 "No transports configured".to_string(),
             ));
         }
 
-        let futures: Vec<_> = self
-            .transports
-            .iter()
-            .cloned()
+        let transport_count = transports.len();
+        let futures: Vec<_> = transports
+            .into_iter()
             .map(|t| op(t))
             .collect();
 
@@ -109,13 +220,13 @@ impl CompositeTransport {
             trace!(
                 "Broadcast succeeded on {}/{} transports",
                 success_count,
-                self.transports.len()
+                transport_count
             );
             if !errors.is_empty() {
                 warn!(
                     "Some transports failed ({} of {}): {:?}",
                     errors.len(),
-                    self.transports.len(),
+                    transport_count,
                     errors.iter().map(|e| e.to_string()).collect::<Vec<_>>()
                 );
             }
@@ -305,5 +416,25 @@ mod tests {
         // Neither
         let composite = CompositeTransport::from_options::<MockTransport, MockTransport>(None, None);
         assert!(composite.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_add_transport_at_runtime() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+
+        // Start with one transport
+        let composite = CompositeTransport::new()
+            .with_transport(MockTransport::new(call_count.clone(), false));
+        assert_eq!(composite.len(), 1);
+
+        // Add another at runtime
+        composite.add_transport(MockTransport::new(call_count.clone(), false)).await;
+        assert_eq!(composite.len_async().await, 2);
+
+        // Both transports should be called
+        let envelope = make_test_envelope();
+        let result = composite.submit_message(envelope).await;
+        assert!(result.is_ok());
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
     }
 }

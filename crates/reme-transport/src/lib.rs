@@ -25,7 +25,7 @@ pub mod mqtt_target;
 #[cfg(feature = "embedded")]
 pub mod embedded_target;
 
-pub use composite::CompositeTransport;
+pub use composite::{CompositeTransport, CompositeTransportBuilder};
 pub use http::NodeSpec;
 pub use http_target::{HttpTarget, HttpTargetConfig};
 pub use receiver::{MessageReceiver, ReceiverConfig, ReceiverHandle};
