@@ -246,8 +246,8 @@ fn popup_area_fixed(area: Rect, percent_x: u16, min_height: u16) -> Rect {
 
 /// Render the add contact popup
 fn render_add_contact_popup(frame: &mut Frame, app: &App) {
-    // Fixed height: border(2) + margin(2) + instructions(2) + public_id(3) + name(3) + error(2) + hints(1) = 15
-    let area = popup_area_fixed(frame.area(), 60, 17);
+    // Fixed height: border(2) + margin(2) + instructions(1) + public_id(3) + name(3) + error(1) + hints(1) = 13
+    let area = popup_area_fixed(frame.area(), 60, 13);
 
     // Clear the background
     frame.render_widget(Clear, area);
@@ -266,10 +266,10 @@ fn render_add_contact_popup(frame: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(2), // Instructions
+            Constraint::Length(1), // Instructions
             Constraint::Length(3), // Public ID label + input
             Constraint::Length(3), // Name label + input
-            Constraint::Length(2), // Error message area
+            Constraint::Length(1), // Error message area
             Constraint::Length(1), // Button hints
         ])
         .split(inner);
@@ -328,8 +328,8 @@ fn render_add_contact_popup(frame: &mut Frame, app: &App) {
 
 /// Render the "My Identity" popup
 fn render_my_id_popup(frame: &mut Frame, app: &App) {
-    // Fixed height: border(2) + margin(2) + label(2) + id_box(3) + spacer(1) + hints(1) = 11
-    let area = popup_area_fixed(frame.area(), 70, 13);
+    // Fixed height: border(2) + margin(2) + label(1) + id_box(3) + hints(1) = 9
+    let area = popup_area_fixed(frame.area(), 70, 9);
 
     // Clear the background
     frame.render_widget(Clear, area);
@@ -348,15 +348,14 @@ fn render_my_id_popup(frame: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(2), // Label
+            Constraint::Length(1), // Label
             Constraint::Length(3), // Public ID (with border)
-            Constraint::Length(1), // Spacer
             Constraint::Length(1), // Hints
         ])
         .split(inner);
 
     // Label
-    let label = Paragraph::new("Your Public ID (share this with others to receive messages):")
+    let label = Paragraph::new("Your Public ID (share with others):")
         .style(Style::default().fg(Color::White));
     frame.render_widget(label, chunks[0]);
 
@@ -374,16 +373,16 @@ fn render_my_id_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(id_text, id_inner);
 
     // Hints
-    let hints = Paragraph::new("Press Esc, Enter, 'q', or 'i' to close")
+    let hints = Paragraph::new("Esc to close")
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
-    frame.render_widget(hints, chunks[3]);
+    frame.render_widget(hints, chunks[2]);
 }
 
 /// Render the add upstream popup
 fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
-    // Fixed height: border(2) + margin(2) + instructions(2) + type(3) + url(3) + error(2) + hints(1) = 15
-    let area = popup_area_fixed(frame.area(), 60, 17);
+    // Fixed height: border(2) + margin(2) + instructions(1) + type(3) + url(3) + error(1) + hints(1) = 13
+    let area = popup_area_fixed(frame.area(), 60, 13);
 
     // Clear the background
     frame.render_widget(Clear, area);
@@ -402,17 +401,17 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(2), // Instructions
+            Constraint::Length(1), // Instructions
             Constraint::Length(3), // Type selector
             Constraint::Length(3), // URL input
-            Constraint::Length(2), // Error message area
+            Constraint::Length(1), // Error message area
             Constraint::Length(1), // Button hints
         ])
         .split(inner);
 
     // Instructions
     let instructions =
-        Paragraph::new("Add an ephemeral HTTP or MQTT upstream for this session")
+        Paragraph::new("Add HTTP or MQTT upstream for this session")
             .style(Style::default().fg(Color::DarkGray))
             .wrap(Wrap { trim: true });
     frame.render_widget(instructions, chunks[0]);
