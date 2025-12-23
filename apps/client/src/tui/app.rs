@@ -229,32 +229,27 @@ impl<'a> AddUpstreamPopup<'a> {
             return Err("URL is required".to_string());
         }
 
-        // Basic URL validation
-        match self.transport_type {
-            UpstreamType::Http => {
-                if !url.starts_with("http://") && !url.starts_with("https://") {
-                    return Err("HTTP URL must start with http:// or https://".to_string());
-                }
-                // Basic sanity check: must have host after scheme
-                let after_scheme = url.strip_prefix("http://")
-                    .or_else(|| url.strip_prefix("https://"))
-                    .unwrap_or("");
-                if after_scheme.is_empty() || after_scheme.starts_with('/') {
-                    return Err("Invalid HTTP URL: missing host".to_string());
-                }
-            }
-            UpstreamType::Mqtt => {
-                if !url.starts_with("mqtt://") && !url.starts_with("mqtts://") {
-                    return Err("MQTT URL must start with mqtt:// or mqtts://".to_string());
-                }
-                // Basic sanity check: must have host after scheme
-                let after_scheme = url.strip_prefix("mqtt://")
-                    .or_else(|| url.strip_prefix("mqtts://"))
-                    .unwrap_or("");
-                if after_scheme.is_empty() || after_scheme.starts_with('/') {
-                    return Err("Invalid MQTT URL: missing host".to_string());
-                }
-            }
+        // Get schemes and type name based on transport type
+        let (schemes, type_name) = match self.transport_type {
+            UpstreamType::Http => (&["http://", "https://"][..], "HTTP"),
+            UpstreamType::Mqtt => (&["mqtt://", "mqtts://"][..], "MQTT"),
+        };
+
+        // Check scheme prefix
+        if !schemes.iter().any(|s| url.starts_with(s)) {
+            return Err(format!(
+                "{} URL must start with {} or {}",
+                type_name, schemes[0], schemes[1]
+            ));
+        }
+
+        // Basic sanity check: must have host after scheme
+        let after_scheme = schemes
+            .iter()
+            .find_map(|s| url.strip_prefix(s))
+            .unwrap_or("");
+        if after_scheme.is_empty() || after_scheme.starts_with('/') {
+            return Err(format!("Invalid {} URL: missing host", type_name));
         }
 
         Ok(url)
@@ -1296,7 +1291,9 @@ impl<'a> App<'a> {
             }
         }
 
-        // Track in upstreams list for display (runtime-added = direct + ephemeral)
+        // Track in upstreams list for display
+        // Runtime-added upstreams default to Direct (typically LAN peers)
+        // User can add Quorum infrastructure via config file
         self.upstreams.push(UpstreamInfo {
             transport_type,
             url: url.to_string(),

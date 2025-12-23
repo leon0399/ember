@@ -159,9 +159,8 @@ impl CompositeTransport {
 
     /// Check if any transports are configured (sync version).
     ///
-    /// **Note**: This acquires a blocking read lock. Use in sync contexts only.
+    /// **Note**: This tries to acquire a read lock. Returns false if lock unavailable.
     pub fn is_empty(&self) -> bool {
-        // Try to get lock without blocking if possible
         match self.transports.try_read() {
             Ok(guard) => guard.is_empty(),
             Err(_) => {
@@ -178,11 +177,12 @@ impl CompositeTransport {
 
     /// Get the number of configured transports (sync version).
     ///
-    /// **Note**: This tries to acquire a read lock. Returns 0 if lock unavailable.
+    /// **Note**: This tries to acquire a read lock. Returns 1 if lock unavailable
+    /// (conservative: assumes not empty, consistent with `is_empty()`).
     pub fn len(&self) -> usize {
         match self.transports.try_read() {
             Ok(guard) => guard.len(),
-            Err(_) => 0,
+            Err(_) => 1, // Conservative: assume not empty if lock is contended
         }
     }
 

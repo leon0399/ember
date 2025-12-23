@@ -490,9 +490,9 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
 
 /// Render the view upstreams popup
 fn render_upstreams_popup(frame: &mut Frame, app: &App) {
-    // Calculate height based on number of upstreams (min 5, max 15 rows for list)
+    // Calculate height based on number of upstreams (clamp to 1-12 rows)
     let list_height = (app.upstreams.len() as u16).clamp(1, 12);
-    // Total: border(2) + margin(2) + list + legend(1) + hints(1) = 7 + list_height
+    // Total: border(2) + margin(2) + list + legend(1) + hints(1) + padding(1) = 7 + list_height
     let total_height = 7 + list_height;
     let area = popup_area_fixed(frame.area(), 70, total_height);
 
