@@ -233,9 +233,11 @@ fn render_status(frame: &mut Frame, app: &App) {
     frame.render_widget(status, status_area);
 }
 
-/// Calculate centered popup area
-fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
-    let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
+/// Calculate centered popup area with fixed height
+fn popup_area_fixed(area: Rect, percent_x: u16, min_height: u16) -> Rect {
+    // Use fixed height, capped to available space
+    let height = min_height.min(area.height);
+    let vertical = Layout::vertical([Constraint::Length(height)]).flex(Flex::Center);
     let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
     let [area] = vertical.areas(area);
     let [area] = horizontal.areas(area);
@@ -244,9 +246,8 @@ fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
 
 /// Render the add contact popup
 fn render_add_contact_popup(frame: &mut Frame, app: &App) {
-    // Calculate popup area (60% width, 60% height, centered)
-    // Minimum height needed: border(2) + margin(2) + instructions(2) + public_id(3) + name(3) + error(2) + hints(1) = 15
-    let area = popup_area(frame.area(), 60, 60);
+    // Fixed height: border(2) + margin(2) + instructions(2) + public_id(3) + name(3) + error(2) + hints(1) = 15
+    let area = popup_area_fixed(frame.area(), 60, 17);
 
     // Clear the background
     frame.render_widget(Clear, area);
@@ -327,8 +328,8 @@ fn render_add_contact_popup(frame: &mut Frame, app: &App) {
 
 /// Render the "My Identity" popup
 fn render_my_id_popup(frame: &mut Frame, app: &App) {
-    // Calculate popup area (70% width, 35% height, centered)
-    let area = popup_area(frame.area(), 70, 35);
+    // Fixed height: border(2) + margin(2) + label(2) + id_box(3) + spacer(1) + hints(1) = 11
+    let area = popup_area_fixed(frame.area(), 70, 13);
 
     // Clear the background
     frame.render_widget(Clear, area);
@@ -381,9 +382,8 @@ fn render_my_id_popup(frame: &mut Frame, app: &App) {
 
 /// Render the add upstream popup
 fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
-    // Calculate popup area (60% width, 60% height, centered)
-    // Minimum height needed: border(2) + margin(2) + instructions(2) + type(3) + url(3) + error(2) + hints(1) = 15
-    let area = popup_area(frame.area(), 60, 60);
+    // Fixed height: border(2) + margin(2) + instructions(2) + type(3) + url(3) + error(2) + hints(1) = 15
+    let area = popup_area_fixed(frame.area(), 60, 17);
 
     // Clear the background
     frame.render_widget(Clear, area);
