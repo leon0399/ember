@@ -476,21 +476,7 @@ impl<'a> App<'a> {
             // Check for incoming messages from HTTP polling (non-blocking)
             while let Ok(event) = msg_events.try_recv() {
                 if let TransportEvent::Message(envelope) = event {
-                    match self.client.process_message(&envelope).await {
-                        Ok(msg) => {
-                            let content = match &msg.content {
-                                Content::Text(t) => t.body.clone(),
-                                Content::Receipt(r) => format!("[Receipt: {:?}]", r.kind),
-                                _ => "[Unknown content]".to_string(),
-                            };
-                            self.handle_incoming_message(msg.from, content);
-                        }
-                        Err(e) => {
-                            // Log message processing failure (don't silently drop)
-                            tracing::warn!("Failed to process incoming HTTP message: {}", e);
-                            self.status = format!("Message decrypt failed: {}", e);
-                        }
-                    }
+                    self.process_incoming_envelope(&envelope, "HTTP").await;
                 }
             }
 
@@ -510,20 +496,7 @@ impl<'a> App<'a> {
                 match event {
                     NodeEvent::MessageReceived(envelope) => {
                         debug!("Received message from embedded node");
-                        match self.client.process_message(&envelope).await {
-                            Ok(msg) => {
-                                let content = match &msg.content {
-                                    Content::Text(t) => t.body.clone(),
-                                    Content::Receipt(r) => format!("[Receipt: {:?}]", r.kind),
-                                    _ => "[Unknown content]".to_string(),
-                                };
-                                self.handle_incoming_message(msg.from, content);
-                            }
-                            Err(e) => {
-                                tracing::warn!("Failed to process embedded node message: {}", e);
-                                self.status = format!("Message decrypt failed: {}", e);
-                            }
-                        }
+                        self.process_incoming_envelope(&envelope, "embedded node").await;
                     }
                     NodeEvent::Error(e) => {
                         tracing::error!("Embedded node error: {}", e);
@@ -561,7 +534,42 @@ impl<'a> App<'a> {
             }
         }
 
+        // Graceful shutdown of embedded node
+        self.shutdown_embedded_node().await;
+
         Ok(())
+    }
+
+    /// Shutdown the embedded node gracefully.
+    async fn shutdown_embedded_node(&self) {
+        if let Some(ref handle) = self.embedded_node_handle {
+            debug!("Shutting down embedded node...");
+            if let Err(e) = handle.shutdown().await {
+                warn!(error = %e, "Failed to shutdown embedded node gracefully");
+            } else {
+                info!("Embedded node shutdown complete");
+            }
+        }
+    }
+
+    /// Process an incoming envelope from any transport source.
+    ///
+    /// Decrypts the message, extracts content, and updates the UI.
+    async fn process_incoming_envelope(&mut self, envelope: &reme_message::OuterEnvelope, source: &str) {
+        match self.client.process_message(envelope).await {
+            Ok(msg) => {
+                let content = match &msg.content {
+                    Content::Text(t) => t.body.clone(),
+                    Content::Receipt(r) => format!("[Receipt: {:?}]", r.kind),
+                    _ => "[Unknown content]".to_string(),
+                };
+                self.handle_incoming_message(msg.from, content);
+            }
+            Err(e) => {
+                warn!("Failed to process {} message: {}", source, e);
+                self.status = format!("Message decrypt failed: {}", e);
+            }
+        }
     }
 
     /// Get or create a conversation for a contact, returns the index

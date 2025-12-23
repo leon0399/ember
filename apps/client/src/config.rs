@@ -447,6 +447,8 @@ pub struct EmbeddedNodeConfig {
 
     /// HTTP bind address for LAN peers (e.g., "0.0.0.0:23004").
     /// If not set, no HTTP server is started.
+    /// Reserved for Phase 6: HTTP server integration.
+    #[allow(unused)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http_bind: Option<String>,
 
@@ -480,6 +482,8 @@ impl Default for EmbeddedNodeConfig {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct DirectPeerConfig {
     /// The peer's public ID (base64-encoded 32-byte public key).
+    /// Reserved for Phase 6: routing messages to specific peers.
+    #[allow(unused)]
     pub public_id: String,
 
     /// HTTP address of the peer's embedded node (e.g., "http://192.168.1.101:23004").
@@ -1271,5 +1275,89 @@ mod tests {
         assert_eq!(transport.direct_tier_timeout, Duration::from_millis(1000));
         assert_eq!(transport.quorum_tier_timeout, Duration::from_secs(10));
         assert!(transport.excluded_targets.is_empty());
+    }
+
+    #[test]
+    fn test_embedded_node_config_defaults() {
+        let config = EmbeddedNodeConfig::default();
+        assert!(!config.enabled);
+        assert!(config.http_bind.is_none());
+        assert_eq!(config.max_messages, 1000);
+        assert_eq!(config.default_ttl_secs, 86400);
+    }
+
+    #[test]
+    fn test_embedded_node_config_deserialize_full() {
+        let json = r#"{
+            "enabled": true,
+            "http_bind": "0.0.0.0:23004",
+            "max_messages": 500,
+            "default_ttl_secs": 3600
+        }"#;
+        let config: EmbeddedNodeConfig = serde_json::from_str(json).unwrap();
+        assert!(config.enabled);
+        assert_eq!(config.http_bind, Some("0.0.0.0:23004".to_string()));
+        assert_eq!(config.max_messages, 500);
+        assert_eq!(config.default_ttl_secs, 3600);
+    }
+
+    #[test]
+    fn test_embedded_node_config_deserialize_minimal() {
+        // Only enabled flag, rest should use defaults
+        let json = r#"{"enabled": true}"#;
+        let config: EmbeddedNodeConfig = serde_json::from_str(json).unwrap();
+        assert!(config.enabled);
+        assert!(config.http_bind.is_none());
+        assert_eq!(config.max_messages, 1000);
+        assert_eq!(config.default_ttl_secs, 86400);
+    }
+
+    #[test]
+    fn test_direct_peer_config_deserialize() {
+        let json = r#"{
+            "public_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "address": "http://192.168.1.101:23004",
+            "name": "Bob (LAN)"
+        }"#;
+        let config: DirectPeerConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.public_id, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
+        assert_eq!(config.address, "http://192.168.1.101:23004");
+        assert_eq!(config.name, Some("Bob (LAN)".to_string()));
+    }
+
+    #[test]
+    fn test_direct_peer_config_deserialize_without_name() {
+        let json = r#"{
+            "public_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "address": "http://192.168.1.101:23004"
+        }"#;
+        let config: DirectPeerConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.public_id, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
+        assert_eq!(config.address, "http://192.168.1.101:23004");
+        assert!(config.name.is_none());
+    }
+
+    #[test]
+    fn test_direct_peers_in_app_config() {
+        let toml = r#"
+            data_dir = "/tmp/test"
+            log_level = "info"
+
+            [[http]]
+            url = "http://localhost:23003"
+
+            [[direct_peers]]
+            public_id = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+            address = "http://192.168.1.101:23004"
+            name = "Alice"
+
+            [[direct_peers]]
+            public_id = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
+            address = "http://192.168.1.102:23004"
+        "#;
+        let config: AppConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.direct_peers.len(), 2);
+        assert_eq!(config.direct_peers[0].name, Some("Alice".to_string()));
+        assert!(config.direct_peers[1].name.is_none());
     }
 }
