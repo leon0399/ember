@@ -261,12 +261,16 @@ impl<'a> AddUpstreamPopup<'a> {
     }
 }
 
-/// Source of a configured upstream
+/// Delivery tier for an upstream transport
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UpstreamSource {
-    /// Configured in config file
-    Config,
-    /// Added at runtime via popup
+pub enum UpstreamTier {
+    /// Tier 2: Stable infrastructure (HTTP mailboxes, MQTT brokers)
+    /// Messages stored for later retrieval by recipient
+    Quorum,
+    /// Tier 1: Direct peers (LAN P2P via direct_peers config)
+    /// Direct delivery to recipient's embedded node
+    Direct,
+    /// Runtime-added ephemeral transport (session-only)
     Ephemeral,
 }
 
@@ -277,8 +281,8 @@ pub struct UpstreamInfo {
     pub transport_type: UpstreamType,
     /// URL or address
     pub url: String,
-    /// Source (config or ephemeral)
-    pub source: UpstreamSource,
+    /// Delivery tier
+    pub tier: UpstreamTier,
     /// Optional label
     pub label: Option<String>,
 }
@@ -468,7 +472,7 @@ impl<'a> App<'a> {
                 upstreams.push(UpstreamInfo {
                     transport_type: UpstreamType::Http,
                     url: node.url.clone(),
-                    source: UpstreamSource::Config,
+                    tier: UpstreamTier::Quorum,
                     label: node.label.clone(),
                 });
             }
@@ -482,7 +486,7 @@ impl<'a> App<'a> {
                 upstreams.push(UpstreamInfo {
                     transport_type: UpstreamType::Mqtt,
                     url: broker.url.clone(),
-                    source: UpstreamSource::Config,
+                    tier: UpstreamTier::Quorum,
                     label: broker.label.clone(),
                 });
             }
@@ -506,11 +510,11 @@ impl<'a> App<'a> {
                         "Added direct peer"
                     );
                     composite = composite.with_transport(target);
-                    // Track as config-based (direct_peers are in config)
+                    // Track as direct peer (Tier 1 - LAN P2P)
                     upstreams.push(UpstreamInfo {
                         transport_type: UpstreamType::Http,
                         url: peer.address.clone(),
-                        source: UpstreamSource::Config,
+                        tier: UpstreamTier::Direct,
                         label: peer.name.clone(),
                     });
                 }
@@ -1293,7 +1297,7 @@ impl<'a> App<'a> {
         self.upstreams.push(UpstreamInfo {
             transport_type,
             url: url.to_string(),
-            source: UpstreamSource::Ephemeral,
+            tier: UpstreamTier::Ephemeral,
             label: None,
         });
 

@@ -13,7 +13,7 @@ use ratatui::{
     Frame,
 };
 
-use super::app::{AddContactField, AddUpstreamField, App, Focus, UpstreamSource, UpstreamType};
+use super::app::{AddContactField, AddUpstreamField, App, Focus, UpstreamTier, UpstreamType};
 
 /// Render the entire UI
 pub fn render(frame: &mut Frame, app: &App) {
@@ -533,17 +533,19 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
                     UpstreamType::Http => "HTTP",
                     UpstreamType::Mqtt => "MQTT",
                 };
-                let source_str = match upstream.source {
-                    UpstreamSource::Config => "config",
-                    UpstreamSource::Ephemeral => "session",
+                let tier_str = match upstream.tier {
+                    UpstreamTier::Quorum => "quorum",
+                    UpstreamTier::Direct => "direct",
+                    UpstreamTier::Ephemeral => "session",
                 };
                 let type_style = match upstream.transport_type {
                     UpstreamType::Http => Style::default().fg(Color::Blue),
                     UpstreamType::Mqtt => Style::default().fg(Color::Magenta),
                 };
-                let source_style = match upstream.source {
-                    UpstreamSource::Config => Style::default().fg(Color::Green),
-                    UpstreamSource::Ephemeral => Style::default().fg(Color::Yellow),
+                let tier_style = match upstream.tier {
+                    UpstreamTier::Quorum => Style::default().fg(Color::Green),
+                    UpstreamTier::Direct => Style::default().fg(Color::Cyan),
+                    UpstreamTier::Ephemeral => Style::default().fg(Color::Yellow),
                 };
 
                 let label_part = if let Some(ref label) = upstream.label {
@@ -558,7 +560,7 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
                     Span::styled(&upstream.url, Style::default().fg(Color::White)),
                     Span::styled(label_part, Style::default().fg(Color::DarkGray)),
                     Span::raw(" "),
-                    Span::styled(format!("[{}]", source_str), source_style),
+                    Span::styled(format!("[{}]", tier_str), tier_style),
                 ]);
 
                 ListItem::new(line)
