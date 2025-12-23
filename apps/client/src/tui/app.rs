@@ -34,7 +34,7 @@ pub type AppResult<T> = Result<T, Box<dyn std::error::Error>>;
 const PUBLIC_ID_HEX_LENGTH: usize = 64;
 
 /// Help text shown in status bar (Alt+H or initial startup)
-const HELP_TEXT: &str = "Alt+A: add | Alt+U: upstream | Alt+I: identity | Alt+H: help | Tab: switch | Ctrl+Q: quit";
+const HELP_TEXT: &str = "Alt+A/F2: add | Alt+U/F4: upstream | Alt+I/F3: identity | Tab: switch | Ctrl+Q: quit";
 
 /// Short help hint for status bar
 const HELP_HINT: &str = "Alt+H for help";
@@ -794,34 +794,59 @@ impl<'a> App<'a> {
         }
 
         // Global shortcuts (Alt+key) - work from any focus
+        // Note: Handle both lowercase and uppercase since some terminals send different cases
         if key.modifiers.contains(KeyModifiers::ALT) {
             match key.code {
-                KeyCode::Char('a') => {
+                KeyCode::Char('a') | KeyCode::Char('A') => {
                     // Alt+A: Add contact
                     self.show_add_contact_popup = true;
                     self.add_contact_popup.reset();
                     self.status = "Add Contact (Tab: switch, Enter: confirm, Esc: cancel)".to_string();
                     return Ok(());
                 }
-                KeyCode::Char('i') => {
+                KeyCode::Char('i') | KeyCode::Char('I') => {
                     // Alt+I: Show identity
                     self.show_my_id_popup = true;
                     return Ok(());
                 }
-                KeyCode::Char('u') => {
+                KeyCode::Char('u') | KeyCode::Char('U') => {
                     // Alt+U: Add upstream
                     self.show_add_upstream_popup = true;
                     self.add_upstream_popup.reset();
                     self.status = "Add Upstream (Tab: switch, ←/→: type, Enter: add, Esc: cancel)".to_string();
                     return Ok(());
                 }
-                KeyCode::Char('h') => {
+                KeyCode::Char('h') | KeyCode::Char('H') => {
                     // Alt+H: Show help
                     self.status = HELP_TEXT.to_string();
                     return Ok(());
                 }
                 _ => {}
             }
+        }
+
+        // Function key fallbacks for terminals where Alt doesn't work properly
+        match key.code {
+            KeyCode::F(2) => {
+                // F2: Add contact (fallback for Alt+A)
+                self.show_add_contact_popup = true;
+                self.add_contact_popup.reset();
+                self.status = "Add Contact (Tab: switch, Enter: confirm, Esc: cancel)".to_string();
+                return Ok(());
+            }
+            KeyCode::F(3) => {
+                // F3: Show identity (fallback for Alt+I)
+                self.show_my_id_popup = true;
+                return Ok(());
+            }
+            KeyCode::F(4) => {
+                // F4: Add upstream (fallback for Alt+U)
+                self.show_add_upstream_popup = true;
+                self.add_upstream_popup.reset();
+                self.status = "Add Upstream (Tab: switch, ←/→: type, Enter: add, Esc: cancel)".to_string();
+                return Ok(());
+            }
+            _ => {}
         }
 
         match key.code {
