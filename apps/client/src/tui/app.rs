@@ -447,7 +447,7 @@ impl<'a> App<'a> {
             // Draw UI
             terminal.draw(|frame| ui::render(frame, self))?;
 
-            // Check for incoming messages (non-blocking)
+            // Check for incoming messages from HTTP polling (non-blocking)
             while let Ok(event) = msg_events.try_recv() {
                 if let TransportEvent::Message(envelope) = event {
                     match self.client.process_message(&envelope).await {
@@ -461,9 +461,47 @@ impl<'a> App<'a> {
                         }
                         Err(e) => {
                             // Log message processing failure (don't silently drop)
-                            tracing::warn!("Failed to process incoming message: {}", e);
+                            tracing::warn!("Failed to process incoming HTTP message: {}", e);
                             self.status = format!("Message decrypt failed: {}", e);
                         }
+                    }
+                }
+            }
+
+            // Check for incoming messages from embedded node (non-blocking)
+            // Collect events first to avoid borrow conflicts
+            let node_events: Vec<NodeEvent> = if let Some(ref mut event_rx) = self.node_event_rx {
+                let mut events = Vec::new();
+                while let Ok(event) = event_rx.try_recv() {
+                    events.push(event);
+                }
+                events
+            } else {
+                Vec::new()
+            };
+
+            for event in node_events {
+                match event {
+                    NodeEvent::MessageReceived(envelope) => {
+                        debug!("Received message from embedded node");
+                        match self.client.process_message(&envelope).await {
+                            Ok(msg) => {
+                                let content = match &msg.content {
+                                    Content::Text(t) => t.body.clone(),
+                                    Content::Receipt(r) => format!("[Receipt: {:?}]", r.kind),
+                                    _ => "[Unknown content]".to_string(),
+                                };
+                                self.handle_incoming_message(msg.from, content);
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to process embedded node message: {}", e);
+                                self.status = format!("Message decrypt failed: {}", e);
+                            }
+                        }
+                    }
+                    NodeEvent::Error(e) => {
+                        tracing::error!("Embedded node error: {}", e);
+                        self.status = format!("Node error: {}", e);
                     }
                 }
             }
