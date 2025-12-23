@@ -26,10 +26,45 @@ use crate::error::NodeError;
 /// Configuration for the persistent store
 #[derive(Debug, Clone)]
 pub struct PersistentStoreConfig {
-    /// Maximum messages per routing key (mailbox)
+    /// Maximum messages per routing key (mailbox). Must be > 0.
     pub max_messages_per_mailbox: usize,
-    /// Default TTL for messages without explicit TTL (seconds)
+    /// Default TTL for messages without explicit TTL (seconds). Must be > 0.
     pub default_ttl_secs: u64,
+}
+
+impl PersistentStoreConfig {
+    /// Create a new configuration with validation.
+    ///
+    /// # Errors
+    /// Returns `NodeError::InvalidConfig` if:
+    /// - `max_messages_per_mailbox` is 0
+    /// - `default_ttl_secs` is 0
+    pub fn new(max_messages_per_mailbox: usize, default_ttl_secs: u64) -> Result<Self, NodeError> {
+        let config = Self {
+            max_messages_per_mailbox,
+            default_ttl_secs,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Validate the configuration.
+    ///
+    /// # Errors
+    /// Returns `NodeError::InvalidConfig` if any value is invalid.
+    pub fn validate(&self) -> Result<(), NodeError> {
+        if self.max_messages_per_mailbox == 0 {
+            return Err(NodeError::InvalidConfig(
+                "max_messages_per_mailbox must be greater than 0".to_string(),
+            ));
+        }
+        if self.default_ttl_secs == 0 {
+            return Err(NodeError::InvalidConfig(
+                "default_ttl_secs must be greater than 0".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Default for PersistentStoreConfig {
@@ -590,5 +625,115 @@ mod tests {
         let stats = store.stats().unwrap();
         assert_eq!(stats.mailbox_count, 2);
         assert_eq!(stats.total_messages, 3);
+    }
+
+    #[test]
+    fn test_get_message() {
+        let config = PersistentStoreConfig::default();
+        let store = PersistentMailboxStore::in_memory(config).unwrap();
+        let routing_key = RoutingKey::from_bytes([20u8; 16]);
+
+        let envelope = create_test_envelope(routing_key, Some(1));
+        let message_id = envelope.message_id;
+
+        store.enqueue(routing_key, envelope.clone()).unwrap();
+
+        // Should find existing message
+        let found = store.get_message(&message_id).unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().message_id, message_id);
+
+        // Should return None for non-existent ID
+        let fake_id = MessageID::new();
+        let not_found = store.get_message(&fake_id).unwrap();
+        assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_config_validation() {
+        // Valid config should succeed
+        let valid = PersistentStoreConfig::new(100, 3600);
+        assert!(valid.is_ok());
+
+        // Zero max_messages should fail
+        let zero_capacity = PersistentStoreConfig::new(0, 3600);
+        assert!(matches!(zero_capacity, Err(NodeError::InvalidConfig(_))));
+
+        // Zero TTL should fail
+        let zero_ttl = PersistentStoreConfig::new(100, 0);
+        assert!(matches!(zero_ttl, Err(NodeError::InvalidConfig(_))));
+
+        // Default should always be valid
+        let default_config = PersistentStoreConfig::default();
+        assert!(default_config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_cleanup_expired() {
+        // Use a very short TTL (1 second)
+        let config = PersistentStoreConfig {
+            max_messages_per_mailbox: 100,
+            default_ttl_secs: 1,
+        };
+        let store = PersistentMailboxStore::in_memory(config).unwrap();
+        let routing_key = RoutingKey::from_bytes([21u8; 16]);
+
+        // Enqueue with default TTL (1 second)
+        store
+            .enqueue(routing_key, create_test_envelope(routing_key, None))
+            .unwrap();
+
+        // Should have 1 message initially
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.total_messages, 1);
+
+        // Wait for expiration
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        // Message should now be expired
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.expired_pending_cleanup, 1);
+
+        // Cleanup should remove expired message
+        let cleaned = store.cleanup_expired().unwrap();
+        assert_eq!(cleaned, 1);
+
+        // Should be empty now
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.total_messages, 0);
+        assert_eq!(stats.expired_pending_cleanup, 0);
+    }
+
+    #[test]
+    fn test_expired_messages_excluded() {
+        // Use a very short TTL (1 second)
+        let config = PersistentStoreConfig {
+            max_messages_per_mailbox: 100,
+            default_ttl_secs: 1,
+        };
+        let store = PersistentMailboxStore::in_memory(config).unwrap();
+        let routing_key = RoutingKey::from_bytes([22u8; 16]);
+
+        // Enqueue with default TTL (1 second)
+        let envelope = create_test_envelope(routing_key, None);
+        let message_id = envelope.message_id;
+        store.enqueue(routing_key, envelope).unwrap();
+
+        // Should exist initially
+        assert!(store.has_message(&routing_key, &message_id).unwrap());
+        assert!(!store.get_message_ids(&routing_key).unwrap().is_empty());
+        assert!(store.get_message(&message_id).unwrap().is_some());
+
+        // Wait for expiration
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        // Expired messages should be excluded from queries
+        assert!(!store.has_message(&routing_key, &message_id).unwrap());
+        assert!(store.get_message_ids(&routing_key).unwrap().is_empty());
+        assert!(store.get_message(&message_id).unwrap().is_none());
+
+        // Fetch should also exclude expired messages
+        let fetched = store.fetch(&routing_key).unwrap();
+        assert!(fetched.is_empty());
     }
 }
