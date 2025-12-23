@@ -488,20 +488,8 @@ impl MailboxStore for PersistentMailboxStore {
     }
 
     fn delete_message(&self, message_id: &MessageID) -> Result<bool, NodeError> {
-        let message_id_bytes = message_id.as_bytes();
-
-        let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
-
-        let deleted = conn.execute(
-            "DELETE FROM mailbox_messages WHERE message_id = ?",
-            params![&message_id_bytes[..]],
-        )?;
-
-        if deleted > 0 {
-            debug!(?message_id, "message deleted via trait method");
-        }
-
-        Ok(deleted > 0)
+        // Delegate to the inherent method
+        PersistentMailboxStore::delete_message(self, message_id)
     }
 
     fn cleanup_expired(&self) -> Result<usize, NodeError> {

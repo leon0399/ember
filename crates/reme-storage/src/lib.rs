@@ -221,9 +221,12 @@ impl Storage {
     /// database file with its own connection. Both connections can safely
     /// coexist using SQLite's WAL mode.
     ///
+    /// # Note
+    /// For in-memory databases (testing mode), this creates a separate in-memory
+    /// mailbox store that does not share data with the main Storage connection.
+    ///
     /// # Errors
-    /// Returns an error if the database is in-memory (mailbox store requires
-    /// a file-based database for concurrent access) or if the connection fails.
+    /// Returns an error if opening the database connection fails.
     ///
     /// # Example
     /// ```ignore
