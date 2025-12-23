@@ -482,9 +482,9 @@ impl Default for EmbeddedNodeConfig {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct DirectPeerConfig {
     /// The peer's public ID (base64-encoded 32-byte public key).
-    /// Reserved for Phase 6: routing messages to specific peers.
-    #[allow(unused)]
-    pub public_id: String,
+    /// Optional - reserved for Phase 6: routing messages to specific peers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_id: Option<String>,
 
     /// HTTP address of the peer's embedded node (e.g., "http://192.168.1.101:23004").
     pub address: String,
@@ -1007,9 +1007,9 @@ default_ttl_secs = {embedded_ttl_secs}
 # Messages to these peers will be delivered directly via their embedded node.
 #
 # [[direct_peers]]
-# public_id = "BASE64_ENCODED_PUBLIC_ID"
 # address = "http://192.168.1.101:23004"
-# name = "Bob (LAN)"
+# name = "Bob (LAN)"                          # Optional
+# public_id = "BASE64_ENCODED_PUBLIC_ID"      # Optional, reserved for future
 "#,
         url = defaults.http[0].url,
         data_dir = defaults.data_dir.to_string_lossy(),
@@ -1320,21 +1320,33 @@ mod tests {
             "name": "Bob (LAN)"
         }"#;
         let config: DirectPeerConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(config.public_id, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
+        assert_eq!(config.public_id, Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string()));
         assert_eq!(config.address, "http://192.168.1.101:23004");
         assert_eq!(config.name, Some("Bob (LAN)".to_string()));
     }
 
     #[test]
-    fn test_direct_peer_config_deserialize_without_name() {
+    fn test_direct_peer_config_deserialize_without_public_id() {
+        // public_id is optional - minimal config with just address
         let json = r#"{
-            "public_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
             "address": "http://192.168.1.101:23004"
         }"#;
         let config: DirectPeerConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(config.public_id, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
+        assert!(config.public_id.is_none());
         assert_eq!(config.address, "http://192.168.1.101:23004");
         assert!(config.name.is_none());
+    }
+
+    #[test]
+    fn test_direct_peer_config_deserialize_with_name_only() {
+        let json = r#"{
+            "address": "http://192.168.1.101:23004",
+            "name": "Bob (LAN)"
+        }"#;
+        let config: DirectPeerConfig = serde_json::from_str(json).unwrap();
+        assert!(config.public_id.is_none());
+        assert_eq!(config.address, "http://192.168.1.101:23004");
+        assert_eq!(config.name, Some("Bob (LAN)".to_string()));
     }
 
     #[test]
@@ -1352,12 +1364,13 @@ mod tests {
             name = "Alice"
 
             [[direct_peers]]
-            public_id = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
             address = "http://192.168.1.102:23004"
         "#;
         let config: AppConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.direct_peers.len(), 2);
+        assert_eq!(config.direct_peers[0].public_id, Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string()));
         assert_eq!(config.direct_peers[0].name, Some("Alice".to_string()));
+        assert!(config.direct_peers[1].public_id.is_none());
         assert!(config.direct_peers[1].name.is_none());
     }
 }

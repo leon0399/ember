@@ -17,7 +17,7 @@ use reme_transport::http_target::{HttpTarget, HttpTargetConfig};
 use reme_transport::pool::TransportPool;
 use reme_transport::target::TargetKind;
 use reme_transport::{
-    CertPin, CompositeTransport, EmbeddedTarget, MessageReceiver, MqttBrokerSpec, MqttTransport,
+    CertPin, CompositeTransport, MessageReceiver, MqttBrokerSpec, MqttTransport,
     ReceiverConfig, TransportEvent,
 };
 use tokio::sync::mpsc;
@@ -318,11 +318,10 @@ impl<'a> App<'a> {
         if let Some(mqtt) = mqtt_transport {
             composite = composite.with_transport(mqtt);
         }
-        // Add embedded node as highest-priority transport if enabled
-        if let Some(ref handle) = embedded_node_handle {
-            let embedded_target = EmbeddedTarget::new(handle.clone());
-            composite = composite.with_transport(embedded_target);
-        }
+        // Note: Embedded node is intentionally NOT added to CompositeTransport here.
+        // In Phase 5, the embedded node has no HTTP server - storing messages locally
+        // would mask remote delivery failures since recipients can't fetch from us.
+        // Phase 6 will add HTTP server for inbound LAN messages, enabling bidirectional P2P.
 
         // Add direct peers as ephemeral targets for LAN P2P messaging
         for peer in &config.direct_peers {
