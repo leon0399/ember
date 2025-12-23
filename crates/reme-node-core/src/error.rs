@@ -4,6 +4,7 @@ use thiserror::Error;
 
 /// Errors from node operations
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum NodeError {
     /// Database error
     #[error("Database error: {0}")]
@@ -28,6 +29,10 @@ pub enum NodeError {
     /// Invalid message format
     #[error("Invalid message: {0}")]
     InvalidMessage(String),
+
+    /// Invalid configuration
+    #[error("Invalid configuration: {0}")]
+    InvalidConfig(String),
 }
 
 /// Result type for node operations
