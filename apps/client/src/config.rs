@@ -593,7 +593,7 @@ pub struct AppConfig {
 }
 
 fn default_http() -> Vec<HttpEndpoint> {
-    vec![HttpEndpoint::new("http://localhost:23003")]
+    vec![HttpEndpoint::new("http://localhost:23004")]
 }
 
 impl Default for AppConfig {
@@ -1052,7 +1052,7 @@ mod tests {
     fn test_default_config() {
         let config = AppConfig::default();
         assert_eq!(config.http.len(), 1);
-        assert_eq!(config.http[0].url, "http://localhost:23003");
+        assert_eq!(config.http[0].url, "http://localhost:23004");
         assert_eq!(config.http[0].cert_pin, None);
         assert!(config.mqtt.is_empty());
         assert!(!config.embedded_node.enabled);
@@ -1091,7 +1091,7 @@ mod tests {
     fn test_default_http() {
         let endpoints = default_http();
         assert_eq!(endpoints.len(), 1);
-        assert_eq!(endpoints[0].url, "http://localhost:23003");
+        assert_eq!(endpoints[0].url, "http://localhost:23004");
         assert_eq!(endpoints[0].cert_pin, None);
     }
 

@@ -17,8 +17,8 @@ use reme_transport::http_target::{HttpTarget, HttpTargetConfig};
 use reme_transport::pool::TransportPool;
 use reme_transport::target::TargetKind;
 use reme_transport::{
-    CertPin, CompositeTransport, MessageReceiver, MqttBrokerSpec, MqttTransport,
-    ReceiverConfig, TransportEvent,
+    CertPin, CompositeTransport, DeliveryTier, MessageReceiver, MqttBrokerSpec, MqttTransport,
+    ReceiverConfig, TargetId, TransportEvent, TransportRegistry, TransportTarget,
 };
 use tokio::sync::mpsc;
 use std::collections::{HashMap, VecDeque};
@@ -34,7 +34,7 @@ pub type AppResult<T> = Result<T, Box<dyn std::error::Error>>;
 const PUBLIC_ID_HEX_LENGTH: usize = 64;
 
 /// Help text shown in status bar (Alt+H or initial startup)
-const HELP_TEXT: &str = "Alt+A: add | Alt+I: identity | Alt+H: help | Tab: switch | Ctrl+Q: quit";
+const HELP_TEXT: &str = "Alt+A/F2: add | Alt+U/F4: upstream | Alt+V/F5: view | Alt+I/F3: identity | Ctrl+Q: quit";
 
 /// Short help hint for status bar
 const HELP_HINT: &str = "Alt+H for help";
@@ -59,6 +59,33 @@ pub enum AddContactField {
     #[default]
     PublicId,
     Name,
+}
+
+/// Transport type for ephemeral upstream
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UpstreamType {
+    #[default]
+    Http,
+    Mqtt,
+}
+
+impl UpstreamType {
+    /// Toggle between HTTP and MQTT
+    pub fn toggle(&mut self) {
+        *self = match self {
+            UpstreamType::Http => UpstreamType::Mqtt,
+            UpstreamType::Mqtt => UpstreamType::Http,
+        };
+    }
+}
+
+/// Which field is focused in the add upstream popup
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AddUpstreamField {
+    #[default]
+    Type,
+    Tier,
+    Url,
 }
 
 /// State for the add contact popup
@@ -149,6 +176,101 @@ impl<'a> AddContactPopup<'a> {
     }
 }
 
+/// State for the add upstream popup
+pub struct AddUpstreamPopup<'a> {
+    /// Currently focused field
+    pub focused_field: AddUpstreamField,
+    /// Selected transport type
+    pub transport_type: UpstreamType,
+    /// Selected delivery tier
+    pub tier: DeliveryTier,
+    /// URL input
+    pub url_input: TextArea<'a>,
+    /// Error message to display
+    pub error: Option<String>,
+}
+
+impl<'a> Default for AddUpstreamPopup<'a> {
+    fn default() -> Self {
+        let mut url_input = TextArea::default();
+        url_input.set_placeholder_text("http://192.168.1.50:23003");
+        url_input.set_cursor_line_style(Style::default());
+
+        Self {
+            focused_field: AddUpstreamField::Type,
+            transport_type: UpstreamType::Http,
+            tier: DeliveryTier::Direct,
+            url_input,
+            error: None,
+        }
+    }
+}
+
+impl<'a> AddUpstreamPopup<'a> {
+    /// Reset the popup to initial state
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Toggle focus between fields
+    pub fn toggle_field(&mut self) {
+        self.focused_field = match self.focused_field {
+            AddUpstreamField::Type => AddUpstreamField::Tier,
+            AddUpstreamField::Tier => AddUpstreamField::Url,
+            AddUpstreamField::Url => AddUpstreamField::Type,
+        };
+    }
+
+    /// Toggle the delivery tier
+    pub fn toggle_tier(&mut self) {
+        self.tier = match self.tier {
+            DeliveryTier::Direct => DeliveryTier::Quorum,
+            DeliveryTier::Quorum => DeliveryTier::BestEffort,
+            DeliveryTier::BestEffort => DeliveryTier::Direct,
+        };
+    }
+
+    /// Get the URL input (trimmed)
+    pub fn get_url(&self) -> String {
+        self.url_input.lines().join("").trim().to_string()
+    }
+
+    /// Validate the URL input
+    pub fn validate_url(&self) -> Result<String, String> {
+        let url = self.get_url();
+
+        if url.is_empty() {
+            return Err("URL is required".to_string());
+        }
+
+        // Get schemes and type name based on transport type
+        let (schemes, type_name) = match self.transport_type {
+            UpstreamType::Http => (&["http://", "https://"][..], "HTTP"),
+            UpstreamType::Mqtt => (&["mqtt://", "mqtts://"][..], "MQTT"),
+        };
+
+        // Check scheme prefix
+        if !schemes.iter().any(|s| url.starts_with(s)) {
+            return Err(format!(
+                "{} URL must start with {} or {}",
+                type_name, schemes[0], schemes[1]
+            ));
+        }
+
+        // Basic sanity check: must have host after scheme
+        let after_scheme = schemes
+            .iter()
+            .find_map(|s| url.strip_prefix(s))
+            .unwrap_or("");
+        if after_scheme.is_empty() || after_scheme.starts_with('/') {
+            return Err(format!("Invalid {} URL: missing host", type_name));
+        }
+
+        Ok(url)
+    }
+}
+
+
 /// A conversation/contact entry
 #[derive(Debug, Clone)]
 pub struct Conversation {
@@ -206,6 +328,14 @@ pub struct App<'a> {
     pub add_contact_popup: AddContactPopup<'a>,
     /// Whether the "my identity" popup is visible
     pub show_my_id_popup: bool,
+    /// Whether the add upstream popup is visible
+    pub show_add_upstream_popup: bool,
+    /// Add upstream popup state
+    pub add_upstream_popup: AddUpstreamPopup<'a>,
+    /// Whether the view upstreams popup is visible
+    pub show_upstreams_popup: bool,
+    /// Transport registry for querying and managing transports
+    pub registry: TransportRegistry,
     /// Outbox tick interval from config
     outbox_tick_interval: Duration,
 }
@@ -314,18 +444,24 @@ impl<'a> App<'a> {
 
         // Build composite transport for sending
         let mut composite = CompositeTransport::new();
+
+        // Add HTTP nodes from config
         if let Some(ref http) = http_pool {
             composite = composite.with_arc_transport(http.clone());
         }
+
+        // Add MQTT brokers from config
         if let Some(mqtt) = mqtt_transport {
             composite = composite.with_transport(mqtt);
         }
+
         // Note: Embedded node is intentionally NOT added to CompositeTransport here.
         // In Phase 5, the embedded node has no HTTP server - storing messages locally
         // would mask remote delivery failures since recipients can't fetch from us.
         // Phase 6 will add HTTP server for inbound LAN messages, enabling bidirectional P2P.
 
         // Add direct peers as ephemeral targets for LAN P2P messaging
+        let mut direct_peer_ids: Vec<(TargetId, Option<String>)> = Vec::new();
         for peer in &config.direct_peers {
             let target_config = HttpTargetConfig::new(&peer.address, TargetKind::Ephemeral)
                 .with_label(peer.name.as_deref().unwrap_or(&peer.address));
@@ -337,6 +473,7 @@ impl<'a> App<'a> {
                         name = peer.name.as_deref().unwrap_or("(unnamed)"),
                         "Added direct peer"
                     );
+                    direct_peer_ids.push((target.id().clone(), peer.name.clone()));
                     composite = composite.with_transport(target);
                 }
                 Err(e) => {
@@ -350,6 +487,23 @@ impl<'a> App<'a> {
         }
 
         let transport = Arc::new(composite);
+
+        // Create transport registry for UI queries
+        let mut registry = TransportRegistry::with_composite(transport.clone());
+        if let Some(ref http) = http_pool {
+            registry.set_http_pool(http.clone());
+        }
+
+        // Register MQTT brokers for display (they're in composite but not in a pool)
+        for broker in &config.mqtt {
+            let id = TargetId::mqtt(&broker.url);
+            registry.register_stable(id, broker.label.clone(), DeliveryTier::Quorum);
+        }
+
+        // Register direct peers for display
+        for (id, label) in direct_peer_ids {
+            registry.register_stable(id, label, DeliveryTier::Direct);
+        }
 
         // Ensure we have at least one transport
         if transport.is_empty() {
@@ -413,6 +567,10 @@ impl<'a> App<'a> {
             show_add_contact_popup: false,
             add_contact_popup: AddContactPopup::default(),
             show_my_id_popup: false,
+            show_add_upstream_popup: false,
+            add_upstream_popup: AddUpstreamPopup::default(),
+            show_upstreams_popup: false,
+            registry,
             outbox_tick_interval,
         };
 
@@ -657,6 +815,12 @@ impl<'a> App<'a> {
         if self.show_my_id_popup {
             return self.handle_my_id_popup_key_event(key);
         }
+        if self.show_add_upstream_popup {
+            return self.handle_add_upstream_popup_key_event(key).await;
+        }
+        if self.show_upstreams_popup {
+            return self.handle_upstreams_popup_key_event(key);
+        }
 
         // Global shortcuts
         if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -670,27 +834,69 @@ impl<'a> App<'a> {
         }
 
         // Global shortcuts (Alt+key) - work from any focus
+        // Note: Handle both lowercase and uppercase since some terminals send different cases
         if key.modifiers.contains(KeyModifiers::ALT) {
             match key.code {
-                KeyCode::Char('a') => {
+                KeyCode::Char('a') | KeyCode::Char('A') => {
                     // Alt+A: Add contact
                     self.show_add_contact_popup = true;
                     self.add_contact_popup.reset();
                     self.status = "Add Contact (Tab: switch, Enter: confirm, Esc: cancel)".to_string();
                     return Ok(());
                 }
-                KeyCode::Char('i') => {
+                KeyCode::Char('i') | KeyCode::Char('I') => {
                     // Alt+I: Show identity
                     self.show_my_id_popup = true;
                     return Ok(());
                 }
-                KeyCode::Char('h') => {
+                KeyCode::Char('u') | KeyCode::Char('U') => {
+                    // Alt+U: Add upstream
+                    self.show_add_upstream_popup = true;
+                    self.add_upstream_popup.reset();
+                    self.status = "Add Upstream (Tab: switch, ←/→: type, Enter: add, Esc: cancel)".to_string();
+                    return Ok(());
+                }
+                KeyCode::Char('v') | KeyCode::Char('V') => {
+                    // Alt+V: View upstreams
+                    self.show_upstreams_popup = true;
+                    return Ok(());
+                }
+                KeyCode::Char('h') | KeyCode::Char('H') => {
                     // Alt+H: Show help
                     self.status = HELP_TEXT.to_string();
                     return Ok(());
                 }
                 _ => {}
             }
+        }
+
+        // Function key fallbacks for terminals where Alt doesn't work properly
+        match key.code {
+            KeyCode::F(2) => {
+                // F2: Add contact (fallback for Alt+A)
+                self.show_add_contact_popup = true;
+                self.add_contact_popup.reset();
+                self.status = "Add Contact (Tab: switch, Enter: confirm, Esc: cancel)".to_string();
+                return Ok(());
+            }
+            KeyCode::F(3) => {
+                // F3: Show identity (fallback for Alt+I)
+                self.show_my_id_popup = true;
+                return Ok(());
+            }
+            KeyCode::F(4) => {
+                // F4: Add upstream (fallback for Alt+U)
+                self.show_add_upstream_popup = true;
+                self.add_upstream_popup.reset();
+                self.status = "Add Upstream (Tab: switch, ←/→: type, Enter: add, Esc: cancel)".to_string();
+                return Ok(());
+            }
+            KeyCode::F(5) => {
+                // F5: View upstreams (fallback for Alt+V)
+                self.show_upstreams_popup = true;
+                return Ok(());
+            }
+            _ => {}
         }
 
         match key.code {
@@ -948,6 +1154,133 @@ impl<'a> App<'a> {
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    /// Handle key events when view upstreams popup is visible
+    fn handle_upstreams_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('v') => {
+                // Close popup
+                self.show_upstreams_popup = false;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Handle key events when add upstream popup is visible
+    async fn handle_add_upstream_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
+        match key.code {
+            KeyCode::Esc => {
+                // Cancel
+                self.show_add_upstream_popup = false;
+                self.add_upstream_popup.reset();
+                self.status = HELP_HINT.to_string();
+            }
+            KeyCode::Tab => {
+                // Toggle field focus
+                self.add_upstream_popup.toggle_field();
+            }
+            KeyCode::Left | KeyCode::Right => {
+                match self.add_upstream_popup.focused_field {
+                    AddUpstreamField::Type => {
+                        // Toggle transport type
+                        self.add_upstream_popup.transport_type.toggle();
+                        self.add_upstream_popup.error = None;
+                        // Update placeholder based on type
+                        let placeholder = match self.add_upstream_popup.transport_type {
+                            UpstreamType::Http => "http://192.168.1.50:23003",
+                            UpstreamType::Mqtt => "mqtt://192.168.1.50:1883",
+                        };
+                        self.add_upstream_popup.url_input.set_placeholder_text(placeholder);
+                    }
+                    AddUpstreamField::Tier => {
+                        // Toggle delivery tier
+                        self.add_upstream_popup.toggle_tier();
+                        self.add_upstream_popup.error = None;
+                    }
+                    AddUpstreamField::Url => {
+                        // Pass to text input
+                        self.add_upstream_popup.url_input.input(Input::from(key));
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                // Try to add the upstream
+                match self.add_upstream_popup.validate_url() {
+                    Ok(url) => {
+                        let result = self.add_upstream(&url).await;
+                        match result {
+                            Ok(()) => {
+                                let transport_type = self.add_upstream_popup.transport_type;
+                                self.show_add_upstream_popup = false;
+                                self.add_upstream_popup.reset();
+                                self.status = format!(
+                                    "Added {} upstream: {}",
+                                    match transport_type {
+                                        UpstreamType::Http => "HTTP",
+                                        UpstreamType::Mqtt => "MQTT",
+                                    },
+                                    url
+                                );
+                            }
+                            Err(e) => {
+                                self.add_upstream_popup.error = Some(e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.add_upstream_popup.error = Some(e);
+                    }
+                }
+            }
+            _ => {
+                // Pass other keys to URL input when focused
+                if self.add_upstream_popup.focused_field == AddUpstreamField::Url {
+                    self.add_upstream_popup.url_input.input(Input::from(key));
+                    self.add_upstream_popup.error = None;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Add an upstream transport at runtime
+    async fn add_upstream(&mut self, url: &str) -> Result<(), String> {
+        let transport_type = self.add_upstream_popup.transport_type;
+        let tier = self.add_upstream_popup.tier;
+
+        match transport_type {
+            UpstreamType::Http => {
+                // Use registry to add HTTP target (handles both composite and metadata)
+                self.registry
+                    .add_http_target(url, None, tier)
+                    .await
+                    .map_err(|e| format!("Failed to create HTTP transport: {}", e))?;
+                info!(url = %url, "Added ephemeral HTTP upstream");
+            }
+            UpstreamType::Mqtt => {
+                // Create MQTT transport
+                let broker_spec = MqttBrokerSpec {
+                    url: url.to_string(),
+                    client_id: None, // Auto-generated
+                };
+                let transport = MqttTransport::new(vec![broker_spec])
+                    .await
+                    .map_err(|e| format!("Failed to connect to MQTT broker: {}", e))?;
+
+                // Add to composite transport via registry
+                self.registry.composite().add_transport(transport).await;
+
+                // Register in metadata for display
+                let id = TargetId::mqtt(url);
+                self.registry.register_ephemeral(id, None, tier);
+
+                info!(url = %url, "Added ephemeral MQTT upstream");
+            }
+        }
+
         Ok(())
     }
 }

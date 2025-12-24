@@ -9,7 +9,9 @@ pub mod delivery;
 pub mod http;
 pub mod http_target;
 pub mod pool;
+pub mod query;
 pub mod receiver;
+pub mod registry;
 pub mod seen_cache;
 pub mod target;
 pub mod tls;
@@ -25,15 +27,17 @@ pub mod mqtt_target;
 #[cfg(feature = "embedded")]
 pub mod embedded_target;
 
-pub use composite::CompositeTransport;
+pub use composite::{CompositeTransport, CompositeTransportBuilder};
 pub use http::NodeSpec;
 pub use http_target::{HttpTarget, HttpTargetConfig};
 pub use receiver::{MessageReceiver, ReceiverConfig, ReceiverHandle};
 pub use seen_cache::{SeenCache, SharedSeenCache};
 pub use target::{
-    HealthState, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget,
+    HealthData, HealthState, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget,
 };
 pub use pool::{PoolConfig, PoolStrategy, TransportPool};
+pub use query::{HealthSummary, TargetSnapshot, TransportQuery};
+pub use registry::{EnrichedSnapshot, EphemeralMeta, TransportRegistry};
 pub use coordinator::{
     CoordinatorConfig, CoordinatorHandle, CoordinatorHealth, RoutingStrategy, TransportCoordinator,
 };

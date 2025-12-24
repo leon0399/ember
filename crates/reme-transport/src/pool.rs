@@ -11,6 +11,7 @@ use futures::future::join_all;
 use reme_message::{OuterEnvelope, TombstoneEnvelope};
 use tracing::{debug, warn};
 
+use crate::query::{HealthSummary, TargetSnapshot, TransportQuery};
 use crate::seen_cache::SharedSeenCache;
 use crate::target::{HealthState, TargetId, TargetKind, TransportTarget};
 use crate::{Transport, TransportError};
@@ -532,6 +533,8 @@ pub struct PoolHealthSummary {
     pub degraded: usize,
     /// Number of unhealthy targets.
     pub unhealthy: usize,
+    /// Number of targets with unknown health.
+    pub unknown: usize,
 }
 
 impl<T: TransportTarget> TransportPool<T> {
@@ -543,6 +546,7 @@ impl<T: TransportTarget> TransportPool<T> {
             healthy: 0,
             degraded: 0,
             unhealthy: 0,
+            unknown: 0,
         };
 
         for target in targets.iter() {
@@ -550,10 +554,38 @@ impl<T: TransportTarget> TransportPool<T> {
                 HealthState::Healthy => summary.healthy += 1,
                 HealthState::Degraded => summary.degraded += 1,
                 HealthState::Unhealthy => summary.unhealthy += 1,
+                HealthState::Unknown => summary.unknown += 1,
             }
         }
 
         summary
+    }
+}
+
+/// Implement `TransportQuery` for UI and monitoring access.
+impl<T: TransportTarget + 'static> TransportQuery for TransportPool<T> {
+    fn list_targets(&self) -> Vec<TargetSnapshot> {
+        self.targets
+            .read()
+            .unwrap()
+            .iter()
+            .map(|t| TargetSnapshot::from_target(t.as_ref()))
+            .collect()
+    }
+
+    fn health_summary(&self) -> HealthSummary {
+        let pool_summary = TransportPool::health_summary(self);
+        HealthSummary {
+            total: pool_summary.total,
+            healthy: pool_summary.healthy,
+            degraded: pool_summary.degraded,
+            unhealthy: pool_summary.unhealthy,
+            unknown: pool_summary.unknown,
+        }
+    }
+
+    fn has_available(&self) -> bool {
+        TransportPool::has_available(self)
     }
 }
 

@@ -19,6 +19,7 @@ use crate::delivery::{
 };
 use crate::http_target::HttpTarget;
 use crate::pool::TransportPool;
+use crate::query::{HealthSummary, TargetSnapshot, TransportQuery};
 use crate::receiver::ReceiverConfig;
 use crate::seen_cache::SharedSeenCache;
 use crate::target::{TargetId, TargetKind, TransportTarget};
@@ -863,6 +864,47 @@ impl Transport for TransportCoordinator {
 
     async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
         self.submit_tombstone_with_strategy(tombstone).await
+    }
+}
+
+/// Implement `TransportQuery` for unified access to all transport targets.
+impl TransportQuery for TransportCoordinator {
+    fn list_targets(&self) -> Vec<TargetSnapshot> {
+        let mut targets = Vec::new();
+
+        // Collect HTTP targets
+        if let Some(ref pool) = self.http_pool {
+            targets.extend(TransportQuery::list_targets(pool.as_ref()));
+        }
+
+        // Collect MQTT targets
+        #[cfg(feature = "mqtt")]
+        if let Some(ref pool) = self.mqtt_pool {
+            targets.extend(TransportQuery::list_targets(pool.as_ref()));
+        }
+
+        targets
+    }
+
+    fn health_summary(&self) -> HealthSummary {
+        let mut summary = HealthSummary::new();
+
+        // Merge HTTP pool health
+        if let Some(ref pool) = self.http_pool {
+            summary.merge(&TransportQuery::health_summary(pool.as_ref()));
+        }
+
+        // Merge MQTT pool health
+        #[cfg(feature = "mqtt")]
+        if let Some(ref pool) = self.mqtt_pool {
+            summary.merge(&TransportQuery::health_summary(pool.as_ref()));
+        }
+
+        summary
+    }
+
+    fn has_available(&self) -> bool {
+        self.has_transports()
     }
 }
 

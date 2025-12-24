@@ -136,6 +136,9 @@ pub enum HealthState {
 
     /// Target is unhealthy, circuit is open (skip this target).
     Unhealthy,
+
+    /// Health state is unknown (e.g., composite-only targets without health tracking).
+    Unknown,
 }
 
 /// Health tracking for a transport target.
@@ -350,6 +353,12 @@ impl TargetConfig {
         self
     }
 
+    /// Set an optional human-readable label.
+    pub fn with_label_opt(mut self, label: Option<String>) -> Self {
+        self.label = label;
+        self
+    }
+
     /// Set the request timeout.
     pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
         self.request_timeout = timeout;
@@ -381,6 +390,37 @@ impl TargetConfig {
     }
 }
 
+/// Detailed health data for UI display and monitoring.
+///
+/// This struct captures timing and failure information that's useful
+/// for debugging and display purposes.
+#[derive(Debug, Clone, Default)]
+pub struct HealthData {
+    /// Current health state.
+    pub state: HealthState,
+    /// Average latency in milliseconds (0 if unknown).
+    pub avg_latency_ms: u32,
+    /// Number of consecutive failures.
+    pub consecutive_failures: u32,
+    /// Time since last successful operation (if any).
+    pub since_last_success: Option<Duration>,
+    /// Time since last failed operation (if any).
+    pub since_last_failure: Option<Duration>,
+}
+
+impl TargetHealth {
+    /// Get a snapshot of health data for UI display.
+    pub fn to_health_data(&self) -> HealthData {
+        HealthData {
+            state: self.state(),
+            avg_latency_ms: self.avg_latency_ms(),
+            consecutive_failures: self.consecutive_failures(),
+            since_last_success: self.last_success().map(|t| t.elapsed()),
+            since_last_failure: self.last_failure().map(|t| t.elapsed()),
+        }
+    }
+}
+
 /// A single transport target (one URL, one broker, one peer).
 ///
 /// Each target is an independent instance with its own:
@@ -400,6 +440,17 @@ pub trait TransportTarget: Send + Sync {
 
     /// Check if target is currently available for operations.
     fn is_available(&self) -> bool;
+
+    /// Get detailed health data for UI display.
+    ///
+    /// Default implementation returns only the health state.
+    /// Implementations with access to `TargetHealth` should override this.
+    fn health_data(&self) -> HealthData {
+        HealthData {
+            state: self.health(),
+            ..Default::default()
+        }
+    }
 
     /// Submit a message to this specific target.
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError>;

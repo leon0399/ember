@@ -15,7 +15,7 @@ pub use app::{App, AppResult};
 use crate::config::AppConfig;
 use crossterm::{
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use password::prompt_for_password;
 use ratatui::prelude::*;
@@ -36,7 +36,8 @@ pub async fn run(config: AppConfig) -> AppResult<()> {
     // === PHASE 2: TUI mode ===
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    // Enter alternate screen and explicitly clear it to remove any artifacts
+    execute!(stdout, EnterAlternateScreen, Clear(ClearType::All))?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
