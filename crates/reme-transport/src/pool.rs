@@ -533,6 +533,8 @@ pub struct PoolHealthSummary {
     pub degraded: usize,
     /// Number of unhealthy targets.
     pub unhealthy: usize,
+    /// Number of targets with unknown health.
+    pub unknown: usize,
 }
 
 impl<T: TransportTarget> TransportPool<T> {
@@ -544,6 +546,7 @@ impl<T: TransportTarget> TransportPool<T> {
             healthy: 0,
             degraded: 0,
             unhealthy: 0,
+            unknown: 0,
         };
 
         for target in targets.iter() {
@@ -551,6 +554,7 @@ impl<T: TransportTarget> TransportPool<T> {
                 HealthState::Healthy => summary.healthy += 1,
                 HealthState::Degraded => summary.degraded += 1,
                 HealthState::Unhealthy => summary.unhealthy += 1,
+                HealthState::Unknown => summary.unknown += 1,
             }
         }
 
@@ -576,6 +580,7 @@ impl<T: TransportTarget + 'static> TransportQuery for TransportPool<T> {
             healthy: pool_summary.healthy,
             degraded: pool_summary.degraded,
             unhealthy: pool_summary.unhealthy,
+            unknown: pool_summary.unknown,
         }
     }
 

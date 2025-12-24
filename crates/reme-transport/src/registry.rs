@@ -7,7 +7,7 @@
 //!
 //! This is the primary entry point for UI code to interact with transports.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -193,13 +193,23 @@ impl TransportRegistry {
     ///
     /// This is the primary method for UI display, enriching snapshots with
     /// registry metadata.
+    ///
+    /// # Health State for Composite-Only Targets
+    ///
+    /// Targets that exist only in the composite transport (not in HTTP/MQTT pools)
+    /// will have `HealthState::Unknown` since the registry does not track their
+    /// health. These are typically send-only targets without active polling.
     pub fn list_all_targets(&self) -> Vec<EnrichedSnapshot> {
         let mut results = Vec::new();
         let meta = self.ephemeral_meta.read().unwrap();
 
+        // Collect IDs from pool snapshots for O(1) duplicate checking
+        let mut seen_ids: HashSet<TargetId> = HashSet::new();
+
         // Collect from HTTP pool
         if let Some(ref pool) = self.http_pool {
             for snapshot in TransportQuery::list_targets(pool.as_ref()) {
+                seen_ids.insert(snapshot.id.clone());
                 let ephemeral_meta = meta.get(&snapshot.id);
                 results.push(EnrichedSnapshot {
                     snapshot,
@@ -214,6 +224,7 @@ impl TransportRegistry {
         #[cfg(feature = "mqtt")]
         if let Some(ref pool) = self.mqtt_pool {
             for snapshot in TransportQuery::list_targets(pool.as_ref()) {
+                seen_ids.insert(snapshot.id.clone());
                 let ephemeral_meta = meta.get(&snapshot.id);
                 results.push(EnrichedSnapshot {
                     snapshot,
@@ -224,15 +235,16 @@ impl TransportRegistry {
             }
         }
 
-        // Add ephemeral-only targets (in composite but not in pools)
-        // These would be runtime-added targets
+        // Add composite-only targets (in metadata but not in pools)
+        // These are typically send-only targets without active health tracking
         for (id, emeta) in meta.iter() {
-            // Check if already included from pools
-            if !results.iter().any(|r| &r.snapshot.id == id) {
+            // O(1) membership check
+            if !seen_ids.contains(id) {
                 // Create a synthetic snapshot for composite-only targets
+                // Health is Unknown since we don't have active health tracking for these
                 let snapshot = TargetSnapshot::from_config(
                     &TargetConfig::ephemeral(id.clone()),
-                    HealthState::Healthy, // Assume healthy for now
+                    HealthState::Unknown,
                     0,
                     0,
                     None,

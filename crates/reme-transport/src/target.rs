@@ -136,6 +136,9 @@ pub enum HealthState {
 
     /// Target is unhealthy, circuit is open (skip this target).
     Unhealthy,
+
+    /// Health state is unknown (e.g., composite-only targets without health tracking).
+    Unknown,
 }
 
 /// Health tracking for a transport target.

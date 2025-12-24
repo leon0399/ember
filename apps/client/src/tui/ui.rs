@@ -593,6 +593,7 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
                     HealthState::Healthy => ("●", Style::default().fg(Color::Green)),
                     HealthState::Degraded => ("◐", Style::default().fg(Color::Yellow)),
                     HealthState::Unhealthy => ("○", Style::default().fg(Color::Red)),
+                    HealthState::Unknown => ("?", Style::default().fg(Color::DarkGray)),
                 };
 
                 let tier_str = match enriched.tier {

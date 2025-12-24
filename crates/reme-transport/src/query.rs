@@ -160,6 +160,8 @@ pub struct HealthSummary {
     pub degraded: usize,
     /// Number of unhealthy targets.
     pub unhealthy: usize,
+    /// Number of targets with unknown health (e.g., composite-only without tracking).
+    pub unknown: usize,
 }
 
 impl HealthSummary {
@@ -174,6 +176,7 @@ impl HealthSummary {
         self.healthy += other.healthy;
         self.degraded += other.degraded;
         self.unhealthy += other.unhealthy;
+        self.unknown += other.unknown;
     }
 
     /// Calculate the percentage of healthy targets.
@@ -275,6 +278,7 @@ mod tests {
             healthy: 3,
             degraded: 1,
             unhealthy: 1,
+            unknown: 0,
         };
 
         assert!(!summary.all_healthy());
@@ -286,6 +290,7 @@ mod tests {
             healthy: 2,
             degraded: 1,
             unhealthy: 0,
+            unknown: 0,
         };
 
         summary.merge(&other);
@@ -307,6 +312,7 @@ mod tests {
             healthy: 3,
             degraded: 0,
             unhealthy: 0,
+            unknown: 0,
         };
         assert!(all_healthy.all_healthy());
         assert!(all_healthy.any_available());
