@@ -270,17 +270,50 @@ impl Default for TransportRegistry {
 }
 
 /// Implement TransportQuery for unified access.
+///
+/// This implementation includes targets from all sources:
+/// - HTTP pool targets (with health tracking)
+/// - MQTT pool targets (with health tracking)
+/// - Composite-only targets (from ephemeral_meta, without health tracking)
 impl TransportQuery for TransportRegistry {
     fn list_targets(&self) -> Vec<TargetSnapshot> {
         let mut targets = Vec::new();
+        let meta = self.ephemeral_meta.read().unwrap();
 
+        // Collect IDs from pool snapshots for O(1) duplicate checking
+        let mut seen_ids: HashSet<TargetId> = HashSet::new();
+
+        // Collect from HTTP pool
         if let Some(ref pool) = self.http_pool {
-            targets.extend(TransportQuery::list_targets(pool.as_ref()));
+            for snapshot in TransportQuery::list_targets(pool.as_ref()) {
+                seen_ids.insert(snapshot.id.clone());
+                targets.push(snapshot);
+            }
         }
 
+        // Collect from MQTT pool
         #[cfg(feature = "mqtt")]
         if let Some(ref pool) = self.mqtt_pool {
-            targets.extend(TransportQuery::list_targets(pool.as_ref()));
+            for snapshot in TransportQuery::list_targets(pool.as_ref()) {
+                seen_ids.insert(snapshot.id.clone());
+                targets.push(snapshot);
+            }
+        }
+
+        // Add composite-only targets (in metadata but not in pools)
+        // These have HealthState::Unknown since we don't track their health
+        for (id, emeta) in meta.iter() {
+            if !seen_ids.contains(id) {
+                let snapshot = TargetSnapshot::from_config(
+                    &TargetConfig::ephemeral(id.clone()).with_label_opt(emeta.label.clone()),
+                    HealthState::Unknown,
+                    0,
+                    0,
+                    None,
+                    None,
+                );
+                targets.push(snapshot);
+            }
         }
 
         targets
@@ -288,14 +321,31 @@ impl TransportQuery for TransportRegistry {
 
     fn health_summary(&self) -> HealthSummary {
         let mut summary = HealthSummary::new();
+        let mut seen_ids: HashSet<TargetId> = HashSet::new();
 
+        // Collect from HTTP pool
         if let Some(ref pool) = self.http_pool {
+            for snapshot in TransportQuery::list_targets(pool.as_ref()) {
+                seen_ids.insert(snapshot.id);
+            }
             summary.merge(&TransportQuery::health_summary(pool.as_ref()));
         }
 
+        // Collect from MQTT pool
         #[cfg(feature = "mqtt")]
         if let Some(ref pool) = self.mqtt_pool {
+            for snapshot in TransportQuery::list_targets(pool.as_ref()) {
+                seen_ids.insert(snapshot.id);
+            }
             summary.merge(&TransportQuery::health_summary(pool.as_ref()));
+        }
+
+        // Count composite-only targets (in metadata but not in pools)
+        let meta = self.ephemeral_meta.read().unwrap();
+        let composite_only_count = meta.keys().filter(|id| !seen_ids.contains(*id)).count();
+        if composite_only_count > 0 {
+            summary.total += composite_only_count;
+            summary.unknown += composite_only_count;
         }
 
         summary
@@ -405,5 +455,77 @@ mod tests {
             custom_label: Some("My Server".to_string()),
         };
         assert_eq!(enriched_with_label.display_label(), "My Server");
+    }
+
+    #[tokio::test]
+    async fn test_composite_targets_in_list_targets() {
+        // Composite-only targets (added via add_http_target but not in pools)
+        // should appear in list_targets() for consistency with has_available()
+        let registry = TransportRegistry::new();
+
+        // Initially empty
+        assert!(registry.list_targets().is_empty());
+        assert!(!registry.has_available());
+
+        // Add an ephemeral target (goes to composite, not pool)
+        let id = registry
+            .add_http_target("http://localhost:23006", Some("Composite Target".to_string()), DeliveryTier::Direct)
+            .await
+            .unwrap();
+
+        // Now list_targets() should include it
+        let targets = registry.list_targets();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].id, id);
+        assert_eq!(targets[0].health, HealthState::Unknown); // Composite targets have Unknown health
+        assert_eq!(targets[0].label.as_deref(), Some("Composite Target"));
+
+        // has_available() should be consistent
+        assert!(registry.has_available());
+    }
+
+    #[tokio::test]
+    async fn test_composite_targets_in_health_summary() {
+        let registry = TransportRegistry::new();
+
+        // Add two composite-only targets
+        registry
+            .add_http_target("http://localhost:23006", None, DeliveryTier::Direct)
+            .await
+            .unwrap();
+        registry
+            .add_http_target("http://localhost:23007", None, DeliveryTier::Quorum)
+            .await
+            .unwrap();
+
+        // health_summary() should count them as unknown
+        let summary = registry.health_summary();
+        assert_eq!(summary.total, 2);
+        assert_eq!(summary.unknown, 2);
+        assert_eq!(summary.healthy, 0);
+        assert_eq!(summary.degraded, 0);
+        assert_eq!(summary.unhealthy, 0);
+    }
+
+    #[tokio::test]
+    async fn test_list_targets_has_available_consistency() {
+        let registry = TransportRegistry::new();
+
+        // Both should agree on emptiness
+        assert!(registry.list_targets().is_empty());
+        assert!(!registry.has_available());
+
+        // Add a target
+        registry
+            .add_http_target("http://localhost:23008", None, DeliveryTier::Direct)
+            .await
+            .unwrap();
+
+        // Both should agree on non-emptiness
+        assert!(!registry.list_targets().is_empty());
+        assert!(registry.has_available());
+
+        // Count should match
+        assert_eq!(registry.list_targets().len(), 1);
     }
 }

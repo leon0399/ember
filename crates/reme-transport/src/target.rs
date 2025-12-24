@@ -353,6 +353,12 @@ impl TargetConfig {
         self
     }
 
+    /// Set an optional human-readable label.
+    pub fn with_label_opt(mut self, label: Option<String>) -> Self {
+        self.label = label;
+        self
+    }
+
     /// Set the request timeout.
     pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
         self.request_timeout = timeout;
