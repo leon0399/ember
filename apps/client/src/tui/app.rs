@@ -440,16 +440,22 @@ impl<'a> App<'a> {
             info!("Embedded node started");
 
             // Start HTTP server for LAN P2P if configured
+            // Bind BEFORE spawning to fail fast on port conflicts
             if let Some(ref bind_addr) = config.embedded_node.http_bind {
                 let http_handle = handle.clone();
                 let our_routing_key = identity.public_id().routing_key();
-                let bind_addr = bind_addr.clone();
+
+                // Bind first to verify address is valid and port is available
+                let (listener, router) = http_server::bind_server(bind_addr, http_handle, our_routing_key)
+                    .await
+                    .map_err(|e| format!("Failed to start HTTP server: {}", e))?;
+
+                // Now spawn the server task - binding already succeeded
                 tokio::spawn(async move {
-                    if let Err(e) = http_server::start_server(&bind_addr, http_handle, our_routing_key).await {
-                        tracing::error!(error = %e, "Embedded HTTP server failed");
+                    if let Err(e) = http_server::run_server(listener, router).await {
+                        tracing::error!(error = %e, "Embedded HTTP server stopped unexpectedly");
                     }
                 });
-                info!(addr = %config.embedded_node.http_bind.as_ref().unwrap(), "Embedded HTTP server started for LAN P2P");
             }
 
             (Some(handle), Some(join_handle), Some(event_rx))

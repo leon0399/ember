@@ -48,9 +48,9 @@
 
 use std::sync::Arc;
 
-use reme_message::{OuterEnvelope, RoutingKey, TombstoneEnvelope};
+use reme_message::{MessageID, OuterEnvelope, RoutingKey, TombstoneEnvelope};
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{MailboxStore, NodeError, NodeRequest, NodeEvent};
 
@@ -238,10 +238,23 @@ impl EmbeddedNodeHandle {
             .map_err(|_| NodeError::ChannelClosed)
     }
 
+    /// Check if a message already exists in the mailbox.
+    ///
+    /// Useful for duplicate detection before storing.
+    pub fn has_message(&self, routing_key: &RoutingKey, message_id: &MessageID) -> Result<bool, NodeError> {
+        self.store.has_message(routing_key, message_id)
+    }
+
     /// Notify the client that a message was received from an external source.
     ///
     /// This bypasses the request channel and directly stores + notifies,
     /// making it suitable for use from HTTP handlers.
+    ///
+    /// # Event Notification
+    ///
+    /// If the event channel is full, the message is still stored but the client
+    /// won't be immediately notified (it will see the message on next fetch).
+    /// If the channel is closed, this returns an error as the client may have crashed.
     pub fn notify_message_received(&self, envelope: OuterEnvelope) -> Result<(), NodeError> {
         let routing_key = envelope.routing_key;
         let message_id = envelope.message_id;
@@ -251,10 +264,25 @@ impl EmbeddedNodeHandle {
         self.store.enqueue(routing_key, envelope.clone())?;
 
         // Push event to client
-        if let Err(e) = self.event_sender.try_send(NodeEvent::MessageReceived(envelope)) {
-            warn!(?message_id, error = %e, "Failed to send message event to client");
-        } else {
-            debug!(?message_id, "Message event sent to client");
+        match self.event_sender.try_send(NodeEvent::MessageReceived(envelope)) {
+            Ok(()) => {
+                debug!(?message_id, "Message event sent to client");
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                // Message stored, but client backlogged - they'll see it on next fetch
+                warn!(
+                    ?message_id,
+                    "Event channel full - message stored but client not immediately notified"
+                );
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                // Client receiver dropped - this is a serious error
+                error!(
+                    ?message_id,
+                    "Event channel closed - message stored but client may have crashed"
+                );
+                return Err(NodeError::ChannelClosed);
+            }
         }
 
         Ok(())
