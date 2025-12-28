@@ -49,6 +49,83 @@ fn xeddsa_verify(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64]) ->
     key.verify(message, signature).is_ok()
 }
 
+// ============================================================================
+// VXEdDSA Functions (for anonymous outer envelope verification)
+// ============================================================================
+
+/// Sign data with VXEdDSA, producing a signature and deterministic VRF output.
+///
+/// VXEdDSA extends XEdDSA with Verifiable Random Function (VRF) properties:
+/// - Same (key, message) always produces the same VRF output
+/// - Anyone with the public key can verify and recover the VRF output
+/// - The VRF output looks random but is deterministically derived
+///
+/// Note: The underlying VXEdDSA implementation requires a 32-byte message.
+/// Variable-length input is hashed to 32 bytes using BLAKE3 before signing.
+///
+/// Returns (signature: 96 bytes, vrf_output: 32 bytes)
+fn vxeddsa_sign(private_key: &[u8; 32], message: &[u8]) -> ([u8; 96], [u8; 32]) {
+    use libsignal_dezire::vxeddsa::vxeddsa_sign as ffi_sign;
+
+    // Hash message to 32 bytes (VXEdDSA requires fixed-size message)
+    let message_hash: [u8; 32] = *blake3::hash(message).as_bytes();
+
+    // VXEdDSA sign - may panic if scalar is zero (extremely unlikely)
+    let output = ffi_sign(private_key, &message_hash);
+
+    (output.signature, output.vrf)
+}
+
+/// Verify a VXEdDSA signature and recover the VRF output.
+///
+/// If verification succeeds, returns Some(vrf_output) where vrf_output is the
+/// deterministic 32-byte VRF value for this (public_key, message) pair.
+///
+/// If verification fails, returns None.
+///
+/// Note: The message is hashed to 32 bytes using BLAKE3 (same as during signing).
+fn vxeddsa_verify(
+    public_key: &[u8; 32],
+    message: &[u8],
+    signature: &[u8; 96],
+) -> Option<[u8; 32]> {
+    use libsignal_dezire::vxeddsa::vxeddsa_verify as ffi_verify;
+
+    // Hash message to 32 bytes (same as during signing)
+    let message_hash: [u8; 32] = *blake3::hash(message).as_bytes();
+
+    let mut vrf_output = [0u8; 32];
+
+    // VXEdDSA verify - writes VRF output to pointer if valid
+    let valid = ffi_verify(public_key, &message_hash, signature, &mut vrf_output);
+
+    if valid {
+        Some(vrf_output)
+    } else {
+        None
+    }
+}
+
+/// Derive a commitment keypair from a VRF output.
+///
+/// This derives a deterministic X25519 keypair from the VRF output, which can be
+/// used for anonymous outer envelope signing. The commitment key is:
+/// - Unlinkable to the sender's identity (derived from VRF output)
+/// - Deterministic for the same (sender, message_id) pair
+/// - Verifiable by recipient (who can recover VRF output via VXEdDSA verification)
+///
+/// Returns (commitment_private: 32 bytes, commitment_public: 32 bytes)
+fn derive_commitment_key(vrf_output: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
+    // Derive private key from VRF output using domain-separated KDF
+    let commitment_private = blake3::derive_key("reme-commitment-v1", vrf_output);
+
+    // Derive public key from private key
+    let secret = StaticSecret::from(commitment_private);
+    let public = X25519PublicKey::from(&secret);
+
+    (commitment_private, *public.as_bytes())
+}
+
 /// Encrypt an InnerEnvelope to a recipient's MIK (stateless encryption)
 ///
 /// This implements Session V1-style sealed box encryption with triple binding:
@@ -679,5 +756,137 @@ mod tests {
         // Test with secret that's all 0xFF (maximum non-zero)
         let max_secret = [0xFFu8; 32];
         assert!(!is_zero_shared_secret(&max_secret), "All-max secret should not be detected as zero");
+    }
+
+    // ============================================================================
+    // VXEdDSA Tests
+    // ============================================================================
+
+    #[test]
+    fn test_vxeddsa_sign_verify_roundtrip() {
+        // Generate a keypair
+        let alice = Identity::generate();
+        let alice_private = alice.to_bytes();
+        let alice_public = alice.public_id().to_bytes();
+
+        // Sign a message
+        let message = b"test message for vxeddsa";
+        let (signature, vrf_output) = vxeddsa_sign(&alice_private, message);
+
+        // Verify the signature
+        let verified_vrf = vxeddsa_verify(&alice_public, message, &signature);
+        assert!(verified_vrf.is_some(), "VXEdDSA verification should succeed");
+        assert_eq!(verified_vrf.unwrap(), vrf_output, "VRF output should match");
+    }
+
+    #[test]
+    fn test_vxeddsa_deterministic_vrf() {
+        // Same (key, message) should produce same VRF output
+        let alice = Identity::generate();
+        let alice_private = alice.to_bytes();
+
+        let message = b"deterministic vrf test";
+
+        // Sign twice
+        let (_, vrf1) = vxeddsa_sign(&alice_private, message);
+        let (_, vrf2) = vxeddsa_sign(&alice_private, message);
+
+        // VRF outputs should be identical (deterministic)
+        assert_eq!(vrf1, vrf2, "VRF output should be deterministic for same key+message");
+    }
+
+    #[test]
+    fn test_vxeddsa_different_messages_different_vrf() {
+        // Different messages should produce different VRF outputs
+        let alice = Identity::generate();
+        let alice_private = alice.to_bytes();
+
+        let message1 = b"message one";
+        let message2 = b"message two";
+
+        let (_, vrf1) = vxeddsa_sign(&alice_private, message1);
+        let (_, vrf2) = vxeddsa_sign(&alice_private, message2);
+
+        assert_ne!(vrf1, vrf2, "Different messages should produce different VRF outputs");
+    }
+
+    #[test]
+    fn test_vxeddsa_wrong_public_key_fails() {
+        // Verification with wrong public key should fail
+        let alice = Identity::generate();
+        let alice_private = alice.to_bytes();
+
+        let bob = Identity::generate();
+        let bob_public = bob.public_id().to_bytes();
+
+        let message = b"wrong key test";
+        let (signature, _) = vxeddsa_sign(&alice_private, message);
+
+        // Verify with Bob's key should fail
+        let result = vxeddsa_verify(&bob_public, message, &signature);
+        assert!(result.is_none(), "VXEdDSA verification with wrong key should fail");
+    }
+
+    #[test]
+    fn test_vxeddsa_wrong_message_fails() {
+        // Verification with wrong message should fail
+        let alice = Identity::generate();
+        let alice_private = alice.to_bytes();
+        let alice_public = alice.public_id().to_bytes();
+
+        let message = b"original message";
+        let wrong_message = b"tampered message";
+
+        let (signature, _) = vxeddsa_sign(&alice_private, message);
+
+        // Verify with wrong message should fail
+        let result = vxeddsa_verify(&alice_public, wrong_message, &signature);
+        assert!(result.is_none(), "VXEdDSA verification with wrong message should fail");
+    }
+
+    #[test]
+    fn test_derive_commitment_key_deterministic() {
+        // Same VRF output should produce same commitment key
+        let vrf_output = [42u8; 32];
+
+        let (priv1, pub1) = derive_commitment_key(&vrf_output);
+        let (priv2, pub2) = derive_commitment_key(&vrf_output);
+
+        assert_eq!(priv1, priv2, "Commitment private key should be deterministic");
+        assert_eq!(pub1, pub2, "Commitment public key should be deterministic");
+    }
+
+    #[test]
+    fn test_derive_commitment_key_different_inputs() {
+        // Different VRF outputs should produce different commitment keys
+        let vrf1 = [1u8; 32];
+        let vrf2 = [2u8; 32];
+
+        let (_, pub1) = derive_commitment_key(&vrf1);
+        let (_, pub2) = derive_commitment_key(&vrf2);
+
+        assert_ne!(pub1, pub2, "Different VRF outputs should produce different commitment keys");
+    }
+
+    #[test]
+    fn test_commitment_key_can_sign_with_xeddsa() {
+        // Commitment key should be usable for XEdDSA signing
+        let alice = Identity::generate();
+        let alice_private = alice.to_bytes();
+
+        // Derive commitment key from VXEdDSA
+        let message_id = b"test-message-id";
+        let (_, vrf_output) = vxeddsa_sign(&alice_private, message_id);
+        let (commitment_priv, commitment_pub) = derive_commitment_key(&vrf_output);
+
+        // Sign with commitment key using XEdDSA
+        let outer_data = b"outer envelope data";
+        let signature = xeddsa_sign(&commitment_priv, outer_data);
+
+        // Verify with commitment public key
+        assert!(
+            xeddsa_verify(&commitment_pub, outer_data, &signature),
+            "Commitment key should work for XEdDSA signing"
+        );
     }
 }
