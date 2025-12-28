@@ -14,3 +14,4 @@ x25519-dalek = { workspace = true, features = ["static_secrets"] }
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 
 chacha20poly1305 = "0.10"
+xeddsa = { version = "1.0", features = ["xed25519"] }
