@@ -98,17 +98,19 @@ pub fn encrypt_to_mik(
         shared_secret.as_bytes(),
     );
 
-    // Serialize the inner envelope
-    let inner_bytes = bincode::encode_to_vec(inner_envelope, bincode_config())?;
+    // Serialize the inner envelope into a reusable buffer
+    let mut buffer = bincode::encode_to_vec(inner_envelope, bincode_config())?;
+    let inner_bytes_len = buffer.len();
 
     // Sign: inner_bytes || outer_message_id (binding signature to outer envelope)
-    let mut signable = inner_bytes.clone();
-    signable.extend_from_slice(outer_message_id.as_bytes());
-    let signature = xeddsa_sign(sender_private, &signable);
+    buffer.extend_from_slice(outer_message_id.as_bytes());
+    let signature = xeddsa_sign(sender_private, &buffer);
 
-    // Concatenate: inner_bytes || signature (signature appended before encryption)
-    let mut plaintext = inner_bytes;
-    plaintext.extend_from_slice(&signature);
+    // Prepare plaintext for encryption: inner_bytes || signature
+    // Truncate to remove message_id, then append signature
+    buffer.truncate(inner_bytes_len);
+    buffer.extend_from_slice(&signature);
+    let plaintext = buffer;
 
     // Derive nonce from message_id AND recipient_pk (recipient binding)
     let nonce_bytes = derive_nonce(outer_message_id, &recipient_mik.to_bytes());
@@ -143,6 +145,14 @@ pub fn encrypt_to_mik(
 /// - Nonce derivation (with recipient_pk)
 /// - AAD verification (tampering with message_id causes decryption failure)
 /// - Signature verification (message_id is part of signed data)
+///
+/// # Breaking Change (v0.1)
+///
+/// This function expects the sign-all-bytes format where the signature is
+/// appended to serialized InnerEnvelope bytes before encryption. Messages
+/// encrypted with the previous format (signature inside InnerEnvelope) are
+/// not compatible. This is intentional for the PoC stage - no migration path
+/// is provided.
 pub fn decrypt_with_mik(
     ephemeral_public: &[u8; 32],
     ciphertext: &[u8],

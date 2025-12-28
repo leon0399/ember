@@ -874,6 +874,10 @@ async fn test_truncated_ciphertext_rejected() {
     let tiny_ciphertext = vec![0u8; 8];
     let result = decrypt_with_mik(&[1u8; 32], &tiny_ciphertext, &bob_private, &message_id);
     assert!(result.is_err(), "Tiny ciphertext should be rejected");
+    assert!(
+        matches!(result.unwrap_err(), EncryptionError::DecryptionFailed),
+        "Tiny ciphertext should return DecryptionFailed"
+    );
 
     // Test ciphertext that would decrypt to less than 64 bytes (signature size)
     // AEAD tag is 16 bytes, so we need ciphertext > 16 + 64 = 80 bytes for valid payload
@@ -881,6 +885,10 @@ async fn test_truncated_ciphertext_rejected() {
     let small_ciphertext = vec![0u8; 50]; // Will fail AEAD verification anyway
     let result = decrypt_with_mik(&[1u8; 32], &small_ciphertext, &bob_private, &message_id);
     assert!(result.is_err(), "Small ciphertext should be rejected");
+    assert!(
+        matches!(result.unwrap_err(), EncryptionError::DecryptionFailed),
+        "Small ciphertext should return DecryptionFailed"
+    );
 
     println!("\n✓ Truncated ciphertext rejection test passed!");
 }
