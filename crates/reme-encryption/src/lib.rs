@@ -4,8 +4,9 @@ use chacha20poly1305::{
 };
 use rand_core::OsRng;
 use reme_identity::{is_low_order_point, PublicID};
-use reme_message::{InnerEnvelope, MessageID};
+use reme_message::{bincode_config, InnerEnvelope, MessageID};
 use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey, StaticSecret};
+use xeddsa::{xed25519, Sign, Verify};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EncryptionError {
@@ -15,6 +16,8 @@ pub enum EncryptionError {
     DecryptionFailed,
     #[error("Invalid recipient public key (low-order point)")]
     InvalidRecipientKey,
+    #[error("Invalid sender signature: message may be forged or tampered")]
+    InvalidSenderSignature,
     #[error("Serialization error: {0}")]
     SerializationError(#[from] bincode::error::EncodeError),
     #[error("Deserialization error: {0}")]
@@ -29,24 +32,43 @@ fn is_zero_shared_secret(shared_secret: &[u8; 32]) -> bool {
     shared_secret == &[0u8; 32]
 }
 
+/// Sign data with XEdDSA using an X25519 private key.
+///
+/// XEdDSA allows signing with X25519 keys by converting them to Ed25519-compatible
+/// format internally. This enables using a single keypair for both DH and signatures.
+fn xeddsa_sign(private_key: &[u8; 32], message: &[u8]) -> [u8; 64] {
+    let key = xed25519::PrivateKey(*private_key);
+    key.sign(message, OsRng)
+}
+
+/// Verify an XEdDSA signature using an X25519 public key.
+///
+/// Returns true if the signature is valid, false otherwise.
+fn xeddsa_verify(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bool {
+    let key = xed25519::PublicKey(*public_key);
+    key.verify(message, signature).is_ok()
+}
+
 /// Encrypt an InnerEnvelope to a recipient's MIK (stateless encryption)
 ///
 /// This implements Session V1-style sealed box encryption with triple binding:
 /// 1. Generates an ephemeral X25519 keypair (e, E)
 /// 2. Computes shared_secret = X25519(e, recipient_MIK)
 /// 3. Derives encryption key from shared_secret using blake3
-/// 4. Encrypts the InnerEnvelope with ChaCha20Poly1305
+/// 4. Signs the serialized envelope || message_id with XEdDSA
+/// 5. Encrypts (serialized_envelope || signature) with ChaCha20Poly1305
 ///
 /// Triple binding (message_id bound via):
 /// - Nonce derivation: nonce = BLAKE3(context, message_id || recipient_pk)
 /// - AAD: message_id passed as additional authenticated data
-/// - Signature: message_id included in signed data (in InnerEnvelope)
+/// - Signature: message_id included in signed data
 ///
 /// Returns the ephemeral public key and ciphertext.
 pub fn encrypt_to_mik(
     inner_envelope: &InnerEnvelope,
     recipient_mik: &PublicID,
     outer_message_id: &MessageID,
+    sender_private: &[u8; 32],
 ) -> Result<([u8; 32], Vec<u8>), EncryptionError> {
     // Reject small-order (weak) public keys that would produce predictable shared secrets
     if is_low_order_point(&recipient_mik.to_bytes()) {
@@ -77,7 +99,16 @@ pub fn encrypt_to_mik(
     );
 
     // Serialize the inner envelope
-    let plaintext = bincode::encode_to_vec(inner_envelope, bincode::config::standard())?;
+    let inner_bytes = bincode::encode_to_vec(inner_envelope, bincode_config())?;
+
+    // Sign: inner_bytes || outer_message_id (binding signature to outer envelope)
+    let mut signable = inner_bytes.clone();
+    signable.extend_from_slice(outer_message_id.as_bytes());
+    let signature = xeddsa_sign(sender_private, &signable);
+
+    // Concatenate: inner_bytes || signature (signature appended before encryption)
+    let mut plaintext = inner_bytes;
+    plaintext.extend_from_slice(&signature);
 
     // Derive nonce from message_id AND recipient_pk (recipient binding)
     let nonce_bytes = derive_nonce(outer_message_id, &recipient_mik.to_bytes());
@@ -104,10 +135,13 @@ pub fn encrypt_to_mik(
 /// 1. Computes shared_secret = X25519(mik_private, ephemeral_public)
 /// 2. Derives encryption key from shared_secret + both public keys
 /// 3. Decrypts the ciphertext with ChaCha20Poly1305 (with AAD verification)
+/// 4. Splits signature from decrypted data (last 64 bytes)
+/// 5. Verifies XEdDSA signature against sender's public key from InnerEnvelope
 ///
 /// The outer_message_id is used for:
 /// - Nonce derivation (with recipient_pk)
 /// - AAD verification (tampering with message_id causes decryption failure)
+/// - Signature verification (message_id is part of signed data)
 pub fn decrypt_with_mik(
     ephemeral_public: &[u8; 32],
     ciphertext: &[u8],
@@ -159,8 +193,27 @@ pub fn decrypt_with_mik(
         )
         .map_err(|_| EncryptionError::DecryptionFailed)?;
 
-    // Deserialize
-    let (inner_envelope, _) = bincode::decode_from_slice(&plaintext, bincode::config::standard())?;
+    // Split signature from payload (last 64 bytes)
+    if plaintext.len() < 64 {
+        return Err(EncryptionError::DecryptionFailed);
+    }
+    let (inner_bytes, signature_bytes) = plaintext.split_at(plaintext.len() - 64);
+    let signature: [u8; 64] = signature_bytes
+        .try_into()
+        .map_err(|_| EncryptionError::DecryptionFailed)?;
+
+    // Deserialize the inner envelope (bincode v2 decode_from_slice handles trailing bytes)
+    let (inner_envelope, _): (InnerEnvelope, _) =
+        bincode::decode_from_slice(inner_bytes, bincode_config())?;
+
+    // Verify signature: inner_bytes || outer_message_id
+    let mut signable = inner_bytes.to_vec();
+    signable.extend_from_slice(outer_message_id.as_bytes());
+
+    let sender_pub = inner_envelope.from.to_bytes();
+    if !xeddsa_verify(&sender_pub, &signable, &signature) {
+        return Err(EncryptionError::InvalidSenderSignature);
+    }
 
     Ok(inner_envelope)
 }
@@ -211,31 +264,19 @@ mod tests {
     use reme_identity::Identity;
     use reme_message::{Content, TextContent};
 
-    /// Helper to create a signed InnerEnvelope
-    fn create_signed_inner(
-        sender: &Identity,
-        message_id: &MessageID,
-        body: &str,
-        created_at_ms: u64,
-    ) -> InnerEnvelope {
-        // Create envelope without signature first
-        let mut inner = InnerEnvelope {
+    /// Helper to create an InnerEnvelope (no signature field - signing happens during encryption)
+    fn create_inner(sender: &Identity, body: &str, created_at_ms: u64) -> InnerEnvelope {
+        InnerEnvelope {
             from: *sender.public_id(),
             created_at_ms,
             content: Content::Text(TextContent {
                 body: body.to_string(),
             }),
-            signature: None,
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
             flags: 0,
-        };
-
-        // Sign it (including message_id in signable bytes)
-        let signable = inner.signable_bytes(message_id);
-        inner.signature = Some(InnerEnvelope::sign(&signable, &sender.to_bytes()));
-        inner
+        }
     }
 
     #[test]
@@ -247,22 +288,24 @@ mod tests {
 
         // Create sender identity (Alice)
         let alice = Identity::generate();
+        let alice_private = alice.to_bytes();
 
-        // Create signed inner envelope
+        // Create inner envelope (signature added during encryption)
         let message_id = MessageID::new();
-        let inner = create_signed_inner(&alice, &message_id, "Hello Bob via MIK!", 1234567890);
+        let inner = create_inner(&alice, "Hello Bob via MIK!", 1234567890);
 
-        // Alice encrypts to Bob's MIK
-        let (ephemeral_pub, ciphertext) = encrypt_to_mik(&inner, &bob_public, &message_id).unwrap();
+        // Alice encrypts to Bob's MIK (signing happens inside encrypt_to_mik)
+        let (ephemeral_pub, ciphertext) =
+            encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private).unwrap();
 
-        // Bob decrypts with his MIK private key
-        let decrypted = decrypt_with_mik(&ephemeral_pub, &ciphertext, &bob_private, &message_id).unwrap();
+        // Bob decrypts with his MIK private key (signature verification happens inside)
+        let decrypted =
+            decrypt_with_mik(&ephemeral_pub, &ciphertext, &bob_private, &message_id).unwrap();
 
         assert_eq!(inner.from, decrypted.from);
         assert_eq!(inner.created_at_ms, decrypted.created_at_ms);
 
-        // Verify sender signature (must pass message_id for verification)
-        assert!(decrypted.verify_signature(&message_id), "Sender signature should be valid");
+        // Signature was already verified during decryption - if we got here, it's valid
 
         match (inner.content, decrypted.content) {
             (Content::Text(orig), Content::Text(dec)) => {
@@ -283,18 +326,23 @@ mod tests {
 
         // Create sender
         let alice = Identity::generate();
+        let alice_private = alice.to_bytes();
 
-        // Create signed inner envelope
+        // Create inner envelope
         let message_id = MessageID::new();
-        let inner = create_signed_inner(&alice, &message_id, "Secret message for Bob", 1234567890);
+        let inner = create_inner(&alice, "Secret message for Bob", 1234567890);
 
         // Alice encrypts to Bob's MIK
-        let (ephemeral_pub, ciphertext) = encrypt_to_mik(&inner, &bob_public, &message_id).unwrap();
+        let (ephemeral_pub, ciphertext) =
+            encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private).unwrap();
 
         // Eve tries to decrypt with her private key (should fail)
         let result = decrypt_with_mik(&ephemeral_pub, &ciphertext, &eve_private, &message_id);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), EncryptionError::DecryptionFailed));
+        assert!(matches!(
+            result.unwrap_err(),
+            EncryptionError::DecryptionFailed
+        ));
     }
 
     #[test]
@@ -303,17 +351,20 @@ mod tests {
         let bob_public = *bob.public_id();
 
         let alice = Identity::generate();
+        let alice_private = alice.to_bytes();
 
-        // Create two different signed messages
+        // Create two different messages
         let message_id1 = MessageID::new();
-        let inner1 = create_signed_inner(&alice, &message_id1, "Message 1", 1234567890);
+        let inner1 = create_inner(&alice, "Message 1", 1234567890);
 
         let message_id2 = MessageID::new();
-        let inner2 = create_signed_inner(&alice, &message_id2, "Message 2", 1234567891);
+        let inner2 = create_inner(&alice, "Message 2", 1234567891);
 
         // Encrypt both
-        let (ephemeral1, _) = encrypt_to_mik(&inner1, &bob_public, &message_id1).unwrap();
-        let (ephemeral2, _) = encrypt_to_mik(&inner2, &bob_public, &message_id2).unwrap();
+        let (ephemeral1, _) =
+            encrypt_to_mik(&inner1, &bob_public, &message_id1, &alice_private).unwrap();
+        let (ephemeral2, _) =
+            encrypt_to_mik(&inner2, &bob_public, &message_id2, &alice_private).unwrap();
 
         // Each message should have a different ephemeral key
         assert_ne!(ephemeral1, ephemeral2);
@@ -327,34 +378,35 @@ mod tests {
 
         let alice = Identity::generate();
         let mallory = Identity::generate();
+        let mallory_private = mallory.to_bytes();
 
         // Mallory creates a message claiming to be from Alice
         let message_id = MessageID::new();
-        let mut inner = InnerEnvelope {
+        let inner = InnerEnvelope {
             from: *alice.public_id(), // Claims to be Alice
             created_at_ms: 1234567890,
             content: Content::Text(TextContent {
                 body: "Fake message from Alice".to_string(),
             }),
-            signature: None,
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
             flags: 0,
         };
 
-        // Mallory signs with her own key (not Alice's)
-        let signable = inner.signable_bytes(&message_id);
-        inner.signature = Some(InnerEnvelope::sign(&signable, &mallory.to_bytes()));
+        // Mallory encrypts with HER private key (not Alice's)
+        // The signature will be made with Mallory's key, but `from` claims Alice
+        let (ephemeral_pub, ciphertext) =
+            encrypt_to_mik(&inner, &bob_public, &message_id, &mallory_private).unwrap();
 
-        // Encrypt and send
-        let (ephemeral_pub, ciphertext) = encrypt_to_mik(&inner, &bob_public, &message_id).unwrap();
-
-        // Bob decrypts
-        let decrypted = decrypt_with_mik(&ephemeral_pub, &ciphertext, &bob_private, &message_id).unwrap();
-
-        // Signature verification should FAIL (Mallory signed, but `from` claims Alice)
-        assert!(!decrypted.verify_signature(&message_id), "Forged signature should be invalid");
+        // Bob decrypts - signature verification should FAIL
+        // (decrypt_with_mik verifies using `from` field = Alice's pubkey, but signed with Mallory's key)
+        let result = decrypt_with_mik(&ephemeral_pub, &ciphertext, &bob_private, &message_id);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            EncryptionError::InvalidSenderSignature
+        ));
     }
 
     #[test]
@@ -365,19 +417,27 @@ mod tests {
         let bob_private = bob.to_bytes();
 
         let alice = Identity::generate();
+        let alice_private = alice.to_bytes();
 
         let message_id = MessageID::new();
         let wrong_message_id = MessageID::new();
 
-        let inner = create_signed_inner(&alice, &message_id, "Test message", 1234567890);
+        let inner = create_inner(&alice, "Test message", 1234567890);
 
         // Encrypt with correct message_id
-        let (ephemeral_pub, ciphertext) = encrypt_to_mik(&inner, &bob_public, &message_id).unwrap();
+        let (ephemeral_pub, ciphertext) =
+            encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private).unwrap();
 
         // Try to decrypt with wrong message_id (should fail due to AAD mismatch)
         let result = decrypt_with_mik(&ephemeral_pub, &ciphertext, &bob_private, &wrong_message_id);
-        assert!(result.is_err(), "Decryption with wrong message_id should fail");
-        assert!(matches!(result.unwrap_err(), EncryptionError::DecryptionFailed));
+        assert!(
+            result.is_err(),
+            "Decryption with wrong message_id should fail"
+        );
+        assert!(matches!(
+            result.unwrap_err(),
+            EncryptionError::DecryptionFailed
+        ));
     }
 
     #[test]
@@ -385,12 +445,13 @@ mod tests {
         // Test that encryption to small-order (weak) public keys is rejected.
         // These keys produce predictable shared secrets, providing no confidentiality.
         let alice = Identity::generate();
+        let alice_private = alice.to_bytes();
         let message_id = MessageID::new();
-        let inner = create_signed_inner(&alice, &message_id, "Test message", 1234567890);
+        let inner = create_inner(&alice, "Test message", 1234567890);
 
         // Test zero point (order 1)
         let zero_mik = PublicID::from_bytes_unchecked(&[0u8; 32]);
-        let result = encrypt_to_mik(&inner, &zero_mik, &message_id);
+        let result = encrypt_to_mik(&inner, &zero_mik, &message_id, &alice_private);
         assert!(
             matches!(result, Err(EncryptionError::InvalidRecipientKey)),
             "Zero MIK should be rejected"
@@ -400,7 +461,7 @@ mod tests {
         let mut order2 = [0u8; 32];
         order2[0] = 1;
         let order2_mik = PublicID::from_bytes_unchecked(&order2);
-        let result = encrypt_to_mik(&inner, &order2_mik, &message_id);
+        let result = encrypt_to_mik(&inner, &order2_mik, &message_id, &alice_private);
         assert!(
             matches!(result, Err(EncryptionError::InvalidRecipientKey)),
             "Order-2 point should be rejected"
@@ -444,18 +505,23 @@ mod tests {
         let bob_private = bob.to_bytes();
 
         let alice = Identity::generate();
+        let alice_private = alice.to_bytes();
 
         // Create a large message (~10KB)
         let large_body = "X".repeat(10 * 1024);
         let message_id = MessageID::new();
-        let inner = create_signed_inner(&alice, &message_id, &large_body, 1234567890);
+        let inner = create_inner(&alice, &large_body, 1234567890);
 
         // Encrypt
-        let (ephemeral_pub, ciphertext) = encrypt_to_mik(&inner, &bob_public, &message_id)
-            .expect("Large message encryption should succeed");
+        let (ephemeral_pub, ciphertext) =
+            encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private)
+                .expect("Large message encryption should succeed");
 
-        // Ciphertext should be larger than plaintext (due to serialization + tag)
-        assert!(ciphertext.len() > large_body.len(), "Ciphertext should include overhead");
+        // Ciphertext should be larger than plaintext (due to serialization + tag + signature)
+        assert!(
+            ciphertext.len() > large_body.len(),
+            "Ciphertext should include overhead"
+        );
 
         // Decrypt and verify
         let decrypted = decrypt_with_mik(&ephemeral_pub, &ciphertext, &bob_private, &message_id)
@@ -463,7 +529,11 @@ mod tests {
 
         match decrypted.content {
             Content::Text(text) => {
-                assert_eq!(text.body.len(), large_body.len(), "Decrypted body length should match");
+                assert_eq!(
+                    text.body.len(),
+                    large_body.len(),
+                    "Decrypted body length should match"
+                );
                 assert_eq!(text.body, large_body, "Decrypted body should match original");
             }
             _ => panic!("Expected text content"),
@@ -478,27 +548,41 @@ mod tests {
         let bob_public = *bob.public_id();
 
         let alice = Identity::generate();
+        let alice_private = alice.to_bytes();
         let charlie = Identity::generate();
+        let charlie_private = charlie.to_bytes();
 
         // Same message content and message_id, but different senders
         let message_id = MessageID::new();
-        let inner_alice = create_signed_inner(&alice, &message_id, "Hello Bob!", 1234567890);
-        let inner_charlie = create_signed_inner(&charlie, &message_id, "Hello Bob!", 1234567890);
+        let inner_alice = create_inner(&alice, "Hello Bob!", 1234567890);
+        let inner_charlie = create_inner(&charlie, "Hello Bob!", 1234567890);
 
         // Encrypt both
-        let (ephemeral_alice, ciphertext_alice) = encrypt_to_mik(&inner_alice, &bob_public, &message_id).unwrap();
-        let (ephemeral_charlie, ciphertext_charlie) = encrypt_to_mik(&inner_charlie, &bob_public, &message_id).unwrap();
+        let (ephemeral_alice, ciphertext_alice) =
+            encrypt_to_mik(&inner_alice, &bob_public, &message_id, &alice_private).unwrap();
+        let (ephemeral_charlie, ciphertext_charlie) =
+            encrypt_to_mik(&inner_charlie, &bob_public, &message_id, &charlie_private).unwrap();
 
         // Ephemeral keys should be different (random)
-        assert_ne!(ephemeral_alice, ephemeral_charlie, "Ephemeral keys should differ");
+        assert_ne!(
+            ephemeral_alice, ephemeral_charlie,
+            "Ephemeral keys should differ"
+        );
 
         // Ciphertexts should be different (different ephemeral keys = different shared secrets)
-        assert_ne!(ciphertext_alice, ciphertext_charlie, "Ciphertexts should differ");
+        assert_ne!(
+            ciphertext_alice, ciphertext_charlie,
+            "Ciphertexts should differ"
+        );
 
         // Both should still decrypt correctly
         let bob_private = bob.to_bytes();
-        let decrypted_alice = decrypt_with_mik(&ephemeral_alice, &ciphertext_alice, &bob_private, &message_id).unwrap();
-        let decrypted_charlie = decrypt_with_mik(&ephemeral_charlie, &ciphertext_charlie, &bob_private, &message_id).unwrap();
+        let decrypted_alice =
+            decrypt_with_mik(&ephemeral_alice, &ciphertext_alice, &bob_private, &message_id)
+                .unwrap();
+        let decrypted_charlie =
+            decrypt_with_mik(&ephemeral_charlie, &ciphertext_charlie, &bob_private, &message_id)
+                .unwrap();
 
         assert_eq!(decrypted_alice.from, *alice.public_id());
         assert_eq!(decrypted_charlie.from, *charlie.public_id());
@@ -512,21 +596,27 @@ mod tests {
         let bob_public = *bob.public_id();
 
         let alice = Identity::generate();
+        let alice_private = alice.to_bytes();
 
         let message_id1 = MessageID::new();
         let message_id2 = MessageID::new();
 
-        let inner1 = create_signed_inner(&alice, &message_id1, "Same content", 1234567890);
-        let inner2 = create_signed_inner(&alice, &message_id2, "Same content", 1234567890);
+        let inner1 = create_inner(&alice, "Same content", 1234567890);
+        let inner2 = create_inner(&alice, "Same content", 1234567890);
 
-        let (ephemeral1, ciphertext1) = encrypt_to_mik(&inner1, &bob_public, &message_id1).unwrap();
-        let (ephemeral2, ciphertext2) = encrypt_to_mik(&inner2, &bob_public, &message_id2).unwrap();
+        let (ephemeral1, ciphertext1) =
+            encrypt_to_mik(&inner1, &bob_public, &message_id1, &alice_private).unwrap();
+        let (ephemeral2, ciphertext2) =
+            encrypt_to_mik(&inner2, &bob_public, &message_id2, &alice_private).unwrap();
 
         // Different ephemeral keys
         assert_ne!(ephemeral1, ephemeral2, "Ephemeral keys should differ");
 
         // Different ciphertexts (even with same content)
-        assert_ne!(ciphertext1, ciphertext2, "Ciphertexts should differ even with same content");
+        assert_ne!(
+            ciphertext1, ciphertext2,
+            "Ciphertexts should differ even with same content"
+        );
     }
 
     #[test]
@@ -537,13 +627,15 @@ mod tests {
         let bob_private = bob.to_bytes();
 
         let alice = Identity::generate();
+        let alice_private = alice.to_bytes();
 
         let message_id = MessageID::new();
-        let inner = create_signed_inner(&alice, &message_id, "", 1234567890);
+        let inner = create_inner(&alice, "", 1234567890);
 
         // Encrypt empty message
-        let (ephemeral_pub, ciphertext) = encrypt_to_mik(&inner, &bob_public, &message_id)
-            .expect("Empty message encryption should succeed");
+        let (ephemeral_pub, ciphertext) =
+            encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private)
+                .expect("Empty message encryption should succeed");
 
         // Decrypt and verify
         let decrypted = decrypt_with_mik(&ephemeral_pub, &ciphertext, &bob_private, &message_id)

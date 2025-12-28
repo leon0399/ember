@@ -443,26 +443,22 @@ impl<T: Transport> Client<T> {
         };
 
         // Create inner envelope with DAG fields
-        let mut inner = InnerEnvelope {
+        let inner = InnerEnvelope {
             from: *self.identity.public_id(),
             created_at_ms: now,
             content: content.clone(),
-            signature: None,
             prev_self,
             observed_heads,
             epoch,
             flags: if detached { FLAG_DETACHED } else { 0 },
         };
 
-        // Compute content_id before signing
+        // Compute content_id
         let content_id = inner.content_id();
 
-        // Sign the envelope
-        let signable = inner.signable_bytes(&outer_message_id);
-        inner.signature = Some(InnerEnvelope::sign(&signable, &self.private_key()));
-
-        // Encrypt to recipient's MIK
-        let (ephemeral_key, ciphertext) = encrypt_to_mik(&inner, to, &outer_message_id)?;
+        // Encrypt to recipient's MIK (signing happens inside encrypt_to_mik)
+        let (ephemeral_key, ciphertext) =
+            encrypt_to_mik(&inner, to, &outer_message_id, &self.private_key())?;
 
         // Create outer envelope
         let outer = OuterEnvelope {
@@ -579,7 +575,9 @@ impl<T: Transport> Client<T> {
         }
 
         // Decrypt using MIK (stateless decryption)
-        // This also verifies AAD binding (message_id must match)
+        // This also verifies:
+        // - AAD binding (message_id must match)
+        // - Sender signature (sign-all-bytes - signature verified during decryption)
         let inner = decrypt_with_mik(
             &outer.ephemeral_key,
             &outer.inner_ciphertext,
@@ -588,15 +586,9 @@ impl<T: Transport> Client<T> {
         )
         .map_err(|e| match e {
             EncryptionError::DecryptionFailed => ClientError::DecryptionFailed,
+            EncryptionError::InvalidSenderSignature => ClientError::InvalidSenderSignature,
             other => other.into(),
         })?;
-
-        // Verify sender signature to prevent impersonation attacks
-        // This ensures the `from` field matches who actually signed the message
-        // The signature also binds to message_id (triple binding)
-        if !inner.verify_signature(&outer.message_id) {
-            return Err(ClientError::InvalidSenderSignature);
-        }
 
         // Note: Recipient binding is implicit via sealed box ECDH.
         // If decryption succeeded, the message was intended for our MIK.
@@ -1820,27 +1812,22 @@ mod tests {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
         let message_id = MessageID::new();
-        let mut inner = InnerEnvelope {
+        let inner = InnerEnvelope {
             from: *alice.public_id(),
             created_at_ms: now_ms,
             content: Content::Text(TextContent {
                 body: "I lost my state!".to_string(),
             }),
-            signature: None,
             prev_self: None,           // No previous message (state lost)
             observed_heads: Vec::new(),
             epoch: 0,                  // Fresh epoch
             flags: 0,                  // NOT detached - this indicates state loss
         };
 
-        // Sign the message
-        let signable = inner.signable_bytes(&message_id);
-        inner.signature = Some(InnerEnvelope::sign(&signable, &alice_private_key));
-
-        // Encrypt and create outer envelope
+        // Encrypt and create outer envelope (signing happens inside encrypt_to_mik)
         let bob_routing_key = bob.public_id().routing_key();
         let (ephemeral_key, ciphertext) =
-            encrypt_to_mik(&inner, bob.public_id(), &message_id).unwrap();
+            encrypt_to_mik(&inner, bob.public_id(), &message_id, &alice_private_key).unwrap();
         let outer = OuterEnvelope {
             version: reme_message::CURRENT_VERSION,
             routing_key: bob_routing_key,
@@ -1897,27 +1884,22 @@ mod tests {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
         let message_id = MessageID::new();
-        let mut inner = InnerEnvelope {
+        let inner = InnerEnvelope {
             from: *alice.public_id(),
             created_at_ms: now_ms,
             content: Content::Text(TextContent {
                 body: "Detached via LoRa".to_string(),
             }),
-            signature: None,
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
             flags: FLAG_DETACHED,  // Intentionally detached!
         };
 
-        // Sign the message
-        let signable = inner.signable_bytes(&message_id);
-        inner.signature = Some(InnerEnvelope::sign(&signable, &alice_private_key));
-
-        // Encrypt and create outer envelope
+        // Encrypt and create outer envelope (signing happens inside encrypt_to_mik)
         let bob_routing_key = bob.public_id().routing_key();
         let (ephemeral_key, ciphertext) =
-            encrypt_to_mik(&inner, bob.public_id(), &message_id).unwrap();
+            encrypt_to_mik(&inner, bob.public_id(), &message_id, &alice_private_key).unwrap();
         let outer = OuterEnvelope {
             version: reme_message::CURRENT_VERSION,
             routing_key: bob_routing_key,
@@ -1979,27 +1961,22 @@ mod tests {
         // Create a fake observed_head that Alice won't recognize
         let unknown_content_id: ContentId = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE];
 
-        let mut inner = InnerEnvelope {
+        let inner = InnerEnvelope {
             from: *bob.public_id(),
             created_at_ms: now_ms,
             content: Content::Text(TextContent {
                 body: "I saw your messages!".to_string(),
             }),
-            signature: None,
             prev_self: None,  // Bob's first message
             observed_heads: vec![unknown_content_id],  // Claims to have seen this from Alice
             epoch: 0,
             flags: 0,
         };
 
-        // Sign with Bob's key
-        let signable = inner.signable_bytes(&message_id);
-        inner.signature = Some(InnerEnvelope::sign(&signable, &bob_private_key));
-
-        // Encrypt for Alice
+        // Encrypt for Alice (signing happens inside encrypt_to_mik)
         let alice_routing_key = alice.public_id().routing_key();
         let (ephemeral_key, ciphertext) =
-            encrypt_to_mik(&inner, alice.public_id(), &message_id).unwrap();
+            encrypt_to_mik(&inner, alice.public_id(), &message_id, &bob_private_key).unwrap();
         let outer = OuterEnvelope {
             version: reme_message::CURRENT_VERSION,
             routing_key: alice_routing_key,

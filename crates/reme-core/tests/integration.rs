@@ -124,26 +124,22 @@ async fn test_e2e_encryption_mik_only() {
 
     // Alice creates and encrypts a message to Bob's MIK (stateless)
     let message_id = MessageID::new();
-    let mut inner = InnerEnvelope {
+    let inner = InnerEnvelope {
         from: *alice.public_id(),
         created_at_ms: 1234567890,
         content: Content::Text(TextContent {
             body: "Hello Bob! This is Alice.".to_string(),
         }),
-        signature: None,
         prev_self: None,
         observed_heads: Vec::new(),
         epoch: 0,
         flags: 0,
     };
 
-    // Sign the message with Alice's private key (including message_id in signable bytes)
-    let signable = inner.signable_bytes(&message_id);
-    inner.signature = Some(InnerEnvelope::sign(&signable, &alice.to_bytes()));
-
-    // Encrypt to Bob's MIK (returns ephemeral_key and ciphertext)
-    let (ephemeral_key, ciphertext) = encrypt_to_mik(&inner, bob.public_id(), &message_id)
-        .expect("encrypt_to_mik failed");
+    // Encrypt to Bob's MIK (signing happens inside encrypt_to_mik)
+    let (ephemeral_key, ciphertext) =
+        encrypt_to_mik(&inner, bob.public_id(), &message_id, &alice.to_bytes())
+            .expect("encrypt_to_mik failed");
     println!("Alice encrypted message to Bob's MIK");
 
     // Alice sends the message
@@ -173,6 +169,7 @@ async fn test_e2e_encryption_mik_only() {
     println!("Bob fetched {} message(s)", messages.len());
 
     // Bob decrypts using his MIK private key (stateless)
+    // Signature verification happens inside decrypt_with_mik
     let bob_private = bob.to_bytes();
     let decrypted = decrypt_with_mik(
         &messages[0].ephemeral_key,
@@ -180,14 +177,10 @@ async fn test_e2e_encryption_mik_only() {
         &bob_private,
         &messages[0].message_id,
     )
-    .expect("decrypt_with_mik failed");
+    .expect("decrypt_with_mik failed (signature verification included)");
 
-    // Verify sender signature (authentication) - must pass message_id for triple binding
-    assert!(
-        decrypted.verify_signature(&messages[0].message_id),
-        "Sender signature verification failed"
-    );
-    println!("Bob verified Alice's signature: OK");
+    // Signature was verified during decryption - if we got here, it's valid
+    println!("Bob decrypted and verified Alice's signature: OK");
 
     match decrypted.content {
         Content::Text(t) => {
