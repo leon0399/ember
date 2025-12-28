@@ -36,8 +36,16 @@ ratatui = { workspace = true }
 crossterm = { workspace = true }
 tui-textarea = { workspace = true }
 
+# HTTP server for embedded node (LAN P2P)
+axum = { workspace = true }
+tower-http = { workspace = true, features = ["limit"] }
+base64 = { workspace = true }
+
 # password input
 rpassword = "7"
 
 # secure memory handling
 zeroize = "1"
+
+[dev-dependencies]
+tower = { workspace = true, features = ["util"] }

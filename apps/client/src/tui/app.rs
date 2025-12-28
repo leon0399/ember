@@ -2,6 +2,7 @@
 
 use crate::config::AppConfig;
 use crate::tui::event::{Event, EventHandler};
+use crate::tui::http_server;
 use crate::tui::ui;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
@@ -437,6 +438,26 @@ impl<'a> App<'a> {
             let join_handle = tokio::spawn(async move { node.run().await });
 
             info!("Embedded node started");
+
+            // Start HTTP server for LAN P2P if configured
+            // Bind BEFORE spawning to fail fast on port conflicts
+            if let Some(ref bind_addr) = config.embedded_node.http_bind {
+                let http_handle = handle.clone();
+                let our_routing_key = identity.public_id().routing_key();
+
+                // Bind first to verify address is valid and port is available
+                let (listener, router) = http_server::bind_server(bind_addr, http_handle, our_routing_key)
+                    .await
+                    .map_err(|e| format!("Failed to start HTTP server: {}", e))?;
+
+                // Now spawn the server task - binding already succeeded
+                tokio::spawn(async move {
+                    if let Err(e) = http_server::run_server(listener, router).await {
+                        tracing::error!(error = %e, "Embedded HTTP server stopped unexpectedly");
+                    }
+                });
+            }
+
             (Some(handle), Some(join_handle), Some(event_rx))
         } else {
             (None, None, None)
@@ -456,9 +477,9 @@ impl<'a> App<'a> {
         }
 
         // Note: Embedded node is intentionally NOT added to CompositeTransport here.
-        // In Phase 5, the embedded node has no HTTP server - storing messages locally
-        // would mask remote delivery failures since recipients can't fetch from us.
-        // Phase 6 will add HTTP server for inbound LAN messages, enabling bidirectional P2P.
+        // The embedded node stores messages locally, but recipients fetch via HTTP server
+        // (started above if http_bind is configured). Direct P2P messaging uses the
+        // direct_peers config to send TO contacts, and HTTP server to receive FROM them.
 
         // Add direct peers as ephemeral targets for LAN P2P messaging
         let mut direct_peer_ids: Vec<(TargetId, Option<String>)> = Vec::new();

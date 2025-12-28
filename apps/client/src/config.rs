@@ -123,6 +123,23 @@ pub struct CliArgs {
     #[arg(long, env = "REME_OUTBOX_RETRY_MAX_DELAY")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outbox_retry_max_delay: Option<u64>,
+
+    /// Enable the embedded node for LAN P2P messaging
+    ///
+    /// When enabled, the client runs an in-process mailbox node
+    #[arg(long, env = "REME_EMBEDDED_NODE")]
+    pub embedded_node: bool,
+
+    /// Disable the embedded node (overrides config file)
+    #[arg(long, conflicts_with = "embedded_node")]
+    pub no_embedded_node: bool,
+
+    /// HTTP bind address for embedded node (enables HTTP server)
+    ///
+    /// Example: --embedded-http-bind 0.0.0.0:23004
+    #[arg(long, env = "REME_EMBEDDED_HTTP_BIND")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedded_http_bind: Option<String>,
 }
 
 /// Outbox configuration
@@ -868,8 +885,23 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
             .unwrap_or(delivery_defaults.quorum_tier_timeout_secs),
     };
 
-    // Resolve embedded node config from config file > defaults
-    let embedded_node = raw.embedded_node.unwrap_or_default();
+    // Resolve embedded node config with priority: CLI > config file > defaults
+    let embedded_node_file = raw.embedded_node.unwrap_or_default();
+    let embedded_node = EmbeddedNodeConfig {
+        // CLI flags take priority: --embedded-node enables, --no-embedded-node disables
+        enabled: if cli.embedded_node {
+            true
+        } else if cli.no_embedded_node {
+            false
+        } else {
+            embedded_node_file.enabled
+        },
+        // CLI --embedded-http-bind overrides config file
+        http_bind: cli.embedded_http_bind
+            .or(embedded_node_file.http_bind),
+        max_messages: embedded_node_file.max_messages,
+        default_ttl_secs: embedded_node_file.default_ttl_secs,
+    };
 
     // Resolve direct peers from config file > defaults (empty)
     let direct_peers = raw.direct_peers.unwrap_or_default();

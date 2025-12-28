@@ -7,6 +7,7 @@
 
 mod app;
 mod event;
+pub mod http_server;
 mod password;
 mod ui;
 

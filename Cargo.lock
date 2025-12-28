@@ -482,6 +482,8 @@ checksum = "a1d728cc89cf3aee9ff92b05e62b19ee65a02b5702cff7d5a377e32c6ae29d8d"
 name = "client"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "base64 0.22.1",
  "clap",
  "config",
  "crossterm",
@@ -502,6 +504,8 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "toml",
+ "tower",
+ "tower-http",
  "tracing",
  "tracing-subscriber",
  "tui-textarea",
@@ -3517,6 +3521,7 @@ dependencies = [
  "futures-util",
  "http",
  "http-body",
+ "http-body-util",
  "iri-string",
  "pin-project-lite",
  "tower",
