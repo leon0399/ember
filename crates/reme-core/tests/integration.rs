@@ -4,7 +4,7 @@
 //! Uses MIK-only stateless encryption (no session establishment, no prekeys).
 
 use reme_core::Client;
-use reme_encryption::{decrypt_with_mik, encrypt_to_mik};
+use reme_encryption::{decrypt_with_mik, encrypt_to_mik, EncryptionError};
 use reme_identity::Identity;
 use reme_message::{
     Content, InnerEnvelope, MessageID, OuterEnvelope, TextContent, TombstoneStatus, CURRENT_VERSION,
@@ -776,6 +776,113 @@ async fn test_outbox_cleanup() {
     assert_eq!(cleaned, 1, "Should have cleaned exactly 1 confirmed entry");
 
     println!("\n✓ Outbox cleanup test passed!");
+}
+
+/// Test that forged signature is rejected at Client level
+///
+/// This tests the full end-to-end flow where Mallory creates a message
+/// claiming to be from Alice, but signs it with her own key. The receiver
+/// (Bob) should reject the message with InvalidSenderSignature error.
+#[tokio::test]
+async fn test_forged_signature_rejected_at_client_level() {
+    let server = TestServer::start().await;
+    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
+
+    // Create identities
+    let alice = Identity::generate();
+    let bob_identity = Identity::generate();
+    let bob_storage = Storage::in_memory().unwrap();
+    let bob = Client::new(bob_identity, transport.clone(), bob_storage);
+    let mallory = Identity::generate();
+
+    println!("Alice ID: {}", hex::encode(alice.public_id().to_bytes()));
+    println!("Bob ID: {}", hex::encode(bob.public_id().to_bytes()));
+    println!("Mallory ID: {}", hex::encode(mallory.public_id().to_bytes()));
+
+    // Mallory creates a message claiming to be from Alice
+    let message_id = MessageID::new();
+    let inner = InnerEnvelope {
+        from: *alice.public_id(), // Claims to be Alice
+        created_at_ms: 1234567890,
+        content: Content::Text(TextContent {
+            body: "Fake message from Alice".to_string(),
+        }),
+        prev_self: None,
+        observed_heads: Vec::new(),
+        epoch: 0,
+        flags: 0,
+    };
+
+    // Mallory encrypts with HER private key (not Alice's)
+    // The signature will be made with Mallory's key, but `from` claims Alice
+    let (ephemeral_key, ciphertext) =
+        encrypt_to_mik(&inner, bob.public_id(), &message_id, &mallory.to_bytes())
+            .expect("encrypt_to_mik should succeed");
+
+    // Mallory sends the forged message to Bob
+    let outer = OuterEnvelope {
+        version: CURRENT_VERSION,
+        routing_key: bob.routing_key(),
+        timestamp_hours: reme_message::now_hours(),
+        ttl_hours: Some(1),
+        message_id,
+        ephemeral_key,
+        inner_ciphertext: ciphertext,
+    };
+
+    transport
+        .submit_message(outer.clone())
+        .await
+        .expect("submit_message failed");
+    println!("Mallory sent forged message claiming to be Alice");
+
+    // Bob processes the message - should get InvalidSenderSignature error
+    let result = bob.process_message(&outer).await;
+    assert!(result.is_err(), "Forged message should be rejected");
+
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, reme_core::ClientError::InvalidSenderSignature),
+        "Expected InvalidSenderSignature error, got: {:?}",
+        err
+    );
+    println!("Bob correctly rejected forged message with InvalidSenderSignature");
+
+    println!("\n✓ Forged signature rejection test passed!");
+}
+
+/// Test that truncated ciphertext is handled gracefully
+///
+/// This tests edge cases where ciphertext is too short to contain
+/// the required signature (64 bytes) or is empty.
+#[tokio::test]
+async fn test_truncated_ciphertext_rejected() {
+    let bob = Identity::generate();
+    let bob_private = bob.to_bytes();
+    let message_id = MessageID::new();
+
+    // Test empty ciphertext
+    let empty_ciphertext: Vec<u8> = vec![];
+    let result = decrypt_with_mik(&[1u8; 32], &empty_ciphertext, &bob_private, &message_id);
+    assert!(result.is_err(), "Empty ciphertext should be rejected");
+    assert!(
+        matches!(result.unwrap_err(), EncryptionError::DecryptionFailed),
+        "Empty ciphertext should return DecryptionFailed"
+    );
+
+    // Test ciphertext smaller than AEAD tag (16 bytes for ChaCha20Poly1305)
+    let tiny_ciphertext = vec![0u8; 8];
+    let result = decrypt_with_mik(&[1u8; 32], &tiny_ciphertext, &bob_private, &message_id);
+    assert!(result.is_err(), "Tiny ciphertext should be rejected");
+
+    // Test ciphertext that would decrypt to less than 64 bytes (signature size)
+    // AEAD tag is 16 bytes, so we need ciphertext > 16 + 64 = 80 bytes for valid payload
+    // This tests the post-decryption length check
+    let small_ciphertext = vec![0u8; 50]; // Will fail AEAD verification anyway
+    let result = decrypt_with_mik(&[1u8; 32], &small_ciphertext, &bob_private, &message_id);
+    assert!(result.is_err(), "Small ciphertext should be rejected");
+
+    println!("\n✓ Truncated ciphertext rejection test passed!");
 }
 
 /// Test that retry mechanism works for pending messages

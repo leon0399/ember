@@ -198,9 +198,6 @@ impl OuterEnvelope {
     }
 }
 
-/// Signature type alias for clarity
-pub type Signature = [u8; 64];
-
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct InnerEnvelope {
     /// Sender's public identity (32 bytes)

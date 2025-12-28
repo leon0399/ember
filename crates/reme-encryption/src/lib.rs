@@ -115,6 +115,7 @@ pub fn encrypt_to_mik(
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     // Create cipher and encrypt with AAD (message_id binding)
+    // Note: AEAD errors are intentionally discarded to prevent oracle attacks
     let cipher = ChaCha20Poly1305::new((&encryption_key).into());
     let ciphertext = cipher
         .encrypt(
@@ -182,6 +183,7 @@ pub fn decrypt_with_mik(
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     // Create cipher and decrypt with AAD verification
+    // Note: AEAD errors are intentionally discarded to prevent oracle attacks
     let cipher = ChaCha20Poly1305::new((&encryption_key).into());
     let plaintext = cipher
         .decrypt(
