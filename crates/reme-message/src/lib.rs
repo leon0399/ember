@@ -145,6 +145,21 @@ pub const CURRENT_VERSION: Version = Version { major: 0, minor: 0 };
 /// 1. Computes shared_secret = X25519(mik_private, ephemeral_key)
 /// 2. Derives same encryption key
 /// 3. Decrypts InnerEnvelope
+///
+/// ## Anonymous Outer Verification (Optional)
+///
+/// When `commitment_pub` and `outer_signature` are present, relay nodes can
+/// verify outer envelope integrity without knowing the sender's identity:
+///
+/// - `commitment_pub`: 32-byte X25519 key derived from VXEdDSA VRF output
+/// - `outer_signature`: 64-byte XEdDSA signature over outer_signable_bytes()
+///
+/// The sender derives commitment_pub using VXEdDSA on message_id, producing
+/// a VRF output that is then used to derive a commitment keypair. The outer
+/// signature is created with this commitment key.
+///
+/// Recipients verify the commitment binding using the VXEdDSA derivation proof
+/// included in the encrypted payload.
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct OuterEnvelope {
     pub version: Version,
@@ -165,11 +180,28 @@ pub struct OuterEnvelope {
     /// Used with recipient's MIK to derive the encryption key.
     pub ephemeral_key: [u8; 32],
 
+    // ===== Anonymous Outer Verification (Optional) =====
+    // When present, allows relay nodes to verify outer envelope integrity
+    // without knowing the sender's identity.
+
+    /// Commitment public key (32 bytes) for anonymous outer signing.
+    /// Derived from VXEdDSA VRF output on (sender_priv, message_id).
+    /// When present, outer_signature must also be present.
+    pub commitment_pub: Option<[u8; 32]>,
+
+    /// XEdDSA signature (64 bytes) over outer_signable_bytes().
+    /// Created with the commitment private key.
+    /// Allows nodes to verify outer fields weren't tampered.
+    pub outer_signature: Option<[u8; 64]>,
+
     pub inner_ciphertext: Vec<u8>,
 }
 
 impl OuterEnvelope {
     /// Create a new envelope for MIK-only encryption
+    ///
+    /// Creates an envelope without outer signature (backward compatible).
+    /// For envelopes with outer signature, use `new_signed()`.
     ///
     /// # Arguments
     /// * `routing_key` - 16-byte routing key (truncated blake3 hash of recipient PublicID)
@@ -189,8 +221,96 @@ impl OuterEnvelope {
             ttl_hours,
             message_id: MessageID::new(),
             ephemeral_key,
+            commitment_pub: None,
+            outer_signature: None,
             inner_ciphertext,
         }
+    }
+
+    /// Create a new envelope with outer signature for anonymous verification.
+    ///
+    /// This version includes commitment_pub and outer_signature for node-verifiable
+    /// outer envelope integrity without revealing sender identity.
+    ///
+    /// # Arguments
+    /// * `routing_key` - 16-byte routing key (truncated blake3 hash of recipient PublicID)
+    /// * `ttl_hours` - Optional time-to-live in hours
+    /// * `ephemeral_key` - 32-byte ephemeral X25519 public key used for ECDH
+    /// * `commitment_pub` - 32-byte commitment public key for outer signature verification
+    /// * `outer_signature` - 64-byte XEdDSA signature over outer_signable_bytes()
+    /// * `inner_ciphertext` - Encrypted InnerEnvelope bytes
+    pub fn new_signed(
+        routing_key: RoutingKey,
+        ttl_hours: Option<u16>,
+        ephemeral_key: [u8; 32],
+        commitment_pub: [u8; 32],
+        outer_signature: [u8; 64],
+        inner_ciphertext: Vec<u8>,
+    ) -> Self {
+        Self {
+            version: CURRENT_VERSION,
+            routing_key,
+            timestamp_hours: now_hours(),
+            ttl_hours,
+            message_id: MessageID::new(),
+            ephemeral_key,
+            commitment_pub: Some(commitment_pub),
+            outer_signature: Some(outer_signature),
+            inner_ciphertext,
+        }
+    }
+
+    /// Returns the bytes covered by the outer signature.
+    ///
+    /// The outer signable includes all metadata fields that should be
+    /// protected from tampering by relay nodes:
+    /// - version (2 bytes)
+    /// - routing_key (16 bytes)
+    /// - timestamp_hours (4 bytes)
+    /// - ttl_hours (3 bytes: 1 option byte + 2 value bytes)
+    /// - message_id (16 bytes)
+    /// - ephemeral_key (32 bytes)
+    ///
+    /// Does NOT include: commitment_pub, outer_signature, inner_ciphertext
+    pub fn outer_signable_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(73); // 2 + 16 + 4 + 3 + 16 + 32
+
+        // Domain separation
+        bytes.extend_from_slice(b"reme-outer-sig-v1");
+
+        // Version
+        bytes.push(self.version.major);
+        bytes.push(self.version.minor);
+
+        // Routing key
+        bytes.extend_from_slice(self.routing_key.as_ref());
+
+        // Timestamp
+        bytes.extend_from_slice(&self.timestamp_hours.to_le_bytes());
+
+        // TTL (encode Option as 1-byte flag + optional 2-byte value)
+        match self.ttl_hours {
+            Some(ttl) => {
+                bytes.push(1);
+                bytes.extend_from_slice(&ttl.to_le_bytes());
+            }
+            None => {
+                bytes.push(0);
+            }
+        }
+
+        // Message ID
+        bytes.extend_from_slice(self.message_id.as_bytes());
+
+        // Ephemeral key
+        bytes.extend_from_slice(&self.ephemeral_key);
+
+        bytes
+    }
+
+    /// Check if this envelope has outer signature.
+    pub fn has_outer_signature(&self) -> bool {
+        self.commitment_pub.is_some() && self.outer_signature.is_some()
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {

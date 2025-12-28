@@ -461,6 +461,8 @@ impl<T: Transport> Client<T> {
             encrypt_to_mik(&inner, to, &outer_message_id, &self.private_key())?;
 
         // Create outer envelope
+        // TODO: Add outer signature support after encrypt_to_mik is updated
+        // to return commitment_pub and outer_signature for anonymous verification.
         let outer = OuterEnvelope {
             version: CURRENT_VERSION,
             routing_key,
@@ -468,6 +470,8 @@ impl<T: Transport> Client<T> {
             ttl_hours: Some(7 * 24), // 7 days default TTL
             message_id: outer_message_id,
             ephemeral_key,
+            commitment_pub: None,     // Will be populated after VXEdDSA integration
+            outer_signature: None,    // Will be populated after VXEdDSA integration
             inner_ciphertext: ciphertext,
         };
 
