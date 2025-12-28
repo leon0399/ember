@@ -36,6 +36,27 @@ pub fn now_secs() -> u64 {
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
+
+// ============================================
+// Bincode configuration
+// ============================================
+
+/// Bincode configuration for message serialization.
+///
+/// Returns the standard bincode v2 config. Forward compatibility is built-in:
+/// - `decode_from_slice` returns `(T, bytes_consumed)`, ignoring trailing bytes
+/// - New fields can be added at the end of structs without breaking older clients
+/// - Older clients simply don't consume bytes they don't understand
+///
+/// # Example
+/// ```ignore
+/// let bytes = bincode::encode_to_vec(&envelope, bincode_config())?;
+/// let (decoded, _bytes_read) = bincode::decode_from_slice(&bytes, bincode_config())?;
+/// ```
+pub fn bincode_config() -> impl bincode::config::Config {
+    bincode::config::standard()
+}
+
 pub use tombstone::{
     DetailedReceipt, DeviceID, TombstoneEnvelope, TombstoneStatus, TombstoneValidationError,
     WirePayload, WireType, CLOCK_SKEW_ALLOWANCE_HOURS, TOMBSTONE_MAX_AGE_HOURS,
