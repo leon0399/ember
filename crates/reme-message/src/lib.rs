@@ -213,12 +213,10 @@ pub struct InnerEnvelope {
     /// Message content
     pub content: Content,
 
-    /// XEdDSA signature proving sender authenticity (optional for future session messages)
-    /// Signs: from || created_at_ms || content || DAG fields || outer_message_id
-    ///
-    /// Currently always Some (MIK-only encryption requires signature).
-    /// Will be None for session-encrypted messages where ECDH provides authentication.
-    pub signature: Option<Signature>,
+    // Note: Signature is no longer stored in the struct.
+    // With sign-all-bytes (#25), the signature is appended to the serialized
+    // InnerEnvelope before encryption. This enables forward compatibility:
+    // newer versions can add fields, and the signature covers all bytes.
 
     // =============================================
     // Merkle DAG fields for message ordering
@@ -300,85 +298,10 @@ impl InnerEnvelope {
         (self.flags & FLAG_DETACHED) != 0
     }
 
-    /// Returns the bytes that are covered by the sender signature.
-    ///
-    /// The outer_message_id is passed as a parameter (not stored in InnerEnvelope)
-    /// to enable triple binding: the signature binds the inner content to the outer
-    /// message_id without duplicating it in the wire format.
-    ///
-    /// Signature covers: from, timestamp, content, DAG fields, outer_message_id.
-    /// Including DAG fields prevents manipulation of message ordering.
-    pub fn signable_bytes(&self, outer_message_id: &MessageID) -> Vec<u8> {
-        let mut bytes = Vec::new();
-
-        // from (32 bytes)
-        bytes.extend_from_slice(&self.from.to_bytes());
-
-        // created_at_ms (8 bytes)
-        bytes.extend_from_slice(&self.created_at_ms.to_le_bytes());
-
-        // content - serialize with bincode for consistency
-        let content_bytes =
-            bincode::encode_to_vec(&self.content, bincode::config::standard()).unwrap();
-        bytes.extend_from_slice(&content_bytes);
-
-        // DAG fields (prevents manipulation of message ordering)
-        if let Some(prev) = &self.prev_self {
-            bytes.push(1);
-            bytes.extend_from_slice(prev);
-        } else {
-            bytes.push(0);
-        }
-
-        bytes.extend_from_slice(&(self.observed_heads.len() as u16).to_le_bytes());
-        for head in &self.observed_heads {
-            bytes.extend_from_slice(head);
-        }
-
-        bytes.extend_from_slice(&self.epoch.to_le_bytes());
-
-        // flags (1 byte)
-        bytes.push(self.flags);
-
-        // outer_message_id (16 bytes) - binds signature to outer envelope
-        bytes.extend_from_slice(outer_message_id.as_bytes());
-
-        bytes
-    }
-
-    /// Sign this envelope with the sender's private key.
-    /// Returns the signature bytes.
-    pub fn sign(signable_bytes: &[u8], sender_private: &[u8; 32]) -> Signature {
-        use rand_core::OsRng;
-        use xeddsa::{xed25519, Sign};
-
-        let private_key = xed25519::PrivateKey(*sender_private);
-        private_key.sign(signable_bytes, OsRng)
-    }
-
-    /// Verify that the signature is valid for the sender (from field).
-    ///
-    /// The outer_message_id must be provided to verify the binding between
-    /// inner content and outer envelope.
-    ///
-    /// Returns true if signature is present and valid, false otherwise.
-    pub fn verify_signature(&self, outer_message_id: &MessageID) -> bool {
-        use xeddsa::{xed25519, Verify};
-
-        match &self.signature {
-            Some(sig) => {
-                let public_key = xed25519::PublicKey(self.from.to_bytes());
-                let signable = self.signable_bytes(outer_message_id);
-                public_key.verify(&signable, sig).is_ok()
-            }
-            None => false, // No signature present
-        }
-    }
-
-    /// Check if this envelope has a signature.
-    pub fn has_signature(&self) -> bool {
-        self.signature.is_some()
-    }
+    // Note: signable_bytes(), sign(), verify_signature(), and has_signature()
+    // have been removed as part of #25 (sign-all-bytes).
+    // Signing now happens in reme-encryption::encrypt_to_mik() by signing
+    // the serialized InnerEnvelope bytes || outer_message_id.
 }
 
 #[derive(Debug, Clone, Encode, Decode)]
@@ -420,7 +343,6 @@ mod tests {
             content: Content::Text(TextContent {
                 body: body.to_string(),
             }),
-            signature: None,
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
@@ -444,7 +366,6 @@ mod tests {
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
-            signature: None,
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
@@ -456,7 +377,6 @@ mod tests {
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
-            signature: None,
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
@@ -474,7 +394,6 @@ mod tests {
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
-            signature: None,
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
@@ -486,7 +405,6 @@ mod tests {
             content: Content::Text(TextContent {
                 body: "World".to_string(),
             }),
-            signature: None,
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
@@ -504,7 +422,6 @@ mod tests {
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
-            signature: None,
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
@@ -516,7 +433,6 @@ mod tests {
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
-            signature: None,
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
@@ -536,7 +452,6 @@ mod tests {
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
-            signature: None,
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
@@ -548,7 +463,6 @@ mod tests {
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
-            signature: None,
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
@@ -570,7 +484,6 @@ mod tests {
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
-            signature: None,
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
@@ -582,7 +495,6 @@ mod tests {
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
-            signature: None,
             prev_self: Some(prev_id),
             observed_heads: vec![observed],
             epoch: 5,
@@ -603,7 +515,6 @@ mod tests {
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
-            signature: None,
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
@@ -618,7 +529,6 @@ mod tests {
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
-            signature: None,
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
@@ -634,7 +544,6 @@ mod tests {
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
-            signature: None,
             prev_self: Some([1, 2, 3, 4, 5, 6, 7, 8]),
             observed_heads: vec![[9, 10, 11, 12, 13, 14, 15, 16]],
             epoch: 0,
@@ -643,42 +552,8 @@ mod tests {
         assert!(inner3.is_detached());
     }
 
-    #[test]
-    fn test_signable_bytes_includes_dag_fields() {
-        let sender = Identity::generate();
-        let message_id = MessageID::new();
-
-        let inner1 = InnerEnvelope {
-            from: *sender.public_id(),
-            created_at_ms: 1234567890,
-            content: Content::Text(TextContent {
-                body: "Hello".to_string(),
-            }),
-            signature: None,
-            prev_self: None,
-            observed_heads: Vec::new(),
-            epoch: 0,
-            flags: 0,
-        };
-        let inner2 = InnerEnvelope {
-            from: *sender.public_id(),
-            created_at_ms: 1234567890,
-            content: Content::Text(TextContent {
-                body: "Hello".to_string(),
-            }),
-            signature: None,
-            prev_self: Some([1, 2, 3, 4, 5, 6, 7, 8]),
-            observed_heads: vec![[9, 10, 11, 12, 13, 14, 15, 16]],
-            epoch: 5,
-            flags: 0,
-        };
-
-        // Different DAG fields should produce different signable bytes
-        assert_ne!(
-            inner1.signable_bytes(&message_id),
-            inner2.signable_bytes(&message_id)
-        );
-    }
+    // Note: test_signable_bytes_includes_dag_fields was removed as part of #25.
+    // Signing now happens in reme-encryption, not in InnerEnvelope.
 
     #[test]
     fn test_dag_fields_serialization() {
@@ -692,7 +567,6 @@ mod tests {
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
-            signature: None,
             prev_self: Some(prev_id),
             observed_heads: vec![observed],
             epoch: 42,
