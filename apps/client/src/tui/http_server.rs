@@ -14,13 +14,13 @@
 use axum::{
     extract::State,
     http::StatusCode,
-    response::{IntoResponse, Json},
+    response::{IntoResponse, Json, Response},
     routing::post,
     Router,
 };
 use base64::prelude::*;
-use reme_message::{OuterEnvelope, RoutingKey, WirePayload};
-use reme_node_core::EmbeddedNodeHandle;
+use reme_message::{MessageID, OuterEnvelope, RoutingKey, WirePayload};
+use reme_node_core::{EmbeddedNodeHandle, NodeError};
 use serde::Serialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -39,6 +39,33 @@ pub enum HttpServerError {
 
     #[error("Server error: {0}")]
     ServerError(#[from] std::io::Error),
+}
+
+/// API error type for HTTP handlers.
+///
+/// Implements `IntoResponse` for clean error-to-HTTP-response conversion.
+#[derive(Debug)]
+enum ApiError {
+    /// Invalid request format (base64, wire format, etc.)
+    BadRequest(String),
+    /// Message not intended for this recipient
+    Forbidden,
+    /// Internal storage or processing error
+    Internal(String),
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let (status, error_message) = match self {
+            ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
+            ApiError::Forbidden => (
+                StatusCode::FORBIDDEN,
+                "Message not intended for this recipient".to_string(),
+            ),
+            ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+        };
+        (status, Json(ErrorResponse { error: error_message })).into_response()
+    }
 }
 
 /// Shared state for HTTP handlers.
@@ -63,10 +90,12 @@ impl HttpServerState {
     }
 
     /// Check if a message is a duplicate (already stored).
-    pub fn is_duplicate(&self, envelope: &OuterEnvelope) -> bool {
+    ///
+    /// Returns `Ok(true)` if already stored, `Ok(false)` if not stored,
+    /// or `Err` if the check failed (database error).
+    pub fn is_duplicate(&self, envelope: &OuterEnvelope) -> Result<bool, NodeError> {
         self.node_handle
             .has_message(&envelope.routing_key, &envelope.message_id)
-            .unwrap_or(false)
     }
 
     /// Store a message and notify the client.
@@ -103,27 +132,17 @@ struct HealthResponse {
 async fn submit_handler(
     State(state): State<Arc<HttpServerState>>,
     body: String,
-) -> Result<Json<SubmitResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<SubmitResponse>, ApiError> {
     // Decode base64 payload
     let wire_bytes = BASE64_STANDARD.decode(body.trim()).map_err(|e| {
         warn!(error = %e, "Received invalid base64 payload");
-        (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Invalid base64 encoding".to_string(),
-            }),
-        )
+        ApiError::BadRequest("Invalid base64 encoding".to_string())
     })?;
 
     // Parse WirePayload
     let payload = WirePayload::decode(&wire_bytes).map_err(|e| {
         warn!(error = %e, "Received invalid wire payload");
-        (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Invalid message format".to_string(),
-            }),
-        )
+        ApiError::BadRequest("Invalid message format".to_string())
     })?;
 
     // Extract OuterEnvelope (reject tombstones from peers)
@@ -131,11 +150,8 @@ async fn submit_handler(
         WirePayload::Message(env) => env,
         WirePayload::Tombstone(_) => {
             debug!("Rejected tombstone from LAN peer");
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Tombstones not accepted via direct peer API".to_string(),
-                }),
+            return Err(ApiError::BadRequest(
+                "Tombstones not accepted via direct peer API".to_string(),
             ));
         }
     };
@@ -152,38 +168,77 @@ async fn submit_handler(
             received = %hex::encode(envelope.routing_key.as_bytes()),
             "Rejecting message: routing key mismatch"
         );
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                error: "Message not intended for this recipient".to_string(),
-            }),
-        ));
+        return Err(ApiError::Forbidden);
     }
 
     // === DUPLICATE CHECK ===
     // Idempotent operation: return success if already stored
-    if state.is_duplicate(&envelope) {
-        debug!(message_id = ?message_id, "Duplicate message, already stored");
-        return Ok(Json(SubmitResponse { status: "ok" }));
+    match state.is_duplicate(&envelope) {
+        Ok(true) => {
+            debug!(message_id = ?message_id, "Duplicate message, already stored");
+            return Ok(Json(SubmitResponse { status: "ok" }));
+        }
+        Ok(false) => {
+            // Not a duplicate, proceed to store
+        }
+        Err(e) => {
+            // Database error during duplicate check - log but try to store anyway
+            // This handles potential transient issues while maintaining availability
+            warn!(
+                message_id = ?message_id,
+                error = %e,
+                "Duplicate check failed, attempting store anyway"
+            );
+        }
     }
 
     // Store and notify client
-    state.store_message(envelope).map_err(|e| {
+    // Handle race condition: if store fails, check if it's now a duplicate
+    if let Err(e) = state.store_message(envelope.clone()) {
+        // Check if the message was stored by a concurrent request (race condition)
+        // If so, treat as success (idempotent behavior)
+        if is_duplicate_after_store_failure(&state, &message_id, &e) {
+            debug!(
+                message_id = ?message_id,
+                "Store failed but message exists (concurrent insert), treating as success"
+            );
+            return Ok(Json(SubmitResponse { status: "ok" }));
+        }
+
         error!(
             message_id = ?message_id,
             error = %e,
             "Failed to store message from LAN peer"
         );
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: "Failed to store message".to_string(),
-            }),
-        )
-    })?;
+        return Err(ApiError::Internal("Failed to store message".to_string()));
+    }
 
     info!(message_id = ?message_id, "Message from LAN peer stored successfully");
     Ok(Json(SubmitResponse { status: "ok" }))
+}
+
+/// Check if a store failure was due to a concurrent duplicate insert (race condition).
+///
+/// Returns true if the message now exists in storage, indicating another request
+/// successfully stored it first. This enables idempotent behavior under concurrent load.
+fn is_duplicate_after_store_failure(
+    state: &HttpServerState,
+    message_id: &MessageID,
+    _error: &NodeError,
+) -> bool {
+    // Re-check if message exists - if a concurrent request stored it, treat as success
+    // We create a temporary envelope just for the lookup (only routing_key + message_id matter)
+    let check_envelope = OuterEnvelope {
+        version: reme_message::CURRENT_VERSION,
+        routing_key: *state.our_routing_key(),
+        message_id: *message_id,
+        timestamp_hours: 0,
+        ttl_hours: None,
+        ephemeral_key: [0u8; 32],
+        inner_ciphertext: vec![],
+    };
+
+    state.is_duplicate(&check_envelope).unwrap_or(false)
 }
 
 /// Health check endpoint
