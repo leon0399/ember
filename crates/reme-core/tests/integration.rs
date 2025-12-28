@@ -137,7 +137,7 @@ async fn test_e2e_encryption_mik_only() {
     };
 
     // Encrypt to Bob's MIK (signing happens inside encrypt_to_mik)
-    let (ephemeral_key, ciphertext) =
+    let enc_output =
         encrypt_to_mik(&inner, bob.public_id(), &message_id, &alice.to_bytes())
             .expect("encrypt_to_mik failed");
     println!("Alice encrypted message to Bob's MIK");
@@ -149,8 +149,10 @@ async fn test_e2e_encryption_mik_only() {
         timestamp_hours: reme_message::now_hours(),
         ttl_hours: Some(1), // 1 hour TTL
         message_id,
-        ephemeral_key,
-        inner_ciphertext: ciphertext,
+        ephemeral_key: enc_output.ephemeral_public,
+        commitment_pub: enc_output.commitment_public,
+        outer_signature: None, // Could sign here if needed
+        inner_ciphertext: enc_output.ciphertext,
     };
 
     transport
@@ -171,18 +173,19 @@ async fn test_e2e_encryption_mik_only() {
     // Bob decrypts using his MIK private key (stateless)
     // Signature verification happens inside decrypt_with_mik
     let bob_private = bob.to_bytes();
-    let decrypted = decrypt_with_mik(
+    let dec_output = decrypt_with_mik(
         &messages[0].ephemeral_key,
         &messages[0].inner_ciphertext,
         &bob_private,
         &messages[0].message_id,
+        messages[0].commitment_pub.as_ref(),
     )
     .expect("decrypt_with_mik failed (signature verification included)");
 
     // Signature was verified during decryption - if we got here, it's valid
     println!("Bob decrypted and verified Alice's signature: OK");
 
-    match decrypted.content {
+    match dec_output.inner_envelope.content {
         Content::Text(t) => {
             assert_eq!(t.body, "Hello Bob! This is Alice.");
             println!("Bob decrypted message: \"{}\"", t.body);
@@ -815,7 +818,7 @@ async fn test_forged_signature_rejected_at_client_level() {
 
     // Mallory encrypts with HER private key (not Alice's)
     // The signature will be made with Mallory's key, but `from` claims Alice
-    let (ephemeral_key, ciphertext) =
+    let enc_output =
         encrypt_to_mik(&inner, bob.public_id(), &message_id, &mallory.to_bytes())
             .expect("encrypt_to_mik should succeed");
 
@@ -826,8 +829,10 @@ async fn test_forged_signature_rejected_at_client_level() {
         timestamp_hours: reme_message::now_hours(),
         ttl_hours: Some(1),
         message_id,
-        ephemeral_key,
-        inner_ciphertext: ciphertext,
+        ephemeral_key: enc_output.ephemeral_public,
+        commitment_pub: enc_output.commitment_public,
+        outer_signature: None,
+        inner_ciphertext: enc_output.ciphertext,
     };
 
     transport
@@ -863,7 +868,7 @@ async fn test_truncated_ciphertext_rejected() {
 
     // Test empty ciphertext
     let empty_ciphertext: Vec<u8> = vec![];
-    let result = decrypt_with_mik(&[1u8; 32], &empty_ciphertext, &bob_private, &message_id);
+    let result = decrypt_with_mik(&[1u8; 32], &empty_ciphertext, &bob_private, &message_id, None);
     assert!(result.is_err(), "Empty ciphertext should be rejected");
     assert!(
         matches!(result.unwrap_err(), EncryptionError::DecryptionFailed),
@@ -872,7 +877,7 @@ async fn test_truncated_ciphertext_rejected() {
 
     // Test ciphertext smaller than AEAD tag (16 bytes for ChaCha20Poly1305)
     let tiny_ciphertext = vec![0u8; 8];
-    let result = decrypt_with_mik(&[1u8; 32], &tiny_ciphertext, &bob_private, &message_id);
+    let result = decrypt_with_mik(&[1u8; 32], &tiny_ciphertext, &bob_private, &message_id, None);
     assert!(result.is_err(), "Tiny ciphertext should be rejected");
     assert!(
         matches!(result.unwrap_err(), EncryptionError::DecryptionFailed),
@@ -883,7 +888,7 @@ async fn test_truncated_ciphertext_rejected() {
     // AEAD tag is 16 bytes, so we need ciphertext > 16 + 64 = 80 bytes for valid payload
     // This tests the post-decryption length check
     let small_ciphertext = vec![0u8; 50]; // Will fail AEAD verification anyway
-    let result = decrypt_with_mik(&[1u8; 32], &small_ciphertext, &bob_private, &message_id);
+    let result = decrypt_with_mik(&[1u8; 32], &small_ciphertext, &bob_private, &message_id, None);
     assert!(result.is_err(), "Small ciphertext should be rejected");
     assert!(
         matches!(result.unwrap_err(), EncryptionError::DecryptionFailed),

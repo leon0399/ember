@@ -7,7 +7,10 @@
 //! - Contact management
 //! - Resilient delivery via outbox with retry policies
 
-use reme_encryption::{decrypt_with_mik, encrypt_to_mik, EncryptionError};
+use reme_encryption::{
+    decrypt_with_mik, encrypt_to_mik, sign_outer_envelope, verify_commitment_binding,
+    EncryptionError,
+};
 use reme_identity::{Identity, PublicID};
 use reme_message::{
     Content, ContentId, ConversationDag, DeviceID, InnerEnvelope, MessageID, OuterEnvelope,
@@ -456,24 +459,28 @@ impl<T: Transport> Client<T> {
         // Compute content_id
         let content_id = inner.content_id();
 
-        // Encrypt to recipient's MIK (signing happens inside encrypt_to_mik)
-        let (ephemeral_key, ciphertext) =
-            encrypt_to_mik(&inner, to, &outer_message_id, &self.private_key())?;
+        // Encrypt to recipient's MIK (signing + VXEdDSA derivation happens inside)
+        let enc_output = encrypt_to_mik(&inner, to, &outer_message_id, &self.private_key())?;
 
-        // Create outer envelope
-        // TODO: Add outer signature support after encrypt_to_mik is updated
-        // to return commitment_pub and outer_signature for anonymous verification.
-        let outer = OuterEnvelope {
+        // Create outer envelope (first without signature - needed for outer_signable_bytes)
+        let mut outer = OuterEnvelope {
             version: CURRENT_VERSION,
             routing_key,
             timestamp_hours: reme_message::now_hours(),
             ttl_hours: Some(7 * 24), // 7 days default TTL
             message_id: outer_message_id,
-            ephemeral_key,
-            commitment_pub: None,     // Will be populated after VXEdDSA integration
-            outer_signature: None,    // Will be populated after VXEdDSA integration
-            inner_ciphertext: ciphertext,
+            ephemeral_key: enc_output.ephemeral_public,
+            commitment_pub: enc_output.commitment_public,
+            outer_signature: None, // Will be set after signing
+            inner_ciphertext: enc_output.ciphertext,
         };
+
+        // Sign outer envelope with commitment key (if available)
+        if let Some(ref commitment_priv) = enc_output.commitment_private {
+            let outer_signable = outer.outer_signable_bytes();
+            let outer_sig = sign_outer_envelope(commitment_priv, &outer_signable);
+            outer.outer_signature = Some(outer_sig);
+        }
 
         // Store locally first
         let contact_id = self.storage.get_contact_id(to)?;
@@ -582,17 +589,32 @@ impl<T: Transport> Client<T> {
         // This also verifies:
         // - AAD binding (message_id must match)
         // - Sender signature (sign-all-bytes - signature verified during decryption)
-        let inner = decrypt_with_mik(
+        let dec_output = decrypt_with_mik(
             &outer.ephemeral_key,
             &outer.inner_ciphertext,
             &self.private_key(),
             &outer.message_id,
+            outer.commitment_pub.as_ref(),
         )
         .map_err(|e| match e {
             EncryptionError::DecryptionFailed => ClientError::DecryptionFailed,
             EncryptionError::InvalidSenderSignature => ClientError::InvalidSenderSignature,
             other => other.into(),
         })?;
+
+        let inner = dec_output.inner_envelope;
+
+        // Verify commitment binding if VXEdDSA was used
+        // This proves the commitment_pub in OuterEnvelope was derived by the sender
+        if let (Some(commitment_pub), Some(derivation_sig)) =
+            (outer.commitment_pub.as_ref(), dec_output.derivation_sig.as_ref())
+        {
+            let sender_pub = inner.from.to_bytes();
+            if !verify_commitment_binding(&sender_pub, &outer.message_id, derivation_sig, commitment_pub) {
+                // Commitment forged - a malicious relay node tampered with outer envelope
+                return Err(ClientError::InvalidSenderSignature);
+            }
+        }
 
         // Note: Recipient binding is implicit via sealed box ECDH.
         // If decryption succeeded, the message was intended for our MIK.
@@ -1628,17 +1650,18 @@ mod tests {
         assert_eq!(messages.len(), 1);
 
         // Decrypt and verify it's detached
-        let inner = decrypt_with_mik(
+        let dec_output = decrypt_with_mik(
             &messages[0].ephemeral_key,
             &messages[0].inner_ciphertext,
             &bob_private_key,
             &messages[0].message_id,
+            messages[0].commitment_pub.as_ref(),
         )
         .unwrap();
 
-        assert!(inner.is_detached());
-        assert!(inner.prev_self.is_none());
-        assert!(inner.observed_heads.is_empty());
+        assert!(dec_output.inner_envelope.is_detached());
+        assert!(dec_output.inner_envelope.prev_self.is_none());
+        assert!(dec_output.inner_envelope.observed_heads.is_empty());
     }
 
     #[tokio::test]
@@ -1666,21 +1689,26 @@ mod tests {
         assert_eq!(messages.len(), 2);
 
         // Decrypt both
-        let inner1 = decrypt_with_mik(
+        let dec1 = decrypt_with_mik(
             &messages[0].ephemeral_key,
             &messages[0].inner_ciphertext,
             &bob_private_key,
             &messages[0].message_id,
+            messages[0].commitment_pub.as_ref(),
         )
         .unwrap();
 
-        let inner2 = decrypt_with_mik(
+        let dec2 = decrypt_with_mik(
             &messages[1].ephemeral_key,
             &messages[1].inner_ciphertext,
             &bob_private_key,
             &messages[1].message_id,
+            messages[1].commitment_pub.as_ref(),
         )
         .unwrap();
+
+        let inner1 = dec1.inner_envelope;
+        let inner2 = dec2.inner_envelope;
 
         // First message has no prev_self (but may have observed_heads if we received from Bob)
         assert!(inner1.prev_self.is_none());
@@ -1748,21 +1776,26 @@ mod tests {
         let messages = shared_transport.take_messages();
         assert_eq!(messages.len(), 3);
 
-        let inner1 = decrypt_with_mik(
+        let dec1 = decrypt_with_mik(
             &messages[0].ephemeral_key,
             &messages[0].inner_ciphertext,
             &bob_private_key,
             &messages[0].message_id,
+            messages[0].commitment_pub.as_ref(),
         )
         .unwrap();
 
-        let inner3 = decrypt_with_mik(
+        let dec3 = decrypt_with_mik(
             &messages[2].ephemeral_key,
             &messages[2].inner_ciphertext,
             &bob_private_key,
             &messages[2].message_id,
+            messages[2].commitment_pub.as_ref(),
         )
         .unwrap();
+
+        let inner1 = dec1.inner_envelope;
+        let inner3 = dec3.inner_envelope;
 
         // Third message (Linked 2) should link to first (Linked 1), skipping detached
         assert_eq!(inner3.prev_self.unwrap(), inner1.content_id());
@@ -1830,7 +1863,7 @@ mod tests {
 
         // Encrypt and create outer envelope (signing happens inside encrypt_to_mik)
         let bob_routing_key = bob.public_id().routing_key();
-        let (ephemeral_key, ciphertext) =
+        let enc_output =
             encrypt_to_mik(&inner, bob.public_id(), &message_id, &alice_private_key).unwrap();
         let outer = OuterEnvelope {
             version: reme_message::CURRENT_VERSION,
@@ -1838,8 +1871,10 @@ mod tests {
             timestamp_hours: reme_message::now_hours(),
             ttl_hours: None,
             message_id,
-            ephemeral_key,
-            inner_ciphertext: ciphertext,
+            ephemeral_key: enc_output.ephemeral_public,
+            commitment_pub: enc_output.commitment_public,
+            outer_signature: None,
+            inner_ciphertext: enc_output.ciphertext,
         };
 
         // Bob processes this message
@@ -1902,7 +1937,7 @@ mod tests {
 
         // Encrypt and create outer envelope (signing happens inside encrypt_to_mik)
         let bob_routing_key = bob.public_id().routing_key();
-        let (ephemeral_key, ciphertext) =
+        let enc_output =
             encrypt_to_mik(&inner, bob.public_id(), &message_id, &alice_private_key).unwrap();
         let outer = OuterEnvelope {
             version: reme_message::CURRENT_VERSION,
@@ -1910,8 +1945,10 @@ mod tests {
             timestamp_hours: reme_message::now_hours(),
             ttl_hours: None,
             message_id,
-            ephemeral_key,
-            inner_ciphertext: ciphertext,
+            ephemeral_key: enc_output.ephemeral_public,
+            commitment_pub: enc_output.commitment_public,
+            outer_signature: None,
+            inner_ciphertext: enc_output.ciphertext,
         };
 
         // Bob processes this detached message
@@ -1979,7 +2016,7 @@ mod tests {
 
         // Encrypt for Alice (signing happens inside encrypt_to_mik)
         let alice_routing_key = alice.public_id().routing_key();
-        let (ephemeral_key, ciphertext) =
+        let enc_output =
             encrypt_to_mik(&inner, alice.public_id(), &message_id, &bob_private_key).unwrap();
         let outer = OuterEnvelope {
             version: reme_message::CURRENT_VERSION,
@@ -1987,8 +2024,10 @@ mod tests {
             timestamp_hours: reme_message::now_hours(),
             ttl_hours: None,
             message_id,
-            ephemeral_key,
-            inner_ciphertext: ciphertext,
+            ephemeral_key: enc_output.ephemeral_public,
+            commitment_pub: enc_output.commitment_public,
+            outer_signature: None,
+            inner_ciphertext: enc_output.ciphertext,
         };
 
         // Alice processes this message

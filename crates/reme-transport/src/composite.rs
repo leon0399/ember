@@ -313,6 +313,8 @@ mod tests {
             ttl_hours: Some(24),
             message_id: MessageID::new(),
             ephemeral_key: [0u8; 32],
+            commitment_pub: None,
+            outer_signature: None,
             inner_ciphertext: vec![0u8; 64],
         }
     }

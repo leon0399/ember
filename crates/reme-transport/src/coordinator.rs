@@ -996,6 +996,8 @@ mod tests {
             timestamp_hours: 0,
             ttl_hours: None,
             ephemeral_key: [3u8; 32],
+            commitment_pub: None,
+            outer_signature: None,
             inner_ciphertext: vec![1, 2, 3],
         };
 
@@ -1021,6 +1023,8 @@ mod tests {
             timestamp_hours: 0,
             ttl_hours: None,
             ephemeral_key: [3u8; 32],
+            commitment_pub: None,
+            outer_signature: None,
             inner_ciphertext: vec![1, 2, 3],
         };
 
@@ -1045,6 +1049,8 @@ mod tests {
             timestamp_hours: 0,
             ttl_hours: None,
             ephemeral_key: [3u8; 32],
+            commitment_pub: None,
+            outer_signature: None,
             inner_ciphertext: vec![1, 2, 3],
         };
 
