@@ -419,6 +419,12 @@ pub struct NodeConfig {
     /// Additional valid hostnames (for multi-homed servers, dev, migration)
     #[serde(default)]
     pub additional_hosts: Vec<String>,
+
+    /// Whether to require outer envelope signatures for message verification
+    /// When true, messages without valid outer_signature will be rejected (400 Bad Request)
+    /// When false (default), unsigned messages are accepted for backward compatibility
+    #[serde(default)]
+    pub require_outer_signature: bool,
 }
 
 impl Default for NodeConfig {
@@ -441,6 +447,7 @@ impl Default for NodeConfig {
             identity_path: None,   // None means use default location
             public_host: None,     // None means accept any (insecure mode)
             additional_hosts: Vec::new(),
+            require_outer_signature: false, // Backward compatible: accept unsigned messages
         }
     }
 }
@@ -739,6 +746,9 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     let public_host = cli.public_host.or(public_host_from_config);
     let additional_hosts = cli.additional_hosts.unwrap_or(additional_hosts_from_config);
 
+    // Read require_outer_signature from config (defaults to false for backward compat)
+    let require_outer_signature = config.get_bool("require_outer_signature").unwrap_or(false);
+
     Ok(NodeConfig {
         bind_addr,
         max_messages,
@@ -756,6 +766,7 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         identity_path,
         public_host,
         additional_hosts,
+        require_outer_signature,
     })
 }
 

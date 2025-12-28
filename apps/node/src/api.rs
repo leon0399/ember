@@ -22,6 +22,7 @@ use axum::{
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
+use reme_encryption::verify_outer_envelope;
 use reme_message::{OuterEnvelope, RoutingKey, WirePayload};
 use serde::Serialize;
 use std::sync::Arc;
@@ -46,6 +47,8 @@ pub struct AppState {
     pub public_host: Option<String>,
     /// Additional acceptable hostnames (for multi-homed, dev, migration)
     pub additional_hosts: Vec<String>,
+    /// Whether to require outer envelope signatures for message verification
+    pub require_outer_signature: bool,
 }
 
 /// Maximum request body size (256 KiB)
@@ -345,6 +348,49 @@ async fn handle_message(
             Json(SubmitResponse { status: "ok".to_string() }),
         )
             .into_response();
+    }
+
+    // Verify outer envelope signature if present
+    match (&envelope.commitment_pub, &envelope.outer_signature) {
+        (Some(commitment_pub), Some(outer_signature)) => {
+            // Both present: verify the signature
+            let outer_signable = envelope.outer_signable_bytes();
+            if !verify_outer_envelope(commitment_pub, &outer_signable, outer_signature) {
+                debug!("Invalid outer envelope signature");
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "Invalid outer envelope signature".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            // Inconsistent: one present without the other
+            debug!("Inconsistent outer signature fields");
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Outer signature fields must both be present or both absent".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        (None, None) => {
+            // Neither present: check if signatures are required
+            if state.require_outer_signature {
+                debug!("Outer signature required but not present");
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "Outer envelope signature required".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            // Otherwise, accept unsigned messages for backward compatibility
+        }
     }
 
     let routing_key = envelope.routing_key;

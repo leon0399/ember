@@ -4,7 +4,7 @@
 //! Uses MIK-only stateless encryption (no session establishment, no prekeys).
 
 use reme_core::Client;
-use reme_encryption::{decrypt_with_mik, encrypt_to_mik, EncryptionError};
+use reme_encryption::{decrypt_with_mik, encrypt_to_mik, sign_outer_envelope, EncryptionError};
 use reme_identity::Identity;
 use reme_message::{
     Content, InnerEnvelope, MessageID, OuterEnvelope, TextContent, TombstoneStatus, CURRENT_VERSION,
@@ -53,6 +53,7 @@ impl TestServer {
             identity: None,
             public_host: None,
             additional_hosts: vec![],
+            require_outer_signature: false,
         });
         let app = api::router(state, None);
 
@@ -143,7 +144,7 @@ async fn test_e2e_encryption_mik_only() {
     println!("Alice encrypted message to Bob's MIK");
 
     // Alice sends the message
-    let outer = OuterEnvelope {
+    let mut outer = OuterEnvelope {
         version: CURRENT_VERSION,
         routing_key: bob_routing_key,
         timestamp_hours: reme_message::now_hours(),
@@ -151,9 +152,15 @@ async fn test_e2e_encryption_mik_only() {
         message_id,
         ephemeral_key: enc_output.ephemeral_public,
         commitment_pub: enc_output.commitment_public,
-        outer_signature: None, // Could sign here if needed
+        outer_signature: None, // Will sign below
         inner_ciphertext: enc_output.ciphertext,
     };
+
+    // Sign the outer envelope with the commitment key
+    if let Some(commitment_priv) = enc_output.commitment_private.as_ref() {
+        let outer_signable = outer.outer_signable_bytes();
+        outer.outer_signature = Some(sign_outer_envelope(commitment_priv, &outer_signable));
+    }
 
     transport
         .submit_message(outer)
@@ -439,6 +446,7 @@ async fn test_multi_node_replication() {
         identity: None,
         public_host: None,
         additional_hosts: vec![],
+        require_outer_signature: false,
     });
     let app1 = api::router(state1, None);
 
@@ -457,6 +465,7 @@ async fn test_multi_node_replication() {
         identity: None,
         public_host: None,
         additional_hosts: vec![],
+        require_outer_signature: false,
     });
     let app2 = api::router(state2, None);
 
@@ -823,7 +832,7 @@ async fn test_forged_signature_rejected_at_client_level() {
             .expect("encrypt_to_mik should succeed");
 
     // Mallory sends the forged message to Bob
-    let outer = OuterEnvelope {
+    let mut outer = OuterEnvelope {
         version: CURRENT_VERSION,
         routing_key: bob.routing_key(),
         timestamp_hours: reme_message::now_hours(),
@@ -831,9 +840,15 @@ async fn test_forged_signature_rejected_at_client_level() {
         message_id,
         ephemeral_key: enc_output.ephemeral_public,
         commitment_pub: enc_output.commitment_public,
-        outer_signature: None,
+        outer_signature: None, // Will sign below
         inner_ciphertext: enc_output.ciphertext,
     };
+
+    // Sign the outer envelope with Mallory's commitment key
+    if let Some(commitment_priv) = enc_output.commitment_private.as_ref() {
+        let outer_signable = outer.outer_signable_bytes();
+        outer.outer_signature = Some(sign_outer_envelope(commitment_priv, &outer_signable));
+    }
 
     transport
         .submit_message(outer.clone())

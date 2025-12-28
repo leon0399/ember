@@ -65,6 +65,7 @@ async fn start_test_node(
         identity,
         public_host,
         additional_hosts: vec![],
+        require_outer_signature: false,
     });
     let app = api::router(state, None);
 

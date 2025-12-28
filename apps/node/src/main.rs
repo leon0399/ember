@@ -281,6 +281,7 @@ async fn main() {
         identity,
         public_host: config.public_host.clone(),
         additional_hosts: config.additional_hosts.clone(),
+        require_outer_signature: config.require_outer_signature,
     });
 
     // Create router with rate limiting
