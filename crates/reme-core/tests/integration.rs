@@ -913,6 +913,212 @@ async fn test_truncated_ciphertext_rejected() {
     println!("\n✓ Truncated ciphertext rejection test passed!");
 }
 
+/// Test that tampered outer envelope signature is rejected by node
+///
+/// Verifies that the node correctly detects when an outer signature
+/// has been tampered with after being signed.
+#[tokio::test]
+async fn test_tampered_outer_signature_rejected() {
+    let server = TestServer::start().await;
+    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
+
+    let alice = Identity::generate();
+    let bob = Identity::generate();
+
+    // Create and encrypt a valid message
+    let message_id = MessageID::new();
+    let inner = InnerEnvelope {
+        from: *alice.public_id(),
+        created_at_ms: 1234567890,
+        content: Content::Text(TextContent {
+            body: "Test message".to_string(),
+        }),
+        prev_self: None,
+        observed_heads: Vec::new(),
+        epoch: 0,
+        flags: 0,
+    };
+
+    let enc_output =
+        encrypt_to_mik(&inner, bob.public_id(), &message_id, &alice.to_bytes())
+            .expect("encrypt_to_mik failed");
+
+    // Build outer envelope with valid signature
+    let mut outer = OuterEnvelope {
+        version: CURRENT_VERSION,
+        routing_key: bob.public_id().routing_key(),
+        timestamp_hours: reme_message::now_hours(),
+        ttl_hours: Some(1),
+        message_id,
+        ephemeral_key: enc_output.ephemeral_public,
+        commitment_pub: enc_output.commitment_public,
+        outer_signature: None,
+        inner_ciphertext: enc_output.ciphertext,
+    };
+
+    // Sign the outer envelope
+    if let Some(commitment_priv) = enc_output.commitment_private.as_ref() {
+        let outer_signable = outer.outer_signable_bytes();
+        outer.outer_signature = Some(sign_outer_envelope(commitment_priv, &outer_signable));
+    }
+
+    // Tamper with the signature by flipping some bits
+    if let Some(ref mut sig) = outer.outer_signature {
+        sig[0] ^= 0xFF;
+        sig[31] ^= 0xFF;
+    }
+
+    // Submit should fail with 400 Bad Request
+    let result = transport.submit_message(outer).await;
+    assert!(result.is_err(), "Tampered signature should be rejected");
+
+    let err = result.unwrap_err();
+    let err_str = err.to_string();
+    assert!(
+        err_str.contains("400") && err_str.contains("Invalid outer envelope signature"),
+        "Expected 400 with 'Invalid outer envelope signature' error, got: {}",
+        err_str
+    );
+
+    println!("\n✓ Tampered outer signature rejection test passed!");
+}
+
+/// Test backward compatibility: unsigned messages are accepted by default
+///
+/// Verifies that nodes accept messages without outer signatures when
+/// require_outer_signature is false (the default for backward compat).
+#[tokio::test]
+async fn test_backward_compat_no_outer_sig() {
+    let server = TestServer::start().await;
+    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
+
+    let alice = Identity::generate();
+    let bob = Identity::generate();
+
+    // Create and encrypt a valid message
+    let message_id = MessageID::new();
+    let inner = InnerEnvelope {
+        from: *alice.public_id(),
+        created_at_ms: 1234567890,
+        content: Content::Text(TextContent {
+            body: "Unsigned message".to_string(),
+        }),
+        prev_self: None,
+        observed_heads: Vec::new(),
+        epoch: 0,
+        flags: 0,
+    };
+
+    let enc_output =
+        encrypt_to_mik(&inner, bob.public_id(), &message_id, &alice.to_bytes())
+            .expect("encrypt_to_mik failed");
+
+    // Build outer envelope WITHOUT signature (backward compat mode)
+    let bob_routing_key = bob.public_id().routing_key();
+    let outer = OuterEnvelope {
+        version: CURRENT_VERSION,
+        routing_key: bob_routing_key,
+        timestamp_hours: reme_message::now_hours(),
+        ttl_hours: Some(1),
+        message_id,
+        ephemeral_key: enc_output.ephemeral_public,
+        commitment_pub: None, // No commitment
+        outer_signature: None, // No signature
+        inner_ciphertext: enc_output.ciphertext,
+    };
+
+    // Submit should succeed (backward compat)
+    transport
+        .submit_message(outer)
+        .await
+        .expect("Unsigned message should be accepted in backward compat mode");
+
+    // Fetch and verify message was stored
+    let messages = transport.fetch_once(&bob_routing_key).await.expect("fetch failed");
+    assert_eq!(messages.len(), 1, "Message should be stored");
+
+    println!("\n✓ Backward compatibility test passed!");
+}
+
+/// Test that inconsistent outer signature fields are rejected
+///
+/// Verifies that the node rejects messages with only commitment_pub
+/// or only outer_signature (must be both or neither).
+#[tokio::test]
+async fn test_inconsistent_outer_fields_rejected() {
+    let server = TestServer::start().await;
+    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
+
+    let alice = Identity::generate();
+    let bob = Identity::generate();
+
+    // Create and encrypt a valid message
+    let message_id = MessageID::new();
+    let inner = InnerEnvelope {
+        from: *alice.public_id(),
+        created_at_ms: 1234567890,
+        content: Content::Text(TextContent {
+            body: "Test message".to_string(),
+        }),
+        prev_self: None,
+        observed_heads: Vec::new(),
+        epoch: 0,
+        flags: 0,
+    };
+
+    let enc_output =
+        encrypt_to_mik(&inner, bob.public_id(), &message_id, &alice.to_bytes())
+            .expect("encrypt_to_mik failed");
+
+    let bob_routing_key = bob.public_id().routing_key();
+
+    // Test 1: commitment_pub without outer_signature
+    let outer_with_commitment_only = OuterEnvelope {
+        version: CURRENT_VERSION,
+        routing_key: bob_routing_key,
+        timestamp_hours: reme_message::now_hours(),
+        ttl_hours: Some(1),
+        message_id,
+        ephemeral_key: enc_output.ephemeral_public,
+        commitment_pub: enc_output.commitment_public, // Has commitment
+        outer_signature: None, // But no signature
+        inner_ciphertext: enc_output.ciphertext.clone(),
+    };
+
+    let result = transport.submit_message(outer_with_commitment_only).await;
+    assert!(result.is_err(), "Commitment without signature should be rejected");
+    let err_str = result.unwrap_err().to_string();
+    assert!(
+        err_str.contains("400") && err_str.contains("both be present or both absent"),
+        "Expected inconsistency error, got: {}",
+        err_str
+    );
+
+    // Test 2: outer_signature without commitment_pub
+    let outer_with_sig_only = OuterEnvelope {
+        version: CURRENT_VERSION,
+        routing_key: bob_routing_key,
+        timestamp_hours: reme_message::now_hours(),
+        ttl_hours: Some(1),
+        message_id: MessageID::new(), // New ID to avoid duplicate
+        ephemeral_key: enc_output.ephemeral_public,
+        commitment_pub: None, // No commitment
+        outer_signature: Some([0u8; 64]), // But has signature
+        inner_ciphertext: enc_output.ciphertext,
+    };
+
+    let result = transport.submit_message(outer_with_sig_only).await;
+    assert!(result.is_err(), "Signature without commitment should be rejected");
+    let err_str = result.unwrap_err().to_string();
+    assert!(
+        err_str.contains("400") && err_str.contains("both be present or both absent"),
+        "Expected inconsistency error, got: {}",
+        err_str
+    );
+
+    println!("\n✓ Inconsistent outer fields rejection test passed!");
+}
+
 /// Test that retry mechanism works for pending messages
 #[tokio::test]
 async fn test_outbox_retry_mechanism() {
