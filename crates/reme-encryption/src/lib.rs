@@ -500,8 +500,10 @@ pub fn verify_commitment_binding(
     // Derive expected commitment_pub from VRF output
     let (_, expected_pub) = derive_commitment_key(&vrf_output);
 
-    // Compare with provided commitment_pub
-    expected_pub == *commitment_pub
+    // Compare with provided commitment_pub using constant-time comparison
+    // to prevent timing attacks that could leak information about the expected key
+    use subtle::ConstantTimeEq;
+    expected_pub.ct_eq(commitment_pub).into()
 }
 
 /// Derive a 32-byte encryption key from ECDH shared secret and both public keys
@@ -1125,5 +1127,142 @@ mod tests {
             xeddsa_verify(&commitment_pub, outer_data, &signature),
             "Commitment key should work for XEdDSA signing"
         );
+    }
+
+    // ============================================================================
+    // verify_commitment_binding Tests
+    // ============================================================================
+
+    #[test]
+    fn test_verify_commitment_binding_valid() {
+        // Valid commitment binding should verify
+        let alice = Identity::generate();
+        let alice_private = alice.to_bytes();
+        let alice_public = alice.public_id().to_bytes();
+
+        let message_id = MessageID::new();
+
+        // Derive commitment key via VXEdDSA (same as in encryption)
+        let (derivation_sig, vrf_output) = vxeddsa_sign(&alice_private, message_id.as_bytes());
+        let (_, commitment_pub) = derive_commitment_key(&vrf_output);
+
+        // Verify binding
+        assert!(
+            verify_commitment_binding(&alice_public, &message_id, &derivation_sig, &commitment_pub),
+            "Valid commitment binding should verify"
+        );
+    }
+
+    #[test]
+    fn test_verify_commitment_binding_wrong_sender() {
+        // Verification with wrong sender public key should fail
+        let alice = Identity::generate();
+        let alice_private = alice.to_bytes();
+
+        let bob = Identity::generate();
+        let bob_public = bob.public_id().to_bytes();
+
+        let message_id = MessageID::new();
+
+        // Alice creates commitment
+        let (derivation_sig, vrf_output) = vxeddsa_sign(&alice_private, message_id.as_bytes());
+        let (_, commitment_pub) = derive_commitment_key(&vrf_output);
+
+        // Verify with Bob's key should fail
+        assert!(
+            !verify_commitment_binding(&bob_public, &message_id, &derivation_sig, &commitment_pub),
+            "Wrong sender should fail verification"
+        );
+    }
+
+    #[test]
+    fn test_verify_commitment_binding_wrong_message_id() {
+        // Verification with wrong message_id should fail
+        let alice = Identity::generate();
+        let alice_private = alice.to_bytes();
+        let alice_public = alice.public_id().to_bytes();
+
+        let message_id = MessageID::new();
+        let wrong_message_id = MessageID::new();
+
+        // Create commitment for original message_id
+        let (derivation_sig, vrf_output) = vxeddsa_sign(&alice_private, message_id.as_bytes());
+        let (_, commitment_pub) = derive_commitment_key(&vrf_output);
+
+        // Verify with wrong message_id should fail
+        assert!(
+            !verify_commitment_binding(&alice_public, &wrong_message_id, &derivation_sig, &commitment_pub),
+            "Wrong message_id should fail verification"
+        );
+    }
+
+    #[test]
+    fn test_verify_commitment_binding_forged_commitment() {
+        // Verification with forged commitment_pub should fail
+        // This simulates a malicious relay node replacing commitment_pub
+        let alice = Identity::generate();
+        let alice_private = alice.to_bytes();
+        let alice_public = alice.public_id().to_bytes();
+
+        let message_id = MessageID::new();
+
+        // Alice creates legitimate commitment
+        let (derivation_sig, _) = vxeddsa_sign(&alice_private, message_id.as_bytes());
+
+        // Attacker creates their own commitment_pub
+        let attacker = Identity::generate();
+        let attacker_private = attacker.to_bytes();
+        let (_, forged_vrf) = vxeddsa_sign(&attacker_private, message_id.as_bytes());
+        let (_, forged_commitment_pub) = derive_commitment_key(&forged_vrf);
+
+        // Verify should fail - derivation_sig proves Alice's commitment, not attacker's
+        assert!(
+            !verify_commitment_binding(&alice_public, &message_id, &derivation_sig, &forged_commitment_pub),
+            "Forged commitment_pub should fail verification"
+        );
+    }
+
+    #[test]
+    fn test_verify_commitment_binding_tampered_signature() {
+        // Verification with tampered derivation_sig should fail
+        let alice = Identity::generate();
+        let alice_private = alice.to_bytes();
+        let alice_public = alice.public_id().to_bytes();
+
+        let message_id = MessageID::new();
+
+        // Create valid commitment
+        let (mut derivation_sig, vrf_output) = vxeddsa_sign(&alice_private, message_id.as_bytes());
+        let (_, commitment_pub) = derive_commitment_key(&vrf_output);
+
+        // Tamper with signature
+        derivation_sig[0] ^= 0xFF;
+        derivation_sig[50] ^= 0x01;
+
+        // Verify should fail
+        assert!(
+            !verify_commitment_binding(&alice_public, &message_id, &derivation_sig, &commitment_pub),
+            "Tampered derivation_sig should fail verification"
+        );
+    }
+
+    #[test]
+    fn test_verify_commitment_binding_constant_time() {
+        // Test that the same binding verifies consistently (sanity check for constant-time path)
+        let alice = Identity::generate();
+        let alice_private = alice.to_bytes();
+        let alice_public = alice.public_id().to_bytes();
+
+        let message_id = MessageID::new();
+        let (derivation_sig, vrf_output) = vxeddsa_sign(&alice_private, message_id.as_bytes());
+        let (_, commitment_pub) = derive_commitment_key(&vrf_output);
+
+        // Verify multiple times - should always succeed
+        for _ in 0..10 {
+            assert!(
+                verify_commitment_binding(&alice_public, &message_id, &derivation_sig, &commitment_pub),
+                "Valid binding should verify consistently"
+            );
+        }
     }
 }

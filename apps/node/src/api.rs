@@ -10,7 +10,7 @@ use crate::rate_limit::{KeyedLimiter, RateLimiters};
 use reme_node_core::{MailboxStore, NodeError, PersistentMailboxStore};
 use crate::replication::ReplicationClient;
 use crate::signed_headers::{SignatureError, SignatureVerifier, HEADER_NODE_SIGNATURE};
-use reme_identity::PublicID;
+use reme_identity::{is_low_order_point, PublicID};
 use axum::{
     body::Bytes,
     extract::{DefaultBodyLimit, Path, Request, State},
@@ -353,6 +353,18 @@ async fn handle_message(
     // Verify outer envelope signature if present
     match (&envelope.commitment_pub, &envelope.outer_signature) {
         (Some(commitment_pub), Some(outer_signature)) => {
+            // Reject low-order commitment keys (potential attack vector)
+            if is_low_order_point(commitment_pub) {
+                debug!("Low-order commitment_pub rejected");
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "Invalid commitment public key".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+
             // Both present: verify the signature
             let outer_signable = envelope.outer_signable_bytes();
             if !verify_outer_envelope(commitment_pub, &outer_signable, outer_signature) {
@@ -389,7 +401,8 @@ async fn handle_message(
                 )
                     .into_response();
             }
-            // Otherwise, accept unsigned messages for backward compatibility
+            // Accept unsigned messages for backward compatibility
+            debug!("Accepting unsigned message (backward compatibility mode)");
         }
     }
 

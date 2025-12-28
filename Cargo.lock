@@ -2507,6 +2507,7 @@ dependencies = [
  "rand_core 0.6.4",
  "reme-identity",
  "reme-message",
+ "subtle",
  "thiserror 2.0.17",
  "uuid",
  "x25519-dalek",

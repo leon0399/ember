@@ -606,13 +606,29 @@ impl<T: Transport> Client<T> {
 
         // Verify commitment binding if VXEdDSA was used
         // This proves the commitment_pub in OuterEnvelope was derived by the sender
-        if let (Some(commitment_pub), Some(derivation_sig)) =
-            (outer.commitment_pub.as_ref(), dec_output.derivation_sig.as_ref())
-        {
-            let sender_pub = inner.from.to_bytes();
-            if !verify_commitment_binding(&sender_pub, &outer.message_id, derivation_sig, commitment_pub) {
-                // Commitment forged - a malicious relay node tampered with outer envelope
+        match (outer.commitment_pub.as_ref(), dec_output.derivation_sig.as_ref()) {
+            (Some(commitment_pub), Some(derivation_sig)) => {
+                // Both present: verify the binding
+                let sender_pub = inner.from.to_bytes();
+                if !verify_commitment_binding(&sender_pub, &outer.message_id, derivation_sig, commitment_pub) {
+                    // Commitment forged - a malicious relay node tampered with outer envelope
+                    return Err(ClientError::InvalidSenderSignature);
+                }
+            }
+            (Some(_), None) => {
+                // SECURITY: commitment_pub present but derivation_sig stripped from ciphertext.
+                // This could indicate an attack attempting to bypass commitment verification.
+                warn!("commitment_pub present but derivation_sig missing - possible tampering");
                 return Err(ClientError::InvalidSenderSignature);
+            }
+            (None, Some(_)) => {
+                // derivation_sig present but no commitment_pub in outer envelope.
+                // This is malformed/corrupted - should never happen in valid messages.
+                warn!("derivation_sig present but commitment_pub missing - malformed message");
+                return Err(ClientError::InvalidSenderSignature);
+            }
+            (None, None) => {
+                // Legacy message without VXEdDSA - allowed for backward compatibility
             }
         }
 

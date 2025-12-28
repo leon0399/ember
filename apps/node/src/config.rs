@@ -354,6 +354,12 @@ pub struct CliArgs {
     /// For multi-homed servers, dev, or migration scenarios
     #[arg(long, env = "REME_NODE_ADDITIONAL_HOSTS", value_delimiter = ',')]
     pub additional_hosts: Option<Vec<String>>,
+
+    /// Require outer envelope signatures on all messages
+    /// When enabled, messages without valid outer_signature will be rejected (400 Bad Request)
+    /// When disabled (default), unsigned messages are accepted for backward compatibility
+    #[arg(long, env = "REME_NODE_REQUIRE_OUTER_SIGNATURE")]
+    pub require_outer_signature: bool,
 }
 
 /// Final resolved configuration
@@ -746,8 +752,10 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     let public_host = cli.public_host.or(public_host_from_config);
     let additional_hosts = cli.additional_hosts.unwrap_or(additional_hosts_from_config);
 
-    // Read require_outer_signature from config (defaults to false for backward compat)
-    let require_outer_signature = config.get_bool("require_outer_signature").unwrap_or(false);
+    // Read require_outer_signature: CLI flag takes precedence over config
+    // CLI is a bool flag (defaults false), config defaults to false for backward compat
+    let require_outer_signature_from_config = config.get_bool("require_outer_signature").unwrap_or(false);
+    let require_outer_signature = cli.require_outer_signature || require_outer_signature_from_config;
 
     Ok(NodeConfig {
         bind_addr,

@@ -16,3 +16,4 @@ rand_core = { version = "0.6.4", features = ["getrandom"] }
 chacha20poly1305 = "0.10"
 xeddsa = { version = "1.0", features = ["xed25519"] }
 libsignal-dezire = "0.1"  # VXEdDSA implementation for anonymous outer verification
+subtle = "2"  # Constant-time comparison for cryptographic verification
