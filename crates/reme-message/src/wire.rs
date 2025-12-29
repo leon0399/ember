@@ -14,28 +14,18 @@
 //! - `0x00`: Message (OuterEnvelope)
 //! - `0x02`: AckTombstone (SignedAckTombstone)
 
+use strum::FromRepr;
+
 use crate::tombstone::SignedAckTombstone;
 use crate::{MessageID, OuterEnvelope, RoutingKey};
 
 /// Wire payload type discriminator
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr)]
 pub enum WireType {
     Message = 0x00,
     /// Tombstone V2: Signed Ack (96 bytes)
     AckTombstone = 0x02,
-}
-
-impl TryFrom<u8> for WireType {
-    type Error = String;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0x00 => Ok(WireType::Message),
-            0x02 => Ok(WireType::AckTombstone),
-            _ => Err(format!("Unknown wire type: 0x{:02x}", value)),
-        }
-    }
 }
 
 /// Unified wire payload for messages and tombstones
@@ -57,7 +47,8 @@ impl WirePayload {
             return Err("Empty payload".to_string());
         }
 
-        let wire_type = WireType::try_from(bytes[0])?;
+        let wire_type = WireType::from_repr(bytes[0])
+            .ok_or_else(|| format!("Unknown wire type: 0x{:02x}", bytes[0]))?;
 
         match wire_type {
             WireType::Message => {
@@ -125,10 +116,10 @@ mod tests {
 
     #[test]
     fn test_wire_type_conversion() {
-        assert_eq!(WireType::try_from(0x00).unwrap(), WireType::Message);
-        assert_eq!(WireType::try_from(0x02).unwrap(), WireType::AckTombstone);
-        assert!(WireType::try_from(0x01).is_err()); // V1 tombstone type no longer supported
-        assert!(WireType::try_from(0x03).is_err());
+        assert_eq!(WireType::from_repr(0x00), Some(WireType::Message));
+        assert_eq!(WireType::from_repr(0x02), Some(WireType::AckTombstone));
+        assert_eq!(WireType::from_repr(0x01), None); // V1 tombstone type no longer supported
+        assert_eq!(WireType::from_repr(0x03), None);
     }
 
     #[test]

@@ -16,6 +16,8 @@
 //! - **Privacy**: No identity in wire format (nodes don't know sender/recipient)
 //! - **Replay prevention**: message_id binding in ack_secret derivation
 
+use strum::{Display, EnumIter};
+
 use crate::wire::WireType;
 use crate::MessageID;
 use bincode::{Decode, Encode};
@@ -73,7 +75,7 @@ pub struct SignedAckTombstone {
 }
 
 /// Who created a tombstone (for delivery confirmation)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumIter)]
 pub enum Attribution {
     /// Tombstone was signed by the message sender
     Sender,

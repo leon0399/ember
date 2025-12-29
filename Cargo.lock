@@ -2494,6 +2494,7 @@ dependencies = [
  "rand 0.9.2",
  "rand_core 0.6.4",
  "reme-identity",
+ "strum 0.27.2",
  "subtle",
  "uuid",
  "x25519-dalek",
@@ -2521,6 +2522,7 @@ dependencies = [
  "reme-identity",
  "reme-message",
  "reme-transport",
+ "strum 0.27.2",
  "thiserror 2.0.17",
  "tokio",
 ]
@@ -2559,6 +2561,7 @@ dependencies = [
  "rustls 0.23.35",
  "serde",
  "sha2",
+ "strum 0.27.2",
  "thiserror 2.0.17",
  "tokio",
  "tokio-util",
