@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 pub mod dag;
 pub mod tombstone;
+pub mod wire;
 
 pub use dag::{ConversationDag, GapResult, ReceiverGapDetector, SenderGapDetector};
 
@@ -60,11 +61,10 @@ pub fn bincode_config() -> impl bincode::config::Config {
 pub use tombstone::{
     // Tombstone V2 (signed ack)
     Attribution, SignedAckTombstone,
-    // Wire format
-    WirePayload, WireType,
     // Constants
     ACK_HASH_DOMAIN, CLOCK_SKEW_ALLOWANCE_HOURS, TOMBSTONE_MAX_AGE_HOURS,
 };
+pub use wire::{WirePayload, WireType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MessageID(Uuid);
