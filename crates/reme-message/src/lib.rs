@@ -58,8 +58,6 @@ pub fn bincode_config() -> impl bincode::config::Config {
 }
 
 pub use tombstone::{
-    // Tombstone V1 (legacy)
-    DetailedReceipt, DeviceID, TombstoneEnvelope, TombstoneStatus, TombstoneValidationError,
     // Tombstone V2 (signed ack)
     Attribution, SignedAckTombstone,
     // Wire format

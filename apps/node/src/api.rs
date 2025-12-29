@@ -266,11 +266,11 @@ fn parse_wire_payload(body: &Bytes) -> Result<(String, WirePayload), String> {
     Ok((body_str.to_string(), payload))
 }
 
-/// Unified submit endpoint for messages
+/// Unified submit endpoint for messages and tombstones
 ///
 /// Accepts base64-encoded wire format: `[type: u8][payload: bincode bytes]`
 /// - type 0x00: Message (OuterEnvelope)
-/// - type 0x01: Tombstone (TombstoneEnvelope) - TEMPORARILY DISABLED
+/// - type 0x02: AckTombstone (SignedAckTombstone) - Tombstone V2
 ///
 /// ## Authentication
 ///
@@ -315,17 +315,6 @@ async fn submit_payload(
     match payload {
         WirePayload::Message(envelope) => {
             handle_message(state, envelope, payload_b64, from_node, source).await
-        }
-        WirePayload::Tombstone(_) => {
-            // V1 Tombstones are deprecated in favor of SignedAckTombstone (V2)
-            warn!("Legacy tombstones (V1) are deprecated");
-            (
-                StatusCode::GONE,
-                Json(ErrorResponse {
-                    error: "Legacy tombstones deprecated, use AckTombstone".to_string(),
-                }),
-            )
-                .into_response()
         }
         WirePayload::AckTombstone(tombstone) => {
             // Tombstone V2: ECDH-derived ack verification

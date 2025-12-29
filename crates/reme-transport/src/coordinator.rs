@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::future::join_all;
-use reme_message::{OuterEnvelope, RoutingKey, SignedAckTombstone, TombstoneEnvelope};
+use reme_message::{OuterEnvelope, RoutingKey, SignedAckTombstone};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
@@ -301,20 +301,6 @@ impl TransportCoordinator {
         }
     }
 
-    /// Submit a tombstone using the configured routing strategy.
-    async fn submit_tombstone_with_strategy(
-        &self,
-        tombstone: TombstoneEnvelope,
-    ) -> Result<(), TransportError> {
-        match self.config.routing_strategy {
-            RoutingStrategy::BroadcastAll => self.broadcast_tombstone(tombstone).await,
-            RoutingStrategy::DirectFirst => self.direct_first_tombstone(tombstone).await,
-            RoutingStrategy::HttpOnly => self.http_only_tombstone(tombstone).await,
-            #[cfg(feature = "mqtt")]
-            RoutingStrategy::MqttOnly => self.mqtt_only_tombstone(tombstone).await,
-        }
-    }
-
     /// Broadcast message to all available transports.
     async fn broadcast_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
         let mut futures: Vec<BoxedFuture> = Vec::new();
@@ -333,34 +319,6 @@ impl TransportCoordinator {
             let pool = pool.clone();
             futures.push(Box::pin(async move {
                 pool.submit_message(env).await
-            }));
-        }
-
-        if futures.is_empty() {
-            return Err(TransportError::Network("No transports configured".to_string()));
-        }
-
-        self.broadcast_await_any_success(futures).await
-    }
-
-    /// Broadcast tombstone to all available transports.
-    async fn broadcast_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
-        let mut futures: Vec<BoxedFuture> = Vec::new();
-
-        if let Some(ref pool) = self.http_pool {
-            let ts = tombstone.clone();
-            let pool = pool.clone();
-            futures.push(Box::pin(async move {
-                pool.submit_tombstone(ts).await
-            }));
-        }
-
-        #[cfg(feature = "mqtt")]
-        if let Some(ref pool) = self.mqtt_pool {
-            let ts = tombstone.clone();
-            let pool = pool.clone();
-            futures.push(Box::pin(async move {
-                pool.submit_tombstone(ts).await
             }));
         }
 
@@ -398,44 +356,10 @@ impl TransportCoordinator {
         self.broadcast_message(envelope).await
     }
 
-    /// Try direct/ephemeral targets first for tombstones.
-    async fn direct_first_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
-        if let Some(ref pool) = self.http_pool {
-            let ephemeral = pool.targets_by_kind(crate::target::TargetKind::Ephemeral);
-            if !ephemeral.is_empty() {
-                for target in ephemeral {
-                    if target.is_available() {
-                        match TransportTarget::submit_tombstone(&*target, tombstone.clone()).await {
-                            Ok(()) => return Ok(()),
-                            Err(e) => {
-                                debug!(
-                                    target = %target.id(),
-                                    error = %e,
-                                    "Ephemeral target failed tombstone, trying next"
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        self.broadcast_tombstone(tombstone).await
-    }
-
     /// HTTP-only message submission.
     async fn http_only_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
         if let Some(ref pool) = self.http_pool {
             pool.submit_message(envelope).await
-        } else {
-            Err(TransportError::Network("No HTTP transport configured".to_string()))
-        }
-    }
-
-    /// HTTP-only tombstone submission.
-    async fn http_only_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
-        if let Some(ref pool) = self.http_pool {
-            pool.submit_tombstone(tombstone).await
         } else {
             Err(TransportError::Network("No HTTP transport configured".to_string()))
         }
@@ -446,16 +370,6 @@ impl TransportCoordinator {
     async fn mqtt_only_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
         if let Some(ref pool) = self.mqtt_pool {
             pool.submit_message(envelope).await
-        } else {
-            Err(TransportError::Network("No MQTT transport configured".to_string()))
-        }
-    }
-
-    /// MQTT-only tombstone submission.
-    #[cfg(feature = "mqtt")]
-    async fn mqtt_only_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
-        if let Some(ref pool) = self.mqtt_pool {
-            pool.submit_tombstone(tombstone).await
         } else {
             Err(TransportError::Network("No MQTT transport configured".to_string()))
         }
@@ -860,10 +774,6 @@ impl CoordinatorHealth {
 impl Transport for TransportCoordinator {
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
         self.submit_with_strategy(envelope).await
-    }
-
-    async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
-        self.submit_tombstone_with_strategy(tombstone).await
     }
 
     async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {

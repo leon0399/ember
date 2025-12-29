@@ -6,7 +6,7 @@
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use reme_message::{OuterEnvelope, SignedAckTombstone, TombstoneEnvelope};
+use reme_message::{OuterEnvelope, SignedAckTombstone};
 use reme_node_core::{EmbeddedNodeHandle, NodeError};
 use tracing::debug;
 
@@ -160,25 +160,6 @@ impl TransportTarget for EmbeddedTarget {
         result
     }
 
-    async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
-        let start = Instant::now();
-
-        let result = self.handle.submit_tombstone(tombstone).await.map_err(convert_error);
-
-        match &result {
-            Ok(()) => {
-                self.record_success(start.elapsed());
-                debug!("Tombstone submitted to {}", self.display_label());
-            }
-            Err(e) => {
-                self.record_failure(e);
-                debug!("Failed to submit tombstone to {}: {}", self.display_label(), e);
-            }
-        }
-
-        result
-    }
-
     async fn submit_ack_tombstone(&self, _tombstone: SignedAckTombstone) -> Result<(), TransportError> {
         // Ack tombstones will be implemented in Phase 5
         // For now, return success since the embedded node handles tombstones automatically
@@ -202,10 +183,6 @@ impl TransportTarget for EmbeddedTarget {
 impl crate::Transport for EmbeddedTarget {
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
         <Self as TransportTarget>::submit_message(self, envelope).await
-    }
-
-    async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
-        <Self as TransportTarget>::submit_tombstone(self, tombstone).await
     }
 
     async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {

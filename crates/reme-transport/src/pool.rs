@@ -8,7 +8,7 @@ use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use futures::future::join_all;
-use reme_message::{OuterEnvelope, SignedAckTombstone, TombstoneEnvelope};
+use reme_message::{OuterEnvelope, SignedAckTombstone};
 use tracing::{debug, warn};
 
 use crate::query::{HealthSummary, TargetSnapshot, TransportQuery};
@@ -259,28 +259,6 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
         result
     }
 
-    /// Submit a tombstone using the pool strategy.
-    pub async fn submit_tombstone(
-        &self,
-        tombstone: TombstoneEnvelope,
-    ) -> Result<(), TransportError> {
-        let targets = self.select_targets();
-        if targets.is_empty() {
-            return Err(TransportError::Network("No targets available".to_string()));
-        }
-
-        match self.config.strategy {
-            PoolStrategy::Broadcast => self.broadcast_tombstone(&targets, tombstone).await,
-            PoolStrategy::Race => self.race_tombstone(&targets, tombstone).await,
-            PoolStrategy::PriorityFallback => {
-                self.priority_fallback_tombstone(&targets, tombstone).await
-            }
-            PoolStrategy::RoundRobin | PoolStrategy::FastestFirst => {
-                targets[0].submit_tombstone(tombstone).await
-            }
-        }
-    }
-
     /// Submit an ack tombstone using the pool strategy.
     pub async fn submit_ack_tombstone(
         &self,
@@ -408,43 +386,6 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
         Err(last_error.unwrap_or(TransportError::Network("All targets failed".to_string())))
     }
 
-    /// Broadcast tombstone to all targets.
-    async fn broadcast_tombstone(
-        &self,
-        targets: &[Arc<T>],
-        tombstone: TombstoneEnvelope,
-    ) -> Result<(), TransportError> {
-        let futures: Vec<_> = targets
-            .iter()
-            .map(|t| {
-                let t = t.clone();
-                let ts = tombstone.clone();
-                async move { t.submit_tombstone(ts).await }
-            })
-            .collect();
-
-        let results = join_all(futures).await;
-
-        let mut last_error = None;
-        let mut success_count = 0;
-
-        for (i, result) in results.into_iter().enumerate() {
-            match result {
-                Ok(()) => success_count += 1,
-                Err(e) => {
-                    warn!("Target {} failed: {}", targets[i].id(), e);
-                    last_error = Some(e);
-                }
-            }
-        }
-
-        if success_count > 0 {
-            Ok(())
-        } else {
-            Err(last_error.unwrap_or(TransportError::Network("All targets failed".to_string())))
-        }
-    }
-
     /// Broadcast ack tombstone to all targets, succeed if any succeeds.
     async fn broadcast_ack_tombstone(
         &self,
@@ -482,77 +423,6 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
         }
     }
 
-    /// Race tombstone to all targets.
-    ///
-    /// Runs all requests in parallel and returns as soon as one succeeds.
-    /// If one fails, continues polling remaining futures rather than
-    /// falling back to broadcast (which would restart all requests).
-    async fn race_tombstone(
-        &self,
-        targets: &[Arc<T>],
-        tombstone: TombstoneEnvelope,
-    ) -> Result<(), TransportError> {
-        if targets.len() == 1 {
-            return targets[0].submit_tombstone(tombstone).await;
-        }
-
-        let futures: Vec<_> = targets
-            .iter()
-            .map(|t| {
-                let t = t.clone();
-                let ts = tombstone.clone();
-                Box::pin(async move { t.submit_tombstone(ts).await })
-            })
-            .collect();
-
-        // Poll futures until one succeeds or all fail
-        let mut remaining = futures;
-        let mut last_error = None;
-
-        while !remaining.is_empty() {
-            let (result, _index, rest) = futures::future::select_all(remaining).await;
-
-            match result {
-                Ok(()) => {
-                    // Success - cancel remaining futures and return
-                    drop(rest);
-                    return Ok(());
-                }
-                Err(e) => {
-                    // This target failed - continue polling the rest
-                    last_error = Some(e);
-                    remaining = rest;
-                }
-            }
-        }
-
-        // All targets failed
-        Err(last_error.unwrap_or(TransportError::Network("All targets failed".to_string())))
-    }
-
-    /// Priority fallback for tombstone.
-    async fn priority_fallback_tombstone(
-        &self,
-        targets: &[Arc<T>],
-        tombstone: TombstoneEnvelope,
-    ) -> Result<(), TransportError> {
-        let mut last_error = None;
-
-        for target in targets {
-            match target.submit_tombstone(tombstone.clone()).await {
-                Ok(()) => {
-                    debug!("Tombstone sent via {}", target.id());
-                    return Ok(());
-                }
-                Err(e) => {
-                    warn!("Target {} failed tombstone, trying next: {}", target.id(), e);
-                    last_error = Some(e);
-                }
-            }
-        }
-
-        Err(last_error.unwrap_or(TransportError::Network("All targets failed".to_string())))
-    }
 }
 
 impl<T: TransportTarget + 'static> Default for TransportPool<T> {
@@ -566,10 +436,6 @@ impl<T: TransportTarget + 'static> Default for TransportPool<T> {
 impl<T: TransportTarget + 'static> Transport for TransportPool<T> {
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
         TransportPool::submit_message(self, envelope).await
-    }
-
-    async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
-        TransportPool::submit_tombstone(self, tombstone).await
     }
 
     async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {

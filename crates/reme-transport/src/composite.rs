@@ -10,7 +10,7 @@
 use crate::{Transport, TransportError};
 use async_trait::async_trait;
 use futures::future::join_all;
-use reme_message::{OuterEnvelope, SignedAckTombstone, TombstoneEnvelope};
+use reme_message::{OuterEnvelope, SignedAckTombstone};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, trace, warn};
@@ -256,14 +256,6 @@ impl Transport for CompositeTransport {
         .await
     }
 
-    async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
-        self.broadcast(|t| {
-            let ts = tombstone.clone();
-            async move { t.submit_tombstone(ts).await }
-        })
-        .await
-    }
-
     async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
         self.broadcast(|t| {
             let ts = tombstone.clone();
@@ -293,15 +285,6 @@ mod tests {
     #[async_trait]
     impl Transport for MockTransport {
         async fn submit_message(&self, _envelope: OuterEnvelope) -> Result<(), TransportError> {
-            self.call_count.fetch_add(1, Ordering::SeqCst);
-            if self.should_fail {
-                Err(TransportError::Network("Mock failure".to_string()))
-            } else {
-                Ok(())
-            }
-        }
-
-        async fn submit_tombstone(&self, _tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
             if self.should_fail {
                 Err(TransportError::Network("Mock failure".to_string()))
