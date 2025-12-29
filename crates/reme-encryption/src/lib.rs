@@ -310,16 +310,24 @@ pub fn derive_ack_secret(shared_secret: &[u8; 32], message_id: &MessageID) -> [u
     ack_secret
 }
 
+/// Domain string for ack_hash derivation.
+/// Used in both derive_ack_hash and SignedAckTombstone::verify_authorization.
+pub const ACK_HASH_DOMAIN: &str = "reme-ack-hash-v1";
+
 /// Derive ack_hash from ack_secret.
 ///
 /// This hash is stored in OuterEnvelope for tombstone verification.
 /// Nodes verify tombstones by checking hash(ack_secret) == ack_hash.
 ///
-/// ack_hash = BLAKE3(ack_secret)[0..16]
+/// ack_hash = BLAKE3_KDF("reme-ack-hash-v1", ack_secret)[0..16]
+///
+/// Domain separation provides defense-in-depth against:
+/// - Cross-protocol confusion attacks
+/// - Misuse of ack_secret in other contexts
 pub fn derive_ack_hash(ack_secret: &[u8; 16]) -> [u8; 16] {
-    let hash = blake3::hash(ack_secret);
+    let derived = blake3::derive_key(ACK_HASH_DOMAIN, ack_secret);
     let mut ack_hash = [0u8; 16];
-    ack_hash.copy_from_slice(&hash.as_bytes()[0..16]);
+    ack_hash.copy_from_slice(&derived[0..16]);
     ack_hash
 }
 

@@ -2494,6 +2494,7 @@ dependencies = [
  "rand 0.9.2",
  "rand_core 0.6.4",
  "reme-identity",
+ "subtle",
  "uuid",
  "x25519-dalek",
  "xeddsa",

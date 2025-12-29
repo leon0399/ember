@@ -51,6 +51,9 @@ pub enum ClientError {
     #[error("Outbox entry not found")]
     OutboxEntryNotFound,
 
+    #[error("Ack secret not found for message (already tombstoned or never sent)")]
+    AckSecretNotFound,
+
     #[error("Message not intended for this recipient (routing key mismatch)")]
     WrongRecipient,
 
@@ -603,6 +606,10 @@ impl<T: Transport> Client<T> {
         // Detached messages (FLAG_DETACHED) skip tombstones to save bandwidth on
         // constrained transports like LoRa or BLE.
         if !inner.is_detached() {
+            // Store ack_secret BEFORE attempting tombstone so we can retry later if it fails.
+            // This ensures we never lose the ability to tombstone a received message.
+            self.storage.store_pending_ack(outer.message_id, ack_secret)?;
+
             let tombstone = SignedAckTombstone::new(
                 outer.message_id,
                 ack_secret,
@@ -611,13 +618,22 @@ impl<T: Transport> Client<T> {
             if let Err(e) = self.transport.submit_ack_tombstone(tombstone).await {
                 // Log failure but don't fail message processing - the message was
                 // successfully received and decrypted. The relay node will eventually
-                // expire the message or a manual tombstone can be sent later.
+                // expire the message or ack_secret can be used to retry later via
+                // acknowledge_received().
                 warn!(
                     message_id = ?outer.message_id,
                     error = %e,
-                    "Failed to send auto-tombstone (message still received successfully)"
+                    "Failed to send auto-tombstone (ack_secret stored for retry)"
                 );
             } else {
+                // Tombstone succeeded - remove stored ack_secret (no longer needed)
+                if let Err(e) = self.storage.remove_pending_ack(&outer.message_id) {
+                    warn!(
+                        message_id = ?outer.message_id,
+                        error = %e,
+                        "Failed to remove pending_ack after successful tombstone"
+                    );
+                }
                 debug!(
                     message_id = ?outer.message_id,
                     "Auto-tombstone sent successfully"
@@ -864,14 +880,14 @@ impl<T: Transport> Client<T> {
     /// * `message_id` - The message ID to retract
     ///
     /// # Errors
-    /// - `ClientError::ContactNotFound` if no pending_ack exists for this message
+    /// - `ClientError::AckSecretNotFound` if no pending_ack exists for this message
     /// - `ClientError::Transport` if the tombstone submission fails
     pub async fn acknowledge_sent(&self, message_id: MessageID) -> Result<(), ClientError> {
         // Retrieve stored ack_secret
         let ack_secret = self
             .storage
             .get_pending_ack(&message_id)?
-            .ok_or(ClientError::ContactNotFound)?;
+            .ok_or(ClientError::AckSecretNotFound)?;
 
         // Create and submit tombstone
         let tombstone = SignedAckTombstone::new(message_id, ack_secret, &self.private_key());
@@ -889,26 +905,33 @@ impl<T: Transport> Client<T> {
         Ok(())
     }
 
-    /// Manually acknowledge a received message (backup for failed auto-tombstone).
+    /// Manually acknowledge a received message (retry for failed auto-tombstone).
     ///
-    /// This is primarily for testing or recovery scenarios where the
-    /// auto-tombstone in `process_message()` failed but the caller has
-    /// the ack_secret from `DecryptionOutput`.
+    /// Use this when the auto-tombstone in `process_message()` failed and you
+    /// want to retry clearing the message from relay nodes.
     ///
-    /// Most callers should not need this - `process_message()` handles
-    /// tombstone submission automatically.
+    /// The ack_secret is automatically retrieved from storage (stored during
+    /// `process_message()` before attempting auto-tombstone).
     ///
     /// # Arguments
     /// * `message_id` - The message ID to acknowledge
-    /// * `ack_secret` - The ack_secret from decryption
-    pub async fn acknowledge_received(
-        &self,
-        message_id: MessageID,
-        ack_secret: [u8; 16],
-    ) -> Result<(), ClientError> {
+    ///
+    /// # Errors
+    /// - `ClientError::AckSecretNotFound` if no pending_ack exists for this message
+    /// - `ClientError::Transport` if the tombstone submission fails
+    pub async fn acknowledge_received(&self, message_id: MessageID) -> Result<(), ClientError> {
+        // Retrieve stored ack_secret
+        let ack_secret = self
+            .storage
+            .get_pending_ack(&message_id)?
+            .ok_or(ClientError::AckSecretNotFound)?;
+
         let tombstone = SignedAckTombstone::new(message_id, ack_secret, &self.private_key());
 
         self.transport.submit_ack_tombstone(tombstone).await?;
+
+        // Remove from pending_acks after successful submission
+        self.storage.remove_pending_ack(&message_id)?;
 
         debug!(
             message_id = ?message_id,

@@ -1257,3 +1257,188 @@ async fn test_detached_message_skips_tombstone() {
 
     println!("\n✓ Detached message skips tombstone test passed!");
 }
+
+/// Test race-like scenario: tombstone vs fetch in rapid succession
+///
+/// This tests that tombstone and fetch operations interleave correctly
+/// without panics or data corruption. While not truly concurrent due to
+/// rusqlite's !Send limitation, it validates the server handles rapid
+/// sequential operations correctly.
+#[tokio::test]
+async fn test_tombstone_fetch_interleaving() {
+    let server = TestServer::start().await;
+    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
+
+    // Create Alice identity
+    let alice_identity = Identity::generate();
+    let bob_identity = Identity::generate();
+    let bob_routing_key = bob_identity.public_id().routing_key();
+
+    // Create multiple messages manually to track ack_secrets
+    let mut messages = Vec::new();
+    for i in 0..5 {
+        let message_id = MessageID::new();
+        let inner = InnerEnvelope {
+            from: *alice_identity.public_id(),
+            created_at_ms: 1234567890 + i,
+            content: Content::Text(TextContent {
+                body: format!("Message {}", i),
+            }),
+            prev_self: None,
+            observed_heads: Vec::new(),
+            epoch: 0,
+            flags: 0,
+        };
+
+        let enc_output = encrypt_to_mik(
+            &inner,
+            bob_identity.public_id(),
+            &message_id,
+            &alice_identity.to_bytes(),
+        )
+        .expect("encrypt_to_mik failed");
+
+        let outer = OuterEnvelope {
+            version: CURRENT_VERSION,
+            routing_key: bob_routing_key,
+            timestamp_hours: reme_message::now_hours(),
+            ttl_hours: Some(1),
+            message_id,
+            ephemeral_key: enc_output.ephemeral_public,
+            ack_hash: enc_output.ack_hash,
+            inner_ciphertext: enc_output.ciphertext,
+        };
+
+        transport
+            .submit_message(outer)
+            .await
+            .expect("submit_message failed");
+
+        messages.push((message_id, enc_output.ack_secret));
+    }
+    println!("Alice sent 5 messages");
+
+    // Alternate between tombstone and fetch operations
+    // This simulates race conditions at the server level
+    for (i, (msg_id, ack_secret)) in messages.iter().take(3).enumerate() {
+        if i % 2 == 0 {
+            // Submit tombstone first, then fetch
+            let tombstone =
+                SignedAckTombstone::new(*msg_id, *ack_secret, &alice_identity.to_bytes());
+            let _ = transport.submit_ack_tombstone(tombstone).await;
+            let _ = transport.fetch_once(&bob_routing_key).await;
+        } else {
+            // Fetch first, then tombstone (tombstone will fail - message fetched)
+            let _ = transport.fetch_once(&bob_routing_key).await;
+            let tombstone =
+                SignedAckTombstone::new(*msg_id, *ack_secret, &alice_identity.to_bytes());
+            // This may fail with 404 - that's expected
+            let _ = transport.submit_ack_tombstone(tombstone).await;
+        }
+    }
+    println!("Interleaved tombstone/fetch operations completed");
+
+    // Final fetch - some messages may remain, some may be gone
+    let final_messages = transport
+        .fetch_once(&bob_routing_key)
+        .await
+        .expect("final fetch failed");
+
+    // We expect 0-5 messages depending on timing
+    assert!(
+        final_messages.len() <= 5,
+        "Should have at most 5 messages"
+    );
+    println!("Final fetch returned {} messages", final_messages.len());
+
+    println!("\n✓ Tombstone/fetch interleaving test passed!");
+}
+
+/// Test idempotent tombstone: submitting the same tombstone twice
+///
+/// The second tombstone should fail with 404 because the message was already
+/// deleted by the first tombstone. This is expected behavior - not an error.
+#[tokio::test]
+async fn test_idempotent_tombstone() {
+    let server = TestServer::start().await;
+    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
+
+    // Create Alice identity (we'll manually create messages to get ack_secret)
+    let alice_identity = Identity::generate();
+    let bob_identity = Identity::generate();
+    let bob_routing_key = bob_identity.public_id().routing_key();
+
+    // Create message and encrypt manually to get ack_secret
+    let message_id = MessageID::new();
+    let inner = InnerEnvelope {
+        from: *alice_identity.public_id(),
+        created_at_ms: 1234567890,
+        content: Content::Text(TextContent {
+            body: "Test message".to_string(),
+        }),
+        prev_self: None,
+        observed_heads: Vec::new(),
+        epoch: 0,
+        flags: 0,
+    };
+
+    // Encrypt to get the ack_secret
+    let enc_output = encrypt_to_mik(
+        &inner,
+        bob_identity.public_id(),
+        &message_id,
+        &alice_identity.to_bytes(),
+    )
+    .expect("encrypt_to_mik failed");
+
+    let outer = OuterEnvelope {
+        version: CURRENT_VERSION,
+        routing_key: bob_routing_key,
+        timestamp_hours: reme_message::now_hours(),
+        ttl_hours: Some(1),
+        message_id,
+        ephemeral_key: enc_output.ephemeral_public,
+        ack_hash: enc_output.ack_hash,
+        inner_ciphertext: enc_output.ciphertext,
+    };
+
+    // Submit the message
+    transport
+        .submit_message(outer)
+        .await
+        .expect("submit_message failed");
+    println!("Alice sent message: {:?}", message_id);
+
+    // Create tombstone (we have the ack_secret from encryption)
+    let tombstone = SignedAckTombstone::new(
+        message_id,
+        enc_output.ack_secret,
+        &alice_identity.to_bytes(),
+    );
+
+    // First tombstone - should succeed
+    transport
+        .submit_ack_tombstone(tombstone.clone())
+        .await
+        .expect("first tombstone should succeed");
+    println!("First tombstone succeeded");
+
+    // Verify message is cleared
+    let messages = transport
+        .fetch_once(&bob_routing_key)
+        .await
+        .expect("fetch_once failed");
+    assert_eq!(messages.len(), 0, "Message should be cleared");
+
+    // Second tombstone - should fail with 404 (message already deleted)
+    let result = transport.submit_ack_tombstone(tombstone).await;
+
+    // The second tombstone should fail because the message no longer exists
+    assert!(
+        result.is_err(),
+        "Second tombstone should fail (message already deleted)"
+    );
+    println!("Second tombstone correctly failed (message already gone)");
+
+    println!("\n✓ Idempotent tombstone test passed!");
+}

@@ -17,10 +17,15 @@
 
 use crate::{now_hours, now_secs, MessageID, RoutingKey, Version, CURRENT_VERSION};
 use bincode::{Decode, Encode};
+use subtle::ConstantTimeEq;
 use xeddsa::{xed25519, Sign, Verify};
 
 /// Maximum age for tombstone validation (10 days in hours)
 pub const TOMBSTONE_MAX_AGE_HOURS: u32 = 10 * 24;
+
+/// Domain string for ack_hash derivation (matches reme_encryption::ACK_HASH_DOMAIN).
+/// IMPORTANT: Keep in sync with reme-encryption/src/lib.rs ACK_HASH_DOMAIN constant.
+const ACK_HASH_DOMAIN: &str = "reme-ack-hash-v1";
 
 /// Clock skew allowance (1 hour)
 /// Since we use hour granularity, 1 hour allowance handles clock drift.
@@ -187,9 +192,13 @@ impl SignedAckTombstone {
     /// Nodes verify that hash(ack_secret) matches the ack_hash stored with
     /// the message. This is O(1) and doesn't require knowing the sender or
     /// recipient's public key.
+    ///
+    /// Uses:
+    /// - Domain-separated derivation: BLAKE3_KDF("reme-ack-hash-v1", ack_secret)
+    /// - Constant-time comparison to prevent timing side-channel attacks
     pub fn verify_authorization(&self, expected_ack_hash: &[u8; 16]) -> bool {
-        let computed_hash = blake3::hash(&self.ack_secret);
-        computed_hash.as_bytes()[..16] == expected_ack_hash[..]
+        let derived = blake3::derive_key(ACK_HASH_DOMAIN, &self.ack_secret);
+        derived[..16].ct_eq(expected_ack_hash).into()
     }
 
     /// Verify signature and determine who created the tombstone.
@@ -879,8 +888,9 @@ mod tests {
 
     /// Helper function to derive ack_hash from ack_secret (mirrors internal logic)
     fn derive_ack_hash_for_test(ack_secret: &[u8; 16]) -> [u8; 16] {
-        let hash = blake3::hash(ack_secret);
-        hash.as_bytes()[..16].try_into().unwrap()
+        // Use domain-separated derivation matching verify_authorization
+        let derived = blake3::derive_key(ACK_HASH_DOMAIN, ack_secret);
+        derived[..16].try_into().unwrap()
     }
 
     #[test]
