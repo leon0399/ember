@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use reme_message::{OuterEnvelope, SignedAckTombstone};
+use strum::{Display, EnumIter};
 
 use crate::url_auth::sanitize_url_for_logging;
 use crate::TransportError;
@@ -58,7 +59,7 @@ impl std::fmt::Display for TargetId {
 /// Binary classification of transport targets.
 ///
 /// This simple classification drives default retry behavior and routing priority.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Display, EnumIter)]
 pub enum TargetKind {
     /// Stable targets: mailbox nodes, manually configured peers, MQTT brokers.
     ///
@@ -125,7 +126,7 @@ impl TargetKind {
 }
 
 /// Health state for circuit breaker pattern.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Display, EnumIter)]
 pub enum HealthState {
     /// Target is healthy, normal operation.
     #[default]

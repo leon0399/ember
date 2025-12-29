@@ -2,6 +2,8 @@
 
 use std::collections::HashSet;
 
+use strum::{Display, EnumIter};
+
 use reme_identity::PublicID;
 use reme_message::{ContentId, MessageID};
 
@@ -170,7 +172,7 @@ pub enum DeliveryConfirmation {
 /// Derived delivery state for UI and logic.
 ///
 /// Computed from attempt history and confirmation status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumIter)]
 pub enum DeliveryState {
     /// No attempts yet, waiting for first send
     Pending,

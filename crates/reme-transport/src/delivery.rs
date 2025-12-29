@@ -7,6 +7,8 @@
 
 use std::time::Duration;
 
+use strum::{Display, EnumIter};
+
 use crate::target::TargetId;
 use crate::TransportError;
 
@@ -35,7 +37,7 @@ impl std::fmt::Display for QuorumStrategyError {
 impl std::error::Error for QuorumStrategyError {}
 
 /// Delivery tiers in priority order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumIter)]
 pub enum DeliveryTier {
     /// Direct delivery to recipient or their peer (mDNS, DHT, Iroh).
     /// Highest priority - if successful, recipient has the message.
