@@ -162,6 +162,17 @@ impl Storage {
             );
 
             CREATE INDEX IF NOT EXISTS idx_attempts_message ON outbox_attempts(message_id);
+
+            -- Pending ack secrets for Tombstone V2
+            -- Stores ack_secret derived during encryption so sender can create
+            -- tombstones for sent messages (e.g., to retract before delivery)
+            CREATE TABLE IF NOT EXISTS pending_acks (
+                message_id BLOB PRIMARY KEY NOT NULL,  -- MessageID (16 bytes)
+                ack_secret BLOB NOT NULL,              -- 16-byte ack_secret
+                created_at INTEGER NOT NULL            -- Unix timestamp (seconds)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_pending_acks_created ON pending_acks(created_at);
             "#,
         )?;
         Ok(())
@@ -449,6 +460,100 @@ impl Storage {
         )?;
 
         Ok(())
+    }
+
+    // ============================================
+    // Pending Ack operations (Tombstone V2)
+    // ============================================
+
+    /// Store a pending ack secret for a sent message.
+    ///
+    /// This is used by senders to retain the ack_secret so they can create
+    /// tombstones for their own messages (e.g., to retract before delivery).
+    pub fn store_pending_ack(
+        &self,
+        message_id: MessageID,
+        ack_secret: [u8; 16],
+    ) -> Result<(), StorageError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let message_id_bytes = message_id.as_bytes();
+
+        self.conn.execute(
+            "INSERT OR REPLACE INTO pending_acks (message_id, ack_secret, created_at)
+             VALUES (?, ?, ?)",
+            params![&message_id_bytes[..], &ack_secret[..], now],
+        )?;
+
+        trace!(?message_id, "stored pending ack secret");
+        Ok(())
+    }
+
+    /// Get the ack secret for a pending message.
+    ///
+    /// Returns None if no ack secret is stored for this message.
+    pub fn get_pending_ack(&self, message_id: &MessageID) -> Result<Option<[u8; 16]>, StorageError> {
+        let message_id_bytes = message_id.as_bytes();
+
+        let result: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT ack_secret FROM pending_acks WHERE message_id = ?",
+                params![&message_id_bytes[..]],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        match result {
+            Some(bytes) if bytes.len() == 16 => {
+                let mut ack_secret = [0u8; 16];
+                ack_secret.copy_from_slice(&bytes);
+                Ok(Some(ack_secret))
+            }
+            Some(_) => Err(StorageError::Serialization(
+                "Invalid ack_secret length in database".to_string(),
+            )),
+            None => Ok(None),
+        }
+    }
+
+    /// Remove a pending ack secret after it has been used (tombstone sent).
+    pub fn remove_pending_ack(&self, message_id: &MessageID) -> Result<(), StorageError> {
+        let message_id_bytes = message_id.as_bytes();
+
+        self.conn.execute(
+            "DELETE FROM pending_acks WHERE message_id = ?",
+            params![&message_id_bytes[..]],
+        )?;
+
+        trace!(?message_id, "removed pending ack secret");
+        Ok(())
+    }
+
+    /// Clean up old pending ack secrets that are older than max_age_secs.
+    ///
+    /// Returns the number of deleted entries.
+    pub fn cleanup_old_pending_acks(&self, max_age_secs: u64) -> Result<usize, StorageError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let cutoff = now - max_age_secs as i64;
+
+        let count = self.conn.execute(
+            "DELETE FROM pending_acks WHERE created_at < ?",
+            params![cutoff],
+        )?;
+
+        if count > 0 {
+            debug!(count, "cleaned up old pending ack secrets");
+        }
+
+        Ok(count)
     }
 
     // ============================================
@@ -1604,5 +1709,64 @@ mod tests {
 
         let fetched = mailbox.fetch(&routing_key).unwrap();
         assert_eq!(fetched.len(), 1);
+    }
+
+    #[test]
+    fn test_pending_acks() {
+        let storage = Storage::in_memory().unwrap();
+        let message_id = MessageID::new();
+        let ack_secret = [42u8; 16];
+
+        // Store a pending ack
+        storage.store_pending_ack(message_id, ack_secret).unwrap();
+
+        // Retrieve it
+        let retrieved = storage.get_pending_ack(&message_id).unwrap();
+        assert_eq!(retrieved, Some(ack_secret));
+
+        // Remove it
+        storage.remove_pending_ack(&message_id).unwrap();
+
+        // Should be gone now
+        let retrieved = storage.get_pending_ack(&message_id).unwrap();
+        assert_eq!(retrieved, None);
+    }
+
+    #[test]
+    fn test_pending_acks_cleanup() {
+        let storage = Storage::in_memory().unwrap();
+
+        // Store a pending ack
+        let message_id = MessageID::new();
+        let ack_secret = [99u8; 16];
+        storage.store_pending_ack(message_id, ack_secret).unwrap();
+
+        // Cleanup with very small max_age shouldn't delete (entry is new)
+        // We'd need to mock time to properly test expiry, but we can test
+        // the query runs without error
+        let cleaned = storage.cleanup_old_pending_acks(3600).unwrap();
+        assert_eq!(cleaned, 0); // Entry is fresh, shouldn't be deleted
+
+        // Entry should still exist
+        let retrieved = storage.get_pending_ack(&message_id).unwrap();
+        assert_eq!(retrieved, Some(ack_secret));
+    }
+
+    #[test]
+    fn test_pending_ack_overwrite() {
+        let storage = Storage::in_memory().unwrap();
+        let message_id = MessageID::new();
+        let ack_secret1 = [1u8; 16];
+        let ack_secret2 = [2u8; 16];
+
+        // Store first ack secret
+        storage.store_pending_ack(message_id, ack_secret1).unwrap();
+
+        // Overwrite with second (should succeed due to INSERT OR REPLACE)
+        storage.store_pending_ack(message_id, ack_secret2).unwrap();
+
+        // Should get the second one
+        let retrieved = storage.get_pending_ack(&message_id).unwrap();
+        assert_eq!(retrieved, Some(ack_secret2));
     }
 }
