@@ -1540,6 +1540,7 @@ mod tests {
             ttl_hours: Some(24),
             message_id: MessageID::new(),
             ephemeral_key: [0u8; 32],
+            ack_hash: [0u8; 16],
             inner_ciphertext: vec![1, 2, 3, 4],
         };
         let msg_id = envelope.message_id;
@@ -1591,6 +1592,7 @@ mod tests {
             ttl_hours: Some(1),
             message_id: MessageID::new(),
             ephemeral_key: [0u8; 32],
+            ack_hash: [0u8; 16],
             inner_ciphertext: vec![5, 6, 7, 8],
         };
 

@@ -996,6 +996,7 @@ mod tests {
             timestamp_hours: 0,
             ttl_hours: None,
             ephemeral_key: [3u8; 32],
+            ack_hash: [0u8; 16],
             inner_ciphertext: vec![1, 2, 3],
         };
 
@@ -1021,6 +1022,7 @@ mod tests {
             timestamp_hours: 0,
             ttl_hours: None,
             ephemeral_key: [3u8; 32],
+            ack_hash: [0u8; 16],
             inner_ciphertext: vec![1, 2, 3],
         };
 
@@ -1045,6 +1047,7 @@ mod tests {
             timestamp_hours: 0,
             ttl_hours: None,
             ephemeral_key: [3u8; 32],
+            ack_hash: [0u8; 16],
             inner_ciphertext: vec![1, 2, 3],
         };
 

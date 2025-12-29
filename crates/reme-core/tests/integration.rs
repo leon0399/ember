@@ -86,7 +86,8 @@ async fn test_transport_roundtrip() {
     // NOTE: This test validates transport mechanics only, not cryptographic properties.
     // Actual encryption/decryption is tested in test_e2e_encryption_mik_only.
     let ephemeral_key = [42u8; 32];
-    let test_envelope = OuterEnvelope::new(routing_key, Some(1), ephemeral_key, vec![1, 2, 3, 4]); // 1 hour TTL
+    let ack_hash = [0u8; 16]; // Placeholder for transport test
+    let test_envelope = OuterEnvelope::new(routing_key, Some(1), ephemeral_key, ack_hash, vec![1, 2, 3, 4]); // 1 hour TTL
     transport
         .submit_message(test_envelope)
         .await
@@ -137,7 +138,7 @@ async fn test_e2e_encryption_mik_only() {
     };
 
     // Encrypt to Bob's MIK (signing happens inside encrypt_to_mik)
-    let (ephemeral_key, ciphertext) =
+    let enc_output =
         encrypt_to_mik(&inner, bob.public_id(), &message_id, &alice.to_bytes())
             .expect("encrypt_to_mik failed");
     println!("Alice encrypted message to Bob's MIK");
@@ -149,8 +150,9 @@ async fn test_e2e_encryption_mik_only() {
         timestamp_hours: reme_message::now_hours(),
         ttl_hours: Some(1), // 1 hour TTL
         message_id,
-        ephemeral_key,
-        inner_ciphertext: ciphertext,
+        ephemeral_key: enc_output.ephemeral_public,
+        ack_hash: enc_output.ack_hash,
+        inner_ciphertext: enc_output.ciphertext,
     };
 
     transport
@@ -171,7 +173,7 @@ async fn test_e2e_encryption_mik_only() {
     // Bob decrypts using his MIK private key (stateless)
     // Signature verification happens inside decrypt_with_mik
     let bob_private = bob.to_bytes();
-    let decrypted = decrypt_with_mik(
+    let dec_output = decrypt_with_mik(
         &messages[0].ephemeral_key,
         &messages[0].inner_ciphertext,
         &bob_private,
@@ -182,7 +184,7 @@ async fn test_e2e_encryption_mik_only() {
     // Signature was verified during decryption - if we got here, it's valid
     println!("Bob decrypted and verified Alice's signature: OK");
 
-    match decrypted.content {
+    match dec_output.inner.content {
         Content::Text(t) => {
             assert_eq!(t.body, "Hello Bob! This is Alice.");
             println!("Bob decrypted message: \"{}\"", t.body);
@@ -479,7 +481,8 @@ async fn test_multi_node_replication() {
     // Send a message to node 1.
     // NOTE: Using fake ephemeral key - this test validates replication, not crypto.
     let ephemeral_key = [99u8; 32];
-    let test_envelope = OuterEnvelope::new(routing_key, Some(1), ephemeral_key, vec![42, 43, 44, 45]);
+    let ack_hash = [0u8; 16];
+    let test_envelope = OuterEnvelope::new(routing_key, Some(1), ephemeral_key, ack_hash, vec![42, 43, 44, 45]);
     transport1
         .submit_message(test_envelope)
         .await
@@ -815,7 +818,7 @@ async fn test_forged_signature_rejected_at_client_level() {
 
     // Mallory encrypts with HER private key (not Alice's)
     // The signature will be made with Mallory's key, but `from` claims Alice
-    let (ephemeral_key, ciphertext) =
+    let enc_output =
         encrypt_to_mik(&inner, bob.public_id(), &message_id, &mallory.to_bytes())
             .expect("encrypt_to_mik should succeed");
 
@@ -826,8 +829,9 @@ async fn test_forged_signature_rejected_at_client_level() {
         timestamp_hours: reme_message::now_hours(),
         ttl_hours: Some(1),
         message_id,
-        ephemeral_key,
-        inner_ciphertext: ciphertext,
+        ephemeral_key: enc_output.ephemeral_public,
+        ack_hash: enc_output.ack_hash,
+        inner_ciphertext: enc_output.ciphertext,
     };
 
     transport

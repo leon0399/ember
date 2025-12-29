@@ -313,6 +313,7 @@ mod tests {
             ttl_hours: Some(24),
             message_id: MessageID::new(),
             ephemeral_key: [0u8; 32],
+            ack_hash: [0u8; 16],
             inner_ciphertext: vec![0u8; 64],
         }
     }

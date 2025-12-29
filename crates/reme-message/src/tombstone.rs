@@ -828,7 +828,8 @@ mod tests {
     fn test_wire_type_conversion() {
         assert_eq!(WireType::try_from(0x00).unwrap(), WireType::Message);
         assert_eq!(WireType::try_from(0x01).unwrap(), WireType::Tombstone);
-        assert!(WireType::try_from(0x02).is_err());
+        assert_eq!(WireType::try_from(0x02).unwrap(), WireType::AckTombstone);
+        assert!(WireType::try_from(0x03).is_err());
     }
 
     #[test]

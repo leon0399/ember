@@ -317,12 +317,26 @@ async fn submit_payload(
             handle_message(state, envelope, payload_b64, from_node, source).await
         }
         WirePayload::Tombstone(_) => {
-            // Tombstones temporarily disabled pending refactor
-            warn!("Tombstones are temporarily disabled");
+            // V1 Tombstones are deprecated in favor of SignedAckTombstone (V2)
+            warn!("Legacy tombstones (V1) are deprecated");
+            (
+                StatusCode::GONE,
+                Json(ErrorResponse {
+                    error: "Legacy tombstones deprecated, use AckTombstone".to_string(),
+                }),
+            )
+                .into_response()
+        }
+        WirePayload::AckTombstone(_tombstone) => {
+            // TODO: Phase 5 - Implement AckTombstone handling
+            // 1. Look up message by message_id
+            // 2. Verify authorization via hash(ack_secret) == ack_hash
+            // 3. Delete message from mailbox
+            warn!("AckTombstone handling not yet implemented");
             (
                 StatusCode::NOT_IMPLEMENTED,
                 Json(ErrorResponse {
-                    error: "Tombstones temporarily disabled".to_string(),
+                    error: "AckTombstone handling coming soon".to_string(),
                 }),
             )
                 .into_response()

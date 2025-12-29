@@ -410,6 +410,9 @@ pub fn parse_mqtt_message(publish: &Publish) -> Result<OuterEnvelope, TransportE
         WirePayload::Tombstone(_) => Err(TransportError::Serialization(
             "Expected message, got tombstone".to_string(),
         )),
+        WirePayload::AckTombstone(_) => Err(TransportError::Serialization(
+            "Expected message, got ack tombstone".to_string(),
+        )),
     }
 }
 
@@ -426,6 +429,9 @@ pub fn parse_mqtt_tombstone(publish: &Publish) -> Result<TombstoneEnvelope, Tran
         WirePayload::Tombstone(tombstone) => Ok(tombstone),
         WirePayload::Message(_) => Err(TransportError::Serialization(
             "Expected tombstone, got message".to_string(),
+        )),
+        WirePayload::AckTombstone(_) => Err(TransportError::Serialization(
+            "Expected legacy tombstone, got ack tombstone".to_string(),
         )),
     }
 }

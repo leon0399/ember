@@ -128,7 +128,8 @@ async fn test_signed_replication_between_nodes() {
     let identity = Identity::generate();
     let routing_key = identity.public_id().routing_key();
     let ephemeral_key = [42u8; 32];
-    let test_envelope = OuterEnvelope::new(routing_key, Some(1), ephemeral_key, vec![1, 2, 3, 4]);
+    let ack_hash = [0u8; 16];
+    let test_envelope = OuterEnvelope::new(routing_key, Some(1), ephemeral_key, ack_hash, vec![1, 2, 3, 4]);
 
     // Send to node 1
     transport1
@@ -182,7 +183,8 @@ async fn test_unsigned_replication_fallback() {
     let identity = Identity::generate();
     let routing_key = identity.public_id().routing_key();
     let ephemeral_key = [99u8; 32];
-    let test_envelope = OuterEnvelope::new(routing_key, Some(1), ephemeral_key, vec![5, 6, 7, 8]);
+    let ack_hash = [0u8; 16];
+    let test_envelope = OuterEnvelope::new(routing_key, Some(1), ephemeral_key, ack_hash, vec![5, 6, 7, 8]);
 
     // Send to node 1
     transport1
@@ -238,7 +240,8 @@ async fn test_mixed_cluster_replication() {
     let identity = Identity::generate();
     let routing_key = identity.public_id().routing_key();
     let ephemeral_key = [11u8; 32];
-    let test_envelope = OuterEnvelope::new(routing_key, Some(1), ephemeral_key, vec![9, 10, 11, 12]);
+    let ack_hash = [0u8; 16];
+    let test_envelope = OuterEnvelope::new(routing_key, Some(1), ephemeral_key, ack_hash, vec![9, 10, 11, 12]);
 
     // Send to node 1 (signed)
     transport1
