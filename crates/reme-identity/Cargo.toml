@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 derivative = { workspace = true }
-derive_more = { workspace = true, features = ["display"] }
+derive_more = { workspace = true, features = ["display", "from", "deref", "deref_mut"] }
 getset = { workspace = true }
 strum = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }

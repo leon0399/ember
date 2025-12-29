@@ -7,6 +7,7 @@ edition = "2021"
 reme-message = { workspace = true }
 reme-node-core = { workspace = true, optional = true }
 
+derive_more = { workspace = true, features = ["display"] }
 strum = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 async-trait = { workspace = true }

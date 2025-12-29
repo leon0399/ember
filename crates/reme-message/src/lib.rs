@@ -1,6 +1,7 @@
 use bincode::enc::Encoder;
 use bincode::error::EncodeError;
 use bincode::{impl_borrow_decode, Decode, Encode};
+use derive_more::From;
 pub use reme_identity::{PublicID, RoutingKey};
 use uuid::Uuid;
 
@@ -66,7 +67,7 @@ pub use tombstone::{
 };
 pub use wire::{WirePayload, WireType};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, From)]
 pub struct MessageID(Uuid);
 
 impl MessageID {
@@ -80,12 +81,6 @@ impl MessageID {
 
     pub fn as_bytes(&self) -> &[u8; 16] {
         self.0.as_bytes()
-    }
-}
-
-impl From<Uuid> for MessageID {
-    fn from(uuid: Uuid) -> Self {
-        MessageID(uuid)
     }
 }
 
