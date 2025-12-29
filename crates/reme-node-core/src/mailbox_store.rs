@@ -301,6 +301,17 @@ impl PersistentMailboxStore {
         Ok(deleted > 0)
     }
 
+    /// Get the ack_hash for a message by ID (for Tombstone V2 verification)
+    ///
+    /// Returns the ack_hash from the stored message, or None if the message
+    /// doesn't exist or has expired.
+    pub fn get_ack_hash(&self, message_id: &MessageID) -> Result<Option<[u8; 16]>, NodeError> {
+        match self.get_message(message_id)? {
+            Some(envelope) => Ok(Some(envelope.ack_hash)),
+            None => Ok(None),
+        }
+    }
+
     /// Get store statistics
     pub fn stats(&self) -> Result<PersistentStoreStats, NodeError> {
         let now = Self::now_secs();
