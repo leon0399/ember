@@ -872,4 +872,188 @@ mod tests {
         let wire_bytes = tombstone.to_wire_bytes();
         assert_eq!(wire_bytes[0], 0x01); // Tombstone discriminator
     }
+
+    // ========================================
+    // SignedAckTombstone V2 Tests
+    // ========================================
+
+    /// Helper function to derive ack_hash from ack_secret (mirrors internal logic)
+    fn derive_ack_hash_for_test(ack_secret: &[u8; 16]) -> [u8; 16] {
+        let hash = blake3::hash(ack_secret);
+        hash.as_bytes()[..16].try_into().unwrap()
+    }
+
+    #[test]
+    fn test_ack_hash_verification_success() {
+        let (_, priv_key) = generate_test_keypair();
+        let message_id = MessageID::new();
+        let ack_secret: [u8; 16] = [0x42; 16];
+
+        // Create tombstone
+        let tombstone = SignedAckTombstone::new(message_id, ack_secret, &priv_key);
+
+        // Derive expected ack_hash
+        let expected_hash = derive_ack_hash_for_test(&ack_secret);
+
+        // Verify authorization passes with correct hash
+        assert!(
+            tombstone.verify_authorization(&expected_hash),
+            "Authorization should pass with correct ack_hash"
+        );
+    }
+
+    #[test]
+    fn test_ack_hash_verification_failure() {
+        let (_, priv_key) = generate_test_keypair();
+        let message_id = MessageID::new();
+        let ack_secret: [u8; 16] = [0x42; 16];
+        let wrong_hash: [u8; 16] = [0xDE; 16];
+
+        // Create tombstone
+        let tombstone = SignedAckTombstone::new(message_id, ack_secret, &priv_key);
+
+        // Verify authorization fails with wrong hash
+        assert!(
+            !tombstone.verify_authorization(&wrong_hash),
+            "Authorization should fail with wrong ack_hash"
+        );
+    }
+
+    #[test]
+    fn test_ack_hash_deterministic() {
+        // Same ack_secret should always produce same ack_hash
+        let ack_secret: [u8; 16] = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0,
+                                    0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+
+        let hash1 = derive_ack_hash_for_test(&ack_secret);
+        let hash2 = derive_ack_hash_for_test(&ack_secret);
+
+        assert_eq!(hash1, hash2, "Same ack_secret should produce same ack_hash");
+    }
+
+    #[test]
+    fn test_ack_hash_different_secrets_produce_different_hashes() {
+        let secret1: [u8; 16] = [0x11; 16];
+        let secret2: [u8; 16] = [0x22; 16];
+
+        let hash1 = derive_ack_hash_for_test(&secret1);
+        let hash2 = derive_ack_hash_for_test(&secret2);
+
+        assert_ne!(hash1, hash2, "Different ack_secrets should produce different ack_hashes");
+    }
+
+    #[test]
+    fn test_signature_attribution_sender() {
+        let (sender_pub, sender_priv) = generate_test_keypair();
+        let (recipient_pub, _) = generate_test_keypair();
+        let message_id = MessageID::new();
+        let ack_secret: [u8; 16] = [0x42; 16];
+
+        // Tombstone signed by sender
+        let tombstone = SignedAckTombstone::new(message_id, ack_secret, &sender_priv);
+
+        // Verify attribution identifies sender
+        assert_eq!(
+            tombstone.verify_attribution(&sender_pub, &recipient_pub),
+            Attribution::Sender,
+            "Attribution should identify sender"
+        );
+    }
+
+    #[test]
+    fn test_signature_attribution_recipient() {
+        let (sender_pub, _) = generate_test_keypair();
+        let (recipient_pub, recipient_priv) = generate_test_keypair();
+        let message_id = MessageID::new();
+        let ack_secret: [u8; 16] = [0x42; 16];
+
+        // Tombstone signed by recipient
+        let tombstone = SignedAckTombstone::new(message_id, ack_secret, &recipient_priv);
+
+        // Verify attribution identifies recipient
+        assert_eq!(
+            tombstone.verify_attribution(&sender_pub, &recipient_pub),
+            Attribution::Recipient,
+            "Attribution should identify recipient"
+        );
+    }
+
+    #[test]
+    fn test_signature_attribution_invalid() {
+        let (sender_pub, _) = generate_test_keypair();
+        let (recipient_pub, _) = generate_test_keypair();
+        let (_, mallory_priv) = generate_test_keypair();
+        let message_id = MessageID::new();
+        let ack_secret: [u8; 16] = [0x42; 16];
+
+        // Tombstone signed by neither sender nor recipient
+        let tombstone = SignedAckTombstone::new(message_id, ack_secret, &mallory_priv);
+
+        // Verify attribution returns Invalid
+        assert_eq!(
+            tombstone.verify_attribution(&sender_pub, &recipient_pub),
+            Attribution::Invalid,
+            "Attribution should be Invalid for unknown signer"
+        );
+    }
+
+    #[test]
+    fn test_ack_tombstone_wire_roundtrip() {
+        let (_, priv_key) = generate_test_keypair();
+        let message_id = MessageID::new();
+        let ack_secret: [u8; 16] = [0x42; 16];
+
+        let original = SignedAckTombstone::new(message_id, ack_secret, &priv_key);
+
+        // Serialize and deserialize
+        let bytes = original.to_wire_bytes();
+        assert_eq!(bytes[0], 0x02, "Wire type should be AckTombstone (0x02)");
+
+        let restored = SignedAckTombstone::from_bytes(&bytes[1..]).unwrap();
+
+        assert_eq!(restored.message_id, original.message_id);
+        assert_eq!(restored.ack_secret, original.ack_secret);
+        assert_eq!(restored.signature, original.signature);
+
+        // Verify restored tombstone still works
+        let expected_hash = derive_ack_hash_for_test(&ack_secret);
+        assert!(restored.verify_authorization(&expected_hash));
+    }
+
+    #[test]
+    fn test_ack_tombstone_size() {
+        let (_, priv_key) = generate_test_keypair();
+        let message_id = MessageID::new();
+        let ack_secret: [u8; 16] = [0x42; 16];
+
+        let tombstone = SignedAckTombstone::new(message_id, ack_secret, &priv_key);
+        let bytes = tombstone.to_bytes();
+
+        // SignedAckTombstone should be 96 bytes:
+        // - message_id: 16 bytes
+        // - ack_secret: 16 bytes
+        // - signature: 64 bytes
+        assert_eq!(bytes.len(), 96, "SignedAckTombstone should be exactly 96 bytes");
+    }
+
+    #[test]
+    fn test_ack_tombstone_wire_payload_roundtrip() {
+        let (_, priv_key) = generate_test_keypair();
+        let message_id = MessageID::new();
+        let ack_secret: [u8; 16] = [0x42; 16];
+
+        let tombstone = SignedAckTombstone::new(message_id, ack_secret, &priv_key);
+        let payload = WirePayload::AckTombstone(tombstone.clone());
+
+        let bytes = payload.encode();
+        let decoded = WirePayload::decode(&bytes).unwrap();
+
+        match decoded {
+            WirePayload::AckTombstone(restored) => {
+                assert_eq!(restored.message_id, tombstone.message_id);
+                assert_eq!(restored.ack_secret, tombstone.ack_secret);
+            }
+            _ => panic!("Expected AckTombstone"),
+        }
+    }
 }

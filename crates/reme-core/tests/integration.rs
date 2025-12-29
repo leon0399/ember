@@ -964,3 +964,296 @@ async fn test_outbox_retry_mechanism() {
 
     println!("\n✓ Outbox retry mechanism test passed!");
 }
+
+// ============================================
+// Tombstone V2 (Signed Ack) Integration Tests
+// ============================================
+
+use reme_message::SignedAckTombstone;
+
+/// Test auto-tombstone on receive: message is auto-cleared from relay after fetch
+#[tokio::test]
+async fn test_auto_tombstone_on_receive() {
+    let server = TestServer::start().await;
+    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
+
+    // Create Alice and Bob
+    let alice_identity = Identity::generate();
+    let alice_storage = Storage::in_memory().unwrap();
+    let alice = Client::new(alice_identity, transport.clone(), alice_storage);
+
+    let bob_identity = Identity::generate();
+    let bob_storage = Storage::in_memory().unwrap();
+    let bob = Client::new(bob_identity, transport.clone(), bob_storage);
+
+    println!("Alice ID: {}", hex::encode(alice.public_id().to_bytes()));
+    println!("Bob ID: {}", hex::encode(bob.public_id().to_bytes()));
+
+    // Alice adds Bob as contact and sends a message
+    alice
+        .add_contact(bob.public_id(), Some("Bob"))
+        .expect("Alice add_contact failed");
+
+    let _msg_id = alice
+        .send_text(bob.public_id(), "Hello Bob!")
+        .await
+        .expect("Alice send_text failed");
+    println!("Alice sent message");
+
+    // Bob fetches and processes messages directly (simpler than using MessageReceiver)
+    let messages = transport
+        .fetch_once(&bob.routing_key())
+        .await
+        .expect("fetch_once failed");
+    assert_eq!(messages.len(), 1, "Message should be in mailbox");
+    println!("Bob fetched message from mailbox");
+
+    // Bob processes the message (triggers auto-tombstone)
+    let _received = bob
+        .process_message(&messages[0])
+        .await
+        .expect("process_message failed");
+    println!("Bob processed message (auto-tombstone sent)");
+
+    // Small delay to ensure tombstone is processed by node
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Verify message is cleared from Bob's mailbox
+    let messages_after = transport
+        .fetch_once(&bob.routing_key())
+        .await
+        .expect("fetch_once failed");
+    assert_eq!(
+        messages_after.len(),
+        0,
+        "Message should be cleared from mailbox after auto-tombstone"
+    );
+    println!("Message cleared from mailbox after auto-tombstone: OK");
+
+    println!("\n✓ Auto-tombstone on receive test passed!");
+}
+
+/// Test sender tombstone retracts message before delivery
+#[tokio::test]
+async fn test_sender_tombstone_retracts_message() {
+    let server = TestServer::start().await;
+    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
+
+    // Create Alice and Bob
+    let alice_identity = Identity::generate();
+    let alice_storage = Storage::in_memory().unwrap();
+    let alice = Client::new(alice_identity, transport.clone(), alice_storage);
+
+    let bob_identity = Identity::generate();
+
+    println!("Alice ID: {}", hex::encode(alice.public_id().to_bytes()));
+
+    // Alice adds Bob as contact and sends a message
+    alice
+        .add_contact(bob_identity.public_id(), Some("Bob"))
+        .expect("Alice add_contact failed");
+
+    let msg_id = alice
+        .send_text(bob_identity.public_id(), "Message to retract")
+        .await
+        .expect("Alice send_text failed");
+    println!("Alice sent message: {:?}", msg_id);
+
+    // Note: We do NOT fetch here because fetch() deletes messages from the node.
+    // The sender tombstone (retraction) only makes sense when the message hasn't
+    // been fetched by the recipient yet.
+
+    // Alice retracts the message (sender-initiated tombstone)
+    // Note: acknowledge_sent looks up the ack_secret from local storage
+    // and sends a tombstone with the same message_id
+    alice
+        .acknowledge_sent(msg_id)
+        .await
+        .expect("acknowledge_sent failed");
+    println!("Alice retracted the message");
+
+    // Verify message is cleared from Bob's mailbox (fetch would return empty)
+    let bob_routing_key = bob_identity.public_id().routing_key();
+    let messages_after = transport
+        .fetch_once(&bob_routing_key)
+        .await
+        .expect("fetch_once failed");
+    assert_eq!(
+        messages_after.len(),
+        0,
+        "Message should be cleared after sender tombstone"
+    );
+    println!("Message cleared from mailbox after retraction: OK");
+
+    println!("\n✓ Sender tombstone retraction test passed!");
+}
+
+/// Test that invalid ack_secret is rejected by the node
+#[tokio::test]
+async fn test_invalid_ack_secret_rejected() {
+    let server = TestServer::start().await;
+    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
+
+    // Create Alice and Bob
+    let alice_identity = Identity::generate();
+    let alice_storage = Storage::in_memory().unwrap();
+    let alice = Client::new(alice_identity, transport.clone(), alice_storage);
+
+    let bob_identity = Identity::generate();
+
+    // Alice adds Bob and sends a message
+    alice
+        .add_contact(bob_identity.public_id(), Some("Bob"))
+        .expect("Alice add_contact failed");
+
+    let msg_id = alice
+        .send_text(bob_identity.public_id(), "Secret message")
+        .await
+        .expect("Alice send_text failed");
+    println!("Alice sent message: {:?}", msg_id);
+
+    // Mallory tries to forge a tombstone with wrong ack_secret
+    let mallory = Identity::generate();
+    let wrong_ack_secret: [u8; 16] = [0xDE; 16]; // Wrong secret
+
+    let forged_tombstone =
+        SignedAckTombstone::new(msg_id, wrong_ack_secret, &mallory.to_bytes());
+
+    // Try to submit the forged tombstone - should fail with Forbidden
+    let result = transport.submit_ack_tombstone(forged_tombstone).await;
+    assert!(result.is_err(), "Forged tombstone should be rejected");
+    let err = result.unwrap_err();
+    println!("Forged tombstone rejected with error: {:?}", err);
+    // Should be 403 Forbidden for invalid ack_secret, not 404 Not Found
+    assert!(
+        format!("{:?}", err).contains("403") || format!("{:?}", err).contains("Forbidden"),
+        "Expected 403 Forbidden, got: {:?}",
+        err
+    );
+
+    // Verify message is still in mailbox
+    let bob_routing_key = bob_identity.public_id().routing_key();
+    let messages = transport
+        .fetch_once(&bob_routing_key)
+        .await
+        .expect("fetch_once failed");
+    assert_eq!(
+        messages.len(),
+        1,
+        "Message should still be in mailbox after failed tombstone"
+    );
+    println!("Message still in mailbox after failed forge attempt: OK");
+
+    println!("\n✓ Invalid ack_secret rejection test passed!");
+}
+
+/// Test that tombstone for non-existent message returns 404
+#[tokio::test]
+async fn test_tombstone_without_message_returns_404() {
+    let server = TestServer::start().await;
+    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
+
+    // Create identity for signing
+    let identity = Identity::generate();
+
+    // Create tombstone for a message that doesn't exist
+    let fake_message_id = MessageID::new();
+    let fake_ack_secret: [u8; 16] = [0x42; 16];
+
+    let tombstone = SignedAckTombstone::new(fake_message_id, fake_ack_secret, &identity.to_bytes());
+
+    // Try to submit tombstone - should fail with NotFound
+    let result = transport.submit_ack_tombstone(tombstone).await;
+    assert!(
+        result.is_err(),
+        "Tombstone for non-existent message should fail"
+    );
+    println!("Tombstone for non-existent message correctly rejected");
+
+    println!("\n✓ Tombstone without message returns 404 test passed!");
+}
+
+/// Test that detached messages skip auto-tombstone
+#[tokio::test]
+async fn test_detached_message_skips_tombstone() {
+    use reme_message::FLAG_DETACHED;
+
+    let server = TestServer::start().await;
+    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
+
+    // Create identities
+    let alice = Identity::generate();
+    let bob_identity = Identity::generate();
+
+    // Capture bob's public ID and routing key before creating client
+    let bob_pub_id = *bob_identity.public_id();
+    let bob_routing_key = bob_identity.public_id().routing_key();
+
+    // Create detached message (FLAG_DETACHED set)
+    let message_id = MessageID::new();
+    let inner = InnerEnvelope {
+        from: *alice.public_id(),
+        created_at_ms: 1234567890,
+        content: Content::Text(TextContent {
+            body: "Detached message".to_string(),
+        }),
+        prev_self: None,
+        observed_heads: Vec::new(),
+        epoch: 0,
+        flags: FLAG_DETACHED, // Mark as detached
+    };
+
+    // Encrypt and send
+    let enc_output =
+        encrypt_to_mik(&inner, &bob_pub_id, &message_id, &alice.to_bytes())
+            .expect("encrypt_to_mik failed");
+
+    let outer = OuterEnvelope {
+        version: CURRENT_VERSION,
+        routing_key: bob_routing_key,
+        timestamp_hours: reme_message::now_hours(),
+        ttl_hours: Some(1),
+        message_id,
+        ephemeral_key: enc_output.ephemeral_public,
+        ack_hash: enc_output.ack_hash,
+        inner_ciphertext: enc_output.ciphertext,
+    };
+
+    transport
+        .submit_message(outer.clone())
+        .await
+        .expect("submit_message failed");
+    println!("Sent detached message");
+
+    // Bob processes the message (should NOT send auto-tombstone due to FLAG_DETACHED)
+    let bob_storage = Storage::in_memory().unwrap();
+    let bob_client = Client::new(bob_identity, transport.clone(), bob_storage);
+
+    let received = bob_client
+        .process_message(&outer)
+        .await
+        .expect("process_message failed");
+
+    assert!(
+        matches!(&received.content, Content::Text(t) if t.body == "Detached message"),
+        "Should receive the detached message"
+    );
+    println!("Bob received detached message");
+
+    // Small delay to ensure any tombstone would be processed
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Verify message is STILL in mailbox (no auto-tombstone was sent)
+    let messages = transport
+        .fetch_once(&bob_routing_key)
+        .await
+        .expect("fetch_once failed");
+    assert_eq!(
+        messages.len(),
+        1,
+        "Detached message should still be in mailbox (no auto-tombstone)"
+    );
+    println!("Detached message still in mailbox (auto-tombstone skipped): OK");
+
+    println!("\n✓ Detached message skips tombstone test passed!");
+}
