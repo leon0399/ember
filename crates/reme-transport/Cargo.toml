@@ -46,3 +46,4 @@ embedded = ["reme-node-core"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
+reme-encryption = { workspace = true }

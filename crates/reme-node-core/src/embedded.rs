@@ -257,6 +257,42 @@ impl EmbeddedNodeHandle {
     pub fn is_running(&self) -> bool {
         !self.requests.is_closed()
     }
+
+    /// Process an ack tombstone to delete a message from the mailbox.
+    ///
+    /// This verifies the tombstone's ack_secret against the stored ack_hash
+    /// and deletes the message if valid.
+    ///
+    /// # Returns
+    /// - `Ok(true)` if the message was deleted
+    /// - `Ok(false)` if the message was not found (already deleted or never existed)
+    /// - `Err(NodeError::InvalidMessage)` if the ack_secret is invalid
+    pub fn process_ack_tombstone(&self, tombstone: &reme_message::SignedAckTombstone) -> Result<bool, NodeError> {
+        let message_id = tombstone.message_id;
+
+        // Get the stored ack_hash for this message
+        let ack_hash = match self.store.get_ack_hash(&message_id)? {
+            Some(hash) => hash,
+            None => {
+                debug!(?message_id, "AckTombstone for unknown message (already deleted?)");
+                return Ok(false);
+            }
+        };
+
+        // Verify the ack_secret
+        if !tombstone.verify_authorization(&ack_hash) {
+            warn!(?message_id, "AckTombstone authorization failed - invalid ack_secret");
+            return Err(NodeError::InvalidMessage("Invalid ack_secret".to_string()));
+        }
+
+        // Delete the message
+        let deleted = self.store.delete_message(&message_id)?;
+        if deleted {
+            debug!(?message_id, "Message deleted via AckTombstone");
+        }
+
+        Ok(deleted)
+    }
 }
 
 

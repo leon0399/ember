@@ -98,6 +98,12 @@ pub trait MailboxStore: Send + Sync {
     /// Returns `Ok(true)` if a message was deleted, `Ok(false)` if not found.
     fn delete_message(&self, message_id: &MessageID) -> Result<bool, NodeError>;
 
+    /// Get the ack_hash for a message (for tombstone verification)
+    ///
+    /// Returns the ack_hash from the stored message, or None if the message
+    /// doesn't exist or has expired.
+    fn get_ack_hash(&self, message_id: &MessageID) -> Result<Option<[u8; 16]>, NodeError>;
+
     /// Remove expired messages
     fn cleanup_expired(&self) -> Result<usize, NodeError>;
 }
@@ -501,6 +507,11 @@ impl MailboxStore for PersistentMailboxStore {
     fn delete_message(&self, message_id: &MessageID) -> Result<bool, NodeError> {
         // Delegate to the inherent method
         PersistentMailboxStore::delete_message(self, message_id)
+    }
+
+    fn get_ack_hash(&self, message_id: &MessageID) -> Result<Option<[u8; 16]>, NodeError> {
+        // Delegate to the inherent method
+        PersistentMailboxStore::get_ack_hash(self, message_id)
     }
 
     fn cleanup_expired(&self) -> Result<usize, NodeError> {

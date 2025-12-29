@@ -2551,6 +2551,7 @@ dependencies = [
  "futures",
  "hex",
  "percent-encoding",
+ "reme-encryption",
  "reme-message",
  "reme-node-core",
  "reqwest",
