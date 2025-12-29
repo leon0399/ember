@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 reme-identity = { workspace = true }
+reme-encryption = { workspace = true }
 reme-message = { workspace = true }
 reme-transport = { workspace = true, features = ["mqtt"] }
 reme-node-core = { workspace = true }
