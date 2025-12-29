@@ -14,6 +14,7 @@
 //!   if the background cleanup task is delayed.
 
 use bincode::config;
+use derivative::Derivative;
 use reme_message::{MessageID, OuterEnvelope, RoutingKey};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
@@ -23,12 +24,20 @@ use tracing::{debug, info, trace, warn};
 
 use crate::error::NodeError;
 
+/// 7 days in seconds - default message TTL
+const fn default_ttl_secs() -> u64 {
+    7 * 24 * 60 * 60
+}
+
 /// Configuration for the persistent store
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Derivative)]
+#[derivative(Default)]
 pub struct PersistentStoreConfig {
     /// Maximum messages per routing key (mailbox). Must be > 0.
+    #[derivative(Default(value = "1000"))]
     pub max_messages_per_mailbox: usize,
     /// Default TTL for messages without explicit TTL (seconds). Must be > 0.
+    #[derivative(Default(value = "default_ttl_secs()"))]
     pub default_ttl_secs: u64,
 }
 
@@ -66,15 +75,6 @@ impl PersistentStoreConfig {
             Ok(())
         } else {
             Err(NodeError::InvalidConfig(errors.join(", ")))
-        }
-    }
-}
-
-impl Default for PersistentStoreConfig {
-    fn default() -> Self {
-        Self {
-            max_messages_per_mailbox: 1000,
-            default_ttl_secs: 7 * 24 * 60 * 60, // 7 days
         }
     }
 }

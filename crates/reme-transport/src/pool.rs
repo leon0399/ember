@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
+use derivative::Derivative;
 use futures::future::join_all;
 use reme_message::{OuterEnvelope, SignedAckTombstone};
 use tracing::{debug, warn};
@@ -48,22 +49,15 @@ pub enum PoolStrategy {
 }
 
 /// Configuration for a transport pool.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Derivative)]
+#[derivative(Default)]
 pub struct PoolConfig {
     /// Strategy for routing to targets.
     pub strategy: PoolStrategy,
 
     /// Whether to use the shared seen cache for deduplication.
+    #[derivative(Default(value = "true"))]
     pub use_seen_cache: bool,
-}
-
-impl Default for PoolConfig {
-    fn default() -> Self {
-        Self {
-            strategy: PoolStrategy::Broadcast,
-            use_seen_cache: true,
-        }
-    }
 }
 
 impl PoolConfig {

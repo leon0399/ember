@@ -63,6 +63,7 @@
 use crate::cleanup::CleanupConfig;
 use clap::Parser;
 use config::{Config, Environment, File, FileFormat};
+use derivative::Derivative;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -72,49 +73,39 @@ use tracing::info;
 ///
 /// Each limit can be independently disabled by setting its `_rps` value to 0.
 /// Limits are applied per-IP (using X-Forwarded-For if present) and per-routing-key.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Derivative)]
+#[derivative(Default)]
 #[serde(default)]
 pub struct RateLimitConfig {
     /// Submit endpoint: per-IP requests per second (0 = disabled)
     pub submit_ip_rps: u32,
     /// Submit endpoint: per-IP burst capacity
+    #[derivative(Default(value = "10"))]
     pub submit_ip_burst: u32,
     /// Submit endpoint: per-routing-key requests per second (0 = disabled)
     pub submit_key_rps: u32,
     /// Submit endpoint: per-routing-key burst capacity
+    #[derivative(Default(value = "20"))]
     pub submit_key_burst: u32,
 
     /// Fetch endpoint: per-IP requests per second (0 = disabled)
     pub fetch_ip_rps: u32,
     /// Fetch endpoint: per-IP burst capacity
+    #[derivative(Default(value = "50"))]
     pub fetch_ip_burst: u32,
     /// Fetch endpoint: per-routing-key requests per second (0 = disabled)
     pub fetch_key_rps: u32,
     /// Fetch endpoint: per-routing-key burst capacity
+    #[derivative(Default(value = "30"))]
     pub fetch_key_burst: u32,
-}
-
-impl Default for RateLimitConfig {
-    fn default() -> Self {
-        Self {
-            // All disabled by default (0 = off)
-            submit_ip_rps: 0,
-            submit_ip_burst: 10,
-            submit_key_rps: 0,
-            submit_key_burst: 20,
-            fetch_ip_rps: 0,
-            fetch_ip_burst: 50,
-            fetch_key_rps: 0,
-            fetch_key_burst: 30,
-        }
-    }
 }
 
 /// TLS configuration for HTTPS server
 ///
 /// When enabled, the node will serve HTTPS instead of HTTP.
 /// Requires both cert_path and key_path to be set.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Derivative)]
+#[derivative(Default)]
 #[serde(default)]
 pub struct TlsConfig {
     /// Enable TLS (requires cert_path and key_path)
@@ -123,16 +114,6 @@ pub struct TlsConfig {
     pub cert_path: Option<PathBuf>,
     /// Path to PEM-encoded private key file
     pub key_path: Option<PathBuf>,
-}
-
-impl Default for TlsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            cert_path: None,
-            key_path: None,
-        }
-    }
 }
 
 /// MQTT broker configuration for the bridge

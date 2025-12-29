@@ -43,6 +43,7 @@
 
 use clap::Parser;
 use config::{Config, Environment, File, FileFormat};
+use derivative::Derivative;
 use directories::ProjectDirs;
 use reme_transport::{QuorumStrategy, TieredDeliveryConfig};
 use serde::{Deserialize, Serialize};
@@ -142,53 +143,54 @@ pub struct CliArgs {
     pub embedded_http_bind: Option<String>,
 }
 
+// =============================================================================
+// Outbox default value helpers (for serde and derivative Default)
+// =============================================================================
+
+fn default_outbox_tick_interval() -> u64 { 5 }
+fn default_outbox_ttl_days() -> u64 { 7 }
+/// 1 minute - attempt timeout
+fn default_outbox_attempt_timeout() -> u64 { 60 }
+fn default_outbox_retry_initial_delay() -> u64 { 5 }
+/// 5 minutes - max retry delay
+fn default_outbox_retry_max_delay() -> u64 { 300 }
+
 /// Outbox configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Derivative)]
+#[derivative(Default)]
 pub struct OutboxAppConfig {
     /// How often to check for pending retries (seconds)
     #[serde(default = "default_outbox_tick_interval")]
+    #[derivative(Default(value = "default_outbox_tick_interval()"))]
     pub tick_interval_secs: u64,
 
     /// Default message TTL in days (0 = never expire)
     #[serde(default = "default_outbox_ttl_days")]
+    #[derivative(Default(value = "default_outbox_ttl_days()"))]
     pub ttl_days: u64,
 
     /// How long a "sent" attempt stays in-flight before timing out (seconds)
     #[serde(default = "default_outbox_attempt_timeout")]
+    #[derivative(Default(value = "default_outbox_attempt_timeout()"))]
     pub attempt_timeout_secs: u64,
 
     /// Initial retry delay (seconds)
     #[serde(default = "default_outbox_retry_initial_delay")]
+    #[derivative(Default(value = "default_outbox_retry_initial_delay()"))]
     pub retry_initial_delay_secs: u64,
 
     /// Maximum retry delay (seconds)
     #[serde(default = "default_outbox_retry_max_delay")]
+    #[derivative(Default(value = "default_outbox_retry_max_delay()"))]
     pub retry_max_delay_secs: u64,
 }
 
-fn default_outbox_tick_interval() -> u64 { 5 }
-fn default_outbox_ttl_days() -> u64 { 7 }
-fn default_outbox_attempt_timeout() -> u64 { 60 }
-fn default_outbox_retry_initial_delay() -> u64 { 5 }
-fn default_outbox_retry_max_delay() -> u64 { 300 }
-
-impl Default for OutboxAppConfig {
-    fn default() -> Self {
-        Self {
-            tick_interval_secs: default_outbox_tick_interval(),
-            ttl_days: default_outbox_ttl_days(),
-            attempt_timeout_secs: default_outbox_attempt_timeout(),
-            retry_initial_delay_secs: default_outbox_retry_initial_delay(),
-            retry_max_delay_secs: default_outbox_retry_max_delay(),
-        }
-    }
-}
-
 /// Quorum strategy configuration.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum QuorumStrategyConfig {
     /// Any single transport success (legacy behavior).
+    #[default]
     Any,
     /// Fixed count: at least N transports must succeed.
     Count(u32),
@@ -196,12 +198,6 @@ pub enum QuorumStrategyConfig {
     Fraction(f32),
     /// All configured stable transports must succeed.
     All,
-}
-
-impl Default for QuorumStrategyConfig {
-    fn default() -> Self {
-        QuorumStrategyConfig::Any
-    }
 }
 
 impl QuorumStrategyConfig {
@@ -226,13 +222,29 @@ impl QuorumStrategyConfig {
     }
 }
 
+// =============================================================================
+// Delivery default value helpers (for serde and derivative Default)
+// =============================================================================
+
+fn default_urgent_initial_delay() -> u64 { 5 }
+/// 1 minute - max urgent delay
+fn default_urgent_max_delay() -> u64 { 60 }
+fn default_urgent_backoff_multiplier() -> f32 { 2.0 }
+/// 4 hours - maintenance interval
+fn default_maintenance_interval_hours() -> u64 { 4 }
+fn default_maintenance_enabled() -> bool { true }
+/// 500ms - direct tier timeout
+fn default_direct_tier_timeout_ms() -> u64 { 500 }
+fn default_quorum_tier_timeout_secs() -> u64 { 5 }
+
 /// Tiered delivery configuration for quorum semantics.
 ///
 /// This controls how messages flow through delivery tiers:
 /// - Tier 1 (Direct): Race all ephemeral targets, exit on any success
 /// - Tier 2 (Quorum): Broadcast to all stable targets, require quorum
 /// - Tier 3 (Best-Effort): Fire-and-forget delivery (future)
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Derivative)]
+#[derivative(Default)]
 pub struct DeliveryAppConfig {
     /// Quorum strategy for Quorum tier.
     #[serde(default)]
@@ -242,58 +254,42 @@ pub struct DeliveryAppConfig {
 
     /// Initial retry delay in seconds for urgent phase.
     #[serde(default = "default_urgent_initial_delay")]
+    #[derivative(Default(value = "default_urgent_initial_delay()"))]
     pub urgent_initial_delay_secs: u64,
 
     /// Maximum retry delay in seconds for urgent phase.
     #[serde(default = "default_urgent_max_delay")]
+    #[derivative(Default(value = "default_urgent_max_delay()"))]
     pub urgent_max_delay_secs: u64,
 
     /// Backoff multiplier for urgent phase retries.
     #[serde(default = "default_urgent_backoff_multiplier")]
+    #[derivative(Default(value = "default_urgent_backoff_multiplier()"))]
     pub urgent_backoff_multiplier: f32,
 
     // Phase 2 (Maintenance) settings
 
     /// Maintenance refresh interval in hours for distributed phase.
     #[serde(default = "default_maintenance_interval_hours")]
+    #[derivative(Default(value = "default_maintenance_interval_hours()"))]
     pub maintenance_interval_hours: u64,
 
     /// Enable maintenance refreshes (default: true).
     #[serde(default = "default_maintenance_enabled")]
+    #[derivative(Default(value = "true"))]
     pub maintenance_enabled: bool,
 
     // Tier timeouts
 
     /// Direct tier timeout in milliseconds.
     #[serde(default = "default_direct_tier_timeout_ms")]
+    #[derivative(Default(value = "default_direct_tier_timeout_ms()"))]
     pub direct_tier_timeout_ms: u64,
 
     /// Quorum tier timeout in seconds.
     #[serde(default = "default_quorum_tier_timeout_secs")]
+    #[derivative(Default(value = "default_quorum_tier_timeout_secs()"))]
     pub quorum_tier_timeout_secs: u64,
-}
-
-fn default_urgent_initial_delay() -> u64 { 5 }
-fn default_urgent_max_delay() -> u64 { 60 }
-fn default_urgent_backoff_multiplier() -> f32 { 2.0 }
-fn default_maintenance_interval_hours() -> u64 { 4 }
-fn default_maintenance_enabled() -> bool { true }
-fn default_direct_tier_timeout_ms() -> u64 { 500 }
-fn default_quorum_tier_timeout_secs() -> u64 { 5 }
-
-impl Default for DeliveryAppConfig {
-    fn default() -> Self {
-        Self {
-            quorum: QuorumStrategyConfig::default(),
-            urgent_initial_delay_secs: default_urgent_initial_delay(),
-            urgent_max_delay_secs: default_urgent_max_delay(),
-            urgent_backoff_multiplier: default_urgent_backoff_multiplier(),
-            maintenance_interval_hours: default_maintenance_interval_hours(),
-            maintenance_enabled: default_maintenance_enabled(),
-            direct_tier_timeout_ms: default_direct_tier_timeout_ms(),
-            quorum_tier_timeout_secs: default_quorum_tier_timeout_secs(),
-        }
-    }
 }
 
 impl DeliveryAppConfig {
@@ -451,12 +447,21 @@ impl HttpEndpoint {
     }
 }
 
+// =============================================================================
+// Embedded node default value helpers (for serde and derivative Default)
+// =============================================================================
+
+fn default_embedded_max_messages() -> u32 { 1000 }
+/// 24 hours - default TTL for embedded node
+fn default_embedded_ttl_secs() -> u64 { 86400 }
+
 /// Embedded node configuration for in-process mailbox.
 ///
 /// When enabled, the client runs an embedded mailbox node that can:
 /// - Store messages locally for direct LAN P2P delivery
 /// - Optionally expose an HTTP server for peers on the same network
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Derivative)]
+#[derivative(Default)]
 pub struct EmbeddedNodeConfig {
     /// Enable the embedded node (default: false).
     #[serde(default)]
@@ -471,25 +476,13 @@ pub struct EmbeddedNodeConfig {
 
     /// Maximum number of messages to store (default: 1000).
     #[serde(default = "default_embedded_max_messages")]
+    #[derivative(Default(value = "default_embedded_max_messages()"))]
     pub max_messages: u32,
 
     /// Default message TTL in seconds (default: 86400 = 24 hours).
     #[serde(default = "default_embedded_ttl_secs")]
+    #[derivative(Default(value = "default_embedded_ttl_secs()"))]
     pub default_ttl_secs: u64,
-}
-
-fn default_embedded_max_messages() -> u32 { 1000 }
-fn default_embedded_ttl_secs() -> u64 { 86400 }
-
-impl Default for EmbeddedNodeConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            http_bind: None,
-            max_messages: default_embedded_max_messages(),
-            default_ttl_secs: default_embedded_ttl_secs(),
-        }
-    }
 }
 
 /// Direct peer configuration for LAN P2P messaging.

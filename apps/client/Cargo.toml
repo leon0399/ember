@@ -17,6 +17,9 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+# derives
+derivative = { workspace = true }
+
 # serialization
 hex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

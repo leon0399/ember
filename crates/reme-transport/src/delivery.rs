@@ -7,10 +7,25 @@
 
 use std::time::Duration;
 
+use derivative::Derivative;
 use strum::{Display, EnumIter};
 
 use crate::target::TargetId;
 use crate::TransportError;
+
+// =============================================================================
+// Default value helpers for TieredDeliveryConfig
+// =============================================================================
+
+/// 4 hours - maintenance refresh interval
+const fn default_maintenance_interval() -> Duration {
+    Duration::from_secs(4 * 60 * 60)
+}
+
+/// 500ms - direct tier timeout
+const fn default_direct_tier_timeout() -> Duration {
+    Duration::from_millis(500)
+}
 
 /// Error type for invalid quorum strategy configuration.
 #[derive(Debug, Clone, PartialEq)]
@@ -436,42 +451,34 @@ impl DeliveryResult {
 }
 
 /// Configuration for tiered delivery.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Derivative)]
+#[derivative(Default)]
 pub struct TieredDeliveryConfig {
     /// Quorum strategy for Quorum tier.
     pub quorum: QuorumStrategy,
 
     /// Phase 1 (Urgent) retry settings.
+    #[derivative(Default(value = "Duration::from_secs(5)"))]
     pub urgent_initial_delay: Duration,
+    #[derivative(Default(value = "Duration::from_secs(60)"))]
     pub urgent_max_delay: Duration,
+    #[derivative(Default(value = "2.0"))]
     pub urgent_backoff_multiplier: f32,
 
     /// Phase 2 (Maintenance) settings.
+    #[derivative(Default(value = "default_maintenance_interval()"))]
     pub maintenance_interval: Duration,
+    #[derivative(Default(value = "true"))]
     pub maintenance_enabled: bool,
 
     /// Per-tier timeouts (how long to wait before trying next tier).
+    #[derivative(Default(value = "default_direct_tier_timeout()"))]
     pub direct_tier_timeout: Duration,
+    #[derivative(Default(value = "Duration::from_secs(5)"))]
     pub quorum_tier_timeout: Duration,
 
     /// Targets to exclude from delivery (used for replication to avoid echo).
     pub excluded_targets: std::collections::HashSet<TargetId>,
-}
-
-impl Default for TieredDeliveryConfig {
-    fn default() -> Self {
-        Self {
-            quorum: QuorumStrategy::default(),
-            urgent_initial_delay: Duration::from_secs(5),
-            urgent_max_delay: Duration::from_secs(60),
-            urgent_backoff_multiplier: 2.0,
-            maintenance_interval: Duration::from_secs(4 * 60 * 60), // 4 hours
-            maintenance_enabled: true,
-            direct_tier_timeout: Duration::from_millis(500),
-            quorum_tier_timeout: Duration::from_secs(5),
-            excluded_targets: std::collections::HashSet::new(),
-        }
-    }
 }
 
 impl TieredDeliveryConfig {
