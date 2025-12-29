@@ -190,7 +190,7 @@ impl RequestSource {
 
 #[derive(Debug, Serialize)]
 pub struct SubmitResponse {
-    pub status: String,
+    pub status: &'static str,
     /// Ack secret proving the node can decrypt this message.
     /// Present only if the node is the intended recipient (routing_key matches).
     /// Base64-encoded 16-byte secret.
@@ -403,12 +403,12 @@ async fn submit_payload(
                     // This ensures message is deleted across all nodes in the cluster
                     state.replication.replicate_payload(payload_b64, from_node);
 
-                    (StatusCode::OK, Json(SubmitResponse { status: "ok".to_string(), ack_secret: None })).into_response()
+                    (StatusCode::OK, Json(SubmitResponse { status: "ok", ack_secret: None })).into_response()
                 }
                 Ok(false) => {
                     // Message was already deleted (race condition, not an error)
                     // Don't replicate - this is likely a replicated tombstone arriving
-                    (StatusCode::OK, Json(SubmitResponse { status: "ok".to_string(), ack_secret: None })).into_response()
+                    (StatusCode::OK, Json(SubmitResponse { status: "ok", ack_secret: None })).into_response()
                 }
                 Err(e) => {
                     error!("Failed to delete message: {}", e);
@@ -437,7 +437,7 @@ async fn handle_message(
         debug!("Rejecting message from ourselves (loop prevention)");
         return (
             StatusCode::OK,
-            Json(SubmitResponse { status: "ok".to_string(), ack_secret: None }),
+            Json(SubmitResponse { status: "ok", ack_secret: None }),
         )
             .into_response();
     }
@@ -471,7 +471,7 @@ async fn handle_message(
     match state.store.has_message(&routing_key, &message_id) {
         Ok(true) => {
             debug!("Duplicate message {:?}, skipping", message_id);
-            return (StatusCode::OK, Json(SubmitResponse { status: "ok".to_string(), ack_secret: None }))
+            return (StatusCode::OK, Json(SubmitResponse { status: "ok", ack_secret: None }))
                 .into_response();
         }
         Ok(false) => {}
@@ -503,7 +503,7 @@ async fn handle_message(
                 });
             }
 
-            (StatusCode::OK, Json(SubmitResponse { status: "ok".to_string(), ack_secret })).into_response()
+            (StatusCode::OK, Json(SubmitResponse { status: "ok", ack_secret })).into_response()
         }
         Err(e) => {
             error!("Failed to enqueue message: {}", e);

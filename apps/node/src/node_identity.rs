@@ -237,6 +237,7 @@ impl NodeIdentity {
         // Pre-validation: reject known low-order points before ECDH
         // This matches the validation in reme-encryption::decrypt_with_mik
         if is_low_order_point(ephemeral_public) {
+            tracing::debug!("Rejected low-order ephemeral key in derive_shared_secret");
             return None;
         }
 
@@ -246,6 +247,7 @@ impl NodeIdentity {
         // Defense-in-depth: reject all-zero shared secrets (indicates small-order input)
         let bytes = shared_secret.as_bytes();
         if bytes.iter().all(|&b| b == 0) {
+            tracing::debug!("Rejected all-zero shared secret in derive_shared_secret");
             return None;
         }
 

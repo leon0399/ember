@@ -28,6 +28,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 use tui_textarea::{Input, TextArea};
+use zeroize::Zeroizing;
 
 pub type AppResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -418,7 +419,8 @@ impl<'a> App<'a> {
         // Extract identity bytes for HTTP server (before embedded node block)
         // This allows us to create a separate Identity instance for the HTTP server
         // while still passing the original identity to Client::with_config
-        let identity_bytes = identity.to_bytes();
+        // Wrapped in Zeroizing to ensure secret key is cleared from memory when dropped
+        let identity_bytes = Zeroizing::new(identity.to_bytes());
 
         // Create embedded node if enabled
         let (embedded_node_handle, embedded_node_task, node_event_rx) = if config.embedded_node.enabled {
