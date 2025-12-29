@@ -1,4 +1,5 @@
 use std::fmt::{self, Debug, Display};
+use derive_more::{Deref, DerefMut, From, Into};
 use getset::Getters;
 use rand_core::OsRng;
 use thiserror::Error;
@@ -184,7 +185,7 @@ impl PublicID {
 ///
 /// Derived from the first 16 bytes of a BLAKE3 hash of a PublicID.
 /// Used to address messages without revealing the full public key.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Encode, Decode)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Encode, Decode, From, Into, Deref, DerefMut)]
 pub struct RoutingKey(pub [u8; 16]);
 
 impl RoutingKey {
@@ -223,30 +224,6 @@ impl AsRef<[u8]> for RoutingKey {
     }
 }
 
-impl From<[u8; 16]> for RoutingKey {
-    fn from(bytes: [u8; 16]) -> Self {
-        Self(bytes)
-    }
-}
-
-impl From<RoutingKey> for [u8; 16] {
-    fn from(key: RoutingKey) -> Self {
-        key.0
-    }
-}
-
-impl std::ops::Deref for RoutingKey {
-    type Target = [u8; 16];
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for RoutingKey {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
 
 impl AsRef<X25519PublicKey> for PublicID {
   fn as_ref(&self) -> &X25519PublicKey {

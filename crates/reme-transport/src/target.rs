@@ -9,6 +9,7 @@ use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use derive_more::Display as DeriveDisplay;
 use reme_message::{OuterEnvelope, SignedAckTombstone};
 use strum::{Display, EnumIter};
 
@@ -21,7 +22,7 @@ use crate::TransportError;
 ///
 /// URLs are sanitized to remove any embedded credentials, preventing
 /// credential exposure in logs or debug output.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, DeriveDisplay)]
 pub struct TargetId(String);
 
 impl TargetId {
@@ -47,12 +48,6 @@ impl TargetId {
     /// Get the raw ID string.
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-}
-
-impl std::fmt::Display for TargetId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
     }
 }
 
