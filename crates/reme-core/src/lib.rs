@@ -11,8 +11,8 @@ use reme_encryption::{decrypt_with_mik, encrypt_to_mik, EncryptionError};
 use reme_identity::{Identity, PublicID};
 use reme_message::{
     Content, ContentId, ConversationDag, DeviceID, InnerEnvelope, MessageID, OuterEnvelope,
-    ReceiptContent, ReceiptKind, RoutingKey, TextContent, TombstoneEnvelope, TombstoneStatus,
-    CURRENT_VERSION, FLAG_DETACHED,
+    ReceiptContent, ReceiptKind, RoutingKey, SignedAckTombstone, TextContent, TombstoneEnvelope,
+    TombstoneStatus, CURRENT_VERSION, FLAG_DETACHED,
 };
 use reme_outbox::{
     AttemptError, AttemptResult, ClientOutbox, DeliveryState, OutboxConfig, OutboxEntryId,
@@ -472,8 +472,8 @@ impl<T: Transport> Client<T> {
             inner_ciphertext: enc_output.ciphertext,
         };
 
-        // TODO: Store ack_secret for sender-side tombstone (Phase 3)
-        // self.storage.store_pending_ack(&outer_message_id, enc_output.ack_secret)?;
+        // Store ack_secret for sender-side tombstone (retraction capability)
+        self.storage.store_pending_ack(outer_message_id, enc_output.ack_secret)?;
 
         // Store locally first
         let contact_id = self.storage.get_contact_id(to)?;
@@ -594,9 +594,36 @@ impl<T: Transport> Client<T> {
             other => other.into(),
         })?;
 
-        // Extract inner envelope (ack_secret is used for tombstone creation)
+        // Extract inner envelope and ack_secret
         let inner = dec_output.inner;
-        let _ack_secret = dec_output.ack_secret; // TODO: Use for auto-tombstone in Phase 6
+        let ack_secret = dec_output.ack_secret;
+
+        // Auto-send tombstone (fire-and-forget) for non-detached messages
+        // This clears the message from relay nodes to free storage space.
+        // Detached messages (FLAG_DETACHED) skip tombstones to save bandwidth on
+        // constrained transports like LoRa or BLE.
+        if !inner.is_detached() {
+            let tombstone = SignedAckTombstone::new(
+                outer.message_id,
+                ack_secret,
+                &self.private_key(),
+            );
+            if let Err(e) = self.transport.submit_ack_tombstone(tombstone).await {
+                // Log failure but don't fail message processing - the message was
+                // successfully received and decrypted. The relay node will eventually
+                // expire the message or a manual tombstone can be sent later.
+                warn!(
+                    message_id = ?outer.message_id,
+                    error = %e,
+                    "Failed to send auto-tombstone (message still received successfully)"
+                );
+            } else {
+                debug!(
+                    message_id = ?outer.message_id,
+                    "Auto-tombstone sent successfully"
+                );
+            }
+        }
 
         // Note: Recipient binding is implicit via sealed box ECDH.
         // If decryption succeeded, the message was intended for our MIK.
@@ -818,6 +845,77 @@ impl<T: Transport> Client<T> {
     /// Use this when the user has opened/read the message.
     pub async fn send_read_tombstone(&self, message: &ReceivedMessage) -> Result<(), ClientError> {
         self.send_tombstone(message, TombstoneStatus::Read).await
+    }
+
+    // ========================================
+    // Tombstone V2 (Signed Ack) Management
+    // ========================================
+
+    /// Retract a sent message (sender-initiated tombstone).
+    ///
+    /// Use this to delete a message from relay nodes before the recipient
+    /// fetches it. This is the "unsend" or "retract" functionality.
+    ///
+    /// The ack_secret is retrieved from local storage (stored during
+    /// message preparation). If the message has already been acknowledged
+    /// by the recipient, this will fail at the node with 404.
+    ///
+    /// # Arguments
+    /// * `message_id` - The message ID to retract
+    ///
+    /// # Errors
+    /// - `ClientError::ContactNotFound` if no pending_ack exists for this message
+    /// - `ClientError::Transport` if the tombstone submission fails
+    pub async fn acknowledge_sent(&self, message_id: MessageID) -> Result<(), ClientError> {
+        // Retrieve stored ack_secret
+        let ack_secret = self
+            .storage
+            .get_pending_ack(&message_id)?
+            .ok_or(ClientError::ContactNotFound)?;
+
+        // Create and submit tombstone
+        let tombstone = SignedAckTombstone::new(message_id, ack_secret, &self.private_key());
+
+        self.transport.submit_ack_tombstone(tombstone).await?;
+
+        // Remove from pending_acks after successful submission
+        self.storage.remove_pending_ack(&message_id)?;
+
+        debug!(
+            message_id = ?message_id,
+            "Sender-initiated tombstone sent (message retracted)"
+        );
+
+        Ok(())
+    }
+
+    /// Manually acknowledge a received message (backup for failed auto-tombstone).
+    ///
+    /// This is primarily for testing or recovery scenarios where the
+    /// auto-tombstone in `process_message()` failed but the caller has
+    /// the ack_secret from `DecryptionOutput`.
+    ///
+    /// Most callers should not need this - `process_message()` handles
+    /// tombstone submission automatically.
+    ///
+    /// # Arguments
+    /// * `message_id` - The message ID to acknowledge
+    /// * `ack_secret` - The ack_secret from decryption
+    pub async fn acknowledge_received(
+        &self,
+        message_id: MessageID,
+        ack_secret: [u8; 16],
+    ) -> Result<(), ClientError> {
+        let tombstone = SignedAckTombstone::new(message_id, ack_secret, &self.private_key());
+
+        self.transport.submit_ack_tombstone(tombstone).await?;
+
+        debug!(
+            message_id = ?message_id,
+            "Manual tombstone sent for received message"
+        );
+
+        Ok(())
     }
 
     // ========================================
