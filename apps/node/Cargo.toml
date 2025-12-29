@@ -50,6 +50,7 @@ url = "2"
 subtle = "2"
 zeroize = "1"
 rand = { workspace = true }
+x25519-dalek = { workspace = true }
 
 # rate limiting
 tower_governor = "0.8"
@@ -65,3 +66,4 @@ uuid = { workspace = true }
 [dev-dependencies]
 tempfile = "3"
 reqwest = { workspace = true }
+rand_core = { version = "0.6.4", features = ["getrandom"] }

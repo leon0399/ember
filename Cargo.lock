@@ -1842,6 +1842,7 @@ dependencies = [
  "hex",
  "http",
  "rand 0.9.2",
+ "rand_core 0.6.4",
  "reme-identity",
  "reme-message",
  "reme-node-core",
@@ -1860,6 +1861,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "x25519-dalek",
  "zeroize",
 ]
 
