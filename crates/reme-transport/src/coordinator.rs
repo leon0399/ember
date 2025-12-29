@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::future::join_all;
-use reme_message::{OuterEnvelope, RoutingKey, TombstoneEnvelope};
+use reme_message::{OuterEnvelope, RoutingKey, SignedAckTombstone, TombstoneEnvelope};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
@@ -865,6 +865,34 @@ impl Transport for TransportCoordinator {
     async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
         self.submit_tombstone_with_strategy(tombstone).await
     }
+
+    async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
+        // Broadcast ack tombstone to all available transports
+        let mut futures: Vec<BoxedFuture> = Vec::new();
+
+        if let Some(ref pool) = self.http_pool {
+            let ts = tombstone.clone();
+            let pool = pool.clone();
+            futures.push(Box::pin(async move {
+                pool.submit_ack_tombstone(ts).await
+            }));
+        }
+
+        #[cfg(feature = "mqtt")]
+        if let Some(ref pool) = self.mqtt_pool {
+            let ts = tombstone.clone();
+            let pool = pool.clone();
+            futures.push(Box::pin(async move {
+                pool.submit_ack_tombstone(ts).await
+            }));
+        }
+
+        if futures.is_empty() {
+            return Err(TransportError::Network("No transports configured".to_string()));
+        }
+
+        self.broadcast_await_any_success(futures).await
+    }
 }
 
 /// Implement `TransportQuery` for unified access to all transport targets.
@@ -996,6 +1024,7 @@ mod tests {
             timestamp_hours: 0,
             ttl_hours: None,
             ephemeral_key: [3u8; 32],
+            ack_hash: [0u8; 16],
             inner_ciphertext: vec![1, 2, 3],
         };
 
@@ -1021,6 +1050,7 @@ mod tests {
             timestamp_hours: 0,
             ttl_hours: None,
             ephemeral_key: [3u8; 32],
+            ack_hash: [0u8; 16],
             inner_ciphertext: vec![1, 2, 3],
         };
 
@@ -1045,6 +1075,7 @@ mod tests {
             timestamp_hours: 0,
             ttl_hours: None,
             ephemeral_key: [3u8; 32],
+            ack_hash: [0u8; 16],
             inner_ciphertext: vec![1, 2, 3],
         };
 

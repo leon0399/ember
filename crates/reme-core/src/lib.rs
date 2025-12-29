@@ -11,8 +11,8 @@ use reme_encryption::{decrypt_with_mik, encrypt_to_mik, EncryptionError};
 use reme_identity::{Identity, PublicID};
 use reme_message::{
     Content, ContentId, ConversationDag, DeviceID, InnerEnvelope, MessageID, OuterEnvelope,
-    ReceiptContent, ReceiptKind, RoutingKey, TextContent, TombstoneEnvelope, TombstoneStatus,
-    CURRENT_VERSION, FLAG_DETACHED,
+    ReceiptContent, ReceiptKind, RoutingKey, SignedAckTombstone, TextContent, TombstoneEnvelope,
+    TombstoneStatus, CURRENT_VERSION, FLAG_DETACHED,
 };
 use reme_outbox::{
     AttemptError, AttemptResult, ClientOutbox, DeliveryState, OutboxConfig, OutboxEntryId,
@@ -50,6 +50,9 @@ pub enum ClientError {
 
     #[error("Outbox entry not found")]
     OutboxEntryNotFound,
+
+    #[error("Ack secret not found for message (already tombstoned or never sent)")]
+    AckSecretNotFound,
 
     #[error("Message not intended for this recipient (routing key mismatch)")]
     WrongRecipient,
@@ -457,7 +460,7 @@ impl<T: Transport> Client<T> {
         let content_id = inner.content_id();
 
         // Encrypt to recipient's MIK (signing happens inside encrypt_to_mik)
-        let (ephemeral_key, ciphertext) =
+        let enc_output =
             encrypt_to_mik(&inner, to, &outer_message_id, &self.private_key())?;
 
         // Create outer envelope
@@ -467,9 +470,13 @@ impl<T: Transport> Client<T> {
             timestamp_hours: reme_message::now_hours(),
             ttl_hours: Some(7 * 24), // 7 days default TTL
             message_id: outer_message_id,
-            ephemeral_key,
-            inner_ciphertext: ciphertext,
+            ephemeral_key: enc_output.ephemeral_public,
+            ack_hash: enc_output.ack_hash,
+            inner_ciphertext: enc_output.ciphertext,
         };
+
+        // Store ack_secret for sender-side tombstone (retraction capability)
+        self.storage.store_pending_ack(outer_message_id, enc_output.ack_secret)?;
 
         // Store locally first
         let contact_id = self.storage.get_contact_id(to)?;
@@ -578,7 +585,7 @@ impl<T: Transport> Client<T> {
         // This also verifies:
         // - AAD binding (message_id must match)
         // - Sender signature (sign-all-bytes - signature verified during decryption)
-        let inner = decrypt_with_mik(
+        let dec_output = decrypt_with_mik(
             &outer.ephemeral_key,
             &outer.inner_ciphertext,
             &self.private_key(),
@@ -589,6 +596,18 @@ impl<T: Transport> Client<T> {
             EncryptionError::InvalidSenderSignature => ClientError::InvalidSenderSignature,
             other => other.into(),
         })?;
+
+        // Extract inner envelope and ack_secret
+        let inner = dec_output.inner;
+        let ack_secret = dec_output.ack_secret;
+
+        // For non-detached messages, store ack_secret FIRST for tombstone retry capability.
+        // This ensures we never lose the ability to tombstone if auto-send fails.
+        // We'll send the tombstone AFTER successful message storage to prevent data loss.
+        let should_tombstone = !inner.is_detached();
+        if should_tombstone {
+            self.storage.store_pending_ack(outer.message_id, ack_secret)?;
+        }
 
         // Note: Recipient binding is implicit via sealed box ECDH.
         // If decryption succeeded, the message was intended for our MIK.
@@ -615,6 +634,41 @@ impl<T: Transport> Client<T> {
             outer.message_id,
             &inner.content,
         )?;
+
+        // NOW send auto-tombstone (fire-and-forget) AFTER successful message storage.
+        // This ensures we never lose the message: if storage fails, we don't send tombstone.
+        // If tombstone fails, the message is safely stored and ack_secret is persisted for retry.
+        if should_tombstone {
+            let tombstone = SignedAckTombstone::new(
+                outer.message_id,
+                ack_secret,
+                &self.private_key(),
+            );
+            if let Err(e) = self.transport.submit_ack_tombstone(tombstone).await {
+                // Log failure but don't fail message processing - the message was
+                // successfully stored locally. The relay node will eventually
+                // expire the message or ack_secret can be used to retry later via
+                // acknowledge_received().
+                warn!(
+                    message_id = ?outer.message_id,
+                    error = %e,
+                    "Failed to send auto-tombstone (ack_secret stored for retry)"
+                );
+            } else {
+                // Tombstone succeeded - remove stored ack_secret (no longer needed)
+                if let Err(e) = self.storage.remove_pending_ack(&outer.message_id) {
+                    warn!(
+                        message_id = ?outer.message_id,
+                        error = %e,
+                        "Failed to remove pending_ack after successful tombstone"
+                    );
+                }
+                debug!(
+                    message_id = ?outer.message_id,
+                    "Auto-tombstone sent successfully"
+                );
+            }
+        }
 
         // Update DAG tracking and detect state anomalies
         let contact_key = sender_id.to_bytes();
@@ -810,6 +864,84 @@ impl<T: Transport> Client<T> {
     /// Use this when the user has opened/read the message.
     pub async fn send_read_tombstone(&self, message: &ReceivedMessage) -> Result<(), ClientError> {
         self.send_tombstone(message, TombstoneStatus::Read).await
+    }
+
+    // ========================================
+    // Tombstone V2 (Signed Ack) Management
+    // ========================================
+
+    /// Retract a sent message (sender-initiated tombstone).
+    ///
+    /// Use this to delete a message from relay nodes before the recipient
+    /// fetches it. This is the "unsend" or "retract" functionality.
+    ///
+    /// The ack_secret is retrieved from local storage (stored during
+    /// message preparation). If the message has already been acknowledged
+    /// by the recipient, this will fail at the node with 404.
+    ///
+    /// # Arguments
+    /// * `message_id` - The message ID to retract
+    ///
+    /// # Errors
+    /// - `ClientError::AckSecretNotFound` if no pending_ack exists for this message
+    /// - `ClientError::Transport` if the tombstone submission fails
+    pub async fn acknowledge_sent(&self, message_id: MessageID) -> Result<(), ClientError> {
+        // Retrieve stored ack_secret
+        let ack_secret = self
+            .storage
+            .get_pending_ack(&message_id)?
+            .ok_or(ClientError::AckSecretNotFound)?;
+
+        // Create and submit tombstone
+        let tombstone = SignedAckTombstone::new(message_id, ack_secret, &self.private_key());
+
+        self.transport.submit_ack_tombstone(tombstone).await?;
+
+        // Remove from pending_acks after successful submission
+        self.storage.remove_pending_ack(&message_id)?;
+
+        debug!(
+            message_id = ?message_id,
+            "Sender-initiated tombstone sent (message retracted)"
+        );
+
+        Ok(())
+    }
+
+    /// Manually acknowledge a received message (retry for failed auto-tombstone).
+    ///
+    /// Use this when the auto-tombstone in `process_message()` failed and you
+    /// want to retry clearing the message from relay nodes.
+    ///
+    /// The ack_secret is automatically retrieved from storage (stored during
+    /// `process_message()` before attempting auto-tombstone).
+    ///
+    /// # Arguments
+    /// * `message_id` - The message ID to acknowledge
+    ///
+    /// # Errors
+    /// - `ClientError::AckSecretNotFound` if no pending_ack exists for this message
+    /// - `ClientError::Transport` if the tombstone submission fails
+    pub async fn acknowledge_received(&self, message_id: MessageID) -> Result<(), ClientError> {
+        // Retrieve stored ack_secret
+        let ack_secret = self
+            .storage
+            .get_pending_ack(&message_id)?
+            .ok_or(ClientError::AckSecretNotFound)?;
+
+        let tombstone = SignedAckTombstone::new(message_id, ack_secret, &self.private_key());
+
+        self.transport.submit_ack_tombstone(tombstone).await?;
+
+        // Remove from pending_acks after successful submission
+        self.storage.remove_pending_ack(&message_id)?;
+
+        debug!(
+            message_id = ?message_id,
+            "Manual tombstone sent for received message"
+        );
+
+        Ok(())
     }
 
     // ========================================
@@ -1430,6 +1562,7 @@ impl Client<TransportCoordinator> {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use reme_message::SignedAckTombstone;
     use std::sync::Mutex;
 
     /// Mock transport for testing (MIK-only, no prekeys)
@@ -1464,6 +1597,14 @@ mod tests {
             tombstone: TombstoneEnvelope,
         ) -> Result<(), TransportError> {
             self.tombstones.lock().unwrap().push(tombstone);
+            Ok(())
+        }
+
+        async fn submit_ack_tombstone(
+            &self,
+            _tombstone: SignedAckTombstone,
+        ) -> Result<(), TransportError> {
+            // Mock implementation - just accept
             Ok(())
         }
     }
@@ -1624,7 +1765,7 @@ mod tests {
         assert_eq!(messages.len(), 1);
 
         // Decrypt and verify it's detached
-        let inner = decrypt_with_mik(
+        let dec_output = decrypt_with_mik(
             &messages[0].ephemeral_key,
             &messages[0].inner_ciphertext,
             &bob_private_key,
@@ -1632,9 +1773,9 @@ mod tests {
         )
         .unwrap();
 
-        assert!(inner.is_detached());
-        assert!(inner.prev_self.is_none());
-        assert!(inner.observed_heads.is_empty());
+        assert!(dec_output.inner.is_detached());
+        assert!(dec_output.inner.prev_self.is_none());
+        assert!(dec_output.inner.observed_heads.is_empty());
     }
 
     #[tokio::test]
@@ -1662,7 +1803,7 @@ mod tests {
         assert_eq!(messages.len(), 2);
 
         // Decrypt both
-        let inner1 = decrypt_with_mik(
+        let dec1 = decrypt_with_mik(
             &messages[0].ephemeral_key,
             &messages[0].inner_ciphertext,
             &bob_private_key,
@@ -1670,7 +1811,7 @@ mod tests {
         )
         .unwrap();
 
-        let inner2 = decrypt_with_mik(
+        let dec2 = decrypt_with_mik(
             &messages[1].ephemeral_key,
             &messages[1].inner_ciphertext,
             &bob_private_key,
@@ -1679,11 +1820,11 @@ mod tests {
         .unwrap();
 
         // First message has no prev_self (but may have observed_heads if we received from Bob)
-        assert!(inner1.prev_self.is_none());
+        assert!(dec1.inner.prev_self.is_none());
 
         // Second message should link to first
-        assert!(inner2.prev_self.is_some());
-        assert_eq!(inner2.prev_self.unwrap(), inner1.content_id());
+        assert!(dec2.inner.prev_self.is_some());
+        assert_eq!(dec2.inner.prev_self.unwrap(), dec1.inner.content_id());
     }
 
     #[tokio::test]
@@ -1744,7 +1885,7 @@ mod tests {
         let messages = shared_transport.take_messages();
         assert_eq!(messages.len(), 3);
 
-        let inner1 = decrypt_with_mik(
+        let dec1 = decrypt_with_mik(
             &messages[0].ephemeral_key,
             &messages[0].inner_ciphertext,
             &bob_private_key,
@@ -1752,7 +1893,7 @@ mod tests {
         )
         .unwrap();
 
-        let inner3 = decrypt_with_mik(
+        let dec3 = decrypt_with_mik(
             &messages[2].ephemeral_key,
             &messages[2].inner_ciphertext,
             &bob_private_key,
@@ -1761,7 +1902,7 @@ mod tests {
         .unwrap();
 
         // Third message (Linked 2) should link to first (Linked 1), skipping detached
-        assert_eq!(inner3.prev_self.unwrap(), inner1.content_id());
+        assert_eq!(dec3.inner.prev_self.unwrap(), dec1.inner.content_id());
     }
 
     #[tokio::test]
@@ -1826,7 +1967,7 @@ mod tests {
 
         // Encrypt and create outer envelope (signing happens inside encrypt_to_mik)
         let bob_routing_key = bob.public_id().routing_key();
-        let (ephemeral_key, ciphertext) =
+        let enc_output =
             encrypt_to_mik(&inner, bob.public_id(), &message_id, &alice_private_key).unwrap();
         let outer = OuterEnvelope {
             version: reme_message::CURRENT_VERSION,
@@ -1834,8 +1975,9 @@ mod tests {
             timestamp_hours: reme_message::now_hours(),
             ttl_hours: None,
             message_id,
-            ephemeral_key,
-            inner_ciphertext: ciphertext,
+            ephemeral_key: enc_output.ephemeral_public,
+            ack_hash: enc_output.ack_hash,
+            inner_ciphertext: enc_output.ciphertext,
         };
 
         // Bob processes this message
@@ -1898,7 +2040,7 @@ mod tests {
 
         // Encrypt and create outer envelope (signing happens inside encrypt_to_mik)
         let bob_routing_key = bob.public_id().routing_key();
-        let (ephemeral_key, ciphertext) =
+        let enc_output =
             encrypt_to_mik(&inner, bob.public_id(), &message_id, &alice_private_key).unwrap();
         let outer = OuterEnvelope {
             version: reme_message::CURRENT_VERSION,
@@ -1906,8 +2048,9 @@ mod tests {
             timestamp_hours: reme_message::now_hours(),
             ttl_hours: None,
             message_id,
-            ephemeral_key,
-            inner_ciphertext: ciphertext,
+            ephemeral_key: enc_output.ephemeral_public,
+            ack_hash: enc_output.ack_hash,
+            inner_ciphertext: enc_output.ciphertext,
         };
 
         // Bob processes this detached message
@@ -1975,7 +2118,7 @@ mod tests {
 
         // Encrypt for Alice (signing happens inside encrypt_to_mik)
         let alice_routing_key = alice.public_id().routing_key();
-        let (ephemeral_key, ciphertext) =
+        let enc_output =
             encrypt_to_mik(&inner, alice.public_id(), &message_id, &bob_private_key).unwrap();
         let outer = OuterEnvelope {
             version: reme_message::CURRENT_VERSION,
@@ -1983,8 +2126,9 @@ mod tests {
             timestamp_hours: reme_message::now_hours(),
             ttl_hours: None,
             message_id,
-            ephemeral_key,
-            inner_ciphertext: ciphertext,
+            ephemeral_key: enc_output.ephemeral_public,
+            ack_hash: enc_output.ack_hash,
+            inner_ciphertext: enc_output.ciphertext,
         };
 
         // Alice processes this message

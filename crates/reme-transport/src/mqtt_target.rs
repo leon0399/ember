@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
-use reme_message::{OuterEnvelope, RoutingKey, TombstoneEnvelope, WirePayload};
+use reme_message::{OuterEnvelope, RoutingKey, SignedAckTombstone, TombstoneEnvelope, WirePayload};
 use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS, Transport as MqttTransportType};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
@@ -288,6 +288,30 @@ impl TransportTarget for MqttTarget {
             Err(e) => {
                 self.record_failure(e);
                 warn!("Failed to publish tombstone to {}: {}", self.display_label(), e);
+            }
+        }
+
+        result
+    }
+
+    async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
+        let start = Instant::now();
+
+        // Ack tombstones go to a broadcast topic
+        let topic = format!("{}/ack-tombstones", self.topic_prefix());
+        let wire = WirePayload::AckTombstone(tombstone);
+        let bytes = wire.encode();
+
+        let result = self.publish(&topic, &bytes).await;
+
+        match &result {
+            Ok(()) => {
+                self.record_success(start.elapsed());
+                debug!("AckTombstone published to {}", self.display_label());
+            }
+            Err(e) => {
+                self.record_failure(e);
+                warn!("Failed to publish ack tombstone to {}: {}", self.display_label(), e);
             }
         }
 

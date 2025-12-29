@@ -25,7 +25,7 @@ use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use futures::future::join_all;
-use reme_message::{OuterEnvelope, RoutingKey, TombstoneEnvelope, WirePayload};
+use reme_message::{OuterEnvelope, RoutingKey, SignedAckTombstone, TombstoneEnvelope, WirePayload};
 use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, Publish, QoS, Transport as MqttTransportType};
 use std::sync::Arc;
 use std::time::Duration;
@@ -386,6 +386,16 @@ impl Transport for MqttTransport {
 
         self.publish_to_all(&topic, &bytes).await
     }
+
+    async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
+        // MQTT tombstones go to the general tombstone topic
+        // Since AckTombstone doesn't have routing_key, we use a broadcast topic
+        let topic = format!("{}/ack-tombstones", self.topic_prefix);
+        let wire = WirePayload::AckTombstone(tombstone);
+        let bytes = wire.encode();
+
+        self.publish_to_all(&topic, &bytes).await
+    }
 }
 
 /// Parsed MQTT URL components.
@@ -410,6 +420,9 @@ pub fn parse_mqtt_message(publish: &Publish) -> Result<OuterEnvelope, TransportE
         WirePayload::Tombstone(_) => Err(TransportError::Serialization(
             "Expected message, got tombstone".to_string(),
         )),
+        WirePayload::AckTombstone(_) => Err(TransportError::Serialization(
+            "Expected message, got ack tombstone".to_string(),
+        )),
     }
 }
 
@@ -426,6 +439,9 @@ pub fn parse_mqtt_tombstone(publish: &Publish) -> Result<TombstoneEnvelope, Tran
         WirePayload::Tombstone(tombstone) => Ok(tombstone),
         WirePayload::Message(_) => Err(TransportError::Serialization(
             "Expected tombstone, got message".to_string(),
+        )),
+        WirePayload::AckTombstone(_) => Err(TransportError::Serialization(
+            "Expected legacy tombstone, got ack tombstone".to_string(),
         )),
     }
 }

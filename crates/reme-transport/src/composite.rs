@@ -10,7 +10,7 @@
 use crate::{Transport, TransportError};
 use async_trait::async_trait;
 use futures::future::join_all;
-use reme_message::{OuterEnvelope, TombstoneEnvelope};
+use reme_message::{OuterEnvelope, SignedAckTombstone, TombstoneEnvelope};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, trace, warn};
@@ -263,6 +263,14 @@ impl Transport for CompositeTransport {
         })
         .await
     }
+
+    async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
+        self.broadcast(|t| {
+            let ts = tombstone.clone();
+            async move { t.submit_ack_tombstone(ts).await }
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -301,6 +309,15 @@ mod tests {
                 Ok(())
             }
         }
+
+        async fn submit_ack_tombstone(&self, _tombstone: SignedAckTombstone) -> Result<(), TransportError> {
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+            if self.should_fail {
+                Err(TransportError::Network("Mock failure".to_string()))
+            } else {
+                Ok(())
+            }
+        }
     }
 
     fn make_test_envelope() -> OuterEnvelope {
@@ -313,6 +330,7 @@ mod tests {
             ttl_hours: Some(24),
             message_id: MessageID::new(),
             ephemeral_key: [0u8; 32],
+            ack_hash: [0u8; 16],
             inner_ciphertext: vec![0u8; 64],
         }
     }

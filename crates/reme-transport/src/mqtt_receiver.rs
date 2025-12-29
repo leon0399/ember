@@ -303,6 +303,9 @@ impl MqttReceiver {
             WirePayload::Tombstone(_) => Err(TransportError::Serialization(
                 "Expected message, got tombstone".to_string(),
             )),
+            WirePayload::AckTombstone(_) => Err(TransportError::Serialization(
+                "Expected message, got ack tombstone".to_string(),
+            )),
         }
     }
 

@@ -148,7 +148,7 @@ async fn submit_handler(
     // Extract OuterEnvelope (reject tombstones from peers)
     let envelope = match payload {
         WirePayload::Message(env) => env,
-        WirePayload::Tombstone(_) => {
+        WirePayload::Tombstone(_) | WirePayload::AckTombstone(_) => {
             debug!("Rejected tombstone from LAN peer");
             return Err(ApiError::BadRequest(
                 "Tombstones not accepted via direct peer API".to_string(),
@@ -235,6 +235,7 @@ fn is_duplicate_after_store_failure(
         timestamp_hours: 0,
         ttl_hours: None,
         ephemeral_key: [0u8; 32],
+        ack_hash: [0u8; 16], // Zeroed for lookup-only envelope
         inner_ciphertext: vec![],
     };
 
@@ -354,6 +355,7 @@ mod tests {
             ttl_hours: Some(24),
             message_id: MessageID::new(),
             ephemeral_key: [0u8; 32],
+            ack_hash: [0u8; 16],
             inner_ciphertext: vec![1, 2, 3, 4],
         }
     }

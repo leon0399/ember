@@ -317,15 +317,82 @@ async fn submit_payload(
             handle_message(state, envelope, payload_b64, from_node, source).await
         }
         WirePayload::Tombstone(_) => {
-            // Tombstones temporarily disabled pending refactor
-            warn!("Tombstones are temporarily disabled");
+            // V1 Tombstones are deprecated in favor of SignedAckTombstone (V2)
+            warn!("Legacy tombstones (V1) are deprecated");
             (
-                StatusCode::NOT_IMPLEMENTED,
+                StatusCode::GONE,
                 Json(ErrorResponse {
-                    error: "Tombstones temporarily disabled".to_string(),
+                    error: "Legacy tombstones deprecated, use AckTombstone".to_string(),
                 }),
             )
                 .into_response()
+        }
+        WirePayload::AckTombstone(tombstone) => {
+            // Tombstone V2: ECDH-derived ack verification
+            // 1. Look up message by message_id to get its ack_hash
+            let ack_hash = match state.store.get_ack_hash(&tombstone.message_id) {
+                Ok(Some(hash)) => hash,
+                Ok(None) => {
+                    debug!(?tombstone.message_id, "AckTombstone for unknown message");
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(ErrorResponse {
+                            error: "Message not found".to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    error!("Failed to get ack_hash: {}", e);
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "Internal error".to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+
+            // 2. Verify authorization: hash(ack_secret) == ack_hash
+            if !tombstone.verify_authorization(&ack_hash) {
+                debug!(?tombstone.message_id, "AckTombstone authorization failed");
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(ErrorResponse {
+                        error: "Invalid ack_secret".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+
+            // 3. Delete message from mailbox
+            match state.store.delete_message(&tombstone.message_id) {
+                Ok(true) => {
+                    debug!(?tombstone.message_id, "Message deleted via AckTombstone");
+
+                    // Replicate tombstone to peer nodes (fire-and-forget)
+                    // This ensures message is deleted across all nodes in the cluster
+                    state.replication.replicate_payload(payload_b64, from_node);
+
+                    (StatusCode::OK, Json(SubmitResponse { status: "ok".to_string() })).into_response()
+                }
+                Ok(false) => {
+                    // Message was already deleted (race condition, not an error)
+                    // Don't replicate - this is likely a replicated tombstone arriving
+                    (StatusCode::OK, Json(SubmitResponse { status: "ok".to_string() })).into_response()
+                }
+                Err(e) => {
+                    error!("Failed to delete message: {}", e);
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "Internal error".to_string(),
+                        }),
+                    )
+                        .into_response()
+                }
+            }
         }
     }
 }
