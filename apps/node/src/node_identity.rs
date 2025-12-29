@@ -5,7 +5,7 @@
 //! - XEdDSA signatures on HTTP headers (proving message origin)
 //! - Cryptographic loop prevention (identifying self by public key)
 
-use reme_identity::{Identity, InvalidPublicKey, PublicID};
+use reme_identity::{is_low_order_point, Identity, InvalidPublicKey, PublicID};
 use reme_message::RoutingKey;
 use std::fs::{self, File};
 use std::io::{self, Write};
@@ -230,8 +230,16 @@ impl NodeIdentity {
     /// recipient of a message. The shared secret is computed as:
     /// `shared_secret = X25519(node_private, ephemeral_public)`
     ///
-    /// Returns `None` if the ephemeral key is a low-order point (all-zero result).
+    /// Returns `None` if:
+    /// - The ephemeral key is a known low-order point (pre-validation)
+    /// - The ECDH result is all-zero (defense-in-depth)
     pub fn derive_shared_secret(&self, ephemeral_public: &[u8; 32]) -> Option<[u8; 32]> {
+        // Pre-validation: reject known low-order points before ECDH
+        // This matches the validation in reme-encryption::decrypt_with_mik
+        if is_low_order_point(ephemeral_public) {
+            return None;
+        }
+
         let ephemeral_key = X25519PublicKey::from(*ephemeral_public);
         let shared_secret = self.identity.x25519_secret().diffie_hellman(&ephemeral_key);
 

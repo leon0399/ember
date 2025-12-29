@@ -272,3 +272,40 @@ async fn test_duplicate_returns_no_ack_secret() {
 
     println!("Duplicate submission correctly returned no ack_secret");
 }
+
+/// Test: Malformed ephemeral key (low-order point) → returns no ack_secret
+#[tokio::test]
+async fn test_low_order_ephemeral_key_returns_no_ack_secret() {
+    // Create node identity (this will be the recipient)
+    let (node_identity, _dir) = create_temp_identity();
+    let node_pubkey = *node_identity.public_id();
+
+    // Start node with this identity
+    let (url, _handle) = start_test_node(Some(Arc::new(node_identity))).await;
+
+    // Create an envelope with a low-order ephemeral key (attack attempt)
+    // This is one of the 12 low-order points on Curve25519
+    let low_order_ephemeral_key = [0u8; 32]; // All zeros is a low-order point
+
+    let mut envelope = OuterEnvelope::new(
+        node_pubkey.routing_key(),
+        Some(1),
+        low_order_ephemeral_key,
+        [0u8; 16], // dummy ack_hash
+        vec![1, 2, 3, 4], // dummy ciphertext
+    );
+    envelope.message_id = MessageID::new();
+
+    // Submit to node
+    let response = submit_envelope(&url, envelope).await;
+
+    // Should accept the message (node stores it) but NOT return ack_secret
+    // (ECDH with low-order point would produce weak/predictable shared secret)
+    assert_eq!(response.status, "ok");
+    assert!(
+        response.ack_secret.is_none(),
+        "Low-order ephemeral key should NOT produce ack_secret"
+    );
+
+    println!("Low-order ephemeral key correctly returned no ack_secret");
+}
