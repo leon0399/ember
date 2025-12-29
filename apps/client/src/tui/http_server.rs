@@ -21,6 +21,7 @@ use axum::{
 use base64::prelude::*;
 use reme_encryption::derive_ack_secret;
 use reme_identity::{is_low_order_point, Identity};
+use subtle::ConstantTimeEq;
 use reme_message::{MessageID, OuterEnvelope, RoutingKey, WirePayload};
 use reme_node_core::{EmbeddedNodeHandle, NodeError};
 use serde::Serialize;
@@ -136,8 +137,9 @@ impl HttpServerState {
         let shared_secret = self.identity.x25519_secret().diffie_hellman(&ephemeral_key);
 
         // Defense-in-depth: reject all-zero shared secrets (indicates small-order input)
+        // Use constant-time comparison to prevent timing side-channels
         let bytes = shared_secret.as_bytes();
-        if bytes.iter().all(|&b| b == 0) {
+        if bool::from(bytes.ct_eq(&[0u8; 32])) {
             debug!(
                 message_id = ?envelope.message_id,
                 "Rejected all-zero shared secret in ack_secret derivation"

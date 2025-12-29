@@ -52,6 +52,7 @@ zeroize = "1"
 
 # crypto (for embedded node ECDH)
 x25519-dalek = { workspace = true }
+subtle = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }

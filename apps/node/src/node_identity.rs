@@ -10,6 +10,7 @@ use reme_message::RoutingKey;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::Path;
+use subtle::ConstantTimeEq;
 use x25519_dalek::PublicKey as X25519PublicKey;
 
 /// Errors that can occur during node identity operations.
@@ -245,8 +246,9 @@ impl NodeIdentity {
         let shared_secret = self.identity.x25519_secret().diffie_hellman(&ephemeral_key);
 
         // Defense-in-depth: reject all-zero shared secrets (indicates small-order input)
+        // Use constant-time comparison to prevent timing side-channels
         let bytes = shared_secret.as_bytes();
-        if bytes.iter().all(|&b| b == 0) {
+        if bool::from(bytes.ct_eq(&[0u8; 32])) {
             tracing::debug!("Rejected all-zero shared secret in derive_shared_secret");
             return None;
         }

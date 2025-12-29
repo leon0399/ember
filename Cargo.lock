@@ -502,6 +502,7 @@ dependencies = [
  "rpassword",
  "serde",
  "serde_json",
+ "subtle",
  "thiserror 2.0.17",
  "tokio",
  "toml",

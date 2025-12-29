@@ -75,12 +75,15 @@ async fn start_test_node(identity: Option<Arc<NodeIdentity>>) -> (String, tokio:
     // Wait for server readiness
     let health_url = format!("{}/api/v1/health", url_clone);
     let client = reqwest::Client::new();
+    let mut server_ready = false;
     for _ in 0..50 {
         if client.get(&health_url).send().await.is_ok() {
+            server_ready = true;
             break;
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     }
+    assert!(server_ready, "Test server failed to start within 500ms");
 
     (url, handle)
 }
