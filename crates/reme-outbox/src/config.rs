@@ -4,6 +4,30 @@ use std::time::Duration;
 
 use derivative::Derivative;
 
+// =============================================================================
+// Default value helpers (for derivative Default)
+// =============================================================================
+
+/// 5 minutes - backoff cap for retry delays
+const fn default_max_delay() -> Duration {
+    Duration::from_secs(5 * 60)
+}
+
+/// 7 days in milliseconds - default message TTL
+const fn default_ttl_ms() -> Option<u64> {
+    Some(7 * 24 * 60 * 60 * 1000)
+}
+
+/// 1 day in milliseconds - cleanup delay for confirmed/expired entries
+const fn default_cleanup_after_ms() -> u64 {
+    24 * 60 * 60 * 1000
+}
+
+/// 1 minute in milliseconds - in-flight attempt timeout
+const fn default_attempt_timeout_ms() -> u64 {
+    60 * 1000
+}
+
 /// Configuration for retry triggers.
 ///
 /// Controls which events automatically trigger message retries.
@@ -66,7 +90,7 @@ pub struct TransportRetryPolicy {
     pub initial_delay: Duration,
 
     /// Maximum delay (backoff cap).
-    #[derivative(Default(value = "Duration::from_secs(300)"))] // 5 minutes
+    #[derivative(Default(value = "default_max_delay()"))]
     pub max_delay: Duration,
 
     /// Backoff multiplier (e.g., 2.0 for doubling).
@@ -157,17 +181,17 @@ pub struct OutboxConfig {
     /// Default message TTL in milliseconds.
     ///
     /// `None` means messages never expire.
-    #[derivative(Default(value = "Some(7 * 24 * 60 * 60 * 1000)"))] // 7 days
+    #[derivative(Default(value = "default_ttl_ms()"))]
     pub default_ttl_ms: Option<u64>,
 
     /// How long to keep confirmed/expired entries before cleanup (ms).
-    #[derivative(Default(value = "24 * 60 * 60 * 1000"))] // 1 day
+    #[derivative(Default(value = "default_cleanup_after_ms()"))]
     pub cleanup_after_ms: u64,
 
     /// How long a "Sent" attempt stays in-flight before timing out (ms).
     ///
     /// After this, the message transitions from InFlight to AwaitingRetry.
-    #[derivative(Default(value = "60_000"))] // 1 minute
+    #[derivative(Default(value = "default_attempt_timeout_ms()"))]
     pub attempt_timeout_ms: u64,
 }
 
