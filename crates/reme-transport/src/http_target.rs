@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
-use reme_message::{OuterEnvelope, RoutingKey, SignedAckTombstone, TombstoneEnvelope, WirePayload};
+use reme_message::{OuterEnvelope, RoutingKey, SignedAckTombstone, WirePayload};
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, warn};
@@ -349,30 +349,6 @@ impl TransportTarget for HttpTarget {
         result
     }
 
-    async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
-        let start = Instant::now();
-
-        // Encode as WirePayload
-        let wire_payload = WirePayload::Tombstone(tombstone);
-        let wire_bytes = wire_payload.encode();
-        let payload_b64 = BASE64_STANDARD.encode(&wire_bytes);
-
-        let result = self.submit_payload(&payload_b64).await;
-
-        match &result {
-            Ok(()) => {
-                self.record_success(start.elapsed());
-                debug!("Tombstone submitted to {}", self.display_label());
-            }
-            Err(e) => {
-                self.record_failure(e);
-                warn!("Failed to submit tombstone to {}: {}", self.display_label(), e);
-            }
-        }
-
-        result
-    }
-
     async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
         let start = Instant::now();
 
@@ -414,10 +390,6 @@ impl TransportTarget for HttpTarget {
 impl crate::Transport for HttpTarget {
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
         <Self as TransportTarget>::submit_message(self, envelope).await
-    }
-
-    async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
-        <Self as TransportTarget>::submit_tombstone(self, tombstone).await
     }
 
     async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {

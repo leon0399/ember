@@ -25,7 +25,7 @@ use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use futures::future::join_all;
-use reme_message::{OuterEnvelope, RoutingKey, SignedAckTombstone, TombstoneEnvelope, WirePayload};
+use reme_message::{OuterEnvelope, RoutingKey, SignedAckTombstone, WirePayload};
 use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, Publish, QoS, Transport as MqttTransportType};
 use std::sync::Arc;
 use std::time::Duration;
@@ -379,14 +379,6 @@ impl Transport for MqttTransport {
         result
     }
 
-    async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
-        let topic = self.tombstone_topic_for_routing_key(&tombstone.routing_key);
-        let wire = WirePayload::Tombstone(tombstone);
-        let bytes = wire.encode();
-
-        self.publish_to_all(&topic, &bytes).await
-    }
-
     async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
         // MQTT tombstones go to the general tombstone topic
         // Since AckTombstone doesn't have routing_key, we use a broadcast topic
@@ -417,31 +409,8 @@ pub fn parse_mqtt_message(publish: &Publish) -> Result<OuterEnvelope, TransportE
 
     match wire {
         WirePayload::Message(envelope) => Ok(envelope),
-        WirePayload::Tombstone(_) => Err(TransportError::Serialization(
-            "Expected message, got tombstone".to_string(),
-        )),
         WirePayload::AckTombstone(_) => Err(TransportError::Serialization(
             "Expected message, got ack tombstone".to_string(),
-        )),
-    }
-}
-
-/// Parse a base64-encoded MQTT message payload into a TombstoneEnvelope.
-pub fn parse_mqtt_tombstone(publish: &Publish) -> Result<TombstoneEnvelope, TransportError> {
-    let wire_bytes = BASE64_STANDARD
-        .decode(&publish.payload)
-        .map_err(|e| TransportError::Serialization(format!("Invalid base64: {}", e)))?;
-
-    let wire = WirePayload::decode(&wire_bytes)
-        .map_err(|e| TransportError::Serialization(format!("Invalid wire format: {}", e)))?;
-
-    match wire {
-        WirePayload::Tombstone(tombstone) => Ok(tombstone),
-        WirePayload::Message(_) => Err(TransportError::Serialization(
-            "Expected tombstone, got message".to_string(),
-        )),
-        WirePayload::AckTombstone(_) => Err(TransportError::Serialization(
-            "Expected legacy tombstone, got ack tombstone".to_string(),
         )),
     }
 }

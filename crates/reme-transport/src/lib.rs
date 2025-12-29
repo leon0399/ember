@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use reme_message::{OuterEnvelope, SignedAckTombstone, TombstoneEnvelope};
+use reme_message::{OuterEnvelope, SignedAckTombstone};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
@@ -133,18 +133,10 @@ pub trait Transport: Send + Sync {
     /// Submit an OuterEnvelope to the mailbox
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError>;
 
-    /// Submit a tombstone to acknowledge message receipt (legacy V1)
-    ///
-    /// Tombstones enable cache clearing and prevent duplicate delivery.
-    /// They are cryptographically signed by the recipient.
-    ///
-    /// **Deprecated**: Use `submit_ack_tombstone` for new implementations.
-    async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError>;
-
     /// Submit a signed ack tombstone (Tombstone V2)
     ///
-    /// The new tombstone format uses ECDH-derived ack verification
-    /// which is smaller (96 bytes) and provides O(1) node verification.
+    /// Enables cache clearing and prevents duplicate delivery.
+    /// Uses ECDH-derived ack verification (96 bytes) with O(1) node verification.
     ///
     /// Both sender and recipient can create valid tombstones without
     /// leaking identity information.

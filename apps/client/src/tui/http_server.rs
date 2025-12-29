@@ -148,7 +148,7 @@ async fn submit_handler(
     // Extract OuterEnvelope (reject tombstones from peers)
     let envelope = match payload {
         WirePayload::Message(env) => env,
-        WirePayload::Tombstone(_) | WirePayload::AckTombstone(_) => {
+        WirePayload::AckTombstone(_) => {
             debug!("Rejected tombstone from LAN peer");
             return Err(ApiError::BadRequest(
                 "Tombstones not accepted via direct peer API".to_string(),
@@ -424,7 +424,7 @@ mod tests {
     #[tokio::test]
     async fn test_reject_tombstone() {
         use reme_identity::Identity;
-        use reme_message::TombstoneEnvelope;
+        use reme_message::SignedAckTombstone;
 
         let config = PersistentStoreConfig::default();
         let store = PersistentMailboxStore::in_memory(config).unwrap();
@@ -434,20 +434,14 @@ mod tests {
         let state = Arc::new(HttpServerState::new(handle, our_routing_key));
         let app = build_router(state);
 
-        // Create tombstone
-        let recipient = Identity::generate();
-        let tombstone = TombstoneEnvelope {
-            version: CURRENT_VERSION,
-            target_message_id: MessageID::new(),
-            routing_key: our_routing_key,
-            recipient_id_pub: recipient.public_id().to_bytes(),
-            device_id: [1u8; 16],
-            timestamp_hours: 482253,
-            sequence: 1,
-            signature: [0u8; 64],
-            encrypted_receipt: None,
-        };
-        let wire_payload = WirePayload::Tombstone(tombstone);
+        // Create tombstone (V2)
+        let signer = Identity::generate();
+        let tombstone = SignedAckTombstone::new(
+            MessageID::new(),
+            [0u8; 16], // ack_secret
+            &signer.to_bytes(),
+        );
+        let wire_payload = WirePayload::AckTombstone(tombstone);
         let body = BASE64_STANDARD.encode(wire_payload.encode());
 
         let response = app

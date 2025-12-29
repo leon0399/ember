@@ -10,9 +10,9 @@
 use reme_encryption::{decrypt_with_mik, encrypt_to_mik, EncryptionError};
 use reme_identity::{Identity, PublicID};
 use reme_message::{
-    Content, ContentId, ConversationDag, DeviceID, InnerEnvelope, MessageID, OuterEnvelope,
-    ReceiptContent, ReceiptKind, RoutingKey, SignedAckTombstone, TextContent, TombstoneEnvelope,
-    TombstoneStatus, CURRENT_VERSION, FLAG_DETACHED,
+    Content, ContentId, ConversationDag, InnerEnvelope, MessageID, OuterEnvelope,
+    ReceiptContent, ReceiptKind, RoutingKey, SignedAckTombstone, TextContent,
+    CURRENT_VERSION, FLAG_DETACHED,
 };
 use reme_outbox::{
     AttemptError, AttemptResult, ClientOutbox, DeliveryState, OutboxConfig, OutboxEntryId,
@@ -23,7 +23,6 @@ use reme_transport::{
     DeliveryResult, TargetId, TieredDeliveryConfig, Transport, TransportCoordinator, TransportError,
 };
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tracing::{debug, info, warn};
@@ -125,10 +124,6 @@ pub struct Client<T: Transport> {
     identity: Identity,
     transport: Arc<T>,
     storage: Arc<Storage>,
-    /// Device ID for tombstone sequence management (unique per device)
-    device_id: DeviceID,
-    /// Monotonically increasing tombstone sequence counter
-    tombstone_sequence: AtomicU64,
     /// DAG state per contact (keyed by PublicID bytes)
     /// Tracks message ordering for gap detection
     dag_state: Mutex<HashMap<[u8; 32], ConversationDag>>,
@@ -186,11 +181,6 @@ impl<T: Transport> Client<T> {
         outbox_config: OutboxConfig,
         tiered_config: TieredDeliveryConfig,
     ) -> Self {
-        // Generate random device ID
-        let mut device_id = [0u8; 16];
-        use rand_core::{OsRng, RngCore};
-        OsRng.fill_bytes(&mut device_id);
-
         // Wrap storage in Arc for shared access between Client and ClientOutbox
         let storage = Arc::new(storage);
 
@@ -201,40 +191,9 @@ impl<T: Transport> Client<T> {
             identity,
             transport,
             storage,
-            device_id,
-            tombstone_sequence: AtomicU64::new(1), // Start at 1
             dag_state: Mutex::new(HashMap::new()),
             outbox,
             tiered_config,
-        }
-    }
-
-    /// Create a new client with a specific device ID
-    ///
-    /// Use this when you need deterministic device IDs (e.g., for testing or
-    /// when restoring from storage).
-    pub fn with_device_id(
-        identity: Identity,
-        transport: Arc<T>,
-        storage: Storage,
-        device_id: DeviceID,
-        initial_sequence: u64,
-    ) -> Self {
-        // Wrap storage in Arc for shared access between Client and ClientOutbox
-        let storage = Arc::new(storage);
-
-        // Create outbox with default config and shared storage
-        let outbox = ClientOutbox::new(Arc::clone(&storage), OutboxConfig::default());
-
-        Self {
-            identity,
-            transport,
-            storage,
-            device_id,
-            tombstone_sequence: AtomicU64::new(initial_sequence),
-            dag_state: Mutex::new(HashMap::new()),
-            outbox,
-            tiered_config: TieredDeliveryConfig::default(),
         }
     }
 
@@ -246,16 +205,6 @@ impl<T: Transport> Client<T> {
     /// Update the tiered delivery configuration.
     pub fn set_tiered_config(&mut self, config: TieredDeliveryConfig) {
         self.tiered_config = config;
-    }
-
-    /// Get the device ID
-    pub fn device_id(&self) -> &DeviceID {
-        &self.device_id
-    }
-
-    /// Get the current tombstone sequence number (for persistence)
-    pub fn tombstone_sequence(&self) -> u64 {
-        self.tombstone_sequence.load(Ordering::SeqCst)
     }
 
     /// Get the client's public identity (MIK)
@@ -792,78 +741,6 @@ impl<T: Transport> Client<T> {
     pub fn process_read_receipt(&self, message_id: MessageID) -> Result<(), ClientError> {
         self.storage.mark_read(message_id)?;
         Ok(())
-    }
-
-    // ========================================
-    // Tombstone Management
-    // ========================================
-
-    /// Send a tombstone to acknowledge message receipt
-    ///
-    /// Tombstones are cryptographically signed acknowledgments that enable:
-    /// - Cache clearing on relay nodes (network layer)
-    /// - Optional delivery/read receipts for the sender (application layer, future)
-    ///
-    /// # Arguments
-    ///
-    /// * `message` - The received message to acknowledge
-    /// * `status` - How the message was processed (Delivered/Read/Deleted)
-    pub async fn send_tombstone(
-        &self,
-        message: &ReceivedMessage,
-        status: TombstoneStatus,
-    ) -> Result<(), ClientError> {
-        // Get the routing key for this message (our mailbox where it was stored)
-        let routing_key = self.routing_key();
-
-        // Get next sequence number
-        let sequence = self.tombstone_sequence.fetch_add(1, Ordering::SeqCst);
-
-        // Get recipient's X25519 secret key for signing (XEdDSA)
-        let recipient_secret = self.identity.to_bytes();
-        let recipient_id_pub = self.identity.public_id().to_bytes();
-
-        // Create tombstone
-        let tombstone = TombstoneEnvelope::new(
-            message.message_id,
-            routing_key,
-            recipient_id_pub,
-            &recipient_secret,
-            self.device_id,
-            sequence,
-            status,
-            None, // sender_pub - not used in MIK-only v0.2
-            None, // session_recv_key - not used in MIK-only v0.2
-            None::<&[u8]>, // inner_ciphertext - not used in MIK-only v0.2
-        );
-
-        // Submit to transport
-        self.transport.submit_tombstone(tombstone).await?;
-
-        debug!(
-            "Tombstone sent for message {:?} (status: {:?}, seq: {})",
-            message.message_id, status, sequence
-        );
-
-        Ok(())
-    }
-
-    /// Send a delivery tombstone
-    ///
-    /// This is the recommended method for acknowledging message delivery.
-    pub async fn send_delivery_tombstone(
-        &self,
-        message: &ReceivedMessage,
-    ) -> Result<(), ClientError> {
-        self.send_tombstone(message, TombstoneStatus::Delivered)
-            .await
-    }
-
-    /// Send a read tombstone
-    ///
-    /// Use this when the user has opened/read the message.
-    pub async fn send_read_tombstone(&self, message: &ReceivedMessage) -> Result<(), ClientError> {
-        self.send_tombstone(message, TombstoneStatus::Read).await
     }
 
     // ========================================
@@ -1568,14 +1445,12 @@ mod tests {
     /// Mock transport for testing (MIK-only, no prekeys)
     struct MockTransport {
         messages: Mutex<Vec<OuterEnvelope>>,
-        tombstones: Mutex<Vec<TombstoneEnvelope>>,
     }
 
     impl MockTransport {
         fn new() -> Self {
             Self {
                 messages: Mutex::new(Vec::new()),
-                tombstones: Mutex::new(Vec::new()),
             }
         }
 
@@ -1589,14 +1464,6 @@ mod tests {
     impl Transport for MockTransport {
         async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
             self.messages.lock().unwrap().push(envelope);
-            Ok(())
-        }
-
-        async fn submit_tombstone(
-            &self,
-            tombstone: TombstoneEnvelope,
-        ) -> Result<(), TransportError> {
-            self.tombstones.lock().unwrap().push(tombstone);
             Ok(())
         }
 
@@ -1709,35 +1576,6 @@ mod tests {
         let messages = shared_transport.take_messages();
         let result = eve.process_message(&messages[0]).await;
         assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_tombstone_sent() {
-        let shared_transport = Arc::new(MockTransport::new());
-
-        let alice_identity = Identity::generate();
-        let alice_storage = Storage::in_memory().unwrap();
-        let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
-
-        let bob_identity = Identity::generate();
-        let bob_storage = Storage::in_memory().unwrap();
-        let bob = Client::new(bob_identity, shared_transport.clone(), bob_storage);
-
-        // Alice sends to Bob
-        alice.add_contact(bob.public_id(), Some("Bob")).unwrap();
-        alice.send_text(bob.public_id(), "Hello!").await.unwrap();
-
-        // Bob receives
-        let messages = shared_transport.take_messages();
-        let received = bob.process_message(&messages[0]).await.unwrap();
-
-        // Bob sends tombstone
-        bob.send_delivery_tombstone(&received).await.unwrap();
-
-        // Verify tombstone was submitted
-        let tombstones = shared_transport.tombstones.lock().unwrap();
-        assert_eq!(tombstones.len(), 1);
-        assert_eq!(tombstones[0].target_message_id, received.message_id);
     }
 
     #[tokio::test]

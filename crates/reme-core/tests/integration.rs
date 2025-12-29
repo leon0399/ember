@@ -7,7 +7,7 @@ use reme_core::Client;
 use reme_encryption::{decrypt_with_mik, encrypt_to_mik, EncryptionError};
 use reme_identity::Identity;
 use reme_message::{
-    Content, InnerEnvelope, MessageID, OuterEnvelope, TextContent, TombstoneStatus, CURRENT_VERSION,
+    Content, InnerEnvelope, MessageID, OuterEnvelope, TextContent, CURRENT_VERSION,
 };
 use reme_outbox::{DeliveryState, OutboxConfig};
 use reme_storage::Storage;
@@ -290,116 +290,6 @@ async fn test_two_client_messaging() {
     println!("\n✓ Two-client messaging test passed!");
 }
 
-/// Test tombstone flow: message → receive → tombstone acknowledgment
-#[tokio::test]
-#[ignore = "Tombstones temporarily disabled pending refactor"]
-async fn test_tombstone_flow() {
-    let server = TestServer::start().await;
-    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
-
-    // Create Alice and Bob (no prekey initialization needed!)
-    let alice_identity = Identity::generate();
-    let alice_storage = Storage::in_memory().unwrap();
-    let alice = Client::new(alice_identity, transport.clone(), alice_storage);
-
-    let bob_identity = Identity::generate();
-    let bob_storage = Storage::in_memory().unwrap();
-    let bob = Client::new(bob_identity, transport.clone(), bob_storage);
-
-    println!("Alice ID: {}", hex::encode(alice.public_id().to_bytes()));
-    println!("Bob ID: {}", hex::encode(bob.public_id().to_bytes()));
-
-    // Alice adds Bob as contact and sends a message
-    alice
-        .add_contact(bob.public_id(), Some("Bob"))
-        .expect("Alice add_contact failed");
-
-    let msg_id = alice
-        .send_text(bob.public_id(), "Hello Bob!")
-        .await
-        .expect("Alice send_text failed");
-    println!("Alice sent message: {:?}", msg_id);
-
-    // Bob receives the message using push-based MessageReceiver
-    let receiver = MessageReceiver::new(transport.clone());
-    let config = ReceiverConfig::with_poll_interval(Duration::from_millis(50));
-    let (mut events, _handle) = receiver.subscribe(bob.routing_key(), config);
-
-    let received = tokio::time::timeout(Duration::from_secs(2), async {
-        while let Some(event) = events.recv().await {
-            if let TransportEvent::Message(envelope) = event {
-                return bob.process_message(&envelope).await.ok();
-            }
-        }
-        None
-    })
-    .await
-    .expect("Timeout waiting for message")
-    .expect("No message received");
-    println!("Bob received message from Alice");
-
-    // Bob sends a delivery tombstone
-    bob.send_delivery_tombstone(&received)
-        .await
-        .expect("Bob send_delivery_tombstone failed");
-    println!("Bob sent delivery tombstone for message {:?}", received.message_id);
-
-    // Bob sends a read tombstone
-    bob.send_read_tombstone(&received)
-        .await
-        .expect("Bob send_read_tombstone failed");
-    println!("Bob sent read tombstone for message {:?}", received.message_id);
-
-    println!("\n✓ Tombstone flow test passed!");
-}
-
-/// Test tombstone with different status options
-#[tokio::test]
-#[ignore = "Tombstones temporarily disabled pending refactor"]
-async fn test_tombstone_with_status() {
-    let server = TestServer::start().await;
-    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
-
-    let identity = Identity::generate();
-    let storage = Storage::in_memory().unwrap();
-    let client = Client::new(identity, transport.clone(), storage);
-
-    // Create a fake "received" message for testing tombstone creation
-    let fake_received = reme_core::ReceivedMessage {
-        message_id: MessageID::new(),
-        from: *client.public_id(),
-        content: Content::Text(TextContent {
-            body: "Test message".to_string(),
-        }),
-        created_at_ms: 1234567890,
-        content_id: [0u8; 8], // Dummy content_id for testing
-        has_gaps: false,
-        sender_state_reset: false,
-        local_state_behind: false,
-    };
-
-    // Test each tombstone status
-    client
-        .send_tombstone(&fake_received, TombstoneStatus::Delivered)
-        .await
-        .expect("Delivered tombstone failed");
-    println!("Sent Delivered tombstone");
-
-    client
-        .send_tombstone(&fake_received, TombstoneStatus::Read)
-        .await
-        .expect("Read tombstone failed");
-    println!("Sent Read tombstone");
-
-    client
-        .send_tombstone(&fake_received, TombstoneStatus::Deleted)
-        .await
-        .expect("Deleted tombstone failed");
-    println!("Sent Deleted tombstone");
-
-    println!("\n✓ Tombstone status test passed!");
-}
-
 /// Test multi-node replication: messages sent to one node replicate to peers
 #[tokio::test]
 async fn test_multi_node_replication() {
@@ -503,50 +393,6 @@ async fn test_multi_node_replication() {
     println!("Message replicated to node 2: OK");
 
     println!("\n✓ Multi-node replication test passed!");
-}
-
-/// Test that tombstone sequence numbers are monotonically increasing
-#[tokio::test]
-#[ignore = "Tombstones temporarily disabled pending refactor"]
-async fn test_tombstone_sequence() {
-    let server = TestServer::start().await;
-    let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
-
-    let identity = Identity::generate();
-    let storage = Storage::in_memory().unwrap();
-    let client = Client::new(identity, transport.clone(), storage);
-
-    // Check initial sequence
-    let initial_seq = client.tombstone_sequence();
-    assert!(initial_seq >= 1, "Sequence should start at 1 or higher");
-    println!("Initial sequence: {}", initial_seq);
-
-    // Create fake message
-    let fake_received = reme_core::ReceivedMessage {
-        message_id: MessageID::new(),
-        from: *client.public_id(),
-        content: Content::Text(TextContent {
-            body: "Test".to_string(),
-        }),
-        created_at_ms: 1234567890,
-        content_id: [0u8; 8], // Dummy content_id for testing
-        has_gaps: false,
-        sender_state_reset: false,
-        local_state_behind: false,
-    };
-
-    // Send multiple tombstones
-    for i in 0..3 {
-        client
-            .send_delivery_tombstone(&fake_received)
-            .await
-            .expect("tombstone failed");
-        let seq = client.tombstone_sequence();
-        println!("After tombstone {}: sequence = {}", i + 1, seq);
-        assert_eq!(seq, initial_seq + i as u64 + 1, "Sequence should increment");
-    }
-
-    println!("\n✓ Tombstone sequence test passed!");
 }
 
 // ============================================

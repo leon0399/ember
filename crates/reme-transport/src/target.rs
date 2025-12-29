@@ -9,7 +9,7 @@ use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use reme_message::{OuterEnvelope, SignedAckTombstone, TombstoneEnvelope};
+use reme_message::{OuterEnvelope, SignedAckTombstone};
 
 use crate::url_auth::sanitize_url_for_logging;
 use crate::TransportError;
@@ -454,9 +454,6 @@ pub trait TransportTarget: Send + Sync {
 
     /// Submit a message to this specific target.
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError>;
-
-    /// Submit a tombstone to this specific target (legacy V1).
-    async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError>;
 
     /// Submit an ack tombstone to this specific target (Tombstone V2).
     async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError>;

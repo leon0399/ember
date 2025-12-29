@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
 use futures::future::join_all;
-use reme_message::{MessageID, OuterEnvelope, RoutingKey, SignedAckTombstone, TombstoneEnvelope, WirePayload};
+use reme_message::{MessageID, OuterEnvelope, RoutingKey, SignedAckTombstone, WirePayload};
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, info, warn};
@@ -374,55 +374,6 @@ impl Transport for HttpTransport {
         if success_count > 0 {
             debug!(
                 "Message submitted to {}/{} nodes",
-                success_count,
-                self.base_urls.len()
-            );
-            Ok(())
-        } else {
-            Err(last_error.unwrap_or(TransportError::Network("All nodes failed".to_string())))
-        }
-    }
-
-    /// Submit tombstone to all configured nodes (broadcast)
-    ///
-    /// Returns success if ANY node accepts the tombstone.
-    async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
-        // Encode as WirePayload (includes type discriminator)
-        let wire_payload = WirePayload::Tombstone(tombstone);
-        let wire_bytes = wire_payload.encode();
-
-        // Base64 encode
-        let tombstone_b64 = BASE64_STANDARD.encode(&wire_bytes);
-
-        // Submit to all nodes in parallel
-        let futures: Vec<_> = self
-            .base_urls
-            .iter()
-            .map(|url| self.submit_to_node(url, &tombstone_b64))
-            .collect();
-
-        let results = join_all(futures).await;
-
-        // Check results - succeed if ANY node succeeded
-        let mut last_error = None;
-        let mut success_count = 0;
-
-        for (i, result) in results.into_iter().enumerate() {
-            match result {
-                Ok(()) => {
-                    debug!("Tombstone submitted to node {}", self.base_urls[i]);
-                    success_count += 1;
-                }
-                Err(e) => {
-                    warn!("Failed to submit tombstone to node {}: {}", self.base_urls[i], e);
-                    last_error = Some(e);
-                }
-            }
-        }
-
-        if success_count > 0 {
-            debug!(
-                "Tombstone submitted to {}/{} nodes",
                 success_count,
                 self.base_urls.len()
             );

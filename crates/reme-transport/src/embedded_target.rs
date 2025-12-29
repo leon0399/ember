@@ -6,7 +6,7 @@
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use reme_message::{OuterEnvelope, SignedAckTombstone, TombstoneEnvelope};
+use reme_message::{OuterEnvelope, SignedAckTombstone};
 use reme_node_core::{EmbeddedNodeHandle, NodeError};
 use tracing::debug;
 
@@ -160,29 +160,28 @@ impl TransportTarget for EmbeddedTarget {
         result
     }
 
-    async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
+    async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
         let start = Instant::now();
 
-        let result = self.handle.submit_tombstone(tombstone).await.map_err(convert_error);
+        let result = self.handle.process_ack_tombstone(&tombstone).map_err(convert_error);
 
         match &result {
-            Ok(()) => {
+            Ok(deleted) => {
                 self.record_success(start.elapsed());
-                debug!("Tombstone submitted to {}", self.display_label());
+                if *deleted {
+                    debug!("AckTombstone processed, message deleted from {}", self.display_label());
+                } else {
+                    debug!("AckTombstone processed, message not found in {} (already deleted?)", self.display_label());
+                }
             }
             Err(e) => {
                 self.record_failure(e);
-                debug!("Failed to submit tombstone to {}: {}", self.display_label(), e);
+                debug!("Failed to process AckTombstone in {}: {}", self.display_label(), e);
             }
         }
 
-        result
-    }
-
-    async fn submit_ack_tombstone(&self, _tombstone: SignedAckTombstone) -> Result<(), TransportError> {
-        // Ack tombstones will be implemented in Phase 5
-        // For now, return success since the embedded node handles tombstones automatically
-        Ok(())
+        // Convert Result<bool, _> to Result<(), _>
+        result.map(|_| ())
     }
 
     fn record_success(&self, latency: Duration) {
@@ -202,10 +201,6 @@ impl TransportTarget for EmbeddedTarget {
 impl crate::Transport for EmbeddedTarget {
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
         <Self as TransportTarget>::submit_message(self, envelope).await
-    }
-
-    async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
-        <Self as TransportTarget>::submit_tombstone(self, tombstone).await
     }
 
     async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
@@ -338,5 +333,120 @@ mod tests {
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), TransportError::ChannelClosed));
+    }
+
+    #[tokio::test]
+    async fn test_embedded_target_ack_tombstone() {
+        use reme_encryption::derive_ack_hash;
+        use reme_message::SignedAckTombstone;
+
+        let store_config = PersistentStoreConfig::default();
+        let store = PersistentMailboxStore::in_memory(store_config).unwrap();
+
+        let (node, handle, _event_rx) = EmbeddedNode::new(store);
+        let node_task = tokio::spawn(async move { node.run().await });
+
+        let target = EmbeddedTarget::new(handle.clone());
+
+        // Submit a message with known ack_secret
+        let routing_key = RoutingKey::from_bytes([42u8; 16]);
+        let ack_secret = [1u8; 16];
+        let ack_hash = derive_ack_hash(&ack_secret);
+
+        let envelope = OuterEnvelope {
+            version: CURRENT_VERSION,
+            routing_key,
+            timestamp_hours: 482253,
+            ttl_hours: Some(24),
+            message_id: MessageID::new(),
+            ephemeral_key: [0u8; 32],
+            ack_hash,
+            inner_ciphertext: vec![1, 2, 3, 4],
+        };
+        let message_id = envelope.message_id;
+
+        target.submit_message(envelope).await.unwrap();
+
+        // Verify message is stored
+        let messages = handle.fetch_messages(routing_key).await.unwrap();
+        assert_eq!(messages.len(), 1);
+
+        // Re-submit message since fetch removes it
+        let envelope2 = OuterEnvelope {
+            version: CURRENT_VERSION,
+            routing_key,
+            timestamp_hours: 482253,
+            ttl_hours: Some(24),
+            message_id,
+            ephemeral_key: [0u8; 32],
+            ack_hash,
+            inner_ciphertext: vec![1, 2, 3, 4],
+        };
+        target.submit_message(envelope2).await.unwrap();
+
+        // Create tombstone with correct ack_secret (use a dummy signer key)
+        let dummy_signer_key = [42u8; 32];
+        let tombstone = SignedAckTombstone::new(message_id, ack_secret, &dummy_signer_key);
+
+        // Submit tombstone - should succeed and delete message
+        target.submit_ack_tombstone(tombstone).await.unwrap();
+
+        // Verify message is deleted
+        let messages = handle.fetch_messages(routing_key).await.unwrap();
+        assert!(messages.is_empty(), "Message should have been deleted by tombstone");
+
+        // Cleanup
+        handle.shutdown().await.unwrap();
+        node_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_embedded_target_invalid_ack_tombstone() {
+        use reme_encryption::derive_ack_hash;
+        use reme_message::SignedAckTombstone;
+
+        let store_config = PersistentStoreConfig::default();
+        let store = PersistentMailboxStore::in_memory(store_config).unwrap();
+
+        let (node, handle, _event_rx) = EmbeddedNode::new(store);
+        let node_task = tokio::spawn(async move { node.run().await });
+
+        let target = EmbeddedTarget::new(handle.clone());
+
+        // Submit a message with known ack_secret
+        let routing_key = RoutingKey::from_bytes([42u8; 16]);
+        let ack_secret = [1u8; 16];
+        let ack_hash = derive_ack_hash(&ack_secret);
+
+        let envelope = OuterEnvelope {
+            version: CURRENT_VERSION,
+            routing_key,
+            timestamp_hours: 482253,
+            ttl_hours: Some(24),
+            message_id: MessageID::new(),
+            ephemeral_key: [0u8; 32],
+            ack_hash,
+            inner_ciphertext: vec![1, 2, 3, 4],
+        };
+        let message_id = envelope.message_id;
+
+        target.submit_message(envelope).await.unwrap();
+
+        // Create tombstone with WRONG ack_secret
+        let dummy_signer_key = [42u8; 32];
+        let wrong_ack_secret = [99u8; 16];
+        let tombstone = SignedAckTombstone::new(message_id, wrong_ack_secret, &dummy_signer_key);
+
+        // Submit tombstone - should fail with invalid ack_secret
+        let result = target.submit_ack_tombstone(tombstone).await;
+        assert!(result.is_err(), "Tombstone with invalid ack_secret should fail");
+
+        // Verify message is NOT deleted
+        let messages = handle.fetch_messages(routing_key).await.unwrap();
+        assert_eq!(messages.len(), 1, "Message should not be deleted on invalid tombstone");
+
+        // Cleanup
+        handle.shutdown().await.unwrap();
+        node_task.await.unwrap();
     }
 }

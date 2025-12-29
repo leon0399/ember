@@ -3,7 +3,7 @@
 //! These types enable in-process communication between the client
 //! and an embedded mailbox node via tokio channels.
 
-use reme_message::{OuterEnvelope, RoutingKey, TombstoneEnvelope};
+use reme_message::{OuterEnvelope, RoutingKey};
 use tokio::sync::oneshot;
 
 use crate::NodeError;
@@ -17,12 +17,6 @@ pub enum NodeRequest {
     /// Submit a message to the mailbox for a recipient.
     SubmitMessage {
         envelope: OuterEnvelope,
-        response: oneshot::Sender<Result<(), NodeError>>,
-    },
-
-    /// Submit a tombstone (message acknowledgment).
-    SubmitTombstone {
-        envelope: TombstoneEnvelope,
         response: oneshot::Sender<Result<(), NodeError>>,
     },
 

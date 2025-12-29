@@ -48,7 +48,7 @@
 
 use std::sync::Arc;
 
-use reme_message::{MessageID, OuterEnvelope, RoutingKey, TombstoneEnvelope};
+use reme_message::{MessageID, OuterEnvelope, RoutingKey};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, trace, warn};
 
@@ -114,11 +114,6 @@ impl<S: MailboxStore + 'static> EmbeddedNode<S> {
                     let _ = response.send(result);
                 }
 
-                NodeRequest::SubmitTombstone { envelope, response } => {
-                    let result = self.handle_submit_tombstone(envelope);
-                    let _ = response.send(result);
-                }
-
                 NodeRequest::FetchMessages { routing_key, response } => {
                     let result = self.handle_fetch_messages(routing_key);
                     let _ = response.send(result);
@@ -142,22 +137,6 @@ impl<S: MailboxStore + 'static> EmbeddedNode<S> {
         trace!(?message_id, "Enqueueing message");
         self.store.enqueue(routing_key, envelope)?;
         debug!(?message_id, "Message enqueued successfully");
-
-        Ok(())
-    }
-
-    /// Handle a submit tombstone request.
-    fn handle_submit_tombstone(&self, envelope: TombstoneEnvelope) -> Result<(), NodeError> {
-        let message_id = &envelope.target_message_id;
-
-        trace!(?message_id, "Processing tombstone");
-
-        let deleted = self.store.delete_message(message_id)?;
-        if deleted {
-            debug!(?message_id, "Message deleted via tombstone");
-        } else {
-            debug!(?message_id, "Tombstone for non-existent message, ignoring");
-        }
 
         Ok(())
     }
@@ -193,20 +172,6 @@ impl EmbeddedNodeHandle {
         let (tx, rx) = oneshot::channel();
         self.requests
             .send(NodeRequest::SubmitMessage {
-                envelope,
-                response: tx,
-            })
-            .await
-            .map_err(|_| NodeError::ChannelClosed)?;
-
-        rx.await.map_err(|_| NodeError::ChannelClosed)?
-    }
-
-    /// Submit a tombstone to the embedded node.
-    pub async fn submit_tombstone(&self, envelope: TombstoneEnvelope) -> Result<(), NodeError> {
-        let (tx, rx) = oneshot::channel();
-        self.requests
-            .send(NodeRequest::SubmitTombstone {
                 envelope,
                 response: tx,
             })
@@ -291,6 +256,42 @@ impl EmbeddedNodeHandle {
     /// Check if the node is still running (request channel not closed).
     pub fn is_running(&self) -> bool {
         !self.requests.is_closed()
+    }
+
+    /// Process an ack tombstone to delete a message from the mailbox.
+    ///
+    /// This verifies the tombstone's ack_secret against the stored ack_hash
+    /// and deletes the message if valid.
+    ///
+    /// # Returns
+    /// - `Ok(true)` if the message was deleted
+    /// - `Ok(false)` if the message was not found (already deleted or never existed)
+    /// - `Err(NodeError::InvalidMessage)` if the ack_secret is invalid
+    pub fn process_ack_tombstone(&self, tombstone: &reme_message::SignedAckTombstone) -> Result<bool, NodeError> {
+        let message_id = tombstone.message_id;
+
+        // Get the stored ack_hash for this message
+        let ack_hash = match self.store.get_ack_hash(&message_id)? {
+            Some(hash) => hash,
+            None => {
+                debug!(?message_id, "AckTombstone for unknown message (already deleted?)");
+                return Ok(false);
+            }
+        };
+
+        // Verify the ack_secret
+        if !tombstone.verify_authorization(&ack_hash) {
+            warn!(?message_id, "AckTombstone authorization failed - invalid ack_secret");
+            return Err(NodeError::InvalidMessage("Invalid ack_secret".to_string()));
+        }
+
+        // Delete the message
+        let deleted = self.store.delete_message(&message_id)?;
+        if deleted {
+            debug!(?message_id, "Message deleted via AckTombstone");
+        }
+
+        Ok(deleted)
     }
 }
 
@@ -392,52 +393,5 @@ mod tests {
 
         // Channel should be closed after node stops
         assert!(!handle.is_running(), "Node should not be running after shutdown");
-    }
-
-    #[tokio::test]
-    async fn test_embedded_node_tombstone() {
-        use reme_identity::Identity;
-        use reme_message::TombstoneEnvelope;
-
-        let config = PersistentStoreConfig::default();
-        let store = PersistentMailboxStore::in_memory(config).unwrap();
-
-        let (node, handle, _event_rx) = EmbeddedNode::new(store);
-        let node_task = tokio::spawn(async move { node.run().await });
-
-        let routing_key = RoutingKey::from_bytes([55u8; 16]);
-        let envelope = create_test_envelope(routing_key);
-        let msg_id = envelope.message_id;
-
-        // Submit message
-        handle.submit_message(envelope).await.unwrap();
-
-        // Verify message exists
-        let messages = handle.fetch_messages(routing_key).await.unwrap();
-        assert_eq!(messages.len(), 1);
-
-        // Create tombstone
-        let recipient = Identity::generate();
-        let tombstone = TombstoneEnvelope {
-            version: CURRENT_VERSION,
-            target_message_id: msg_id,
-            routing_key,
-            recipient_id_pub: recipient.public_id().to_bytes(),
-            device_id: [1u8; 16], // DeviceID is a type alias for [u8; 16]
-            timestamp_hours: 482253,
-            sequence: 1,
-            signature: [0u8; 64], // Not verified in embedded node
-            encrypted_receipt: None,
-        };
-
-        // Submit tombstone
-        handle.submit_tombstone(tombstone).await.unwrap();
-
-        // Message should be deleted
-        let messages = handle.fetch_messages(routing_key).await.unwrap();
-        assert_eq!(messages.len(), 0);
-
-        handle.shutdown().await.unwrap();
-        node_task.await.unwrap();
     }
 }
