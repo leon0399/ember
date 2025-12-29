@@ -4,7 +4,7 @@ use chacha20poly1305::{
 };
 use rand_core::OsRng;
 use reme_identity::{is_low_order_point, PublicID};
-use reme_message::{bincode_config, InnerEnvelope, MessageID};
+use reme_message::{bincode_config, InnerEnvelope, MessageID, ACK_HASH_DOMAIN};
 use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey, StaticSecret};
 use xeddsa::{xed25519, Sign, Verify};
 
@@ -309,10 +309,6 @@ pub fn derive_ack_secret(shared_secret: &[u8; 32], message_id: &MessageID) -> [u
     ack_secret.copy_from_slice(&hash.as_bytes()[0..16]);
     ack_secret
 }
-
-/// Domain string for ack_hash derivation.
-/// Used in both derive_ack_hash and SignedAckTombstone::verify_authorization.
-pub const ACK_HASH_DOMAIN: &str = "reme-ack-hash-v1";
 
 /// Derive ack_hash from ack_secret.
 ///

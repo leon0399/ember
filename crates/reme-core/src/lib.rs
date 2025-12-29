@@ -601,44 +601,12 @@ impl<T: Transport> Client<T> {
         let inner = dec_output.inner;
         let ack_secret = dec_output.ack_secret;
 
-        // Auto-send tombstone (fire-and-forget) for non-detached messages
-        // This clears the message from relay nodes to free storage space.
-        // Detached messages (FLAG_DETACHED) skip tombstones to save bandwidth on
-        // constrained transports like LoRa or BLE.
-        if !inner.is_detached() {
-            // Store ack_secret BEFORE attempting tombstone so we can retry later if it fails.
-            // This ensures we never lose the ability to tombstone a received message.
+        // For non-detached messages, store ack_secret FIRST for tombstone retry capability.
+        // This ensures we never lose the ability to tombstone if auto-send fails.
+        // We'll send the tombstone AFTER successful message storage to prevent data loss.
+        let should_tombstone = !inner.is_detached();
+        if should_tombstone {
             self.storage.store_pending_ack(outer.message_id, ack_secret)?;
-
-            let tombstone = SignedAckTombstone::new(
-                outer.message_id,
-                ack_secret,
-                &self.private_key(),
-            );
-            if let Err(e) = self.transport.submit_ack_tombstone(tombstone).await {
-                // Log failure but don't fail message processing - the message was
-                // successfully received and decrypted. The relay node will eventually
-                // expire the message or ack_secret can be used to retry later via
-                // acknowledge_received().
-                warn!(
-                    message_id = ?outer.message_id,
-                    error = %e,
-                    "Failed to send auto-tombstone (ack_secret stored for retry)"
-                );
-            } else {
-                // Tombstone succeeded - remove stored ack_secret (no longer needed)
-                if let Err(e) = self.storage.remove_pending_ack(&outer.message_id) {
-                    warn!(
-                        message_id = ?outer.message_id,
-                        error = %e,
-                        "Failed to remove pending_ack after successful tombstone"
-                    );
-                }
-                debug!(
-                    message_id = ?outer.message_id,
-                    "Auto-tombstone sent successfully"
-                );
-            }
         }
 
         // Note: Recipient binding is implicit via sealed box ECDH.
@@ -666,6 +634,41 @@ impl<T: Transport> Client<T> {
             outer.message_id,
             &inner.content,
         )?;
+
+        // NOW send auto-tombstone (fire-and-forget) AFTER successful message storage.
+        // This ensures we never lose the message: if storage fails, we don't send tombstone.
+        // If tombstone fails, the message is safely stored and ack_secret is persisted for retry.
+        if should_tombstone {
+            let tombstone = SignedAckTombstone::new(
+                outer.message_id,
+                ack_secret,
+                &self.private_key(),
+            );
+            if let Err(e) = self.transport.submit_ack_tombstone(tombstone).await {
+                // Log failure but don't fail message processing - the message was
+                // successfully stored locally. The relay node will eventually
+                // expire the message or ack_secret can be used to retry later via
+                // acknowledge_received().
+                warn!(
+                    message_id = ?outer.message_id,
+                    error = %e,
+                    "Failed to send auto-tombstone (ack_secret stored for retry)"
+                );
+            } else {
+                // Tombstone succeeded - remove stored ack_secret (no longer needed)
+                if let Err(e) = self.storage.remove_pending_ack(&outer.message_id) {
+                    warn!(
+                        message_id = ?outer.message_id,
+                        error = %e,
+                        "Failed to remove pending_ack after successful tombstone"
+                    );
+                }
+                debug!(
+                    message_id = ?outer.message_id,
+                    "Auto-tombstone sent successfully"
+                );
+            }
+        }
 
         // Update DAG tracking and detect state anomalies
         let contact_key = sender_id.to_bytes();

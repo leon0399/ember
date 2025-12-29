@@ -370,10 +370,16 @@ async fn submit_payload(
             match state.store.delete_message(&tombstone.message_id) {
                 Ok(true) => {
                     debug!(?tombstone.message_id, "Message deleted via AckTombstone");
+
+                    // Replicate tombstone to peer nodes (fire-and-forget)
+                    // This ensures message is deleted across all nodes in the cluster
+                    state.replication.replicate_payload(payload_b64, from_node);
+
                     (StatusCode::OK, Json(SubmitResponse { status: "ok".to_string() })).into_response()
                 }
                 Ok(false) => {
                     // Message was already deleted (race condition, not an error)
+                    // Don't replicate - this is likely a replicated tombstone arriving
                     (StatusCode::OK, Json(SubmitResponse { status: "ok".to_string() })).into_response()
                 }
                 Err(e) => {

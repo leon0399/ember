@@ -867,12 +867,31 @@ impl Transport for TransportCoordinator {
     }
 
     async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
-        // Ack tombstones are sent to HTTP pool only (same nodes that store messages)
+        // Broadcast ack tombstone to all available transports
+        let mut futures: Vec<BoxedFuture> = Vec::new();
+
         if let Some(ref pool) = self.http_pool {
-            pool.submit_ack_tombstone(tombstone).await
-        } else {
-            Err(TransportError::Network("No HTTP transport available for tombstone".to_string()))
+            let ts = tombstone.clone();
+            let pool = pool.clone();
+            futures.push(Box::pin(async move {
+                pool.submit_ack_tombstone(ts).await
+            }));
         }
+
+        #[cfg(feature = "mqtt")]
+        if let Some(ref pool) = self.mqtt_pool {
+            let ts = tombstone.clone();
+            let pool = pool.clone();
+            futures.push(Box::pin(async move {
+                pool.submit_ack_tombstone(ts).await
+            }));
+        }
+
+        if futures.is_empty() {
+            return Err(TransportError::Network("No transports configured".to_string()));
+        }
+
+        self.broadcast_await_any_success(futures).await
     }
 }
 

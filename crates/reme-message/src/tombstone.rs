@@ -23,9 +23,9 @@ use xeddsa::{xed25519, Sign, Verify};
 /// Maximum age for tombstone validation (10 days in hours)
 pub const TOMBSTONE_MAX_AGE_HOURS: u32 = 10 * 24;
 
-/// Domain string for ack_hash derivation (matches reme_encryption::ACK_HASH_DOMAIN).
-/// IMPORTANT: Keep in sync with reme-encryption/src/lib.rs ACK_HASH_DOMAIN constant.
-const ACK_HASH_DOMAIN: &str = "reme-ack-hash-v1";
+/// Domain string for ack_hash derivation.
+/// Used for domain separation in KDFs to prevent cross-protocol confusion.
+pub const ACK_HASH_DOMAIN: &str = "reme-ack-hash-v1";
 
 /// Clock skew allowance (1 hour)
 /// Since we use hour granularity, 1 hour allowance handles clock drift.

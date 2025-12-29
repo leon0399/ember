@@ -13,7 +13,7 @@ use reme_outbox::{DeliveryState, OutboxConfig};
 use reme_storage::Storage;
 use reme_transport::http_target::HttpTarget;
 use reme_transport::pool::TransportPool;
-use reme_transport::{MessageReceiver, ReceiverConfig, TransportEvent};
+use reme_transport::{MessageReceiver, ReceiverConfig, TransportError, TransportEvent};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -1162,13 +1162,15 @@ async fn test_tombstone_without_message_returns_404() {
 
     let tombstone = SignedAckTombstone::new(fake_message_id, fake_ack_secret, &identity.to_bytes());
 
-    // Try to submit tombstone - should fail with NotFound
+    // Try to submit tombstone - should fail with NotFound (404)
     let result = transport.submit_ack_tombstone(tombstone).await;
+    let err = result.expect_err("Tombstone for non-existent message should fail");
     assert!(
-        result.is_err(),
-        "Tombstone for non-existent message should fail"
+        matches!(err, TransportError::NotFound),
+        "Expected NotFound (404) error, got: {:?}",
+        err
     );
-    println!("Tombstone for non-existent message correctly rejected");
+    println!("Tombstone for non-existent message correctly rejected with 404");
 
     println!("\n✓ Tombstone without message returns 404 test passed!");
 }

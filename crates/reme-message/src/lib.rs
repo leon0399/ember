@@ -65,7 +65,7 @@ pub use tombstone::{
     // Wire format
     WirePayload, WireType,
     // Constants
-    CLOCK_SKEW_ALLOWANCE_HOURS, TOMBSTONE_MAX_AGE_HOURS,
+    ACK_HASH_DOMAIN, CLOCK_SKEW_ALLOWANCE_HOURS, TOMBSTONE_MAX_AGE_HOURS,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -137,6 +137,9 @@ pub struct Version {
 
 /// Current protocol version (0.0 - PoC)
 /// Using u8 for major/minor: max version 255.255, saves 2 bytes per envelope
+///
+/// Note: ack_hash was added to OuterEnvelope in this version.
+/// No version bump needed since this is a PoC with no deployed clients.
 pub const CURRENT_VERSION: Version = Version { major: 0, minor: 0 };
 
 /// Outer envelope for MIK-only encryption (Session V1-style stateless)

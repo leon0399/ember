@@ -170,6 +170,9 @@ impl HttpTarget {
             if status == reqwest::StatusCode::UNAUTHORIZED {
                 return Err(TransportError::AuthenticationFailed);
             }
+            if status == reqwest::StatusCode::NOT_FOUND {
+                return Err(TransportError::NotFound);
+            }
             let body = response
                 .text()
                 .await
@@ -261,6 +264,9 @@ impl HttpTarget {
             let status = response.status();
             if status == reqwest::StatusCode::UNAUTHORIZED {
                 return Err(TransportError::AuthenticationFailed);
+            }
+            if status == reqwest::StatusCode::NOT_FOUND {
+                return Err(TransportError::NotFound);
             }
             let body = response
                 .text()
