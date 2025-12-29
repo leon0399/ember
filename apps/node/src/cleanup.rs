@@ -7,22 +7,46 @@
 //! of expired messages for self-healing. This background task handles global
 //! cleanup across all mailboxes periodically.
 
+use derivative::Derivative;
 use reme_node_core::{MailboxStore, PersistentMailboxStore};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
+/// 5 minutes - default cleanup interval
+fn default_interval_secs() -> u64 {
+    300
+}
+
+/// 1 hour - tombstone cleanup delay
+fn default_tombstone_delay_secs() -> u64 {
+    3600
+}
+
+/// 24 hours - orphan tombstone cleanup delay
+fn default_orphan_delay_secs() -> u64 {
+    86400
+}
+
+/// 1 hour - rate limit cleanup delay
+fn default_rate_limit_delay_secs() -> u64 {
+    3600
+}
+
 /// Configuration for the background cleanup task
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Derivative)]
+#[derivative(Default)]
 pub struct CleanupConfig {
     /// Enable/disable the cleanup task entirely
     #[serde(default = "default_enabled")]
+    #[derivative(Default(value = "true"))]
     pub enabled: bool,
 
     /// How often to run cleanup (in seconds)
     /// Default: 300 (5 minutes)
     #[serde(default = "default_interval_secs")]
+    #[derivative(Default(value = "default_interval_secs()"))]
     pub interval_secs: u64,
 
     /// Delay before cleaning tombstones after they're stored (in seconds)
@@ -30,6 +54,7 @@ pub struct CleanupConfig {
     /// Default: 3600 (1 hour)
     /// Note: Currently unused - tombstones pending refactor
     #[serde(default = "default_tombstone_delay_secs")]
+    #[derivative(Default(value = "default_tombstone_delay_secs()"))]
     pub tombstone_delay_secs: u64,
 
     /// Delay before cleaning orphan tombstones (in seconds)
@@ -37,6 +62,7 @@ pub struct CleanupConfig {
     /// Default: 86400 (24 hours)
     /// Note: Currently unused - tombstones pending refactor
     #[serde(default = "default_orphan_delay_secs")]
+    #[derivative(Default(value = "default_orphan_delay_secs()"))]
     pub orphan_delay_secs: u64,
 
     /// Delay before cleaning stale rate limit entries (in seconds)
@@ -44,39 +70,12 @@ pub struct CleanupConfig {
     /// Default: 3600 (1 hour)
     /// Note: Currently unused - rate limiting pending implementation
     #[serde(default = "default_rate_limit_delay_secs")]
+    #[derivative(Default(value = "default_rate_limit_delay_secs()"))]
     pub rate_limit_delay_secs: u64,
 }
 
 fn default_enabled() -> bool {
     true
-}
-
-fn default_interval_secs() -> u64 {
-    300 // 5 minutes
-}
-
-fn default_tombstone_delay_secs() -> u64 {
-    3600 // 1 hour
-}
-
-fn default_orphan_delay_secs() -> u64 {
-    86400 // 24 hours
-}
-
-fn default_rate_limit_delay_secs() -> u64 {
-    3600 // 1 hour
-}
-
-impl Default for CleanupConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_enabled(),
-            interval_secs: default_interval_secs(),
-            tombstone_delay_secs: default_tombstone_delay_secs(),
-            orphan_delay_secs: default_orphan_delay_secs(),
-            rate_limit_delay_secs: default_rate_limit_delay_secs(),
-        }
-    }
 }
 
 impl CleanupConfig {

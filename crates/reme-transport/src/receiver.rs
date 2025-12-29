@@ -7,6 +7,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use derivative::Derivative;
 use reme_message::RoutingKey;
 use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
@@ -18,18 +19,12 @@ use crate::pool::TransportPool;
 use crate::{EventReceiver, EventSender, TransportEvent};
 
 /// Configuration for the message receiver
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Derivative)]
+#[derivative(Default)]
 pub struct ReceiverConfig {
     /// How often to poll for new messages
+    #[derivative(Default(value = "Duration::from_secs(5)"))]
     pub poll_interval: Duration,
-}
-
-impl Default for ReceiverConfig {
-    fn default() -> Self {
-        Self {
-            poll_interval: Duration::from_secs(5),
-        }
-    }
 }
 
 impl ReceiverConfig {

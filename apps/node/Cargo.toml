@@ -25,6 +25,9 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+# derives
+derivative = { workspace = true }
+
 # serialization
 base64 = { workspace = true }
 blake3 = { workspace = true }

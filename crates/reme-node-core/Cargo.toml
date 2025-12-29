@@ -8,6 +8,9 @@ description = "Core node functionality for embedded and standalone mailbox nodes
 # Internal crates
 reme-message = { workspace = true }
 
+# Derives
+derivative = { workspace = true }
+
 # Storage
 rusqlite = { workspace = true }
 bincode = { workspace = true }

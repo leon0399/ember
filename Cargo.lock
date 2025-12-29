@@ -487,6 +487,7 @@ dependencies = [
  "clap",
  "config",
  "crossterm",
+ "derivative",
  "directories",
  "hex",
  "ratatui",
@@ -1835,6 +1836,7 @@ dependencies = [
  "blake3",
  "clap",
  "config",
+ "derivative",
  "directories",
  "governor",
  "hex",
@@ -2507,6 +2509,7 @@ name = "reme-node-core"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "derivative",
  "reme-identity",
  "reme-message",
  "rusqlite",
