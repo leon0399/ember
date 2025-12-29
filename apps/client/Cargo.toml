@@ -50,5 +50,8 @@ rpassword = "7"
 # secure memory handling
 zeroize = "1"
 
+# crypto (for embedded node ECDH)
+x25519-dalek = { workspace = true }
+
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }

@@ -19,6 +19,8 @@ use axum::{
     Router,
 };
 use base64::prelude::*;
+use reme_encryption::derive_ack_secret;
+use reme_identity::{is_low_order_point, Identity};
 use reme_message::{MessageID, OuterEnvelope, RoutingKey, WirePayload};
 use reme_node_core::{EmbeddedNodeHandle, NodeError};
 use serde::Serialize;
@@ -27,6 +29,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing::{debug, error, info, warn};
+use x25519_dalek::PublicKey as X25519PublicKey;
 
 /// Error types for HTTP server operations.
 #[derive(Debug, thiserror::Error)]
@@ -73,14 +76,20 @@ impl IntoResponse for ApiError {
 pub struct HttpServerState {
     node_handle: EmbeddedNodeHandle,
     our_routing_key: RoutingKey,
+    identity: Arc<Identity>,
 }
 
 impl HttpServerState {
     /// Create new HTTP server state.
-    pub fn new(node_handle: EmbeddedNodeHandle, our_routing_key: RoutingKey) -> Self {
+    pub fn new(
+        node_handle: EmbeddedNodeHandle,
+        our_routing_key: RoutingKey,
+        identity: Arc<Identity>,
+    ) -> Self {
         Self {
             node_handle,
             our_routing_key,
+            identity,
         }
     }
 
@@ -107,12 +116,46 @@ impl HttpServerState {
     pub fn our_routing_key(&self) -> &RoutingKey {
         &self.our_routing_key
     }
+
+    /// Derive ack_secret for an envelope (embedded node is always the recipient).
+    ///
+    /// Returns `None` if:
+    /// - The ephemeral key is a known low-order point (security check)
+    /// - The ECDH result is all-zero (defense-in-depth)
+    fn derive_ack_secret_for_envelope(&self, envelope: &OuterEnvelope) -> Option<String> {
+        // Pre-validation: reject known low-order points before ECDH
+        if is_low_order_point(&envelope.ephemeral_key) {
+            debug!(
+                message_id = ?envelope.message_id,
+                "Rejected low-order ephemeral key in ack_secret derivation"
+            );
+            return None;
+        }
+
+        let ephemeral_key = X25519PublicKey::from(envelope.ephemeral_key);
+        let shared_secret = self.identity.x25519_secret().diffie_hellman(&ephemeral_key);
+
+        // Defense-in-depth: reject all-zero shared secrets (indicates small-order input)
+        let bytes = shared_secret.as_bytes();
+        if bytes.iter().all(|&b| b == 0) {
+            debug!(
+                message_id = ?envelope.message_id,
+                "Rejected all-zero shared secret in ack_secret derivation"
+            );
+            return None;
+        }
+
+        let ack_secret = derive_ack_secret(bytes, &envelope.message_id);
+        Some(BASE64_STANDARD.encode(ack_secret))
+    }
 }
 
 /// Response for successful submission.
 #[derive(Serialize)]
 struct SubmitResponse {
     status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ack_secret: Option<String>,
 }
 
 /// Response for errors.
@@ -172,11 +215,14 @@ async fn submit_handler(
     }
 
     // === DUPLICATE CHECK ===
-    // Idempotent operation: return success if already stored
+    // Idempotent operation: return success if already stored (but no ack_secret for duplicates)
     match state.is_duplicate(&envelope) {
         Ok(true) => {
             debug!(message_id = ?message_id, "Duplicate message, already stored");
-            return Ok(Json(SubmitResponse { status: "ok" }));
+            return Ok(Json(SubmitResponse {
+                status: "ok",
+                ack_secret: None, // No ack_secret for duplicates
+            }));
         }
         Ok(false) => {
             // Not a duplicate, proceed to store
@@ -192,17 +238,24 @@ async fn submit_handler(
         }
     }
 
+    // Derive ack_secret BEFORE storing (we're the recipient, so we can always derive it)
+    // This proves we received and can decrypt the message
+    let ack_secret = state.derive_ack_secret_for_envelope(&envelope);
+
     // Store and notify client
     // Handle race condition: if store fails, check if it's now a duplicate
     if let Err(e) = state.store_message(envelope.clone()) {
         // Check if the message was stored by a concurrent request (race condition)
-        // If so, treat as success (idempotent behavior)
+        // If so, treat as success but no ack_secret (duplicate)
         if is_duplicate_after_store_failure(&state, &message_id, &e) {
             debug!(
                 message_id = ?message_id,
                 "Store failed but message exists (concurrent insert), treating as success"
             );
-            return Ok(Json(SubmitResponse { status: "ok" }));
+            return Ok(Json(SubmitResponse {
+                status: "ok",
+                ack_secret: None, // No ack_secret for duplicates
+            }));
         }
 
         error!(
@@ -214,7 +267,10 @@ async fn submit_handler(
     }
 
     info!(message_id = ?message_id, "Message from LAN peer stored successfully");
-    Ok(Json(SubmitResponse { status: "ok" }))
+    Ok(Json(SubmitResponse {
+        status: "ok",
+        ack_secret,
+    }))
 }
 
 /// Check if a store failure was due to a concurrent duplicate insert (race condition).
@@ -286,6 +342,7 @@ fn validate_bind_address(bind_addr: &str) -> Result<SocketAddr, HttpServerError>
 /// * `bind_addr` - Address to bind to (e.g., "0.0.0.0:23004")
 /// * `node_handle` - Handle to the embedded node for storing received messages
 /// * `our_routing_key` - Our routing key; messages for other recipients are rejected
+/// * `identity` - Client identity for deriving ack_secret (proves we can decrypt)
 ///
 /// # Returns
 ///
@@ -294,11 +351,12 @@ pub async fn bind_server(
     bind_addr: &str,
     node_handle: EmbeddedNodeHandle,
     our_routing_key: RoutingKey,
+    identity: Arc<Identity>,
 ) -> Result<(TcpListener, Router), HttpServerError> {
     // Validate address format first for better error messages
     let socket_addr = validate_bind_address(bind_addr)?;
 
-    let state = Arc::new(HttpServerState::new(node_handle, our_routing_key));
+    let state = Arc::new(HttpServerState::new(node_handle, our_routing_key, identity));
     let app = build_router(state);
 
     let listener = TcpListener::bind(socket_addr).await.map_err(|e| {
@@ -329,12 +387,14 @@ pub async fn run_server(listener: TcpListener, app: Router) -> Result<(), HttpSe
 /// * `bind_addr` - Address to bind to (e.g., "0.0.0.0:23004")
 /// * `node_handle` - Handle to the embedded node for storing received messages
 /// * `our_routing_key` - Our routing key; messages for other recipients are rejected
+/// * `identity` - Client identity for deriving ack_secret (proves we can decrypt)
 pub async fn start_server(
     bind_addr: &str,
     node_handle: EmbeddedNodeHandle,
     our_routing_key: RoutingKey,
+    identity: Arc<Identity>,
 ) -> Result<(), HttpServerError> {
-    let (listener, app) = bind_server(bind_addr, node_handle, our_routing_key).await?;
+    let (listener, app) = bind_server(bind_addr, node_handle, our_routing_key, identity).await?;
     run_server(listener, app).await
 }
 
@@ -343,10 +403,12 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
-    use reme_message::{MessageID, OuterEnvelope, CURRENT_VERSION};
+    use reme_encryption::encrypt_to_mik;
+    use reme_message::{Content, InnerEnvelope, MessageID, OuterEnvelope, TextContent, CURRENT_VERSION};
     use reme_node_core::{EmbeddedNode, PersistentMailboxStore, PersistentStoreConfig};
     use tower::ServiceExt;
 
+    /// Create a simple test envelope with zeroed ephemeral key (won't validate for ack_secret)
     fn create_test_envelope(routing_key: RoutingKey) -> OuterEnvelope {
         OuterEnvelope {
             version: CURRENT_VERSION,
@@ -354,10 +416,53 @@ mod tests {
             timestamp_hours: 482253,
             ttl_hours: Some(24),
             message_id: MessageID::new(),
-            ephemeral_key: [0u8; 32],
+            ephemeral_key: [0u8; 32], // Low-order point - ack_secret will be None
             ack_hash: [0u8; 16],
             inner_ciphertext: vec![1, 2, 3, 4],
         }
+    }
+
+    /// Create a properly encrypted envelope that can derive ack_secret
+    fn create_encrypted_envelope(
+        sender: &Identity,
+        recipient_pubkey: &reme_identity::PublicID,
+    ) -> (OuterEnvelope, [u8; 16]) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let inner = InnerEnvelope {
+            from: *sender.public_id(),
+            created_at_ms: now_ms,
+            content: Content::Text(TextContent {
+                body: "test message".to_string(),
+            }),
+            prev_self: None,
+            observed_heads: vec![],
+            epoch: 0,
+            flags: 0,
+        };
+
+        let message_id = MessageID::new();
+        let enc_output = encrypt_to_mik(
+            &inner,
+            recipient_pubkey,
+            &message_id,
+            &sender.to_bytes(),
+        )
+        .expect("Encryption failed");
+
+        let mut envelope = OuterEnvelope::new(
+            recipient_pubkey.routing_key(),
+            Some(1),
+            enc_output.ephemeral_public,
+            enc_output.ack_hash,
+            enc_output.ciphertext,
+        );
+        envelope.message_id = message_id;
+
+        (envelope, enc_output.ack_secret)
     }
 
     #[tokio::test]
@@ -366,11 +471,13 @@ mod tests {
         let store = PersistentMailboxStore::in_memory(config).unwrap();
         let (_node, handle, _event_rx) = EmbeddedNode::new(store);
 
-        let our_routing_key = RoutingKey::from_bytes([42u8; 16]);
-        let state = Arc::new(HttpServerState::new(handle, our_routing_key));
+        // Create identity for the embedded node
+        let identity = Identity::generate();
+        let our_routing_key = identity.public_id().routing_key();
+        let state = Arc::new(HttpServerState::new(handle, our_routing_key, Arc::new(identity)));
         let app = build_router(state);
 
-        // Create envelope for us
+        // Create envelope for us (with zeroed ephemeral key - no ack_secret)
         let envelope = create_test_envelope(our_routing_key);
         let wire_payload = WirePayload::Message(envelope);
         let body = BASE64_STANDARD.encode(wire_payload.encode());
@@ -396,9 +503,10 @@ mod tests {
         let store = PersistentMailboxStore::in_memory(config).unwrap();
         let (_node, handle, _event_rx) = EmbeddedNode::new(store);
 
-        let our_routing_key = RoutingKey::from_bytes([42u8; 16]);
+        let identity = Identity::generate();
+        let our_routing_key = identity.public_id().routing_key();
         let wrong_routing_key = RoutingKey::from_bytes([99u8; 16]);
-        let state = Arc::new(HttpServerState::new(handle, our_routing_key));
+        let state = Arc::new(HttpServerState::new(handle, our_routing_key, Arc::new(identity)));
         let app = build_router(state);
 
         // Create envelope for someone else
@@ -423,15 +531,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_reject_tombstone() {
-        use reme_identity::Identity;
         use reme_message::SignedAckTombstone;
 
         let config = PersistentStoreConfig::default();
         let store = PersistentMailboxStore::in_memory(config).unwrap();
         let (_node, handle, _event_rx) = EmbeddedNode::new(store);
 
-        let our_routing_key = RoutingKey::from_bytes([42u8; 16]);
-        let state = Arc::new(HttpServerState::new(handle, our_routing_key));
+        let identity = Identity::generate();
+        let our_routing_key = identity.public_id().routing_key();
+        let state = Arc::new(HttpServerState::new(handle, our_routing_key, Arc::new(identity)));
         let app = build_router(state);
 
         // Create tombstone (V2)
@@ -465,8 +573,9 @@ mod tests {
         let store = PersistentMailboxStore::in_memory(config).unwrap();
         let (_node, handle, _event_rx) = EmbeddedNode::new(store);
 
-        let our_routing_key = RoutingKey::from_bytes([42u8; 16]);
-        let state = Arc::new(HttpServerState::new(handle, our_routing_key));
+        let identity = Identity::generate();
+        let our_routing_key = identity.public_id().routing_key();
+        let state = Arc::new(HttpServerState::new(handle, our_routing_key, Arc::new(identity)));
         let app = build_router(state);
 
         let response = app
@@ -489,8 +598,9 @@ mod tests {
         let store = PersistentMailboxStore::in_memory(config).unwrap();
         let (_node, handle, _event_rx) = EmbeddedNode::new(store);
 
-        let our_routing_key = RoutingKey::from_bytes([42u8; 16]);
-        let state = Arc::new(HttpServerState::new(handle, our_routing_key));
+        let identity = Identity::generate();
+        let our_routing_key = identity.public_id().routing_key();
+        let state = Arc::new(HttpServerState::new(handle, our_routing_key, Arc::new(identity)));
         let app = build_router(state);
 
         // Create envelope for us with a fixed message ID
@@ -526,6 +636,204 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response2.status(), StatusCode::OK);
+    }
+
+    /// Test: Embedded node returns valid ack_secret for properly encrypted messages
+    #[tokio::test]
+    async fn test_returns_ack_secret_for_encrypted_message() {
+        use reme_encryption::derive_ack_hash;
+
+        let config = PersistentStoreConfig::default();
+        let store = PersistentMailboxStore::in_memory(config).unwrap();
+        let (_node, handle, _event_rx) = EmbeddedNode::new(store);
+
+        // Create identity for the embedded node (recipient)
+        let recipient_identity = Identity::generate();
+        let recipient_pubkey = *recipient_identity.public_id();
+        let our_routing_key = recipient_identity.public_id().routing_key();
+
+        let state = Arc::new(HttpServerState::new(
+            handle,
+            our_routing_key,
+            Arc::new(recipient_identity),
+        ));
+        let app = build_router(state);
+
+        // Create sender and properly encrypted envelope
+        let sender = Identity::generate();
+        let (envelope, expected_ack_secret) = create_encrypted_envelope(&sender, &recipient_pubkey);
+        let ack_hash = envelope.ack_hash;
+
+        let wire_payload = WirePayload::Message(envelope);
+        let body = BASE64_STANDARD.encode(wire_payload.encode());
+
+        // Submit message
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/submit")
+                    .header("content-type", "text/plain")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Parse response body
+        let body_bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let response_json: serde_json::Value =
+            serde_json::from_slice(&body_bytes).expect("Invalid JSON response");
+
+        // Should have ack_secret
+        assert!(
+            response_json.get("ack_secret").is_some(),
+            "Response should contain ack_secret"
+        );
+        let returned_ack_secret_b64 = response_json["ack_secret"].as_str().unwrap();
+        let returned_ack_secret: [u8; 16] = BASE64_STANDARD
+            .decode(returned_ack_secret_b64)
+            .expect("Invalid base64")
+            .try_into()
+            .expect("Wrong length");
+
+        // Verify ack_secret is correct
+        assert_eq!(
+            returned_ack_secret, expected_ack_secret,
+            "Returned ack_secret should match expected"
+        );
+
+        // Double-check: hash(ack_secret) should equal ack_hash
+        let computed_ack_hash = derive_ack_hash(&returned_ack_secret);
+        assert_eq!(
+            computed_ack_hash, ack_hash,
+            "hash(ack_secret) should equal ack_hash"
+        );
+    }
+
+    /// Test: Low-order ephemeral key returns no ack_secret (security check)
+    #[tokio::test]
+    async fn test_low_order_ephemeral_key_returns_no_ack_secret() {
+        let config = PersistentStoreConfig::default();
+        let store = PersistentMailboxStore::in_memory(config).unwrap();
+        let (_node, handle, _event_rx) = EmbeddedNode::new(store);
+
+        let identity = Identity::generate();
+        let our_routing_key = identity.public_id().routing_key();
+        let state = Arc::new(HttpServerState::new(handle, our_routing_key, Arc::new(identity)));
+        let app = build_router(state);
+
+        // Create envelope with low-order ephemeral key (zeroed = low-order point)
+        let envelope = create_test_envelope(our_routing_key); // Uses [0u8; 32] ephemeral key
+        let wire_payload = WirePayload::Message(envelope);
+        let body = BASE64_STANDARD.encode(wire_payload.encode());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/submit")
+                    .header("content-type", "text/plain")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Parse response body
+        let body_bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let response_json: serde_json::Value =
+            serde_json::from_slice(&body_bytes).expect("Invalid JSON response");
+
+        // Should NOT have ack_secret (low-order point rejected)
+        assert!(
+            response_json.get("ack_secret").is_none()
+                || response_json["ack_secret"].is_null(),
+            "Low-order ephemeral key should NOT produce ack_secret"
+        );
+    }
+
+    /// Test: Duplicate message returns no ack_secret
+    #[tokio::test]
+    async fn test_duplicate_returns_no_ack_secret() {
+        let config = PersistentStoreConfig::default();
+        let store = PersistentMailboxStore::in_memory(config).unwrap();
+        let (_node, handle, _event_rx) = EmbeddedNode::new(store);
+
+        let recipient_identity = Identity::generate();
+        let recipient_pubkey = *recipient_identity.public_id();
+        let our_routing_key = recipient_identity.public_id().routing_key();
+
+        let state = Arc::new(HttpServerState::new(
+            handle,
+            our_routing_key,
+            Arc::new(recipient_identity),
+        ));
+        let app = build_router(state);
+
+        // Create properly encrypted envelope
+        let sender = Identity::generate();
+        let (envelope, _) = create_encrypted_envelope(&sender, &recipient_pubkey);
+        let wire_payload = WirePayload::Message(envelope);
+        let body = BASE64_STANDARD.encode(wire_payload.encode());
+
+        // First submission - should have ack_secret
+        let response1 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/submit")
+                    .header("content-type", "text/plain")
+                    .body(Body::from(body.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response1.status(), StatusCode::OK);
+
+        let body_bytes1 = axum::body::to_bytes(response1.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let response_json1: serde_json::Value =
+            serde_json::from_slice(&body_bytes1).expect("Invalid JSON");
+        assert!(
+            response_json1.get("ack_secret").is_some(),
+            "First submit should return ack_secret"
+        );
+
+        // Second submission (duplicate) - should NOT have ack_secret
+        let response2 = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/submit")
+                    .header("content-type", "text/plain")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response2.status(), StatusCode::OK);
+
+        let body_bytes2 = axum::body::to_bytes(response2.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let response_json2: serde_json::Value =
+            serde_json::from_slice(&body_bytes2).expect("Invalid JSON");
+        assert!(
+            response_json2.get("ack_secret").is_none()
+                || response_json2["ack_secret"].is_null(),
+            "Duplicate submit should NOT return ack_secret"
+        );
     }
 
     #[test]
