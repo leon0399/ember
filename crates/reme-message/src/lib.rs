@@ -58,8 +58,14 @@ pub fn bincode_config() -> impl bincode::config::Config {
 }
 
 pub use tombstone::{
+    // Tombstone V1 (legacy)
     DetailedReceipt, DeviceID, TombstoneEnvelope, TombstoneStatus, TombstoneValidationError,
-    WirePayload, WireType, CLOCK_SKEW_ALLOWANCE_HOURS, TOMBSTONE_MAX_AGE_HOURS,
+    // Tombstone V2 (signed ack)
+    Attribution, SignedAckTombstone,
+    // Wire format
+    WirePayload, WireType,
+    // Constants
+    CLOCK_SKEW_ALLOWANCE_HOURS, TOMBSTONE_MAX_AGE_HOURS,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -165,6 +171,14 @@ pub struct OuterEnvelope {
     /// Used with recipient's MIK to derive the encryption key.
     pub ephemeral_key: [u8; 32],
 
+    // ===== Tombstone V2: Ack Hash =====
+
+    /// Ack hash (16 bytes) for tombstone authorization.
+    /// Computed as BLAKE3(ack_secret)[0..16] where
+    /// ack_secret = BLAKE3_KDF("reme-ack-v1", shared_secret || message_id).
+    /// Allows nodes to verify tombstones with O(1) hash check.
+    pub ack_hash: [u8; 16],
+
     pub inner_ciphertext: Vec<u8>,
 }
 
@@ -175,11 +189,13 @@ impl OuterEnvelope {
     /// * `routing_key` - 16-byte routing key (truncated blake3 hash of recipient PublicID)
     /// * `ttl_hours` - Optional time-to-live in hours
     /// * `ephemeral_key` - 32-byte ephemeral X25519 public key used for ECDH
+    /// * `ack_hash` - 16-byte hash for tombstone authorization
     /// * `inner_ciphertext` - Encrypted InnerEnvelope bytes
     pub fn new(
         routing_key: RoutingKey,
         ttl_hours: Option<u16>,
         ephemeral_key: [u8; 32],
+        ack_hash: [u8; 16],
         inner_ciphertext: Vec<u8>,
     ) -> Self {
         Self {
@@ -189,6 +205,7 @@ impl OuterEnvelope {
             ttl_hours,
             message_id: MessageID::new(),
             ephemeral_key,
+            ack_hash,
             inner_ciphertext,
         }
     }

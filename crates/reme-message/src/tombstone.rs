@@ -97,6 +97,148 @@ pub struct DetailedReceipt {
     pub proof_of_content: Option<[u8; 32]>,
 }
 
+// ============================================
+// Tombstone V2: Signed Ack Tombstone
+// ============================================
+
+/// Signed Ack Tombstone (V2) - 96 bytes total
+///
+/// A lightweight tombstone that proves the creator knows the ack_secret
+/// derived from the ECDH shared secret. Both sender and recipient can
+/// create valid tombstones without leaking identity.
+///
+/// # Security Properties
+///
+/// - **Authorization**: Node verifies hash(ack_secret) == ack_hash (O(1))
+/// - **Attribution**: Signature allows clients to verify who acknowledged
+/// - **Privacy**: No identity in wire format (nodes don't know sender/recipient)
+/// - **Replay prevention**: message_id binding in ack_secret derivation
+///
+/// # Wire Format
+///
+/// ```text
+/// message_id:  16 bytes (UUID)
+/// ack_secret:  16 bytes (truncated BLAKE3 KDF output)
+/// signature:   64 bytes (XEdDSA)
+/// Total:       96 bytes
+/// ```
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct SignedAckTombstone {
+    /// ID of the message being acknowledged
+    pub message_id: MessageID,
+
+    /// Ack secret derived from ECDH shared secret + message_id
+    /// ack_secret = BLAKE3_KDF("reme-ack-v1", shared_secret || message_id)[0..16]
+    pub ack_secret: [u8; 16],
+
+    /// XEdDSA signature over (message_id || ack_secret)
+    /// Signed by sender or recipient's X25519 private key
+    pub signature: [u8; 64],
+}
+
+/// Who created a tombstone (for delivery confirmation)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Attribution {
+    /// Tombstone was signed by the message sender
+    Sender,
+    /// Tombstone was signed by the message recipient
+    Recipient,
+    /// Signature doesn't match either party
+    Invalid,
+}
+
+impl SignedAckTombstone {
+    /// Create a new signed ack tombstone
+    ///
+    /// # Arguments
+    /// * `message_id` - ID of the message being acknowledged
+    /// * `ack_secret` - 16-byte secret derived from ECDH shared secret
+    /// * `signer_private` - X25519 private key for signing (sender or recipient)
+    pub fn new(
+        message_id: MessageID,
+        ack_secret: [u8; 16],
+        signer_private: &[u8; 32],
+    ) -> Self {
+        use rand_core::OsRng;
+
+        let mut tombstone = Self {
+            message_id,
+            ack_secret,
+            signature: [0u8; 64],
+        };
+
+        let signable = tombstone.signable_bytes();
+        let xed_private = xed25519::PrivateKey(*signer_private);
+        tombstone.signature = xed_private.sign(&signable, OsRng);
+
+        tombstone
+    }
+
+    /// Bytes covered by signature: message_id || ack_secret
+    fn signable_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(32);
+        bytes.extend_from_slice(self.message_id.as_bytes());
+        bytes.extend_from_slice(&self.ack_secret);
+        bytes
+    }
+
+    /// Verify tombstone is authorized (for nodes).
+    ///
+    /// Nodes verify that hash(ack_secret) matches the ack_hash stored with
+    /// the message. This is O(1) and doesn't require knowing the sender or
+    /// recipient's public key.
+    pub fn verify_authorization(&self, expected_ack_hash: &[u8; 16]) -> bool {
+        let computed_hash = blake3::hash(&self.ack_secret);
+        computed_hash.as_bytes()[..16] == expected_ack_hash[..]
+    }
+
+    /// Verify signature and determine who created the tombstone.
+    ///
+    /// Clients use this to determine if the recipient actually acknowledged
+    /// the message (delivery confirmation) or if the sender retracted it.
+    pub fn verify_attribution(
+        &self,
+        sender_pub: &[u8; 32],
+        recipient_pub: &[u8; 32],
+    ) -> Attribution {
+        let signable = self.signable_bytes();
+
+        // Try recipient first (most common for delivery confirmation)
+        let recipient_xed = xed25519::PublicKey(*recipient_pub);
+        if recipient_xed.verify(&signable, &self.signature).is_ok() {
+            return Attribution::Recipient;
+        }
+
+        // Try sender
+        let sender_xed = xed25519::PublicKey(*sender_pub);
+        if sender_xed.verify(&signable, &self.signature).is_ok() {
+            return Attribution::Sender;
+        }
+
+        Attribution::Invalid
+    }
+
+    /// Serialize to bytes with wire type prefix (0x02)
+    pub fn to_wire_bytes(&self) -> Vec<u8> {
+        let mut bytes = vec![WireType::AckTombstone as u8];
+        bytes.extend(bincode::encode_to_vec(self, bincode::config::standard()).unwrap());
+        bytes
+    }
+
+    /// Serialize to bytes without wire type prefix
+    pub fn to_bytes(&self) -> Vec<u8> {
+        bincode::encode_to_vec(self, bincode::config::standard()).unwrap()
+    }
+
+    /// Deserialize from bytes (without wire type prefix)
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        let (tombstone, _): (SignedAckTombstone, _) =
+            bincode::decode_from_slice(bytes, bincode::config::standard())
+                .map_err(|e| format!("Failed to decode ack tombstone: {}", e))?;
+        Ok(tombstone)
+    }
+}
+
 /// Tombstone validation errors
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TombstoneValidationError {
@@ -377,7 +519,10 @@ impl TombstoneEnvelope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WireType {
     Message = 0x00,
+    /// Legacy tombstone (deprecated, use AckTombstone)
     Tombstone = 0x01,
+    /// Tombstone V2: Signed Ack (96 bytes)
+    AckTombstone = 0x02,
 }
 
 impl TryFrom<u8> for WireType {
@@ -387,6 +532,7 @@ impl TryFrom<u8> for WireType {
         match value {
             0x00 => Ok(WireType::Message),
             0x01 => Ok(WireType::Tombstone),
+            0x02 => Ok(WireType::AckTombstone),
             _ => Err(format!("Unknown wire type: 0x{:02x}", value)),
         }
     }
@@ -398,11 +544,15 @@ use crate::OuterEnvelope;
 ///
 /// Wire format: `[type: u8][payload: bincode bytes]`
 /// - type 0x00: Message (OuterEnvelope)
-/// - type 0x01: Tombstone (TombstoneEnvelope)
+/// - type 0x01: Tombstone (TombstoneEnvelope) - Legacy, deprecated
+/// - type 0x02: AckTombstone (SignedAckTombstone) - V2
 #[derive(Debug, Clone)]
 pub enum WirePayload {
     Message(OuterEnvelope),
+    /// Legacy tombstone (deprecated)
     Tombstone(TombstoneEnvelope),
+    /// Tombstone V2: Signed Ack
+    AckTombstone(SignedAckTombstone),
 }
 
 impl WirePayload {
@@ -427,6 +577,12 @@ impl WirePayload {
                         .map_err(|e| format!("Invalid tombstone: {}", e))?;
                 Ok(WirePayload::Tombstone(tombstone))
             }
+            WireType::AckTombstone => {
+                let (tombstone, _): (SignedAckTombstone, _) =
+                    bincode::decode_from_slice(&bytes[1..], bincode::config::standard())
+                        .map_err(|e| format!("Invalid ack tombstone: {}", e))?;
+                Ok(WirePayload::AckTombstone(tombstone))
+            }
         }
     }
 
@@ -443,14 +599,29 @@ impl WirePayload {
                 bytes.extend(bincode::encode_to_vec(tombstone, bincode::config::standard()).unwrap());
                 bytes
             }
+            WirePayload::AckTombstone(tombstone) => {
+                let mut bytes = vec![WireType::AckTombstone as u8];
+                bytes.extend(bincode::encode_to_vec(tombstone, bincode::config::standard()).unwrap());
+                bytes
+            }
         }
     }
 
-    /// Get the routing key for this payload
-    pub fn routing_key(&self) -> &RoutingKey {
+    /// Get the routing key for this payload (only for Message and legacy Tombstone)
+    pub fn routing_key(&self) -> Option<&RoutingKey> {
         match self {
-            WirePayload::Message(envelope) => &envelope.routing_key,
-            WirePayload::Tombstone(tombstone) => &tombstone.routing_key,
+            WirePayload::Message(envelope) => Some(&envelope.routing_key),
+            WirePayload::Tombstone(tombstone) => Some(&tombstone.routing_key),
+            WirePayload::AckTombstone(_) => None, // V2 tombstones don't have routing_key
+        }
+    }
+
+    /// Get the message_id for this payload
+    pub fn message_id(&self) -> &MessageID {
+        match self {
+            WirePayload::Message(envelope) => &envelope.message_id,
+            WirePayload::Tombstone(tombstone) => &tombstone.target_message_id,
+            WirePayload::AckTombstone(tombstone) => &tombstone.message_id,
         }
     }
 }
