@@ -22,6 +22,7 @@ use axum::{
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
+use reme_encryption::derive_ack_secret;
 use reme_message::{OuterEnvelope, RoutingKey, WirePayload};
 use serde::Serialize;
 use std::sync::Arc;
@@ -189,7 +190,12 @@ impl RequestSource {
 
 #[derive(Debug, Serialize)]
 pub struct SubmitResponse {
-    pub status: String,
+    pub status: &'static str,
+    /// Ack secret proving the node can decrypt this message.
+    /// Present only if the node is the intended recipient (routing_key matches).
+    /// Base64-encoded 16-byte secret.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ack_secret: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -214,6 +220,39 @@ pub struct StatsResponse {
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
     pub error: String,
+}
+
+// ============================================
+// Ack Secret Derivation
+// ============================================
+
+/// Try to derive ack_secret if this node is the intended recipient.
+///
+/// Returns `Some(base64-encoded ack_secret)` if:
+/// - Node has an identity configured
+/// - The message's routing_key matches this node's routing_key
+/// - ECDH shared secret derivation succeeds
+///
+/// Returns `None` if this node is just a relay (routing_key doesn't match).
+fn try_derive_ack_secret(
+    identity: Option<&NodeIdentity>,
+    envelope: &OuterEnvelope,
+) -> Option<String> {
+    let identity = identity?;
+
+    // Check if we're the intended recipient
+    if envelope.routing_key != identity.routing_key() {
+        return None;
+    }
+
+    // Derive shared secret via ECDH
+    let shared_secret = identity.derive_shared_secret(&envelope.ephemeral_key)?;
+
+    // Derive ack_secret from shared_secret and message_id
+    let ack_secret = derive_ack_secret(&shared_secret, &envelope.message_id);
+
+    // Return base64-encoded
+    Some(BASE64_STANDARD.encode(ack_secret))
 }
 
 // ============================================
@@ -364,12 +403,12 @@ async fn submit_payload(
                     // This ensures message is deleted across all nodes in the cluster
                     state.replication.replicate_payload(payload_b64, from_node);
 
-                    (StatusCode::OK, Json(SubmitResponse { status: "ok".to_string() })).into_response()
+                    (StatusCode::OK, Json(SubmitResponse { status: "ok", ack_secret: None })).into_response()
                 }
                 Ok(false) => {
                     // Message was already deleted (race condition, not an error)
                     // Don't replicate - this is likely a replicated tombstone arriving
-                    (StatusCode::OK, Json(SubmitResponse { status: "ok".to_string() })).into_response()
+                    (StatusCode::OK, Json(SubmitResponse { status: "ok", ack_secret: None })).into_response()
                 }
                 Err(e) => {
                     error!("Failed to delete message: {}", e);
@@ -398,13 +437,17 @@ async fn handle_message(
         debug!("Rejecting message from ourselves (loop prevention)");
         return (
             StatusCode::OK,
-            Json(SubmitResponse { status: "ok".to_string() }),
+            Json(SubmitResponse { status: "ok", ack_secret: None }),
         )
             .into_response();
     }
 
     let routing_key = envelope.routing_key;
     let message_id = envelope.message_id;
+
+    // Try to derive ack_secret if we're the intended recipient (before envelope is moved)
+    let ack_secret = try_derive_ack_secret(state.identity.as_deref(), &envelope);
+
     // Clone envelope for MQTT publishing (enqueue takes ownership)
     let envelope_for_mqtt = envelope.clone();
 
@@ -428,7 +471,7 @@ async fn handle_message(
     match state.store.has_message(&routing_key, &message_id) {
         Ok(true) => {
             debug!("Duplicate message {:?}, skipping", message_id);
-            return (StatusCode::OK, Json(SubmitResponse { status: "ok".to_string() }))
+            return (StatusCode::OK, Json(SubmitResponse { status: "ok", ack_secret: None }))
                 .into_response();
         }
         Ok(false) => {}
@@ -460,7 +503,7 @@ async fn handle_message(
                 });
             }
 
-            (StatusCode::OK, Json(SubmitResponse { status: "ok".to_string() })).into_response()
+            (StatusCode::OK, Json(SubmitResponse { status: "ok", ack_secret })).into_response()
         }
         Err(e) => {
             error!("Failed to enqueue message: {}", e);

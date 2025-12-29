@@ -28,6 +28,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 use tui_textarea::{Input, TextArea};
+use zeroize::Zeroizing;
 
 pub type AppResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -415,6 +416,12 @@ impl<'a> App<'a> {
             None
         };
 
+        // Extract identity bytes for HTTP server (before embedded node block)
+        // This allows us to create a separate Identity instance for the HTTP server
+        // while still passing the original identity to Client::with_config
+        // Wrapped in Zeroizing to ensure secret key is cleared from memory when dropped
+        let identity_bytes = Zeroizing::new(identity.to_bytes());
+
         // Create embedded node if enabled
         let (embedded_node_handle, embedded_node_task, node_event_rx) = if config.embedded_node.enabled {
             info!("Starting embedded node...");
@@ -445,10 +452,19 @@ impl<'a> App<'a> {
                 let http_handle = handle.clone();
                 let our_routing_key = identity.public_id().routing_key();
 
+                // Create a separate Identity instance for the HTTP server
+                // This is needed because identity will be moved to Client::with_config later
+                let http_identity = Arc::new(Identity::from_bytes(&identity_bytes));
+
                 // Bind first to verify address is valid and port is available
-                let (listener, router) = http_server::bind_server(bind_addr, http_handle, our_routing_key)
-                    .await
-                    .map_err(|e| format!("Failed to start HTTP server: {}", e))?;
+                let (listener, router) = http_server::bind_server(
+                    bind_addr,
+                    http_handle,
+                    our_routing_key,
+                    http_identity,
+                )
+                .await
+                .map_err(|e| format!("Failed to start HTTP server: {}", e))?;
 
                 // Now spawn the server task - binding already succeeded
                 tokio::spawn(async move {

@@ -5,10 +5,13 @@
 //! - XEdDSA signatures on HTTP headers (proving message origin)
 //! - Cryptographic loop prevention (identifying self by public key)
 
-use reme_identity::{Identity, InvalidPublicKey, PublicID};
+use reme_identity::{is_low_order_point, Identity, InvalidPublicKey, PublicID};
+use reme_message::RoutingKey;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::Path;
+use subtle::ConstantTimeEq;
+use x25519_dalek::PublicKey as X25519PublicKey;
 
 /// Errors that can occur during node identity operations.
 #[derive(Debug, thiserror::Error)]
@@ -216,6 +219,42 @@ impl NodeIdentity {
     pub fn sign(&self, message: &[u8]) -> [u8; 64] {
         self.identity.sign_xeddsa(message)
     }
+
+    /// Get the routing key derived from this node's public identity.
+    pub fn routing_key(&self) -> RoutingKey {
+        self.identity.public_id().routing_key()
+    }
+
+    /// Derive shared secret via ECDH with an ephemeral public key.
+    ///
+    /// This is used to derive `ack_secret` when this node is the intended
+    /// recipient of a message. The shared secret is computed as:
+    /// `shared_secret = X25519(node_private, ephemeral_public)`
+    ///
+    /// Returns `None` if:
+    /// - The ephemeral key is a known low-order point (pre-validation)
+    /// - The ECDH result is all-zero (defense-in-depth)
+    pub fn derive_shared_secret(&self, ephemeral_public: &[u8; 32]) -> Option<[u8; 32]> {
+        // Pre-validation: reject known low-order points before ECDH
+        // This matches the validation in reme-encryption::decrypt_with_mik
+        if is_low_order_point(ephemeral_public) {
+            tracing::debug!("Rejected low-order ephemeral key in derive_shared_secret");
+            return None;
+        }
+
+        let ephemeral_key = X25519PublicKey::from(*ephemeral_public);
+        let shared_secret = self.identity.x25519_secret().diffie_hellman(&ephemeral_key);
+
+        // Defense-in-depth: reject all-zero shared secrets (indicates small-order input)
+        // Use constant-time comparison to prevent timing side-channels
+        let bytes = shared_secret.as_bytes();
+        if bool::from(bytes.ct_eq(&[0u8; 32])) {
+            tracing::debug!("Rejected all-zero shared secret in derive_shared_secret");
+            return None;
+        }
+
+        Some(*bytes)
+    }
 }
 
 #[cfg(test)]
@@ -300,6 +339,44 @@ mod tests {
         assert_eq!(
             identity.public_id().to_bytes(),
             loaded.public_id().to_bytes()
+        );
+    }
+
+    #[test]
+    fn test_derive_shared_secret() {
+        use rand_core::OsRng;
+        use x25519_dalek::StaticSecret;
+
+        // Create node identity
+        let identity = Identity::generate();
+        let node_identity = NodeIdentity::new(identity);
+
+        // Create ephemeral keypair (simulating sender)
+        let ephemeral_secret = StaticSecret::random_from_rng(OsRng);
+        let ephemeral_public = X25519PublicKey::from(&ephemeral_secret);
+
+        // Node derives shared secret using ephemeral public
+        let node_shared = node_identity
+            .derive_shared_secret(ephemeral_public.as_bytes())
+            .expect("should derive shared secret");
+
+        // Sender derives shared secret using node's public key
+        let node_public = X25519PublicKey::from(node_identity.public_id().to_bytes());
+        let sender_shared = ephemeral_secret.diffie_hellman(&node_public);
+
+        // Both should compute the same shared secret
+        assert_eq!(node_shared, *sender_shared.as_bytes());
+    }
+
+    #[test]
+    fn test_routing_key() {
+        let identity = Identity::generate();
+        let node_identity = NodeIdentity::new(identity);
+
+        // Routing key should match public_id's routing key
+        assert_eq!(
+            node_identity.routing_key(),
+            node_identity.public_id().routing_key()
         );
     }
 }
