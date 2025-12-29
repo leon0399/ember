@@ -1438,6 +1438,7 @@ impl Client<TransportCoordinator> {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use reme_message::SignedAckTombstone;
     use std::sync::Mutex;
 
     /// Mock transport for testing (MIK-only, no prekeys)
@@ -1472,6 +1473,14 @@ mod tests {
             tombstone: TombstoneEnvelope,
         ) -> Result<(), TransportError> {
             self.tombstones.lock().unwrap().push(tombstone);
+            Ok(())
+        }
+
+        async fn submit_ack_tombstone(
+            &self,
+            _tombstone: SignedAckTombstone,
+        ) -> Result<(), TransportError> {
+            // Mock implementation - just accept
             Ok(())
         }
     }

@@ -8,7 +8,7 @@ use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use futures::future::join_all;
-use reme_message::{OuterEnvelope, TombstoneEnvelope};
+use reme_message::{OuterEnvelope, SignedAckTombstone, TombstoneEnvelope};
 use tracing::{debug, warn};
 
 use crate::query::{HealthSummary, TargetSnapshot, TransportQuery};
@@ -281,6 +281,20 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
         }
     }
 
+    /// Submit an ack tombstone using the pool strategy.
+    pub async fn submit_ack_tombstone(
+        &self,
+        tombstone: SignedAckTombstone,
+    ) -> Result<(), TransportError> {
+        let targets = self.select_targets();
+        if targets.is_empty() {
+            return Err(TransportError::Network("No targets available".to_string()));
+        }
+
+        // Ack tombstones use broadcast strategy for redundancy
+        self.broadcast_ack_tombstone(&targets, tombstone).await
+    }
+
     /// Broadcast message to all targets, succeed if any succeeds.
     async fn broadcast_message(
         &self,
@@ -431,6 +445,43 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
         }
     }
 
+    /// Broadcast ack tombstone to all targets, succeed if any succeeds.
+    async fn broadcast_ack_tombstone(
+        &self,
+        targets: &[Arc<T>],
+        tombstone: SignedAckTombstone,
+    ) -> Result<(), TransportError> {
+        let futures: Vec<_> = targets
+            .iter()
+            .map(|t| {
+                let t = t.clone();
+                let ts = tombstone.clone();
+                async move { t.submit_ack_tombstone(ts).await }
+            })
+            .collect();
+
+        let results = join_all(futures).await;
+
+        let mut last_error = None;
+        let mut success_count = 0;
+
+        for (i, result) in results.into_iter().enumerate() {
+            match result {
+                Ok(()) => success_count += 1,
+                Err(e) => {
+                    warn!("Target {} failed: {}", targets[i].id(), e);
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        if success_count > 0 {
+            Ok(())
+        } else {
+            Err(last_error.unwrap_or(TransportError::Network("All targets failed".to_string())))
+        }
+    }
+
     /// Race tombstone to all targets.
     ///
     /// Runs all requests in parallel and returns as soon as one succeeds.
@@ -519,6 +570,10 @@ impl<T: TransportTarget + 'static> Transport for TransportPool<T> {
 
     async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
         TransportPool::submit_tombstone(self, tombstone).await
+    }
+
+    async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
+        TransportPool::submit_ack_tombstone(self, tombstone).await
     }
 }
 

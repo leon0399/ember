@@ -25,7 +25,7 @@ use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use futures::future::join_all;
-use reme_message::{OuterEnvelope, RoutingKey, TombstoneEnvelope, WirePayload};
+use reme_message::{OuterEnvelope, RoutingKey, SignedAckTombstone, TombstoneEnvelope, WirePayload};
 use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, Publish, QoS, Transport as MqttTransportType};
 use std::sync::Arc;
 use std::time::Duration;
@@ -382,6 +382,16 @@ impl Transport for MqttTransport {
     async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
         let topic = self.tombstone_topic_for_routing_key(&tombstone.routing_key);
         let wire = WirePayload::Tombstone(tombstone);
+        let bytes = wire.encode();
+
+        self.publish_to_all(&topic, &bytes).await
+    }
+
+    async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
+        // MQTT tombstones go to the general tombstone topic
+        // Since AckTombstone doesn't have routing_key, we use a broadcast topic
+        let topic = format!("{}/ack-tombstones", self.topic_prefix);
+        let wire = WirePayload::AckTombstone(tombstone);
         let bytes = wire.encode();
 
         self.publish_to_all(&topic, &bytes).await

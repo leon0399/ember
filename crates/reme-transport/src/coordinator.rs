@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::future::join_all;
-use reme_message::{OuterEnvelope, RoutingKey, TombstoneEnvelope};
+use reme_message::{OuterEnvelope, RoutingKey, SignedAckTombstone, TombstoneEnvelope};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
@@ -864,6 +864,15 @@ impl Transport for TransportCoordinator {
 
     async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError> {
         self.submit_tombstone_with_strategy(tombstone).await
+    }
+
+    async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
+        // Ack tombstones are sent to HTTP pool only (same nodes that store messages)
+        if let Some(ref pool) = self.http_pool {
+            pool.submit_ack_tombstone(tombstone).await
+        } else {
+            Err(TransportError::Network("No HTTP transport available for tombstone".to_string()))
+        }
     }
 }
 
