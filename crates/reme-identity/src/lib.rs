@@ -1,5 +1,6 @@
 use std::fmt::{self, Debug, Display};
 use derive_more::{Deref, DerefMut, From};
+use derivative::Derivative;
 use getset::Getters;
 use rand_core::OsRng;
 use thiserror::Error;
@@ -258,25 +259,24 @@ impl<Context> Decode<Context> for PublicID {
 
 impl_borrow_decode!(PublicID);
 
+/// Helper for derivative Debug to redact sensitive fields.
+fn redact_secret<T>(_: &T, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+    write!(f, "[REDACTED]")
+}
+
 /// User identity containing the secret key for signing and decryption.
 ///
 /// The secret key is automatically zeroized when the Identity is dropped,
 /// preventing sensitive key material from lingering in memory. This is
 /// handled by x25519-dalek's `StaticSecret` which implements `ZeroizeOnDrop`.
-#[derive(Getters)]
+#[derive(Getters, Derivative)]
+#[derivative(Debug)]
 pub struct Identity {
   #[get = "pub"]
   pub(crate) public_id: PublicID,
-  pub(crate) x25519_secret: X25519Secret,
-}
 
-impl Debug for Identity {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.debug_struct("Identity")
-      .field("public_id", &self.public_id)
-      .field("x25519_secret", &"[REDACTED]")
-      .finish()
-  }
+  #[derivative(Debug(format_with = "redact_secret"))]
+  pub(crate) x25519_secret: X25519Secret,
 }
 
 impl Identity {

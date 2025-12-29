@@ -8,6 +8,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use derivative::Derivative;
 use futures::future::join_all;
 use reme_message::{OuterEnvelope, RoutingKey, SignedAckTombstone};
 use tokio::sync::mpsc;
@@ -52,22 +53,14 @@ pub enum RoutingStrategy {
 }
 
 /// Configuration for the transport coordinator.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Derivative)]
+#[derivative(Default)]
 pub struct CoordinatorConfig {
     /// Default routing strategy for outgoing messages.
     pub routing_strategy: RoutingStrategy,
 
     /// Configuration for polling (HTTP only).
     pub receiver_config: ReceiverConfig,
-}
-
-impl Default for CoordinatorConfig {
-    fn default() -> Self {
-        Self {
-            routing_strategy: RoutingStrategy::BroadcastAll,
-            receiver_config: ReceiverConfig::default(),
-        }
-    }
 }
 
 /// Handle to control a running coordinator subscription.

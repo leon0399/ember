@@ -2520,6 +2520,7 @@ name = "reme-outbox"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "derivative",
  "reme-identity",
  "reme-message",
  "reme-transport",
@@ -2551,6 +2552,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bincode",
+ "derivative",
  "derive_more 2.1.0",
  "futures",
  "hex",

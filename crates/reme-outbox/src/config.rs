@@ -2,38 +2,34 @@
 
 use std::time::Duration;
 
+use derivative::Derivative;
+
 /// Configuration for retry triggers.
 ///
 /// Controls which events automatically trigger message retries.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Derivative)]
+#[derivative(Default)]
 pub struct RetryTriggerConfig {
     /// Timer-based retry check interval.
     ///
     /// - `None`: Timer-based retries disabled
     /// - `Some(duration)`: Check for pending retries every `duration`
+    #[derivative(Default(value = "Some(Duration::from_secs(30))"))]
     pub timer: Option<Duration>,
 
     /// Retry when gap detected in peer's `observed_heads`.
     ///
     /// When we receive a message from a peer and detect they haven't
     /// ACKed messages we sent, immediately retry those messages.
+    #[derivative(Default(value = "true"))]
     pub on_gap_detected: bool,
 
     /// Retry when a transport becomes available.
     ///
     /// When a transport (LoRa, BLE, P2P) becomes available,
     /// retry pending messages that can use that transport.
+    #[derivative(Default(value = "true"))]
     pub on_transport_available: bool,
-}
-
-impl Default for RetryTriggerConfig {
-    fn default() -> Self {
-        Self {
-            timer: Some(Duration::from_secs(30)),
-            on_gap_detected: true,
-            on_transport_available: true,
-        }
-    }
 }
 
 impl RetryTriggerConfig {
@@ -62,32 +58,25 @@ impl RetryTriggerConfig {
 /// - HTTP: fast retry, exponential backoff
 /// - LoRa: slow retry, longer intervals, mesh propagation
 /// - BLE: medium retry, device discovery dependent
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Derivative)]
+#[derivative(Default)]
 pub struct TransportRetryPolicy {
     /// Initial delay before first retry.
+    #[derivative(Default(value = "Duration::from_secs(5)"))]
     pub initial_delay: Duration,
 
     /// Maximum delay (backoff cap).
+    #[derivative(Default(value = "Duration::from_secs(300)"))] // 5 minutes
     pub max_delay: Duration,
 
     /// Backoff multiplier (e.g., 2.0 for doubling).
+    #[derivative(Default(value = "2.0"))]
     pub backoff_multiplier: f32,
 
     /// Maximum attempts before giving up on this transport.
     ///
     /// `None` means no limit (keep retrying until TTL).
     pub max_attempts: Option<u32>,
-}
-
-impl Default for TransportRetryPolicy {
-    fn default() -> Self {
-        Self {
-            initial_delay: Duration::from_secs(5),
-            max_delay: Duration::from_secs(300), // 5 minutes
-            backoff_multiplier: 2.0,
-            max_attempts: None,
-        }
-    }
 }
 
 impl TransportRetryPolicy {
@@ -159,7 +148,8 @@ impl TransportRetryPolicy {
 }
 
 /// Main outbox configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Derivative)]
+#[derivative(Default)]
 pub struct OutboxConfig {
     /// Retry trigger configuration.
     pub retry_triggers: RetryTriggerConfig,
@@ -167,26 +157,18 @@ pub struct OutboxConfig {
     /// Default message TTL in milliseconds.
     ///
     /// `None` means messages never expire.
+    #[derivative(Default(value = "Some(7 * 24 * 60 * 60 * 1000)"))] // 7 days
     pub default_ttl_ms: Option<u64>,
 
     /// How long to keep confirmed/expired entries before cleanup (ms).
+    #[derivative(Default(value = "24 * 60 * 60 * 1000"))] // 1 day
     pub cleanup_after_ms: u64,
 
     /// How long a "Sent" attempt stays in-flight before timing out (ms).
     ///
     /// After this, the message transitions from InFlight to AwaitingRetry.
+    #[derivative(Default(value = "60_000"))] // 1 minute
     pub attempt_timeout_ms: u64,
-}
-
-impl Default for OutboxConfig {
-    fn default() -> Self {
-        Self {
-            retry_triggers: RetryTriggerConfig::default(),
-            default_ttl_ms: Some(7 * 24 * 60 * 60 * 1000), // 7 days
-            cleanup_after_ms: 24 * 60 * 60 * 1000,         // 1 day
-            attempt_timeout_ms: 60_000,                    // 1 minute
-        }
-    }
 }
 
 impl OutboxConfig {
