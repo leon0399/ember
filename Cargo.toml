@@ -89,3 +89,22 @@ chacha20poly1305 = "^0.10.1"
 ratatui = "^0.29"
 crossterm = "^0.28"
 tui-textarea = "^0.7"
+
+# Workspace-wide lint configuration
+# All crates should add `[lints] workspace = true` to inherit these
+[workspace.lints.rust]
+# Warn on unsafe code (security-critical project)
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+# Enable clippy::all and pedantic warnings
+# Priority -1 allows individual lint allows to override groups
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+# Commonly allowed pedantic lints (genuinely too noisy/opinionated)
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+similar_names = "allow"

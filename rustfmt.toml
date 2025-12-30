@@ -1,0 +1,12 @@
+# Rustfmt configuration for resilient-messenger
+# Only non-default options are specified
+# See: https://rust-lang.github.io/rustfmt/
+
+# Consistent Unix line endings across platforms
+newline_style = "Unix"
+
+# Use field init shorthand: `Foo { x }` instead of `Foo { x: x }`
+use_field_init_shorthand = true
+
+# Use `?` instead of `try!` macro
+use_try_shorthand = true

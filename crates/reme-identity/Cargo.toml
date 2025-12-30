@@ -3,6 +3,9 @@ name = "reme-identity"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [dependencies]
 derivative = { workspace = true }
 derive_more = { workspace = true, features = ["display", "from", "deref", "deref_mut"] }
