@@ -142,7 +142,7 @@ impl AttemptResult {
 /// Record of a single delivery attempt.
 #[derive(Debug, Clone)]
 pub struct TransportAttempt {
-    /// Which transport was used (e.g., "http:node1.example.com")
+    /// Which transport was used (e.g., "<http:node1.example.com>")
     pub transport_id: TransportId,
     /// When this attempt was made (ms since epoch)
     pub attempted_at_ms: u64,
@@ -155,11 +155,11 @@ pub struct TransportAttempt {
 /// Extensible enum for different confirmation mechanisms.
 #[derive(Debug, Clone)]
 pub enum DeliveryConfirmation {
-    /// Peer's message included our content_id in their `observed_heads`.
+    /// Peer's message included our `content_id` in their `observed_heads`.
     ///
     /// This is the primary confirmation mechanism using the Merkle DAG.
     Dag {
-        /// The content_id of the peer's message that contained our ACK
+        /// The `content_id` of the peer's message that contained our ACK
         observed_in_message_id: ContentId,
     },
     // Future variants:
@@ -276,9 +276,9 @@ pub struct PendingMessage {
     pub recipient: PublicID,
     /// Content ID for DAG tracking (used to detect confirmation)
     pub content_id: ContentId,
-    /// Serialized OuterEnvelope for fast retry
+    /// Serialized `OuterEnvelope` for fast retry
     pub envelope_bytes: Vec<u8>,
-    /// Serialized InnerEnvelope for re-encryption if needed
+    /// Serialized `InnerEnvelope` for re-encryption if needed
     pub inner_bytes: Vec<u8>,
     /// When the message was created (ms since epoch)
     pub created_at_ms: u64,
@@ -326,7 +326,7 @@ impl PendingMessage {
         }
 
         // Check TTL expiry
-        if self.expires_at_ms.map(|e| now_ms > e).unwrap_or(false) {
+        if self.expires_at_ms.is_some_and(|e| now_ms > e) {
             return DeliveryState::Expired;
         }
 
@@ -362,7 +362,7 @@ impl PendingMessage {
 
     /// Check if this message is due for retry.
     pub fn is_due_for_retry(&self, now_ms: u64) -> bool {
-        self.next_retry_at_ms.map(|t| t <= now_ms).unwrap_or(true)
+        self.next_retry_at_ms.is_none_or(|t| t <= now_ms)
     }
 
     /// Get the last attempt for a specific transport, if any.
@@ -501,8 +501,14 @@ mod tests {
     fn test_attempt_error_transient() {
         assert!(AttemptError::network_transient("test").is_transient());
         assert!(!AttemptError::network_permanent("test").is_transient());
-        assert!(AttemptError::Unavailable { message: "test".into() }.is_transient());
-        assert!(!AttemptError::Encoding { message: "test".into() }.is_transient());
+        assert!(AttemptError::Unavailable {
+            message: "test".into()
+        }
+        .is_transient());
+        assert!(!AttemptError::Encoding {
+            message: "test".into()
+        }
+        .is_transient());
         assert!(AttemptError::TimedOut { timeout_ms: 1000 }.is_transient());
     }
 
@@ -610,7 +616,7 @@ mod tests {
 
         msg.successful_targets.insert(node1.clone());
 
-        let all_targets = vec![node1.clone(), node2.clone(), node3.clone()];
+        let all_targets = [node1.clone(), node2.clone(), node3.clone()];
 
         let failed = msg.failed_targets(all_targets.iter());
         assert_eq!(failed.len(), 2);

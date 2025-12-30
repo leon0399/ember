@@ -10,7 +10,9 @@ use ratatui::prelude::*;
 use reme_core::Client;
 use reme_identity::{Identity, PublicID};
 use reme_message::Content;
-use reme_node_core::{EmbeddedNode, EmbeddedNodeHandle, NodeEvent, PersistentMailboxStore, PersistentStoreConfig};
+use reme_node_core::{
+    EmbeddedNode, EmbeddedNodeHandle, NodeEvent, PersistentMailboxStore, PersistentStoreConfig,
+};
 use reme_outbox::{OutboxConfig, TransportRetryPolicy};
 use reme_storage::Storage;
 use reme_transport::http::NodeSpec;
@@ -21,22 +23,23 @@ use reme_transport::{
     CertPin, CompositeTransport, DeliveryTier, MessageReceiver, MqttBrokerSpec, MqttTransport,
     ReceiverConfig, TargetId, TransportEvent, TransportRegistry, TransportTarget,
 };
-use tokio::sync::mpsc;
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use tui_textarea::{Input, TextArea};
 use zeroize::Zeroizing;
 
 pub type AppResult<T> = Result<T, Box<dyn std::error::Error>>;
 
-/// Length of a PublicID when encoded as hexadecimal (32 bytes = 64 hex chars)
+/// Length of a `PublicID` when encoded as hexadecimal (32 bytes = 64 hex chars)
 const PUBLIC_ID_HEX_LENGTH: usize = 64;
 
 /// Help text shown in status bar (Alt+H or initial startup)
-const HELP_TEXT: &str = "Alt+A/F2: add | Alt+U/F4: upstream | Alt+V/F5: view | Alt+I/F3: identity | Ctrl+Q: quit";
+const HELP_TEXT: &str =
+    "Alt+A/F2: add | Alt+U/F4: upstream | Alt+V/F5: view | Alt+I/F3: identity | Ctrl+Q: quit";
 
 /// Short help hint for status bar
 const HELP_HINT: &str = "Alt+H for help";
@@ -102,10 +105,11 @@ pub struct AddContactPopup<'a> {
     pub error: Option<String>,
 }
 
-impl<'a> Default for AddContactPopup<'a> {
+impl Default for AddContactPopup<'_> {
     fn default() -> Self {
         let mut public_id_input = TextArea::default();
-        public_id_input.set_placeholder_text(&format!("{}-character hex string", PUBLIC_ID_HEX_LENGTH));
+        public_id_input
+            .set_placeholder_text(format!("{PUBLIC_ID_HEX_LENGTH}-character hex string"));
         public_id_input.set_cursor_line_style(Style::default());
 
         let mut name_input = TextArea::default();
@@ -121,7 +125,7 @@ impl<'a> Default for AddContactPopup<'a> {
     }
 }
 
-impl<'a> AddContactPopup<'a> {
+impl AddContactPopup<'_> {
     /// Reset the popup to initial state
     pub fn reset(&mut self) {
         *self = Self::default();
@@ -152,8 +156,8 @@ impl<'a> AddContactPopup<'a> {
             ));
         }
 
-        let bytes = hex::decode(hex_str)
-            .map_err(|_| "Invalid hex characters in Public ID".to_string())?;
+        let bytes =
+            hex::decode(hex_str).map_err(|_| "Invalid hex characters in Public ID".to_string())?;
 
         // Safe: hex::decode of 64-char hex string always produces exactly 32 bytes
         let bytes: [u8; 32] = bytes
@@ -192,7 +196,7 @@ pub struct AddUpstreamPopup<'a> {
     pub error: Option<String>,
 }
 
-impl<'a> Default for AddUpstreamPopup<'a> {
+impl Default for AddUpstreamPopup<'_> {
     fn default() -> Self {
         let mut url_input = TextArea::default();
         url_input.set_placeholder_text("http://192.168.1.50:23003");
@@ -208,7 +212,7 @@ impl<'a> Default for AddUpstreamPopup<'a> {
     }
 }
 
-impl<'a> AddUpstreamPopup<'a> {
+impl AddUpstreamPopup<'_> {
     /// Reset the popup to initial state
     pub fn reset(&mut self) {
         *self = Self::default();
@@ -265,13 +269,12 @@ impl<'a> AddUpstreamPopup<'a> {
             .find_map(|s| url.strip_prefix(s))
             .unwrap_or("");
         if after_scheme.is_empty() || after_scheme.starts_with('/') {
-            return Err(format!("Invalid {} URL: missing host", type_name));
+            return Err(format!("Invalid {type_name} URL: missing host"));
         }
 
         Ok(url)
     }
 }
-
 
 /// A conversation/contact entry
 #[derive(Debug, Clone)]
@@ -310,7 +313,7 @@ pub struct App<'a> {
     pub input: TextArea<'a>,
     /// Status message
     pub status: String,
-    /// The messenger client (uses CompositeTransport for sending via HTTP and/or MQTT)
+    /// The messenger client (uses `CompositeTransport` for sending via HTTP and/or MQTT)
     client: Client<CompositeTransport>,
     /// HTTP transport pool for message receiving (HTTP polling-based receiver)
     http_pool: Arc<TransportPool<HttpTarget>>,
@@ -342,7 +345,7 @@ pub struct App<'a> {
     outbox_tick_interval: Duration,
 }
 
-impl<'a> App<'a> {
+impl App<'_> {
     /// Create a new app instance
     ///
     /// # Arguments
@@ -386,15 +389,17 @@ impl<'a> App<'a> {
             .collect::<Result<Vec<_>, String>>()?;
 
         // Create HTTP transport pool for both sending and receiving
-        let http_pool = if !node_specs.is_empty() {
+        let http_pool = if node_specs.is_empty() {
+            None
+        } else {
             let pool = TransportPool::from_node_specs(node_specs)?;
             Some(Arc::new(pool))
-        } else {
-            None
         };
 
         // Create MQTT transport if brokers are configured
-        let mqtt_transport = if !config.mqtt.is_empty() {
+        let mqtt_transport = if config.mqtt.is_empty() {
+            None
+        } else {
             // Convert config brokers to transport broker specs
             let broker_specs: Vec<MqttBrokerSpec> = config
                 .mqtt
@@ -408,12 +413,13 @@ impl<'a> App<'a> {
             match MqttTransport::new(broker_specs).await {
                 Ok(t) => Some(t),
                 Err(e) => {
-                    warn!("Failed to connect to MQTT brokers: {}. MQTT transport disabled.", e);
+                    warn!(
+                        "Failed to connect to MQTT brokers: {}. MQTT transport disabled.",
+                        e
+                    );
                     None
                 }
             }
-        } else {
-            None
         };
 
         // Extract identity bytes for HTTP server (before embedded node block)
@@ -423,14 +429,18 @@ impl<'a> App<'a> {
         let identity_bytes = Zeroizing::new(identity.to_bytes());
 
         // Create embedded node if enabled
-        let (embedded_node_handle, embedded_node_task, node_event_rx) = if config.embedded_node.enabled {
+        let (embedded_node_handle, embedded_node_task, node_event_rx) = if config
+            .embedded_node
+            .enabled
+        {
             info!("Starting embedded node...");
 
             // Create persistent store config from app config
             let store_config = PersistentStoreConfig::new(
                 config.embedded_node.max_messages as usize,
                 config.embedded_node.default_ttl_secs,
-            ).map_err(|e| format!("Invalid embedded node config: {}", e))?;
+            )
+            .map_err(|e| format!("Invalid embedded node config: {e}"))?;
 
             // Create mailbox store in the same data directory
             let mailbox_db_path = config.data_dir.join("mailbox.db");
@@ -438,7 +448,7 @@ impl<'a> App<'a> {
                 .to_str()
                 .ok_or("Mailbox database path contains invalid UTF-8 characters")?;
             let mailbox_store = PersistentMailboxStore::open(mailbox_db_str, store_config)
-                .map_err(|e| format!("Failed to open mailbox store: {}", e))?;
+                .map_err(|e| format!("Failed to open mailbox store: {e}"))?;
 
             // Create and spawn embedded node, keeping JoinHandle for graceful shutdown
             let (node, handle, event_rx) = EmbeddedNode::new(mailbox_store);
@@ -464,7 +474,7 @@ impl<'a> App<'a> {
                     http_identity,
                 )
                 .await
-                .map_err(|e| format!("Failed to start HTTP server: {}", e))?;
+                .map_err(|e| format!("Failed to start HTTP server: {e}"))?;
 
                 // Now spawn the server task - binding already succeeded
                 tokio::spawn(async move {
@@ -581,9 +591,8 @@ impl<'a> App<'a> {
         input.set_cursor_line_style(Style::default());
 
         // Ensure we have HTTP transport pool for message receiving
-        let http_pool_arc = http_pool.ok_or(
-            "No HTTP nodes configured. HTTP is required for message receiving.",
-        )?;
+        let http_pool_arc =
+            http_pool.ok_or("No HTTP nodes configured. HTTP is required for message receiving.")?;
 
         let mut app = Self {
             running: true,
@@ -693,11 +702,12 @@ impl<'a> App<'a> {
                 match event {
                     NodeEvent::MessageReceived(envelope) => {
                         debug!("Received message from embedded node");
-                        self.process_incoming_envelope(&envelope, "embedded node").await;
+                        self.process_incoming_envelope(&envelope, "embedded node")
+                            .await;
                     }
                     NodeEvent::Error(e) => {
                         tracing::error!("Embedded node error: {}", e);
-                        self.status = format!("Node error: {}", e);
+                        self.status = format!("Node error: {e}");
                     }
                 }
             }
@@ -763,7 +773,11 @@ impl<'a> App<'a> {
     /// Process an incoming envelope from any transport source.
     ///
     /// Decrypts the message, extracts content, and updates the UI.
-    async fn process_incoming_envelope(&mut self, envelope: &reme_message::OuterEnvelope, source: &str) {
+    async fn process_incoming_envelope(
+        &mut self,
+        envelope: &reme_message::OuterEnvelope,
+        source: &str,
+    ) {
         match self.client.process_message(envelope).await {
             Ok(msg) => {
                 let content = match &msg.content {
@@ -775,7 +789,7 @@ impl<'a> App<'a> {
             }
             Err(e) => {
                 warn!("Failed to process {} message: {}", source, e);
-                self.status = format!("Message decrypt failed: {}", e);
+                self.status = format!("Message decrypt failed: {e}");
             }
         }
     }
@@ -783,7 +797,11 @@ impl<'a> App<'a> {
     /// Get or create a conversation for a contact, returns the index
     fn get_or_create_conversation(&mut self, public_id: PublicID) -> usize {
         // Check if conversation exists
-        if let Some(idx) = self.conversations.iter().position(|c| c.public_id == public_id) {
+        if let Some(idx) = self
+            .conversations
+            .iter()
+            .position(|c| c.public_id == public_id)
+        {
             return idx;
         }
 
@@ -861,12 +879,9 @@ impl<'a> App<'a> {
 
         // Global shortcuts
         if key.modifiers.contains(KeyModifiers::CONTROL) {
-            match key.code {
-                KeyCode::Char('c') | KeyCode::Char('q') => {
-                    self.running = false;
-                    return Ok(());
-                }
-                _ => {}
+            if let KeyCode::Char('c' | 'q') = key.code {
+                self.running = false;
+                return Ok(());
             }
         }
 
@@ -874,31 +889,33 @@ impl<'a> App<'a> {
         // Note: Handle both lowercase and uppercase since some terminals send different cases
         if key.modifiers.contains(KeyModifiers::ALT) {
             match key.code {
-                KeyCode::Char('a') | KeyCode::Char('A') => {
+                KeyCode::Char('a' | 'A') => {
                     // Alt+A: Add contact
                     self.show_add_contact_popup = true;
                     self.add_contact_popup.reset();
-                    self.status = "Add Contact (Tab: switch, Enter: confirm, Esc: cancel)".to_string();
+                    self.status =
+                        "Add Contact (Tab: switch, Enter: confirm, Esc: cancel)".to_string();
                     return Ok(());
                 }
-                KeyCode::Char('i') | KeyCode::Char('I') => {
+                KeyCode::Char('i' | 'I') => {
                     // Alt+I: Show identity
                     self.show_my_id_popup = true;
                     return Ok(());
                 }
-                KeyCode::Char('u') | KeyCode::Char('U') => {
+                KeyCode::Char('u' | 'U') => {
                     // Alt+U: Add upstream
                     self.show_add_upstream_popup = true;
                     self.add_upstream_popup.reset();
-                    self.status = "Add Upstream (Tab: switch, ←/→: type, Enter: add, Esc: cancel)".to_string();
+                    self.status = "Add Upstream (Tab: switch, ←/→: type, Enter: add, Esc: cancel)"
+                        .to_string();
                     return Ok(());
                 }
-                KeyCode::Char('v') | KeyCode::Char('V') => {
+                KeyCode::Char('v' | 'V') => {
                     // Alt+V: View upstreams
                     self.show_upstreams_popup = true;
                     return Ok(());
                 }
-                KeyCode::Char('h') | KeyCode::Char('H') => {
+                KeyCode::Char('h' | 'H') => {
                     // Alt+H: Show help
                     self.status = HELP_TEXT.to_string();
                     return Ok(());
@@ -925,7 +942,8 @@ impl<'a> App<'a> {
                 // F4: Add upstream (fallback for Alt+U)
                 self.show_add_upstream_popup = true;
                 self.add_upstream_popup.reset();
-                self.status = "Add Upstream (Tab: switch, ←/→: type, Enter: add, Esc: cancel)".to_string();
+                self.status =
+                    "Add Upstream (Tab: switch, ←/→: type, Enter: add, Esc: cancel)".to_string();
                 return Ok(());
             }
             KeyCode::F(5) => {
@@ -958,13 +976,11 @@ impl<'a> App<'a> {
                     Focus::Input => Focus::Messages,
                 };
             }
-            _ => {
-                match self.focus {
-                    Focus::Conversations => self.handle_conversation_key(key).await?,
-                    Focus::Messages => self.handle_message_key(key),
-                    Focus::Input => self.handle_input_key(key).await?,
-                }
-            }
+            _ => match self.focus {
+                Focus::Conversations => self.handle_conversation_key(key).await?,
+                Focus::Messages => self.handle_message_key(key),
+                Focus::Input => self.handle_input_key(key).await?,
+            },
         }
 
         Ok(())
@@ -1025,50 +1041,47 @@ impl<'a> App<'a> {
 
     /// Handle key events in input area
     async fn handle_input_key(&mut self, key: KeyEvent) -> AppResult<()> {
-        match key.code {
-            KeyCode::Enter => {
-                // Send message
-                let text = self.input.lines().join("\n");
-                if !text.trim().is_empty() {
-                    if let Some(conv) = self.conversations.get(self.selected_conversation) {
-                        let public_id = conv.public_id;
-                        match self.client.send_text(&public_id, &text).await {
-                            Ok(_) => {
-                                // Create message object
-                                let message = Message {
-                                    from_me: true,
-                                    sender_name: "You".to_string(),
-                                    content: text,
-                                    timestamp: utc_time_now(),
-                                };
+        if key.code == KeyCode::Enter {
+            // Send message
+            let text = self.input.lines().join("\n");
+            if !text.trim().is_empty() {
+                if let Some(conv) = self.conversations.get(self.selected_conversation) {
+                    let public_id = conv.public_id;
+                    match self.client.send_text(&public_id, &text).await {
+                        Ok(_) => {
+                            // Create message object
+                            let message = Message {
+                                from_me: true,
+                                sender_name: "You".to_string(),
+                                content: text,
+                                timestamp: utc_time_now(),
+                            };
 
-                                // Cache the message
-                                self.cache_message(public_id, message.clone());
+                            // Cache the message
+                            self.cache_message(public_id, message.clone());
 
-                                // Add to visible messages
-                                self.messages.push(message);
+                            // Add to visible messages
+                            self.messages.push(message);
 
-                                self.input = TextArea::default();
-                                self.input.set_placeholder_text("Type a message...");
-                                self.status = "Message sent!".to_string();
-                            }
-                            Err(e) => {
-                                self.status = format!("Send failed: {}", e);
-                            }
+                            self.input = TextArea::default();
+                            self.input.set_placeholder_text("Type a message...");
+                            self.status = "Message sent!".to_string();
+                        }
+                        Err(e) => {
+                            self.status = format!("Send failed: {e}");
                         }
                     }
                 }
             }
-            _ => {
-                // Forward to textarea
-                let input = Input::from(key);
-                self.input.input(input);
-            }
+        } else {
+            // Forward to textarea
+            let input = Input::from(key);
+            self.input.input(input);
         }
         Ok(())
     }
 
-    /// Cache a message with size limit (O(1) eviction using VecDeque)
+    /// Cache a message with size limit (O(1) eviction using `VecDeque`)
     fn cache_message(&mut self, contact: PublicID, message: Message) {
         let cache = self.message_cache.entry(contact).or_default();
         cache.push_back(message);
@@ -1107,7 +1120,7 @@ impl<'a> App<'a> {
                     AddContactField::PublicId => "Public ID",
                     AddContactField::Name => "Name",
                 };
-                self.status = format!("Focus: {} field", field_name);
+                self.status = format!("Focus: {field_name} field");
             }
             KeyCode::Enter => {
                 // Attempt to add contact
@@ -1172,10 +1185,10 @@ impl<'a> App<'a> {
                 // Close popup and show success
                 self.show_add_contact_popup = false;
                 self.add_contact_popup.reset();
-                self.status = format!("Added contact: {}", display_name);
+                self.status = format!("Added contact: {display_name}");
             }
             Err(e) => {
-                self.add_contact_popup.error = Some(format!("Failed to add contact: {}", e));
+                self.add_contact_popup.error = Some(format!("Failed to add contact: {e}"));
             }
         }
 
@@ -1185,7 +1198,7 @@ impl<'a> App<'a> {
     /// Handle key events when my ID popup is visible
     fn handle_my_id_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
         match key.code {
-            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('i') => {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | 'i') => {
                 // Close popup
                 self.show_my_id_popup = false;
             }
@@ -1197,7 +1210,7 @@ impl<'a> App<'a> {
     /// Handle key events when view upstreams popup is visible
     fn handle_upstreams_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
         match key.code {
-            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('v') => {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | 'v') => {
                 // Close popup
                 self.show_upstreams_popup = false;
             }
@@ -1230,7 +1243,9 @@ impl<'a> App<'a> {
                             UpstreamType::Http => "http://192.168.1.50:23003",
                             UpstreamType::Mqtt => "mqtt://192.168.1.50:1883",
                         };
-                        self.add_upstream_popup.url_input.set_placeholder_text(placeholder);
+                        self.add_upstream_popup
+                            .url_input
+                            .set_placeholder_text(placeholder);
                     }
                     AddUpstreamField::Tier => {
                         // Toggle delivery tier
@@ -1294,7 +1309,7 @@ impl<'a> App<'a> {
                 self.registry
                     .add_http_target(url, None, tier)
                     .await
-                    .map_err(|e| format!("Failed to create HTTP transport: {}", e))?;
+                    .map_err(|e| format!("Failed to create HTTP transport: {e}"))?;
                 info!(url = %url, "Added ephemeral HTTP upstream");
             }
             UpstreamType::Mqtt => {
@@ -1305,7 +1320,7 @@ impl<'a> App<'a> {
                 };
                 let transport = MqttTransport::new(vec![broker_spec])
                     .await
-                    .map_err(|e| format!("Failed to connect to MQTT broker: {}", e))?;
+                    .map_err(|e| format!("Failed to connect to MQTT broker: {e}"))?;
 
                 // Add to composite transport via registry
                 self.registry.composite().add_transport(transport).await;
@@ -1332,7 +1347,7 @@ fn utc_time_now() -> String {
 
     let hours = (secs % 86400) / 3600;
     let mins = (secs % 3600) / 60;
-    format!("{:02}:{:02}", hours, mins)
+    format!("{hours:02}:{mins:02}")
 }
 
 /// Format a display name from optional name and public ID

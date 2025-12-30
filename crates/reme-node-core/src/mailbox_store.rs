@@ -1,11 +1,11 @@
-//! Persistent mailbox storage using SQLite
+//! Persistent mailbox storage using `SQLite`
 //!
 //! This module provides durable storage for message envelopes that survives
 //! node restarts.
 //!
 //! ## Design Decisions
 //!
-//! - **SQLite with WAL mode**: Enables fast writes and crash recovery
+//! - **`SQLite` with WAL mode**: Enables fast writes and crash recovery
 //! - **Bincode serialization**: Compact binary format for envelopes
 //! - **Unix timestamps**: Portable, no `Instant` serialization issues
 //! - **Serialized access**: A `Mutex` ensures thread-safe access to the database connection
@@ -82,7 +82,7 @@ impl PersistentStoreConfig {
 /// Trait for mailbox storage backends
 ///
 /// This trait abstracts the storage layer for mailbox nodes, allowing
-/// different implementations (SQLite, in-memory, etc.)
+/// different implementations (`SQLite`, in-memory, etc.)
 pub trait MailboxStore: Send + Sync {
     /// Store a message in the mailbox for the given routing key
     fn enqueue(&self, routing_key: RoutingKey, envelope: OuterEnvelope) -> Result<(), NodeError>;
@@ -91,16 +91,20 @@ pub trait MailboxStore: Send + Sync {
     fn fetch(&self, routing_key: &RoutingKey) -> Result<Vec<OuterEnvelope>, NodeError>;
 
     /// Check if a message with the given ID exists for the routing key
-    fn has_message(&self, routing_key: &RoutingKey, message_id: &MessageID) -> Result<bool, NodeError>;
+    fn has_message(
+        &self,
+        routing_key: &RoutingKey,
+        message_id: &MessageID,
+    ) -> Result<bool, NodeError>;
 
     /// Delete a message by ID (for tombstone support)
     ///
     /// Returns `Ok(true)` if a message was deleted, `Ok(false)` if not found.
     fn delete_message(&self, message_id: &MessageID) -> Result<bool, NodeError>;
 
-    /// Get the ack_hash for a message (for tombstone verification)
+    /// Get the `ack_hash` for a message (for tombstone verification)
     ///
-    /// Returns the ack_hash from the stored message, or None if the message
+    /// Returns the `ack_hash` from the stored message, or None if the message
     /// doesn't exist or has expired.
     fn get_ack_hash(&self, message_id: &MessageID) -> Result<Option<[u8; 16]>, NodeError>;
 
@@ -116,7 +120,7 @@ pub struct PersistentStoreStats {
     pub expired_pending_cleanup: usize,
 }
 
-/// Persistent mailbox store backed by SQLite
+/// Persistent mailbox store backed by `SQLite`
 pub struct PersistentMailboxStore {
     conn: Mutex<Connection>,
     config: PersistentStoreConfig,
@@ -160,19 +164,19 @@ impl PersistentMailboxStore {
         Ok(store)
     }
 
-    /// Configure SQLite connection for optimal performance
+    /// Configure `SQLite` connection for optimal performance
     fn configure_connection(&self) -> Result<(), NodeError> {
         let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
 
         // Enable WAL mode for better concurrent performance
         conn.execute_batch(
-            r#"
+            r"
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous = NORMAL;
             PRAGMA cache_size = -64000;
             PRAGMA temp_store = MEMORY;
             PRAGMA mmap_size = 268435456;
-            "#,
+            ",
         )?;
 
         Ok(())
@@ -183,7 +187,7 @@ impl PersistentMailboxStore {
         let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
 
         conn.execute_batch(
-            r#"
+            r"
             CREATE TABLE IF NOT EXISTS mailbox_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 routing_key BLOB NOT NULL,
@@ -208,7 +212,7 @@ impl PersistentMailboxStore {
             );
 
             INSERT OR IGNORE INTO schema_version (version) VALUES (1);
-            "#,
+            ",
         )?;
 
         debug!("persistent store schema initialized");
@@ -223,14 +227,14 @@ impl PersistentMailboxStore {
             .as_secs()
     }
 
-    /// Serialize an OuterEnvelope to bytes
+    /// Serialize an `OuterEnvelope` to bytes
     fn serialize_envelope(envelope: &OuterEnvelope) -> Result<Vec<u8>, NodeError> {
         let bincode_config = config::standard();
         bincode::encode_to_vec(envelope, bincode_config)
             .map_err(|e| NodeError::Serialization(e.to_string()))
     }
 
-    /// Deserialize bytes to an OuterEnvelope
+    /// Deserialize bytes to an `OuterEnvelope`
     fn deserialize_envelope(data: &[u8]) -> Result<OuterEnvelope, NodeError> {
         let bincode_config = config::standard();
         let (envelope, _): (OuterEnvelope, _) = bincode::decode_from_slice(data, bincode_config)
@@ -307,9 +311,9 @@ impl PersistentMailboxStore {
         Ok(deleted > 0)
     }
 
-    /// Get the ack_hash for a message by ID (for Tombstone V2 verification)
+    /// Get the `ack_hash` for a message by ID (for Tombstone V2 verification)
     ///
-    /// Returns the ack_hash from the stored message, or None if the message
+    /// Returns the `ack_hash` from the stored message, or None if the message
     /// doesn't exist or has expired.
     pub fn get_ack_hash(&self, message_id: &MessageID) -> Result<Option<[u8; 16]>, NodeError> {
         match self.get_message(message_id)? {
@@ -365,8 +369,7 @@ impl MailboxStore for PersistentMailboxStore {
         // Calculate expiration
         let ttl_secs = envelope
             .ttl_hours
-            .map(|h| h as u64 * 3600)
-            .unwrap_or(self.config.default_ttl_secs);
+            .map_or(self.config.default_ttl_secs, |h| u64::from(h) * 3600);
         let expires_at = now + ttl_secs;
 
         let envelope_data = Self::serialize_envelope(&envelope)?;
@@ -485,7 +488,11 @@ impl MailboxStore for PersistentMailboxStore {
         Ok(envelopes)
     }
 
-    fn has_message(&self, routing_key: &RoutingKey, message_id: &MessageID) -> Result<bool, NodeError> {
+    fn has_message(
+        &self,
+        routing_key: &RoutingKey,
+        message_id: &MessageID,
+    ) -> Result<bool, NodeError> {
         let now = Self::now_secs();
         let message_id_bytes = message_id.as_bytes();
 
@@ -581,8 +588,12 @@ mod tests {
         let store = PersistentMailboxStore::in_memory(config).unwrap();
         let routing_key = RoutingKey::from_bytes([4u8; 16]);
 
-        store.enqueue(routing_key, create_test_envelope(routing_key, Some(1))).unwrap();
-        store.enqueue(routing_key, create_test_envelope(routing_key, Some(1))).unwrap();
+        store
+            .enqueue(routing_key, create_test_envelope(routing_key, Some(1)))
+            .unwrap();
+        store
+            .enqueue(routing_key, create_test_envelope(routing_key, Some(1)))
+            .unwrap();
 
         // Third should fail
         let result = store.enqueue(routing_key, create_test_envelope(routing_key, Some(1)));
@@ -654,9 +665,15 @@ mod tests {
         let rk1 = RoutingKey::from_bytes([10u8; 16]);
         let rk2 = RoutingKey::from_bytes([11u8; 16]);
 
-        store.enqueue(rk1, create_test_envelope(rk1, Some(1))).unwrap();
-        store.enqueue(rk1, create_test_envelope(rk1, Some(1))).unwrap();
-        store.enqueue(rk2, create_test_envelope(rk2, Some(1))).unwrap();
+        store
+            .enqueue(rk1, create_test_envelope(rk1, Some(1)))
+            .unwrap();
+        store
+            .enqueue(rk1, create_test_envelope(rk1, Some(1)))
+            .unwrap();
+        store
+            .enqueue(rk2, create_test_envelope(rk2, Some(1)))
+            .unwrap();
 
         let stats = store.stats().unwrap();
         assert_eq!(stats.mailbox_count, 2);

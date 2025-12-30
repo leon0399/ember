@@ -1,7 +1,7 @@
 //! Merkle DAG gap detection for message ordering.
 //!
 //! This module provides tools for detecting missing messages in the DAG
-//! using content-addressed IDs (ContentId).
+//! using content-addressed IDs (`ContentId`).
 
 use std::collections::{HashMap, HashSet};
 
@@ -13,7 +13,7 @@ pub enum GapResult {
     /// Message has complete ancestry (all parents known).
     Complete {
         /// Orphans that were resolved as a result of this message arriving.
-        /// Each tuple is (content_id, prev_self) for proper head tracking.
+        /// Each tuple is (`content_id`, `prev_self`) for proper head tracking.
         resolved_orphans: Vec<(ContentId, ContentId)>,
     },
     /// Message is missing one or more parents.
@@ -33,7 +33,7 @@ impl GapResult {
 /// Information about an orphaned message (missing parent).
 #[derive(Debug, Clone)]
 pub struct OrphanInfo {
-    /// The content_id of the missing parent.
+    /// The `content_id` of the missing parent.
     pub missing_parent: ContentId,
     /// Timestamp (ms) when this orphan was received.
     pub received_at_ms: u64,
@@ -48,7 +48,7 @@ pub struct ReceiverGapDetector {
     /// Messages received with complete ancestry (all parents known).
     complete: HashSet<ContentId>,
 
-    /// Messages missing their parent (content_id -> orphan info).
+    /// Messages missing their parent (`content_id` -> orphan info).
     orphans: HashMap<ContentId, OrphanInfo>,
 
     /// Index: missing parent -> orphans waiting for it.
@@ -101,7 +101,10 @@ impl ReceiverGapDetector {
                         },
                     );
                     // Index for O(1) lookup when parent arrives
-                    self.waiting_on.entry(parent_id).or_default().push(content_id);
+                    self.waiting_on
+                        .entry(parent_id)
+                        .or_default()
+                        .push(content_id);
                     GapResult::Gap {
                         missing: vec![parent_id],
                     }
@@ -110,12 +113,12 @@ impl ReceiverGapDetector {
         }
     }
 
-    /// Mark a content_id as complete without checking parents.
+    /// Mark a `content_id` as complete without checking parents.
     ///
     /// Use this for messages received through alternative means (e.g., resync)
     /// where we know the content is valid but don't have the parent chain.
     ///
-    /// Returns list of (content_id, prev_self) for any orphans that were
+    /// Returns list of (`content_id`, `prev_self`) for any orphans that were
     /// resolved as a result of marking this message complete.
     pub fn mark_complete(&mut self, content_id: ContentId) -> Vec<(ContentId, ContentId)> {
         self.complete.insert(content_id);
@@ -161,8 +164,8 @@ impl ReceiverGapDetector {
     /// when resolving long chains of orphaned messages.
     /// Uses `waiting_on` index for O(1) lookup per resolution.
     ///
-    /// Returns list of (content_id, prev_self) for all resolved orphans,
-    /// so caller can update peer_heads tracking.
+    /// Returns list of (`content_id`, `prev_self`) for all resolved orphans,
+    /// so caller can update `peer_heads` tracking.
     fn try_resolve_orphans(&mut self, new_complete_id: ContentId) -> Vec<(ContentId, ContentId)> {
         let mut work_queue = vec![new_complete_id];
         let mut resolved = Vec::new();
@@ -209,8 +212,8 @@ impl ReceiverGapDetector {
 /// and the new message becomes a head.
 #[derive(Debug, Default)]
 pub struct SenderGapDetector {
-    /// Messages we've sent, keyed by content_id.
-    /// Value is the previous message's content_id (for chain traversal).
+    /// Messages we've sent, keyed by `content_id`.
+    /// Value is the previous message's `content_id` (for chain traversal).
     sent: HashMap<ContentId, Option<ContentId>>,
 
     /// Current leaf nodes (heads) of our sent message DAG.
@@ -239,7 +242,7 @@ impl SenderGapDetector {
         self.heads.insert(content_id);
     }
 
-    /// Get one of our current heads (for use as prev_self in next message).
+    /// Get one of our current heads (for use as `prev_self` in next message).
     ///
     /// Returns an arbitrary head if multiple exist. For single-device
     /// sequential sends, there's always exactly one head.
@@ -252,7 +255,7 @@ impl SenderGapDetector {
         &self.heads
     }
 
-    /// Determine which messages the peer is missing based on their observed_heads.
+    /// Determine which messages the peer is missing based on their `observed_heads`.
     ///
     /// # Arguments
     /// * `peer_observed` - The content IDs the peer has observed from us
@@ -332,7 +335,7 @@ impl SenderGapDetector {
             .collect();
 
         // Sort for consistent ordering (by byte value)
-        result.sort();
+        result.sort_unstable();
         result
     }
 
@@ -341,7 +344,7 @@ impl SenderGapDetector {
         self.sent.len()
     }
 
-    /// Check if a content_id is known (we have record of sending it).
+    /// Check if a `content_id` is known (we have record of sending it).
     ///
     /// Used to detect if peer saw messages we don't remember sending
     /// (indicates we lost state).
@@ -366,7 +369,7 @@ pub struct ConversationDag {
     /// Current epoch for this conversation.
     pub epoch: u16,
     /// The peer's current heads (leaf nodes of their sent DAG).
-    /// Used to construct observed_heads when we send messages.
+    /// Used to construct `observed_heads` when we send messages.
     /// Multiple heads occur with multi-device peers.
     peer_heads: HashSet<ContentId>,
 }
@@ -399,7 +402,7 @@ impl ConversationDag {
     ///
     /// Call this when receiving a message with a higher epoch than tracked.
     /// This indicates the peer intentionally cleared their history, so we
-    /// reset our receiver and peer_heads without affecting our sender state.
+    /// reset our receiver and `peer_heads` without affecting our sender state.
     ///
     /// # Panics
     /// Debug-asserts that `new_epoch > self.epoch` to catch misuse.
@@ -422,7 +425,7 @@ impl ConversationDag {
     ///
     /// # Arguments
     /// * `content_id` - The content ID of the received message
-    /// * `prev_self` - The message's prev_self (peer's parent reference)
+    /// * `prev_self` - The message's `prev_self` (peer's parent reference)
     pub fn update_peer_heads(&mut self, content_id: ContentId, prev_self: Option<ContentId>) {
         // Remove parent from heads (it's no longer a leaf node)
         if let Some(parent) = prev_self {
@@ -432,9 +435,9 @@ impl ConversationDag {
         self.peer_heads.insert(content_id);
     }
 
-    /// Get all peer heads for observed_heads.
+    /// Get all peer heads for `observed_heads`.
     ///
-    /// Returns a vector of the peer's current head content_ids
+    /// Returns a vector of the peer's current head `content_ids`
     /// to include in our outgoing messages.
     pub fn observed_heads(&self) -> Vec<ContentId> {
         self.peer_heads.iter().copied().collect()
@@ -447,7 +450,7 @@ impl ConversationDag {
         !self.peer_heads.is_empty()
     }
 
-    /// Check if any of the given content_ids are unknown to our sender tracker.
+    /// Check if any of the given `content_ids` are unknown to our sender tracker.
     ///
     /// This detects if the peer has seen messages from us that we don't remember
     /// sending (indicates we lost state).
@@ -501,12 +504,7 @@ mod tests {
             // Receive id2 without id1
             let result = detector.on_receive(id2, Some(id1), 2000);
 
-            assert_eq!(
-                result,
-                GapResult::Gap {
-                    missing: vec![id1]
-                }
-            );
+            assert_eq!(result, GapResult::Gap { missing: vec![id1] });
             assert!(detector.is_orphan(&id2));
             assert!(!detector.is_complete(&id2));
         }
@@ -663,7 +661,7 @@ mod tests {
             assert!(detector.heads().contains(&id2));
 
             detector.on_send(id3, Some(id1)); // Another child of id1
-            // Note: id1 already removed, so this just adds id3
+                                              // Note: id1 already removed, so this just adds id3
             assert_eq!(detector.heads().len(), 2); // Both id2 and id3 are heads
             assert!(detector.heads().contains(&id2));
             assert!(detector.heads().contains(&id3));

@@ -15,7 +15,7 @@
 //! - `REME_NODE_MAX_MESSAGES` - Maximum messages per mailbox
 //! - `REME_NODE_DEFAULT_TTL` - Default message TTL in seconds
 //! - `REME_NODE_LOG_LEVEL` - Log level (trace, debug, info, warn, error)
-//! - `REME_NODE_STORAGE_PATH` - Path to SQLite database file (`:memory:` for in-memory)
+//! - `REME_NODE_STORAGE_PATH` - Path to `SQLite` database file (`:memory:` for in-memory)
 //! - `REME_NODE_TLS_ENABLED` - Enable TLS/HTTPS (true/false)
 //! - `REME_NODE_TLS_CERT` - Path to PEM certificate file
 //! - `REME_NODE_TLS_KEY` - Path to PEM private key file
@@ -103,12 +103,12 @@ pub struct RateLimitConfig {
 /// TLS configuration for HTTPS server
 ///
 /// When enabled, the node will serve HTTPS instead of HTTP.
-/// Requires both cert_path and key_path to be set.
+/// Requires both `cert_path` and `key_path` to be set.
 #[derive(Debug, Clone, Deserialize, Serialize, Derivative)]
 #[derivative(Default)]
 #[serde(default)]
 pub struct TlsConfig {
-    /// Enable TLS (requires cert_path and key_path)
+    /// Enable TLS (requires `cert_path` and `key_path`)
     pub enabled: bool,
     /// Path to PEM-encoded certificate file
     pub cert_path: Option<PathBuf>,
@@ -122,7 +122,7 @@ pub struct TlsConfig {
 /// Certificate pinning is not currently supported for MQTT connections.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MqttBrokerConfig {
-    /// MQTT broker URL (e.g., "mqtts://broker.example.com:8883")
+    /// MQTT broker URL (e.g., "<mqtts://broker.example.com:8883>")
     pub url: String,
     /// Optional client ID (auto-generated if not specified)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -205,7 +205,7 @@ pub struct CliArgs {
     #[arg(short = 'b', long, env = "REME_NODE_BIND_ADDR")]
     pub bind_addr: Option<String>,
 
-    /// Port to bind (shorthand for bind_addr with 0.0.0.0)
+    /// Port to bind (shorthand for `bind_addr` with 0.0.0.0)
     #[arg(short = 'p', long, env = "REME_NODE_PORT")]
     pub port: Option<u16>,
 
@@ -249,18 +249,18 @@ pub struct CliArgs {
     #[arg(long, env = "REME_NODE_CLEANUP_ORPHAN_DELAY")]
     pub cleanup_orphan_delay: Option<u64>,
 
-    /// Path to SQLite database file (default: :memory:)
+    /// Path to `SQLite` database file (default: :memory:)
     /// Use ":memory:" for in-memory storage, or a file path for persistence
     #[arg(long, env = "REME_NODE_STORAGE_PATH")]
     pub storage_path: Option<String>,
 
     /// Username for HTTP Basic Auth (optional)
-    /// If set along with auth_password, incoming requests must authenticate
+    /// If set along with `auth_password`, incoming requests must authenticate
     #[arg(long, env = "REME_NODE_AUTH_USERNAME")]
     pub auth_username: Option<String>,
 
     /// Password for HTTP Basic Auth (optional)
-    /// If set along with auth_username, incoming requests must authenticate
+    /// If set along with `auth_username`, incoming requests must authenticate
     #[arg(long, env = "REME_NODE_AUTH_PASSWORD")]
     pub auth_password: Option<String>,
 
@@ -311,7 +311,7 @@ pub struct CliArgs {
     #[arg(long, env = "REME_NODE_MQTT_BROKER", value_delimiter = ',')]
     pub mqtt_broker: Option<Vec<String>>,
 
-    /// MQTT client IDs (comma-separated, matched with mqtt_broker)
+    /// MQTT client IDs (comma-separated, matched with `mqtt_broker`)
     /// If not specified, random client IDs will be generated
     #[arg(long, env = "REME_NODE_MQTT_CLIENT_ID", value_delimiter = ',')]
     pub mqtt_client_id: Option<Vec<String>>,
@@ -363,7 +363,7 @@ pub struct NodeConfig {
     #[serde(default)]
     pub cleanup: CleanupConfig,
 
-    /// Path to SQLite database file (default: :memory:)
+    /// Path to `SQLite` database file (default: :memory:)
     /// Use ":memory:" for in-memory storage, or a file path for persistence
     #[serde(default)]
     pub storage_path: Option<String>,
@@ -419,8 +419,8 @@ impl Default for NodeConfig {
             rate_limit: RateLimitConfig::default(),
             tls: TlsConfig::default(),
             mqtt: MqttBridgeConfig::default(),
-            identity_path: None,   // None means use default location
-            public_host: None,     // None means accept any (insecure mode)
+            identity_path: None, // None means use default location
+            public_host: None,   // None means accept any (insecure mode)
             additional_hosts: Vec::new(),
         }
     }
@@ -433,7 +433,8 @@ fn default_config_path() -> Option<PathBuf> {
 
 /// Get the default identity file path based on platform conventions
 pub fn default_identity_path() -> Option<PathBuf> {
-    ProjectDirs::from("com", "branch", "reme").map(|dirs| dirs.config_dir().join("node-identity.key"))
+    ProjectDirs::from("com", "branch", "reme")
+        .map(|dirs| dirs.config_dir().join("node-identity.key"))
 }
 
 /// Safely convert i64 to u32, clamping negative values to 0.
@@ -456,7 +457,7 @@ fn i64_to_usize_clamped(v: i64) -> usize {
 ///
 /// Priority (highest to lowest):
 /// 1. CLI arguments
-/// 2. Environment variables (REME_NODE_*)
+/// 2. Environment variables (`REME_NODE`_*)
 /// 3. Config file
 /// 4. Built-in defaults
 pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
@@ -469,7 +470,7 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         // Layer 1: Built-in defaults (lowest priority)
         .set_default("bind_addr", defaults.bind_addr.clone())?
         .set_default("max_messages", defaults.max_messages as i64)?
-        .set_default("default_ttl", defaults.default_ttl as i64)?
+        .set_default("default_ttl", i64::from(defaults.default_ttl))?
         .set_default("log_level", defaults.log_level.clone())?
         .set_default("node_id", defaults.node_id.clone())?
         .set_default::<_, Vec<String>>("peers", defaults.peers.clone())?
@@ -501,13 +502,13 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     }
     // Port is a shorthand for bind_addr
     if let Some(port) = cli.port {
-        builder = builder.set_override("bind_addr", format!("0.0.0.0:{}", port))?;
+        builder = builder.set_override("bind_addr", format!("0.0.0.0:{port}"))?;
     }
     if let Some(max_messages) = cli.max_messages {
         builder = builder.set_override("max_messages", max_messages as i64)?;
     }
     if let Some(default_ttl) = cli.default_ttl {
-        builder = builder.set_override("default_ttl", default_ttl as i64)?;
+        builder = builder.set_override("default_ttl", i64::from(default_ttl))?;
     }
     if let Some(ref log_level) = cli.log_level {
         builder = builder.set_override("log_level", log_level.clone())?;
@@ -546,9 +547,7 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         .unwrap_or(defaults.default_ttl);
     let log_level: String = config.get("log_level").unwrap_or(defaults.log_level);
     let node_id: String = config.get("node_id").unwrap_or(defaults.node_id);
-    let peers: Vec<String> = config
-        .get::<Vec<String>>("peers")
-        .unwrap_or(defaults.peers);
+    let peers: Vec<String> = config.get::<Vec<String>>("peers").unwrap_or(defaults.peers);
 
     // Extract cleanup config (using clamped conversions for safety)
     let cleanup = CleanupConfig {
@@ -658,10 +657,7 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
             .get::<String>("tls.cert_path")
             .ok()
             .map(PathBuf::from),
-        key_path: config
-            .get::<String>("tls.key_path")
-            .ok()
-            .map(PathBuf::from),
+        key_path: config.get::<String>("tls.key_path").ok().map(PathBuf::from),
     };
 
     // Apply CLI overrides for TLS
@@ -695,13 +691,19 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
             .collect();
         MqttBridgeConfig {
             brokers,
-            topic_prefix: cli.mqtt_topic_prefix.clone().or(mqtt_topic_prefix_from_config),
+            topic_prefix: cli
+                .mqtt_topic_prefix
+                .clone()
+                .or(mqtt_topic_prefix_from_config),
         }
     } else {
         // Use file/env config
         MqttBridgeConfig {
             brokers: mqtt_brokers_from_config,
-            topic_prefix: cli.mqtt_topic_prefix.clone().or(mqtt_topic_prefix_from_config),
+            topic_prefix: cli
+                .mqtt_topic_prefix
+                .clone()
+                .or(mqtt_topic_prefix_from_config),
         }
     };
 

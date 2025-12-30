@@ -202,10 +202,7 @@ impl CompositeTransport {
         }
 
         let transport_count = transports.len();
-        let futures: Vec<_> = transports
-            .into_iter()
-            .map(|t| op(t))
-            .collect();
+        let futures: Vec<_> = transports.into_iter().map(op).collect();
 
         let results = join_all(futures).await;
 
@@ -213,7 +210,7 @@ impl CompositeTransport {
         let success_count = results.iter().filter(|r| r.is_ok()).count();
         let errors: Vec<_> = results
             .into_iter()
-            .filter_map(|r| r.err())
+            .filter_map(std::result::Result::err)
             .collect();
 
         if success_count > 0 {
@@ -227,14 +224,20 @@ impl CompositeTransport {
                     "Some transports failed ({} of {}): {:?}",
                     errors.len(),
                     transport_count,
-                    errors.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+                    errors
+                        .iter()
+                        .map(std::string::ToString::to_string)
+                        .collect::<Vec<_>>()
                 );
             }
             Ok(())
         } else {
             Err(TransportError::Network(format!(
                 "All transports failed: {:?}",
-                errors.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+                errors
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect::<Vec<_>>()
             )))
         }
     }
@@ -256,7 +259,10 @@ impl Transport for CompositeTransport {
         .await
     }
 
-    async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
+    async fn submit_ack_tombstone(
+        &self,
+        tombstone: SignedAckTombstone,
+    ) -> Result<(), TransportError> {
         self.broadcast(|t| {
             let ts = tombstone.clone();
             async move { t.submit_ack_tombstone(ts).await }
@@ -278,7 +284,10 @@ mod tests {
 
     impl MockTransport {
         fn new(call_count: Arc<AtomicUsize>, should_fail: bool) -> Self {
-            Self { call_count, should_fail }
+            Self {
+                call_count,
+                should_fail,
+            }
         }
     }
 
@@ -293,7 +302,10 @@ mod tests {
             }
         }
 
-        async fn submit_ack_tombstone(&self, _tombstone: SignedAckTombstone) -> Result<(), TransportError> {
+        async fn submit_ack_tombstone(
+            &self,
+            _tombstone: SignedAckTombstone,
+        ) -> Result<(), TransportError> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
             if self.should_fail {
                 Err(TransportError::Network("Mock failure".to_string()))
@@ -415,7 +427,8 @@ mod tests {
         assert_eq!(composite.len(), 1);
 
         // Neither
-        let composite = CompositeTransport::from_options::<MockTransport, MockTransport>(None, None);
+        let composite =
+            CompositeTransport::from_options::<MockTransport, MockTransport>(None, None);
         assert!(composite.is_empty());
     }
 
@@ -424,12 +437,14 @@ mod tests {
         let call_count = Arc::new(AtomicUsize::new(0));
 
         // Start with one transport
-        let composite = CompositeTransport::new()
-            .with_transport(MockTransport::new(call_count.clone(), false));
+        let composite =
+            CompositeTransport::new().with_transport(MockTransport::new(call_count.clone(), false));
         assert_eq!(composite.len(), 1);
 
         // Add another at runtime
-        composite.add_transport(MockTransport::new(call_count.clone(), false)).await;
+        composite
+            .add_transport(MockTransport::new(call_count.clone(), false))
+            .await;
         assert_eq!(composite.len_async().await, 2);
 
         // Both transports should be called

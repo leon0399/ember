@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "Core node functionality for embedded and standalone mailbox nodes"
 
+[lints]
+workspace = true
+
 [dependencies]
 # Internal crates
 reme-message = { workspace = true }

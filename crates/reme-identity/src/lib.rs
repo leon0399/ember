@@ -1,20 +1,19 @@
-use std::fmt::{self, Debug, Display};
-use derive_more::{Deref, DerefMut, From};
+use bincode::de::Decoder;
+use bincode::enc::Encoder;
+use bincode::error::{DecodeError, EncodeError};
+use bincode::{impl_borrow_decode, Decode, Encode};
 use derivative::Derivative;
+use derive_more::{Deref, DerefMut, From};
 use getset::Getters;
 use rand_core::OsRng;
+use std::fmt::{self, Debug, Display};
 use thiserror::Error;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
 use xeddsa::{xed25519, Sign, Verify};
-use bincode::{Encode, Decode, impl_borrow_decode};
-use bincode::enc::Encoder;
-use bincode::de::Decoder;
-use bincode::error::{EncodeError, DecodeError};
 
 pub mod encrypted;
 pub use encrypted::{
-    EncryptedIdentity, EncryptedIdentityError,
-    is_encrypted, load_identity, save_identity,
+    is_encrypted, load_identity, save_identity, EncryptedIdentity, EncryptedIdentityError,
 };
 
 /// Error returned when a public key is invalid (e.g., low-order point)
@@ -38,54 +37,90 @@ pub struct InvalidPublicKey;
 pub fn is_low_order_point(public_key: &[u8; 32]) -> bool {
     const LOW_ORDER_POINTS: [[u8; 32]; 12] = [
         // 0 (order 4)
-        [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ],
         // 1 (order 1)
-        [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        [
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ],
         // 325606250916557431795983626356110631294008115727848805560023387167927233504 (order 8)
-        [0xe0, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0xae, 0x16, 0x56, 0xe3, 0xfa, 0xf1, 0x9f, 0xc4, 0x6a,
-         0xda, 0x09, 0x8d, 0xeb, 0x9c, 0x32, 0xb1, 0xfd, 0x86, 0x62, 0x05, 0x16, 0x5f, 0x49, 0xb8, 0x00],
+        [
+            0xe0, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0xae, 0x16, 0x56, 0xe3, 0xfa, 0xf1, 0x9f,
+            0xc4, 0x6a, 0xda, 0x09, 0x8d, 0xeb, 0x9c, 0x32, 0xb1, 0xfd, 0x86, 0x62, 0x05, 0x16,
+            0x5f, 0x49, 0xb8, 0x00,
+        ],
         // 39382357235489614581723060781553021112529911719440698176882885853963445705823 (order 8)
-        [0x5f, 0x9c, 0x95, 0xbc, 0xa3, 0x50, 0x8c, 0x24, 0xb1, 0xd0, 0xb1, 0x55, 0x9c, 0x83, 0xef, 0x5b,
-         0x04, 0x44, 0x5c, 0xc4, 0x58, 0x1c, 0x8e, 0x86, 0xd8, 0x22, 0x4e, 0xdd, 0xd0, 0x9f, 0x11, 0x57],
+        [
+            0x5f, 0x9c, 0x95, 0xbc, 0xa3, 0x50, 0x8c, 0x24, 0xb1, 0xd0, 0xb1, 0x55, 0x9c, 0x83,
+            0xef, 0x5b, 0x04, 0x44, 0x5c, 0xc4, 0x58, 0x1c, 0x8e, 0x86, 0xd8, 0x22, 0x4e, 0xdd,
+            0xd0, 0x9f, 0x11, 0x57,
+        ],
         // p-1 (order 2), where p = 2^255 - 19
-        [0xec, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f],
+        [
+            0xec, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0x7f,
+        ],
         // p (order 4) - equivalent to 0 mod p
-        [0xed, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f],
+        [
+            0xed, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0x7f,
+        ],
         // p+1 (order 1) - equivalent to 1 mod p
-        [0xee, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f],
+        [
+            0xee, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0x7f,
+        ],
         // p + order8_point_1 (order 8) - non-canonical representation
-        [0xcd, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0xae, 0x16, 0x56, 0xe3, 0xfa, 0xf1, 0x9f, 0xc4, 0x6a,
-         0xda, 0x09, 0x8d, 0xeb, 0x9c, 0x32, 0xb1, 0xfd, 0x86, 0x62, 0x05, 0x16, 0x5f, 0x49, 0xb8, 0x80],
+        [
+            0xcd, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0xae, 0x16, 0x56, 0xe3, 0xfa, 0xf1, 0x9f,
+            0xc4, 0x6a, 0xda, 0x09, 0x8d, 0xeb, 0x9c, 0x32, 0xb1, 0xfd, 0x86, 0x62, 0x05, 0x16,
+            0x5f, 0x49, 0xb8, 0x80,
+        ],
         // p + order8_point_2 (order 8) - non-canonical representation
-        [0x4c, 0x9c, 0x95, 0xbc, 0xa3, 0x50, 0x8c, 0x24, 0xb1, 0xd0, 0xb1, 0x55, 0x9c, 0x83, 0xef, 0x5b,
-         0x04, 0x44, 0x5c, 0xc4, 0x58, 0x1c, 0x8e, 0x86, 0xd8, 0x22, 0x4e, 0xdd, 0xd0, 0x9f, 0x11, 0xd7],
+        [
+            0x4c, 0x9c, 0x95, 0xbc, 0xa3, 0x50, 0x8c, 0x24, 0xb1, 0xd0, 0xb1, 0x55, 0x9c, 0x83,
+            0xef, 0x5b, 0x04, 0x44, 0x5c, 0xc4, 0x58, 0x1c, 0x8e, 0x86, 0xd8, 0x22, 0x4e, 0xdd,
+            0xd0, 0x9f, 0x11, 0xd7,
+        ],
         // 2p-1 (order 2) - non-canonical representation
-        [0xd9, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+        [
+            0xd9, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff,
+        ],
         // 2p (order 4) - non-canonical representation, equivalent to 0 mod p
-        [0xda, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+        [
+            0xda, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff,
+        ],
         // 2p+1 (order 1) - non-canonical representation, equivalent to 1 mod p
-        [0xdb, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+        [
+            0xdb, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff,
+        ],
     ];
 
     LOW_ORDER_POINTS.iter().any(|p| p == public_key)
 }
 
-/// PublicID is a 32-byte address for a user identity using XEdDSA.
+/// `PublicID` is a 32-byte address for a user identity using `XEdDSA`.
 ///
 /// **Structure**: Single 32-byte X25519 public key (Curve25519 Montgomery form)
 /// **Serialization**: 32 bytes on wire
 ///
-/// Uses XEdDSA protocol:
+/// Uses `XEdDSA` protocol:
 /// - X25519 for encryption and key exchange (direct usage)
-/// - XEdDSA signatures for authentication (via birational map to Ed25519)
+/// - `XEdDSA` signatures for authentication (via birational map to Ed25519)
 /// - Sign bit convention: Always 0 (enforced during key generation)
 ///
 /// This achieves 32-byte compact addresses while supporting both encryption
@@ -93,104 +128,104 @@ pub fn is_low_order_point(public_key: &[u8; 32]) -> bool {
 /// Curve25519 (Montgomery) and Ed25519 (Twisted Edwards) forms.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PublicID {
-  pub(crate) x25519_public: X25519PublicKey,
+    pub(crate) x25519_public: X25519PublicKey,
 }
 
 impl Display for PublicID {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    write!(f, "{}", hex::encode(self.to_bytes()))
-  }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", hex::encode(self.to_bytes()))
+    }
 }
 
 impl Debug for PublicID {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    write!(f, "PublicID({})", hex::encode(self.to_bytes()))
-  }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "PublicID({})", hex::encode(self.to_bytes()))
+    }
 }
 
 impl PublicID {
-  /// Serialize to 32 bytes (X25519 public key)
-  pub fn to_bytes(&self) -> [u8; 32] {
-    self.x25519_public.to_bytes()
-  }
-
-  /// Deserialize from 32 bytes with validation.
-  ///
-  /// Returns an error if the bytes represent a low-order point on Curve25519,
-  /// which would produce predictable shared secrets in ECDH.
-  ///
-  /// Use this for untrusted input (network, storage, user input).
-  pub fn try_from_bytes(bytes: &[u8; 32]) -> Result<Self, InvalidPublicKey> {
-    if is_low_order_point(bytes) {
-      return Err(InvalidPublicKey);
+    /// Serialize to 32 bytes (X25519 public key)
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.x25519_public.to_bytes()
     }
-    Ok(Self {
-      x25519_public: X25519PublicKey::from(*bytes),
-    })
-  }
 
-  /// Deserialize from 32 bytes without validation.
-  ///
-  /// # Safety (Cryptographic)
-  ///
-  /// This does not check for low-order points, which produce predictable
-  /// shared secrets in ECDH. Use [`try_from_bytes`] for untrusted input.
-  ///
-  /// This method exists only for test code that intentionally uses invalid keys.
-  /// Production code should always use [`try_from_bytes`].
-  ///
-  /// [`try_from_bytes`]: Self::try_from_bytes
-  #[doc(hidden)]
-  pub fn from_bytes_unchecked(bytes: &[u8; 32]) -> Self {
-    Self {
-      x25519_public: X25519PublicKey::from(*bytes),
+    /// Deserialize from 32 bytes with validation.
+    ///
+    /// Returns an error if the bytes represent a low-order point on Curve25519,
+    /// which would produce predictable shared secrets in ECDH.
+    ///
+    /// Use this for untrusted input (network, storage, user input).
+    pub fn try_from_bytes(bytes: &[u8; 32]) -> Result<Self, InvalidPublicKey> {
+        if is_low_order_point(bytes) {
+            return Err(InvalidPublicKey);
+        }
+        Ok(Self {
+            x25519_public: X25519PublicKey::from(*bytes),
+        })
     }
-  }
 
-  /// Get X25519 public key for encryption/DH
-  pub fn x25519_public(&self) -> &X25519PublicKey {
-    &self.x25519_public
-  }
+    /// Deserialize from 32 bytes without validation.
+    ///
+    /// # Safety (Cryptographic)
+    ///
+    /// This does not check for low-order points, which produce predictable
+    /// shared secrets in ECDH. Use [`try_from_bytes`] for untrusted input.
+    ///
+    /// This method exists only for test code that intentionally uses invalid keys.
+    /// Production code should always use [`try_from_bytes`].
+    ///
+    /// [`try_from_bytes`]: Self::try_from_bytes
+    #[doc(hidden)]
+    pub fn from_bytes_unchecked(bytes: &[u8; 32]) -> Self {
+        Self {
+            x25519_public: X25519PublicKey::from(*bytes),
+        }
+    }
 
-  /// Verify an XEdDSA signature
-  ///
-  /// This converts the X25519 public key to Ed25519 form (with sign bit = 0)
-  /// and verifies the signature using XEdDSA.
-  pub fn verify_xeddsa(&self, message: &[u8], signature: &[u8; 64]) -> bool {
-    // Convert to xeddsa PublicKey type
-    let xed_public = xed25519::PublicKey(self.x25519_public.to_bytes());
-    // Verify using XEdDSA
-    xed_public.verify(message, signature).is_ok()
-  }
+    /// Get X25519 public key for encryption/DH
+    pub fn x25519_public(&self) -> &X25519PublicKey {
+        &self.x25519_public
+    }
 
-  /// Calculate fingerprint hash of the public ID
-  pub fn fingerprint(&self) -> String {
-    let hash = blake3::hash(&self.to_bytes());
-    hex::encode(hash.as_bytes())
-  }
+    /// Verify an `XEdDSA` signature
+    ///
+    /// This converts the X25519 public key to Ed25519 form (with sign bit = 0)
+    /// and verifies the signature using `XEdDSA`.
+    pub fn verify_xeddsa(&self, message: &[u8], signature: &[u8; 64]) -> bool {
+        // Convert to xeddsa PublicKey type
+        let xed_public = xed25519::PublicKey(self.x25519_public.to_bytes());
+        // Verify using XEdDSA
+        xed_public.verify(message, signature).is_ok()
+    }
 
-  /// Calculate routing key for mailbox addressing
-  ///
-  /// Returns a 16-byte key derived from the public ID hash.
-  /// This is used to address messages in the mailbox system
-  /// without revealing the full public key.
-  pub fn routing_key(&self) -> RoutingKey {
-    let hash = blake3::hash(&self.to_bytes());
-    let mut bytes = [0u8; 16];
-    bytes.copy_from_slice(&hash.as_bytes()[0..16]);
-    RoutingKey(bytes)
-  }
+    /// Calculate fingerprint hash of the public ID
+    pub fn fingerprint(&self) -> String {
+        let hash = blake3::hash(&self.to_bytes());
+        hex::encode(hash.as_bytes())
+    }
+
+    /// Calculate routing key for mailbox addressing
+    ///
+    /// Returns a 16-byte key derived from the public ID hash.
+    /// This is used to address messages in the mailbox system
+    /// without revealing the full public key.
+    pub fn routing_key(&self) -> RoutingKey {
+        let hash = blake3::hash(&self.to_bytes());
+        let mut bytes = [0u8; 16];
+        bytes.copy_from_slice(&hash.as_bytes()[0..16]);
+        RoutingKey(bytes)
+    }
 }
 
 /// Routing key for mailbox addressing (16 bytes).
 ///
-/// Derived from the first 16 bytes of a BLAKE3 hash of a PublicID.
+/// Derived from the first 16 bytes of a BLAKE3 hash of a `PublicID`.
 /// Used to address messages without revealing the full public key.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Encode, Decode, From, Deref, DerefMut)]
 pub struct RoutingKey(pub [u8; 16]);
 
 impl RoutingKey {
-    /// Create a new RoutingKey from raw bytes
+    /// Create a new `RoutingKey` from raw bytes
     pub fn from_bytes(bytes: [u8; 16]) -> Self {
         Self(bytes)
     }
@@ -234,9 +269,9 @@ impl From<RoutingKey> for [u8; 16] {
 }
 
 impl AsRef<X25519PublicKey> for PublicID {
-  fn as_ref(&self) -> &X25519PublicKey {
-    &self.x25519_public
-  }
+    fn as_ref(&self) -> &X25519PublicKey {
+        &self.x25519_public
+    }
 }
 
 // Implement bincode Encode/Decode for PublicID (32 bytes on wire)
@@ -251,9 +286,8 @@ impl Encode for PublicID {
 impl<Context> Decode<Context> for PublicID {
     fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, DecodeError> {
         let bytes: [u8; 32] = Decode::decode(decoder)?;
-        Self::try_from_bytes(&bytes).map_err(|_| {
-            DecodeError::OtherString("Invalid public key: low-order point".into())
-        })
+        Self::try_from_bytes(&bytes)
+            .map_err(|_| DecodeError::OtherString("Invalid public key: low-order point".into()))
     }
 }
 
@@ -272,267 +306,301 @@ fn redact_secret<T>(_: &T, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 #[derive(Getters, Derivative)]
 #[derivative(Debug)]
 pub struct Identity {
-  #[get = "pub"]
-  pub(crate) public_id: PublicID,
+    #[get = "pub"]
+    pub(crate) public_id: PublicID,
 
-  #[derivative(Debug(format_with = "redact_secret"))]
-  pub(crate) x25519_secret: X25519Secret,
+    #[derivative(Debug(format_with = "redact_secret"))]
+    pub(crate) x25519_secret: X25519Secret,
 }
 
 impl Identity {
-  /// Get the X25519 secret key for DH operations
-  pub fn x25519_secret(&self) -> &X25519Secret {
-    &self.x25519_secret
-  }
-
-  /// Sign a message using XEdDSA
-  ///
-  /// This uses the XEdDSA signing algorithm which produces Ed25519-compatible
-  /// signatures from X25519 keys via the birational map.
-  pub fn sign_xeddsa(&self, message: &[u8]) -> [u8; 64] {
-    // Convert to xeddsa PrivateKey type
-    let xed_private = xed25519::PrivateKey(self.x25519_secret.to_bytes());
-    // Sign using XEdDSA with OsRng
-    xed_private.sign(message, OsRng)
-  }
-
-  /// Generate a new identity from random bytes
-  pub fn generate() -> Self {
-    let mut bytes = [0u8; 32];
-    rand_core::RngCore::fill_bytes(&mut OsRng, &mut bytes);
-    Self::from_bytes(&bytes)
-  }
-
-  /// Create Identity from 32-byte secret key with validation.
-  ///
-  /// Derives a single X25519 key that will be used for both:
-  /// - X25519 DH operations (direct usage)
-  /// - XEdDSA signatures (via birational map to Ed25519)
-  ///
-  /// Returns an error if the derived public key is a low-order point
-  /// (mathematically impossible with proper clamping, but checked for defense-in-depth).
-  pub fn try_from_bytes(bytes: &[u8; 32]) -> Result<Self, InvalidPublicKey> {
-    let x25519_secret = X25519Secret::from(*bytes);
-    let x25519_public = X25519PublicKey::from(&x25519_secret);
-
-    // Defense-in-depth: verify derived public key isn't low-order
-    // This should be mathematically impossible with X25519 clamping
-    if is_low_order_point(x25519_public.as_bytes()) {
-      return Err(InvalidPublicKey);
+    /// Get the X25519 secret key for DH operations
+    pub fn x25519_secret(&self) -> &X25519Secret {
+        &self.x25519_secret
     }
 
-    let public_id = PublicID { x25519_public };
+    /// Sign a message using `XEdDSA`
+    ///
+    /// This uses the `XEdDSA` signing algorithm which produces Ed25519-compatible
+    /// signatures from X25519 keys via the birational map.
+    pub fn sign_xeddsa(&self, message: &[u8]) -> [u8; 64] {
+        // Convert to xeddsa PrivateKey type
+        let xed_private = xed25519::PrivateKey(self.x25519_secret.to_bytes());
+        // Sign using XEdDSA with OsRng
+        xed_private.sign(message, OsRng)
+    }
 
-    Ok(Self {
-      public_id,
-      x25519_secret,
-    })
-  }
+    /// Generate a new identity from random bytes
+    pub fn generate() -> Self {
+        let mut bytes = [0u8; 32];
+        rand_core::RngCore::fill_bytes(&mut OsRng, &mut bytes);
+        Self::from_bytes(&bytes)
+    }
 
-  /// Create Identity from 32-byte secret key.
-  ///
-  /// # Panics
-  ///
-  /// Panics if the derived public key is a low-order point (mathematically
-  /// impossible with proper X25519 clamping - indicates a bug in crypto library).
-  pub fn from_bytes(bytes: &[u8; 32]) -> Self {
-    Self::try_from_bytes(bytes).expect("derived public key is low-order (crypto library bug)")
-  }
+    /// Create Identity from 32-byte secret key with validation.
+    ///
+    /// Derives a single X25519 key that will be used for both:
+    /// - X25519 DH operations (direct usage)
+    /// - `XEdDSA` signatures (via birational map to Ed25519)
+    ///
+    /// Returns an error if the derived public key is a low-order point
+    /// (mathematically impossible with proper clamping, but checked for defense-in-depth).
+    pub fn try_from_bytes(bytes: &[u8; 32]) -> Result<Self, InvalidPublicKey> {
+        let x25519_secret = X25519Secret::from(*bytes);
+        let x25519_public = X25519PublicKey::from(&x25519_secret);
 
-  /// Return the 32-byte secret key for backup/serialization
-  ///
-  /// IMPORTANT: This is the secret that backs up the entire identity.
-  /// Encrypt this before writing to disk.
-  pub fn to_bytes(&self) -> [u8; 32] {
-    self.x25519_secret.to_bytes()
-  }
+        // Defense-in-depth: verify derived public key isn't low-order
+        // This should be mathematically impossible with X25519 clamping
+        if is_low_order_point(x25519_public.as_bytes()) {
+            return Err(InvalidPublicKey);
+        }
+
+        let public_id = PublicID { x25519_public };
+
+        Ok(Self {
+            public_id,
+            x25519_secret,
+        })
+    }
+
+    /// Create Identity from 32-byte secret key.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the derived public key is a low-order point (mathematically
+    /// impossible with proper X25519 clamping - indicates a bug in crypto library).
+    pub fn from_bytes(bytes: &[u8; 32]) -> Self {
+        Self::try_from_bytes(bytes).expect("derived public key is low-order (crypto library bug)")
+    }
+
+    /// Return the 32-byte secret key for backup/serialization
+    ///
+    /// IMPORTANT: This is the secret that backs up the entire identity.
+    /// Encrypt this before writing to disk.
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.x25519_secret.to_bytes()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
+    use super::*;
 
-  #[test]
-  fn sign_and_verify_xeddsa() {
-    let id = Identity::generate();
-    let msg = b"hello world";
-    let sig = id.sign_xeddsa(msg);
+    #[test]
+    fn sign_and_verify_xeddsa() {
+        let id = Identity::generate();
+        let msg = b"hello world";
+        let sig = id.sign_xeddsa(msg);
 
-    // Verify XEdDSA signature using PublicID
-    assert!(id.public_id().verify_xeddsa(msg, &sig));
-  }
-
-  #[test]
-  fn deterministic_derivation() {
-    let bytes = [42u8; 32];
-
-    let id1 = Identity::from_bytes(&bytes);
-    let id2 = Identity::from_bytes(&bytes);
-
-    // Same bytes should produce identical identities
-    assert_eq!(id1.public_id(), id2.public_id());
-    assert_eq!(id1.to_bytes(), id2.to_bytes());
-    assert_eq!(id1.x25519_secret.to_bytes(), id2.x25519_secret.to_bytes());
-  }
-
-  #[test]
-  fn bytes_roundtrip() {
-    let id1 = Identity::generate();
-    let bytes = id1.to_bytes();
-
-    // Recreate from bytes
-    let id2 = Identity::from_bytes(&bytes);
-
-    // Should have identical keys
-    assert_eq!(id1.public_id(), id2.public_id());
-  }
-
-  #[test]
-  fn bytes_compatibility() {
-    let id1 = Identity::generate();
-
-    // to_bytes/from_bytes should work with 32-byte seed
-    let bytes = id1.to_bytes();
-    let id2 = Identity::from_bytes(&bytes);
-
-    assert_eq!(id1.public_id(), id2.public_id());
-    assert_eq!(bytes.len(), 32);
-  }
-
-  #[test]
-  fn public_id_is_32_bytes() {
-    let id = Identity::generate();
-    let public_id_bytes = id.public_id().to_bytes();
-
-    assert_eq!(public_id_bytes.len(), 32);
-  }
-
-  #[test]
-  fn public_id_xeddsa_signature() {
-    let id = Identity::generate();
-    let x25519_key = id.public_id().x25519_public();
-
-    // Sign and verify should work with XEdDSA
-    let msg = b"test message";
-    let sig = id.sign_xeddsa(msg);
-    assert!(id.public_id().verify_xeddsa(msg, &sig));
-
-    // X25519 key should be 32 bytes
-    assert_eq!(x25519_key.as_bytes().len(), 32);
-  }
-
-  #[test]
-  fn public_id_from_bytes_roundtrip() {
-    let id = Identity::generate();
-    let public_id = id.public_id();
-
-    // Serialize to bytes
-    let bytes = public_id.to_bytes();
-    assert_eq!(bytes.len(), 32);
-
-    // Deserialize from bytes (valid key, so unwrap is safe)
-    let restored = PublicID::try_from_bytes(&bytes).unwrap();
-
-    // Should be equal
-    assert_eq!(public_id, &restored);
-    assert_eq!(public_id.x25519_public(), restored.x25519_public());
-
-    // XEdDSA signature verification should work
-    let msg = b"test message";
-    let sig = id.sign_xeddsa(msg);
-    assert!(restored.verify_xeddsa(msg, &sig));
-  }
-
-  #[test]
-  fn try_from_bytes_rejects_low_order_points() {
-    use super::InvalidPublicKey;
-
-    // Zero point (low-order)
-    let zero = [0u8; 32];
-    assert_eq!(PublicID::try_from_bytes(&zero), Err(InvalidPublicKey));
-
-    // Identity point (low-order)
-    let mut one = [0u8; 32];
-    one[0] = 1;
-    assert_eq!(PublicID::try_from_bytes(&one), Err(InvalidPublicKey));
-
-    // Valid random key should succeed
-    let id = Identity::generate();
-    let valid_bytes = id.public_id().to_bytes();
-    assert!(PublicID::try_from_bytes(&valid_bytes).is_ok());
-  }
-
-  #[test]
-  fn all_12_low_order_points_rejected() {
-    use super::{is_low_order_point, InvalidPublicKey};
-
-    // Complete 12-point blocklist per DJB's Curve25519 documentation
-    let low_order_points: [[u8; 32]; 12] = [
-      // 0 (order 4)
-      [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-      // 1 (order 1)
-      [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-      // order 8 point 1
-      [0xe0, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0xae, 0x16, 0x56, 0xe3, 0xfa, 0xf1, 0x9f, 0xc4, 0x6a,
-       0xda, 0x09, 0x8d, 0xeb, 0x9c, 0x32, 0xb1, 0xfd, 0x86, 0x62, 0x05, 0x16, 0x5f, 0x49, 0xb8, 0x00],
-      // order 8 point 2
-      [0x5f, 0x9c, 0x95, 0xbc, 0xa3, 0x50, 0x8c, 0x24, 0xb1, 0xd0, 0xb1, 0x55, 0x9c, 0x83, 0xef, 0x5b,
-       0x04, 0x44, 0x5c, 0xc4, 0x58, 0x1c, 0x8e, 0x86, 0xd8, 0x22, 0x4e, 0xdd, 0xd0, 0x9f, 0x11, 0x57],
-      // p-1 (order 2)
-      [0xec, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-       0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f],
-      // p (order 4)
-      [0xed, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-       0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f],
-      // p+1 (order 1)
-      [0xee, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-       0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f],
-      // p + order8_point_1 (non-canonical)
-      [0xcd, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0xae, 0x16, 0x56, 0xe3, 0xfa, 0xf1, 0x9f, 0xc4, 0x6a,
-       0xda, 0x09, 0x8d, 0xeb, 0x9c, 0x32, 0xb1, 0xfd, 0x86, 0x62, 0x05, 0x16, 0x5f, 0x49, 0xb8, 0x80],
-      // p + order8_point_2 (non-canonical)
-      [0x4c, 0x9c, 0x95, 0xbc, 0xa3, 0x50, 0x8c, 0x24, 0xb1, 0xd0, 0xb1, 0x55, 0x9c, 0x83, 0xef, 0x5b,
-       0x04, 0x44, 0x5c, 0xc4, 0x58, 0x1c, 0x8e, 0x86, 0xd8, 0x22, 0x4e, 0xdd, 0xd0, 0x9f, 0x11, 0xd7],
-      // 2p-1 (non-canonical)
-      [0xd9, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-       0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
-      // 2p (non-canonical)
-      [0xda, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-       0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
-      // 2p+1 (non-canonical)
-      [0xdb, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-       0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
-    ];
-
-    for (i, point) in low_order_points.iter().enumerate() {
-      assert!(
-        is_low_order_point(point),
-        "Point {} should be detected as low-order",
-        i
-      );
-      assert_eq!(
-        PublicID::try_from_bytes(point),
-        Err(InvalidPublicKey),
-        "Point {} should be rejected by try_from_bytes",
-        i
-      );
+        // Verify XEdDSA signature using PublicID
+        assert!(id.public_id().verify_xeddsa(msg, &sig));
     }
-  }
 
-  #[test]
-  fn valid_key_not_low_order() {
-    use super::is_low_order_point;
+    #[test]
+    fn deterministic_derivation() {
+        let bytes = [42u8; 32];
 
-    // Generate multiple valid keys and ensure none are low-order
-    for _ in 0..100 {
-      let id = Identity::generate();
-      let bytes = id.public_id().to_bytes();
-      assert!(
-        !is_low_order_point(&bytes),
-        "Generated key should not be low-order"
-      );
+        let id1 = Identity::from_bytes(&bytes);
+        let id2 = Identity::from_bytes(&bytes);
+
+        // Same bytes should produce identical identities
+        assert_eq!(id1.public_id(), id2.public_id());
+        assert_eq!(id1.to_bytes(), id2.to_bytes());
+        assert_eq!(id1.x25519_secret.to_bytes(), id2.x25519_secret.to_bytes());
     }
-  }
+
+    #[test]
+    fn bytes_roundtrip() {
+        let id1 = Identity::generate();
+        let bytes = id1.to_bytes();
+
+        // Recreate from bytes
+        let id2 = Identity::from_bytes(&bytes);
+
+        // Should have identical keys
+        assert_eq!(id1.public_id(), id2.public_id());
+    }
+
+    #[test]
+    fn bytes_compatibility() {
+        let id1 = Identity::generate();
+
+        // to_bytes/from_bytes should work with 32-byte seed
+        let bytes = id1.to_bytes();
+        let id2 = Identity::from_bytes(&bytes);
+
+        assert_eq!(id1.public_id(), id2.public_id());
+        assert_eq!(bytes.len(), 32);
+    }
+
+    #[test]
+    fn public_id_is_32_bytes() {
+        let id = Identity::generate();
+        let public_id_bytes = id.public_id().to_bytes();
+
+        assert_eq!(public_id_bytes.len(), 32);
+    }
+
+    #[test]
+    fn public_id_xeddsa_signature() {
+        let id = Identity::generate();
+        let x25519_key = id.public_id().x25519_public();
+
+        // Sign and verify should work with XEdDSA
+        let msg = b"test message";
+        let sig = id.sign_xeddsa(msg);
+        assert!(id.public_id().verify_xeddsa(msg, &sig));
+
+        // X25519 key should be 32 bytes
+        assert_eq!(x25519_key.as_bytes().len(), 32);
+    }
+
+    #[test]
+    fn public_id_from_bytes_roundtrip() {
+        let id = Identity::generate();
+        let public_id = id.public_id();
+
+        // Serialize to bytes
+        let bytes = public_id.to_bytes();
+        assert_eq!(bytes.len(), 32);
+
+        // Deserialize from bytes (valid key, so unwrap is safe)
+        let restored = PublicID::try_from_bytes(&bytes).unwrap();
+
+        // Should be equal
+        assert_eq!(public_id, &restored);
+        assert_eq!(public_id.x25519_public(), restored.x25519_public());
+
+        // XEdDSA signature verification should work
+        let msg = b"test message";
+        let sig = id.sign_xeddsa(msg);
+        assert!(restored.verify_xeddsa(msg, &sig));
+    }
+
+    #[test]
+    fn try_from_bytes_rejects_low_order_points() {
+        use super::InvalidPublicKey;
+
+        // Zero point (low-order)
+        let zero = [0u8; 32];
+        assert_eq!(PublicID::try_from_bytes(&zero), Err(InvalidPublicKey));
+
+        // Identity point (low-order)
+        let mut one = [0u8; 32];
+        one[0] = 1;
+        assert_eq!(PublicID::try_from_bytes(&one), Err(InvalidPublicKey));
+
+        // Valid random key should succeed
+        let id = Identity::generate();
+        let valid_bytes = id.public_id().to_bytes();
+        assert!(PublicID::try_from_bytes(&valid_bytes).is_ok());
+    }
+
+    #[test]
+    fn all_12_low_order_points_rejected() {
+        use super::{is_low_order_point, InvalidPublicKey};
+
+        // Complete 12-point blocklist per DJB's Curve25519 documentation
+        let low_order_points: [[u8; 32]; 12] = [
+            // 0 (order 4)
+            [
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+            ],
+            // 1 (order 1)
+            [
+                0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+            ],
+            // order 8 point 1
+            [
+                0xe0, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0xae, 0x16, 0x56, 0xe3, 0xfa, 0xf1, 0x9f,
+                0xc4, 0x6a, 0xda, 0x09, 0x8d, 0xeb, 0x9c, 0x32, 0xb1, 0xfd, 0x86, 0x62, 0x05, 0x16,
+                0x5f, 0x49, 0xb8, 0x00,
+            ],
+            // order 8 point 2
+            [
+                0x5f, 0x9c, 0x95, 0xbc, 0xa3, 0x50, 0x8c, 0x24, 0xb1, 0xd0, 0xb1, 0x55, 0x9c, 0x83,
+                0xef, 0x5b, 0x04, 0x44, 0x5c, 0xc4, 0x58, 0x1c, 0x8e, 0x86, 0xd8, 0x22, 0x4e, 0xdd,
+                0xd0, 0x9f, 0x11, 0x57,
+            ],
+            // p-1 (order 2)
+            [
+                0xec, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0x7f,
+            ],
+            // p (order 4)
+            [
+                0xed, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0x7f,
+            ],
+            // p+1 (order 1)
+            [
+                0xee, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0x7f,
+            ],
+            // p + order8_point_1 (non-canonical)
+            [
+                0xcd, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0xae, 0x16, 0x56, 0xe3, 0xfa, 0xf1, 0x9f,
+                0xc4, 0x6a, 0xda, 0x09, 0x8d, 0xeb, 0x9c, 0x32, 0xb1, 0xfd, 0x86, 0x62, 0x05, 0x16,
+                0x5f, 0x49, 0xb8, 0x80,
+            ],
+            // p + order8_point_2 (non-canonical)
+            [
+                0x4c, 0x9c, 0x95, 0xbc, 0xa3, 0x50, 0x8c, 0x24, 0xb1, 0xd0, 0xb1, 0x55, 0x9c, 0x83,
+                0xef, 0x5b, 0x04, 0x44, 0x5c, 0xc4, 0x58, 0x1c, 0x8e, 0x86, 0xd8, 0x22, 0x4e, 0xdd,
+                0xd0, 0x9f, 0x11, 0xd7,
+            ],
+            // 2p-1 (non-canonical)
+            [
+                0xd9, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff,
+            ],
+            // 2p (non-canonical)
+            [
+                0xda, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff,
+            ],
+            // 2p+1 (non-canonical)
+            [
+                0xdb, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff,
+            ],
+        ];
+
+        for (i, point) in low_order_points.iter().enumerate() {
+            assert!(
+                is_low_order_point(point),
+                "Point {i} should be detected as low-order"
+            );
+            assert_eq!(
+                PublicID::try_from_bytes(point),
+                Err(InvalidPublicKey),
+                "Point {i} should be rejected by try_from_bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn valid_key_not_low_order() {
+        use super::is_low_order_point;
+
+        // Generate multiple valid keys and ensure none are low-order
+        for _ in 0..100 {
+            let id = Identity::generate();
+            let bytes = id.public_id().to_bytes();
+            assert!(
+                !is_low_order_point(&bytes),
+                "Generated key should not be low-order"
+            );
+        }
+    }
 }

@@ -10,9 +10,8 @@
 use reme_encryption::{decrypt_with_mik, encrypt_to_mik, EncryptionError};
 use reme_identity::{Identity, PublicID};
 use reme_message::{
-    Content, ContentId, ConversationDag, InnerEnvelope, MessageID, OuterEnvelope,
-    ReceiptContent, ReceiptKind, RoutingKey, SignedAckTombstone, TextContent,
-    CURRENT_VERSION, FLAG_DETACHED,
+    Content, ContentId, ConversationDag, InnerEnvelope, MessageID, OuterEnvelope, ReceiptContent,
+    ReceiptKind, RoutingKey, SignedAckTombstone, TextContent, CURRENT_VERSION, FLAG_DETACHED,
 };
 use reme_outbox::{
     AttemptError, AttemptResult, ClientOutbox, DeliveryState, OutboxConfig, OutboxEntryId,
@@ -86,10 +85,10 @@ pub struct ReceivedMessage {
     pub content_id: ContentId,
     /// Whether this message has gaps in the DAG (missing parents)
     pub has_gaps: bool,
-    /// Sender likely lost state: we have history from them but they sent prev_self=None
+    /// Sender likely lost state: we have history from them but they sent `prev_self=None`
     /// (not including intentionally detached messages)
     pub sender_state_reset: bool,
-    /// We likely lost state: sender's observed_heads contains IDs we don't recognize
+    /// We likely lost state: sender's `observed_heads` contains IDs we don't recognize
     /// This means the peer saw messages from us that we have no record of sending
     pub local_state_behind: bool,
 }
@@ -113,7 +112,7 @@ pub struct ReceivedMessage {
 /// - DAG-based delivery confirmation
 /// - Gap detection triggers automatic retry
 ///
-/// ## Tiered Delivery (with TransportCoordinator)
+/// ## Tiered Delivery (with `TransportCoordinator`)
 ///
 /// When using `Client<TransportCoordinator>`, additional methods are available
 /// for tiered delivery with quorum semantics:
@@ -124,12 +123,12 @@ pub struct Client<T: Transport> {
     identity: Identity,
     transport: Arc<T>,
     storage: Arc<Storage>,
-    /// DAG state per contact (keyed by PublicID bytes)
+    /// DAG state per contact (keyed by `PublicID` bytes)
     /// Tracks message ordering for gap detection
     dag_state: Mutex<HashMap<[u8; 32], ConversationDag>>,
     /// Client outbox for resilient delivery tracking
     outbox: ClientOutbox<Arc<Storage>>,
-    /// Configuration for tiered delivery (when using TransportCoordinator)
+    /// Configuration for tiered delivery (when using `TransportCoordinator`)
     tiered_config: TieredDeliveryConfig,
 }
 
@@ -224,7 +223,7 @@ impl<T: Transport> Client<T> {
 
     /// Get the latest observed heads from the receiver tracker for a contact.
     ///
-    /// Returns the content_ids of messages we've received from the peer.
+    /// Returns the `content_ids` of messages we've received from the peer.
     /// In 1:1 chat, this is typically just the peer's latest message.
     fn get_observed_heads(&self, dag: &ConversationDag) -> Vec<ContentId> {
         dag.observed_heads()
@@ -264,7 +263,11 @@ impl<T: Transport> Client<T> {
         let contacts = self.storage.list_contacts()?;
         Ok(contacts
             .into_iter()
-            .map(|(id, public_id, name)| Contact { id, public_id, name })
+            .map(|(id, public_id, name)| Contact {
+                id,
+                public_id,
+                name,
+            })
             .collect())
     }
 
@@ -277,14 +280,14 @@ impl<T: Transport> Client<T> {
     /// This increments the DAG epoch for this conversation, which:
     /// - Clears all DAG tracking state (sender chain, receiver state, peer head)
     /// - Future messages will start fresh chains
-    /// - Messages referencing pre-epoch content_ids will be detected as gaps
+    /// - Messages referencing pre-epoch `content_ids` will be detected as gaps
     ///
     /// Note: This does NOT delete stored messages from local storage.
     /// Use this when both parties agree to clear history.
     pub fn clear_conversation_dag(&self, contact: &PublicID) -> u16 {
         let contact_key = contact.to_bytes();
         let mut dag_state = self.dag_state.lock().unwrap();
-        let dag = dag_state.entry(contact_key).or_insert_with(ConversationDag::new);
+        let dag = dag_state.entry(contact_key).or_default();
         dag.increment_epoch();
         dag.epoch
     }
@@ -293,7 +296,7 @@ impl<T: Transport> Client<T> {
     pub fn get_conversation_epoch(&self, contact: &PublicID) -> u16 {
         let contact_key = contact.to_bytes();
         let dag_state = self.dag_state.lock().unwrap();
-        dag_state.get(&contact_key).map(|d| d.epoch).unwrap_or(0)
+        dag_state.get(&contact_key).map_or(0, |d| d.epoch)
     }
 
     // ========================================
@@ -313,9 +316,9 @@ impl<T: Transport> Client<T> {
 
     /// Send a detached text message (no DAG linkage).
     ///
-    /// Use this for constrained transports (LoRa, BLE) where bandwidth is limited
-    /// and DAG overhead should be avoided. Detached messages have no prev_self
-    /// or observed_heads, making them "floating" in the message history.
+    /// Use this for constrained transports (`LoRa`, BLE) where bandwidth is limited
+    /// and DAG overhead should be avoided. Detached messages have no `prev_self`
+    /// or `observed_heads`, making them "floating" in the message history.
     pub async fn send_text_detached(
         &self,
         to: &PublicID,
@@ -385,7 +388,7 @@ impl<T: Transport> Client<T> {
         let (prev_self, observed_heads, epoch) = {
             let dag_state = self.dag_state.lock().unwrap();
             if detached {
-                let epoch = dag_state.get(&contact_key).map(|d| d.epoch).unwrap_or(0);
+                let epoch = dag_state.get(&contact_key).map_or(0, |d| d.epoch);
                 (None, Vec::new(), epoch)
             } else if let Some(dag) = dag_state.get(&contact_key) {
                 (dag.sender.head(), self.get_observed_heads(dag), dag.epoch)
@@ -409,8 +412,7 @@ impl<T: Transport> Client<T> {
         let content_id = inner.content_id();
 
         // Encrypt to recipient's MIK (signing happens inside encrypt_to_mik)
-        let enc_output =
-            encrypt_to_mik(&inner, to, &outer_message_id, &self.private_key())?;
+        let enc_output = encrypt_to_mik(&inner, to, &outer_message_id, &self.private_key())?;
 
         // Create outer envelope
         let outer = OuterEnvelope {
@@ -425,7 +427,8 @@ impl<T: Transport> Client<T> {
         };
 
         // Store ack_secret for sender-side tombstone (retraction capability)
-        self.storage.store_pending_ack(outer_message_id, enc_output.ack_secret)?;
+        self.storage
+            .store_pending_ack(outer_message_id, enc_output.ack_secret)?;
 
         // Store locally first
         let contact_id = self.storage.get_contact_id(to)?;
@@ -435,20 +438,27 @@ impl<T: Transport> Client<T> {
         // Update DAG tracking (skip for detached)
         if !detached {
             let mut dag_state = self.dag_state.lock().unwrap();
-            let dag = dag_state.entry(contact_key).or_insert_with(ConversationDag::new);
+            let dag = dag_state.entry(contact_key).or_default();
             dag.sender.on_send(content_id, prev_self);
         }
 
         // Serialize envelopes for outbox storage
         let envelope_bytes = bincode::encode_to_vec(&outer, bincode::config::standard())
-            .map_err(|e| ClientError::Serialization(format!("envelope: {}", e)))?;
+            .map_err(|e| ClientError::Serialization(format!("envelope: {e}")))?;
         let inner_bytes = bincode::encode_to_vec(&inner, bincode::config::standard())
-            .map_err(|e| ClientError::Serialization(format!("inner: {}", e)))?;
+            .map_err(|e| ClientError::Serialization(format!("inner: {e}")))?;
 
         // Enqueue to outbox
         let entry_id = self
             .outbox
-            .enqueue(to, content_id, outer_message_id, &envelope_bytes, &inner_bytes, None)
+            .enqueue(
+                to,
+                content_id,
+                outer_message_id,
+                &envelope_bytes,
+                &inner_bytes,
+                None,
+            )
             .map_err(ClientError::Outbox)?;
 
         Ok(PreparedMessage {
@@ -555,7 +565,8 @@ impl<T: Transport> Client<T> {
         // We'll send the tombstone AFTER successful message storage to prevent data loss.
         let should_tombstone = !inner.is_detached();
         if should_tombstone {
-            self.storage.store_pending_ack(outer.message_id, ack_secret)?;
+            self.storage
+                .store_pending_ack(outer.message_id, ack_secret)?;
         }
 
         // Note: Recipient binding is implicit via sealed box ECDH.
@@ -578,21 +589,15 @@ impl<T: Transport> Client<T> {
         let content_id = inner.content_id();
 
         // Store received message - fail if storage fails to prevent data loss
-        self.storage.store_received_message(
-            contact_id,
-            outer.message_id,
-            &inner.content,
-        )?;
+        self.storage
+            .store_received_message(contact_id, outer.message_id, &inner.content)?;
 
         // NOW send auto-tombstone (fire-and-forget) AFTER successful message storage.
         // This ensures we never lose the message: if storage fails, we don't send tombstone.
         // If tombstone fails, the message is safely stored and ack_secret is persisted for retry.
         if should_tombstone {
-            let tombstone = SignedAckTombstone::new(
-                outer.message_id,
-                ack_secret,
-                &self.private_key(),
-            );
+            let tombstone =
+                SignedAckTombstone::new(outer.message_id, ack_secret, &self.private_key());
             if let Err(e) = self.transport.submit_ack_tombstone(tombstone).await {
                 // Log failure but don't fail message processing - the message was
                 // successfully stored locally. The relay node will eventually
@@ -628,7 +633,7 @@ impl<T: Transport> Client<T> {
 
         let (has_gaps, sender_state_reset, local_state_behind) = {
             let mut dag_state = self.dag_state.lock().unwrap();
-            let dag = dag_state.entry(contact_key).or_insert_with(ConversationDag::new);
+            let dag = dag_state.entry(contact_key).or_default();
 
             // Check if peer has advanced their epoch (intentional history clear)
             // If so, reset our tracking to match their new epoch
@@ -672,10 +677,11 @@ impl<T: Transport> Client<T> {
         // Check for delivery confirmations in the peer's observed_heads
         // This is the DAG-based implicit ACK mechanism
         if !inner.observed_heads.is_empty() {
-            match self
-                .outbox
-                .on_peer_message_received(&sender_id, &inner.observed_heads, content_id)
-            {
+            match self.outbox.on_peer_message_received(
+                &sender_id,
+                &inner.observed_heads,
+                content_id,
+            ) {
                 Ok(confirmed) => {
                     if !confirmed.is_empty() {
                         debug!(
@@ -687,13 +693,19 @@ impl<T: Transport> Client<T> {
                 Err(e) => {
                     // Log at warn level - confirmation failures may indicate storage issues
                     // that could prevent proper message acknowledgment
-                    warn!("Outbox confirmation check failed: {} - message may be re-sent", e);
+                    warn!(
+                        "Outbox confirmation check failed: {} - message may be re-sent",
+                        e
+                    );
                 }
             }
 
             // If gap detected and retry triggers are enabled, schedule retry for unacked messages
             if has_gaps {
-                match self.outbox.find_unacked_messages(&sender_id, &inner.observed_heads) {
+                match self
+                    .outbox
+                    .find_unacked_messages(&sender_id, &inner.observed_heads)
+                {
                     Ok(unacked) if !unacked.is_empty() => {
                         debug!(
                             "Gap detected: scheduling retry for {} unacknowledged messages",
@@ -702,7 +714,8 @@ impl<T: Transport> Client<T> {
                         if let Err(e) = self.outbox.schedule_immediate_retry(&unacked) {
                             warn!(
                                 "Failed to schedule immediate retry for {} messages: {}",
-                                unacked.len(), e
+                                unacked.len(),
+                                e
                             );
                         }
                     }
@@ -752,7 +765,7 @@ impl<T: Transport> Client<T> {
     /// Use this to delete a message from relay nodes before the recipient
     /// fetches it. This is the "unsend" or "retract" functionality.
     ///
-    /// The ack_secret is retrieved from local storage (stored during
+    /// The `ack_secret` is retrieved from local storage (stored during
     /// message preparation). If the message has already been acknowledged
     /// by the recipient, this will fail at the node with 404.
     ///
@@ -760,7 +773,7 @@ impl<T: Transport> Client<T> {
     /// * `message_id` - The message ID to retract
     ///
     /// # Errors
-    /// - `ClientError::AckSecretNotFound` if no pending_ack exists for this message
+    /// - `ClientError::AckSecretNotFound` if no `pending_ack` exists for this message
     /// - `ClientError::Transport` if the tombstone submission fails
     pub async fn acknowledge_sent(&self, message_id: MessageID) -> Result<(), ClientError> {
         // Retrieve stored ack_secret
@@ -790,14 +803,14 @@ impl<T: Transport> Client<T> {
     /// Use this when the auto-tombstone in `process_message()` failed and you
     /// want to retry clearing the message from relay nodes.
     ///
-    /// The ack_secret is automatically retrieved from storage (stored during
+    /// The `ack_secret` is automatically retrieved from storage (stored during
     /// `process_message()` before attempting auto-tombstone).
     ///
     /// # Arguments
     /// * `message_id` - The message ID to acknowledge
     ///
     /// # Errors
-    /// - `ClientError::AckSecretNotFound` if no pending_ack exists for this message
+    /// - `ClientError::AckSecretNotFound` if no `pending_ack` exists for this message
     /// - `ClientError::Transport` if the tombstone submission fails
     pub async fn acknowledge_received(&self, message_id: MessageID) -> Result<(), ClientError> {
         // Retrieve stored ack_secret
@@ -847,7 +860,7 @@ impl<T: Transport> Client<T> {
     /// Get the transport ID for the current transport.
     ///
     /// Format: `"{type}:{identifier}"` based on transport configuration.
-    /// Currently defaults to "http:default" - will be enhanced when
+    /// Currently defaults to "<http:default>" - will be enhanced when
     /// multi-transport support is added.
     fn transport_id(&self) -> String {
         // TODO: Extract transport identifier from transport instance
@@ -866,20 +879,23 @@ impl<T: Transport> Client<T> {
     ///
     /// # Returns
     /// The attempt result (Sent or Failed with error details)
-    pub async fn attempt_delivery(&self, entry_id: OutboxEntryId) -> Result<AttemptResult, ClientError> {
-        let pending = self.outbox.get_by_id(entry_id)
+    pub async fn attempt_delivery(
+        &self,
+        entry_id: OutboxEntryId,
+    ) -> Result<AttemptResult, ClientError> {
+        let pending = self
+            .outbox
+            .get_by_id(entry_id)
             .map_err(ClientError::Outbox)?
             .ok_or(ClientError::OutboxEntryNotFound)?;
 
         let transport_id = self.transport_id();
 
         // Deserialize the outer envelope
-        let outer: OuterEnvelope = bincode::decode_from_slice(
-            &pending.envelope_bytes,
-            bincode::config::standard(),
-        )
-        .map(|(envelope, _)| envelope)
-        .map_err(|e| ClientError::Outbox(StorageError::Serialization(e.to_string())))?;
+        let outer: OuterEnvelope =
+            bincode::decode_from_slice(&pending.envelope_bytes, bincode::config::standard())
+                .map(|(envelope, _)| envelope)
+                .map_err(|e| ClientError::Outbox(StorageError::Serialization(e.to_string())))?;
 
         // Attempt delivery
         let result = match self.transport.submit_message(outer).await {
@@ -897,7 +913,7 @@ impl<T: Transport> Client<T> {
 
     /// Retry delivery via a specific transport.
     ///
-    /// Use this for user-initiated transport override (e.g., "send via LoRa").
+    /// Use this for user-initiated transport override (e.g., "send via `LoRa`").
     /// This schedules the message for immediate retry.
     ///
     /// # Arguments
@@ -912,7 +928,9 @@ impl<T: Transport> Client<T> {
     ///
     /// Returns pending messages whose retry time has passed.
     pub fn get_ready_for_retry(&self) -> Result<Vec<PendingMessage>, ClientError> {
-        self.outbox.get_ready_for_retry().map_err(ClientError::Outbox)
+        self.outbox
+            .get_ready_for_retry()
+            .map_err(ClientError::Outbox)
     }
 
     /// Get all pending (unconfirmed) messages.
@@ -921,14 +939,20 @@ impl<T: Transport> Client<T> {
     }
 
     /// Get pending messages for a specific recipient.
-    pub fn get_pending_for(&self, recipient: &PublicID) -> Result<Vec<PendingMessage>, ClientError> {
+    pub fn get_pending_for(
+        &self,
+        recipient: &PublicID,
+    ) -> Result<Vec<PendingMessage>, ClientError> {
         self.outbox
             .get_pending_for(recipient)
             .map_err(ClientError::Outbox)
     }
 
     /// Get delivery state for a message.
-    pub fn get_delivery_state(&self, entry_id: OutboxEntryId) -> Result<Option<DeliveryState>, ClientError> {
+    pub fn get_delivery_state(
+        &self,
+        entry_id: OutboxEntryId,
+    ) -> Result<Option<DeliveryState>, ClientError> {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -947,13 +971,19 @@ impl<T: Transport> Client<T> {
     /// pending retries and clean up expired messages.
     ///
     /// # Returns
-    /// Tuple of (messages_retried, messages_expired)
+    /// Tuple of (`messages_retried`, `messages_expired`)
     pub async fn outbox_tick(&self) -> Result<(usize, u64), ClientError> {
         // Check for expired messages first
-        let expired = self.outbox.check_expirations().map_err(ClientError::Outbox)?;
+        let expired = self
+            .outbox
+            .check_expirations()
+            .map_err(ClientError::Outbox)?;
 
         // Get messages due for retry
-        let due = self.outbox.get_ready_for_retry().map_err(ClientError::Outbox)?;
+        let due = self
+            .outbox
+            .get_ready_for_retry()
+            .map_err(ClientError::Outbox)?;
         let mut retried = 0;
 
         for pending in due {
@@ -1015,7 +1045,7 @@ fn transport_error_to_attempt_error(e: &TransportError) -> AttemptError {
             message: "channel closed".to_string(),
         },
         TransportError::TlsConfig(msg) => AttemptError::Rejected {
-            message: format!("TLS configuration error: {}", msg),
+            message: format!("TLS configuration error: {msg}"),
             is_transient: false,
         },
         TransportError::CertificatePinMismatch {
@@ -1024,8 +1054,7 @@ fn transport_error_to_attempt_error(e: &TransportError) -> AttemptError {
             actual,
         } => AttemptError::Rejected {
             message: format!(
-                "Certificate pin mismatch for {}: expected {}, got {}",
-                hostname, expected, actual
+                "Certificate pin mismatch for {hostname}: expected {expected}, got {actual}"
             ),
             is_transient: false,
         },
@@ -1156,8 +1185,13 @@ impl Client<TransportCoordinator> {
     ///
     /// # Returns
     /// Number of messages retried and their new phases.
-    pub async fn process_urgent_retries(&self) -> Result<Vec<(OutboxEntryId, TieredDeliveryPhase)>, ClientError> {
-        let due = self.outbox.get_urgent_retry_due().map_err(ClientError::Outbox)?;
+    pub async fn process_urgent_retries(
+        &self,
+    ) -> Result<Vec<(OutboxEntryId, TieredDeliveryPhase)>, ClientError> {
+        let due = self
+            .outbox
+            .get_urgent_retry_due()
+            .map_err(ClientError::Outbox)?;
         let mut results = Vec::new();
 
         for pending in due {
@@ -1200,7 +1234,7 @@ impl Client<TransportCoordinator> {
 
         for pending in due {
             match self.attempt_maintenance_refresh(&pending).await {
-                Ok(_) => {
+                Ok(()) => {
                     refreshed += 1;
                 }
                 Err(e) => {
@@ -1225,15 +1259,16 @@ impl Client<TransportCoordinator> {
         pending: &PendingMessage,
     ) -> Result<TieredDeliveryPhase, ClientError> {
         // Deserialize the outer envelope
-        let outer: OuterEnvelope = bincode::decode_from_slice(
-            &pending.envelope_bytes,
-            bincode::config::standard(),
-        )
-        .map(|(envelope, _)| envelope)
-        .map_err(|e| ClientError::Serialization(format!("envelope: {}", e)))?;
+        let outer: OuterEnvelope =
+            bincode::decode_from_slice(&pending.envelope_bytes, bincode::config::standard())
+                .map(|(envelope, _)| envelope)
+                .map_err(|e| ClientError::Serialization(format!("envelope: {e}")))?;
 
         // Try Direct tier first - recipient may be online now
-        let direct_result = self.transport.try_direct_tier(&outer, &self.tiered_config).await;
+        let direct_result = self
+            .transport
+            .try_direct_tier(&outer, &self.tiered_config)
+            .await;
 
         if direct_result.any_success() {
             // Direct delivery! Upgrade to DirectDelivery confidence
@@ -1312,7 +1347,10 @@ impl Client<TransportCoordinator> {
         all_results.extend(quorum_result.results);
 
         let combined_result = DeliveryResult {
-            quorum_reached: self.tiered_config.quorum.is_satisfied(total_success, total_targets),
+            quorum_reached: self
+                .tiered_config
+                .quorum
+                .is_satisfied(total_success, total_targets),
             confidence: reme_transport::DeliveryConfidence::QuorumReached {
                 count: total_success,
                 required: self.tiered_config.quorum.required_count(total_targets),
@@ -1337,17 +1375,21 @@ impl Client<TransportCoordinator> {
     /// Attempt maintenance refresh for a distributed message.
     ///
     /// Refreshes ALL Quorum tier targets to ensure copies still exist.
-    async fn attempt_maintenance_refresh(&self, pending: &PendingMessage) -> Result<(), ClientError> {
+    async fn attempt_maintenance_refresh(
+        &self,
+        pending: &PendingMessage,
+    ) -> Result<(), ClientError> {
         // Deserialize the outer envelope
-        let outer: OuterEnvelope = bincode::decode_from_slice(
-            &pending.envelope_bytes,
-            bincode::config::standard(),
-        )
-        .map(|(envelope, _)| envelope)
-        .map_err(|e| ClientError::Serialization(format!("envelope: {}", e)))?;
+        let outer: OuterEnvelope =
+            bincode::decode_from_slice(&pending.envelope_bytes, bincode::config::standard())
+                .map(|(envelope, _)| envelope)
+                .map_err(|e| ClientError::Serialization(format!("envelope: {e}")))?;
 
         // Try Direct tier first - recipient may be online now
-        let direct_result = self.transport.try_direct_tier(&outer, &self.tiered_config).await;
+        let direct_result = self
+            .transport
+            .try_direct_tier(&outer, &self.tiered_config)
+            .await;
 
         if direct_result.any_success() {
             // Upgrade to direct delivery
@@ -1420,10 +1462,13 @@ impl Client<TransportCoordinator> {
     /// 3. Maintenance refreshes (Phase 2)
     ///
     /// # Returns
-    /// Tuple of (urgent_retried, maintenance_refreshed, expired)
+    /// Tuple of (`urgent_retried`, `maintenance_refreshed`, expired)
     pub async fn tiered_outbox_tick(&self) -> Result<(usize, usize, u64), ClientError> {
         // Check for expired messages first
-        let expired = self.outbox.check_expirations().map_err(ClientError::Outbox)?;
+        let expired = self
+            .outbox
+            .check_expirations()
+            .map_err(ClientError::Outbox)?;
 
         // Process urgent retries
         let urgent_results = self.process_urgent_retries().await?;
@@ -1510,8 +1555,11 @@ mod tests {
             .unwrap();
 
         // Alice sends a message (no session establishment needed!)
-        let msg_id = alice.send_text(bob_identity.public_id(), "Hello Bob!").await.unwrap();
-        assert!(msg_id.as_bytes().len() > 0);
+        let msg_id = alice
+            .send_text(bob_identity.public_id(), "Hello Bob!")
+            .await
+            .unwrap();
+        assert!(!msg_id.as_bytes().is_empty());
 
         // Verify message was submitted
         let messages = alice_transport.messages.lock().unwrap();
@@ -1536,7 +1584,10 @@ mod tests {
 
         // Alice adds Bob as contact and sends a message
         alice.add_contact(bob.public_id(), Some("Bob")).unwrap();
-        let _msg_id = alice.send_text(bob.public_id(), "Hello Bob!").await.unwrap();
+        let _msg_id = alice
+            .send_text(bob.public_id(), "Hello Bob!")
+            .await
+            .unwrap();
 
         // Bob receives and decrypts the message
         let messages = shared_transport.take_messages();
@@ -1570,7 +1621,10 @@ mod tests {
 
         // Alice sends to Bob
         alice.add_contact(bob.public_id(), Some("Bob")).unwrap();
-        alice.send_text(bob.public_id(), "Secret message").await.unwrap();
+        alice
+            .send_text(bob.public_id(), "Secret message")
+            .await
+            .unwrap();
 
         // Eve tries to decrypt (should fail)
         let messages = shared_transport.take_messages();
@@ -1591,7 +1645,9 @@ mod tests {
         let bob_identity = Identity::generate();
         let bob_private_key = bob_identity.to_bytes();
 
-        alice.add_contact(bob_identity.public_id(), Some("Bob")).unwrap();
+        alice
+            .add_contact(bob_identity.public_id(), Some("Bob"))
+            .unwrap();
 
         // Send a detached message
         alice
@@ -1629,13 +1685,21 @@ mod tests {
         let bob_identity = Identity::generate();
         let bob_private_key = bob_identity.to_bytes();
 
-        alice.add_contact(bob_identity.public_id(), Some("Bob")).unwrap();
+        alice
+            .add_contact(bob_identity.public_id(), Some("Bob"))
+            .unwrap();
 
         // Send first linked message
-        alice.send_text(bob_identity.public_id(), "First").await.unwrap();
+        alice
+            .send_text(bob_identity.public_id(), "First")
+            .await
+            .unwrap();
 
         // Send second linked message
-        alice.send_text(bob_identity.public_id(), "Second").await.unwrap();
+        alice
+            .send_text(bob_identity.public_id(), "Second")
+            .await
+            .unwrap();
 
         let messages = shared_transport.take_messages();
         assert_eq!(messages.len(), 2);
@@ -1675,13 +1739,18 @@ mod tests {
 
         let bob_identity = Identity::generate();
 
-        alice.add_contact(bob_identity.public_id(), Some("Bob")).unwrap();
+        alice
+            .add_contact(bob_identity.public_id(), Some("Bob"))
+            .unwrap();
 
         // Initial epoch is 0
         assert_eq!(alice.get_conversation_epoch(bob_identity.public_id()), 0);
 
         // Send a message to establish state
-        alice.send_text(bob_identity.public_id(), "Hello").await.unwrap();
+        alice
+            .send_text(bob_identity.public_id(), "Hello")
+            .await
+            .unwrap();
 
         // Clear conversation DAG
         let new_epoch = alice.clear_conversation_dag(bob_identity.public_id());
@@ -1706,10 +1775,15 @@ mod tests {
         let bob_identity = Identity::generate();
         let bob_private_key = bob_identity.to_bytes();
 
-        alice.add_contact(bob_identity.public_id(), Some("Bob")).unwrap();
+        alice
+            .add_contact(bob_identity.public_id(), Some("Bob"))
+            .unwrap();
 
         // Send linked message
-        alice.send_text(bob_identity.public_id(), "Linked 1").await.unwrap();
+        alice
+            .send_text(bob_identity.public_id(), "Linked 1")
+            .await
+            .unwrap();
 
         // Send detached message (should NOT update chain)
         alice
@@ -1718,7 +1792,10 @@ mod tests {
             .unwrap();
 
         // Send another linked message (should link to "Linked 1", not "Detached")
-        alice.send_text(bob_identity.public_id(), "Linked 2").await.unwrap();
+        alice
+            .send_text(bob_identity.public_id(), "Linked 2")
+            .await
+            .unwrap();
 
         let messages = shared_transport.take_messages();
         assert_eq!(messages.len(), 3);
@@ -1767,7 +1844,10 @@ mod tests {
         bob.add_contact(alice.public_id(), Some("Alice")).unwrap();
 
         // Alice sends first message (establishes history)
-        alice.send_text(bob.public_id(), "Hello Bob!").await.unwrap();
+        alice
+            .send_text(bob.public_id(), "Hello Bob!")
+            .await
+            .unwrap();
         let messages = shared_transport.take_messages();
         let received1 = bob.process_message(&messages[0]).await.unwrap();
 
@@ -1776,7 +1856,10 @@ mod tests {
         assert!(!received1.local_state_behind);
 
         // Alice sends second message (with valid prev_self chain)
-        alice.send_text(bob.public_id(), "How are you?").await.unwrap();
+        alice
+            .send_text(bob.public_id(), "How are you?")
+            .await
+            .unwrap();
         let messages = shared_transport.take_messages();
         let received2 = bob.process_message(&messages[0]).await.unwrap();
 
@@ -1797,10 +1880,10 @@ mod tests {
             content: Content::Text(TextContent {
                 body: "I lost my state!".to_string(),
             }),
-            prev_self: None,           // No previous message (state lost)
+            prev_self: None, // No previous message (state lost)
             observed_heads: Vec::new(),
-            epoch: 0,                  // Fresh epoch
-            flags: 0,                  // NOT detached - this indicates state loss
+            epoch: 0, // Fresh epoch
+            flags: 0, // NOT detached - this indicates state loss
         };
 
         // Encrypt and create outer envelope (signing happens inside encrypt_to_mik)
@@ -1854,7 +1937,10 @@ mod tests {
         bob.add_contact(alice.public_id(), Some("Alice")).unwrap();
 
         // Alice sends first message (establishes history)
-        alice.send_text(bob.public_id(), "Hello Bob!").await.unwrap();
+        alice
+            .send_text(bob.public_id(), "Hello Bob!")
+            .await
+            .unwrap();
         let messages = shared_transport.take_messages();
         bob.process_message(&messages[0]).await.unwrap();
 
@@ -1873,7 +1959,7 @@ mod tests {
             prev_self: None,
             observed_heads: Vec::new(),
             epoch: 0,
-            flags: FLAG_DETACHED,  // Intentionally detached!
+            flags: FLAG_DETACHED, // Intentionally detached!
         };
 
         // Encrypt and create outer envelope (signing happens inside encrypt_to_mik)
@@ -1948,8 +2034,8 @@ mod tests {
             content: Content::Text(TextContent {
                 body: "I saw your messages!".to_string(),
             }),
-            prev_self: None,  // Bob's first message
-            observed_heads: vec![unknown_content_id],  // Claims to have seen this from Alice
+            prev_self: None,                          // Bob's first message
+            observed_heads: vec![unknown_content_id], // Claims to have seen this from Alice
             epoch: 0,
             flags: 0,
         };

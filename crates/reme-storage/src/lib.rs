@@ -34,7 +34,7 @@ pub enum StorageError {
     Node(#[from] NodeError),
 }
 
-/// Simple SQLite storage for desktop v0.1
+/// Simple `SQLite` storage for desktop v0.1
 ///
 /// Supports unified storage for both client data (contacts, messages, outbox)
 /// and embedded node mailbox data.
@@ -193,7 +193,7 @@ impl Storage {
     pub fn init_mailbox_schema(&self) -> Result<(), StorageError> {
         debug!("initializing mailbox schema for embedded node");
         self.conn.execute_batch(
-            r#"
+            r"
             -- Mailbox messages table for embedded node
             -- Stores incoming messages from LAN peers until fetched
             CREATE TABLE IF NOT EXISTS mailbox_messages (
@@ -220,7 +220,7 @@ impl Storage {
             );
 
             INSERT OR IGNORE INTO mailbox_schema_version (version) VALUES (1);
-            "#,
+            ",
         )?;
         debug!("mailbox schema initialized");
         Ok(())
@@ -230,7 +230,7 @@ impl Storage {
     ///
     /// This creates a new `PersistentMailboxStore` that connects to the same
     /// database file with its own connection. Both connections can safely
-    /// coexist using SQLite's WAL mode.
+    /// coexist using `SQLite`'s WAL mode.
     ///
     /// # Note
     /// For in-memory databases (testing mode), this creates a separate in-memory
@@ -249,19 +249,16 @@ impl Storage {
         &self,
         config: PersistentStoreConfig,
     ) -> Result<PersistentMailboxStore, StorageError> {
-        match &self.path {
-            Some(path) => {
-                debug!(path = %path.display(), "creating mailbox store for embedded node");
-                let store = PersistentMailboxStore::open(path, config)?;
-                Ok(store)
-            }
-            None => {
-                // For in-memory databases, create an in-memory mailbox store
-                // Note: This won't share data with the main connection
-                debug!("creating in-memory mailbox store (testing mode)");
-                let store = PersistentMailboxStore::in_memory(config)?;
-                Ok(store)
-            }
+        if let Some(path) = &self.path {
+            debug!(path = %path.display(), "creating mailbox store for embedded node");
+            let store = PersistentMailboxStore::open(path, config)?;
+            Ok(store)
+        } else {
+            // For in-memory databases, create an in-memory mailbox store
+            // Note: This won't share data with the main connection
+            debug!("creating in-memory mailbox store (testing mode)");
+            let store = PersistentMailboxStore::in_memory(config)?;
+            Ok(store)
         }
     }
 
@@ -270,7 +267,11 @@ impl Storage {
     // ============================================
 
     /// Add a contact
-    pub fn add_contact(&self, public_id: &PublicID, name: Option<&str>) -> Result<i64, StorageError> {
+    pub fn add_contact(
+        &self,
+        public_id: &PublicID,
+        name: Option<&str>,
+    ) -> Result<i64, StorageError> {
         debug!(name = ?name, "adding contact");
         let public_id_bytes = public_id.to_bytes();
         let now = std::time::SystemTime::now()
@@ -405,7 +406,11 @@ impl Storage {
         message_id: MessageID,
         content: &Content,
     ) -> Result<(), StorageError> {
-        trace!(contact_id = contact_id, ?message_id, "storing received message");
+        trace!(
+            contact_id = contact_id,
+            ?message_id,
+            "storing received message"
+        );
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -468,7 +473,7 @@ impl Storage {
 
     /// Store a pending ack secret for a sent message.
     ///
-    /// This is used by senders to retain the ack_secret so they can create
+    /// This is used by senders to retain the `ack_secret` so they can create
     /// tombstones for their own messages (e.g., to retract before delivery).
     pub fn store_pending_ack(
         &self,
@@ -495,7 +500,10 @@ impl Storage {
     /// Get the ack secret for a pending message.
     ///
     /// Returns None if no ack secret is stored for this message.
-    pub fn get_pending_ack(&self, message_id: &MessageID) -> Result<Option<[u8; 16]>, StorageError> {
+    pub fn get_pending_ack(
+        &self,
+        message_id: &MessageID,
+    ) -> Result<Option<[u8; 16]>, StorageError> {
         let message_id_bytes = message_id.as_bytes();
 
         let result: Option<Vec<u8>> = self
@@ -533,7 +541,7 @@ impl Storage {
         Ok(())
     }
 
-    /// Clean up old pending ack secrets that are older than max_age_secs.
+    /// Clean up old pending ack secrets that are older than `max_age_secs`.
     ///
     /// Returns the number of deleted entries.
     pub fn cleanup_old_pending_acks(&self, max_age_secs: u64) -> Result<usize, StorageError> {
@@ -590,8 +598,14 @@ impl Storage {
 
         let mut attempts = Vec::new();
         for row in rows {
-            let (transport_id, attempted_at_ms, result_type, error_type, error_message, error_transient) =
-                row?;
+            let (
+                transport_id,
+                attempted_at_ms,
+                result_type,
+                error_type,
+                error_message,
+                error_transient,
+            ) = row?;
 
             let result = if result_type == "sent" {
                 AttemptResult::Sent
@@ -599,11 +613,11 @@ impl Storage {
                 let error = match error_type.as_deref() {
                     Some("network") => AttemptError::Network {
                         message: error_message.unwrap_or_default(),
-                        is_transient: error_transient.map(|v| v != 0).unwrap_or(true),
+                        is_transient: error_transient != Some(0),
                     },
                     Some("rejected") => AttemptError::Rejected {
                         message: error_message.unwrap_or_default(),
-                        is_transient: error_transient.map(|v| v != 0).unwrap_or(false),
+                        is_transient: error_transient.is_some_and(|v| v != 0),
                     },
                     Some("unavailable") => AttemptError::Unavailable {
                         message: error_message.unwrap_or_default(),
@@ -612,9 +626,7 @@ impl Storage {
                         message: error_message.unwrap_or_default(),
                     },
                     Some("timeout") => AttemptError::TimedOut {
-                        timeout_ms: error_message
-                            .and_then(|s| s.parse().ok())
-                            .unwrap_or(60000),
+                        timeout_ms: error_message.and_then(|s| s.parse().ok()).unwrap_or(60000),
                     },
                     _ => AttemptError::Network {
                         message: error_message.unwrap_or_else(|| "unknown error".to_string()),
@@ -663,9 +675,9 @@ impl Storage {
         message_id: &MessageID,
     ) -> Result<std::collections::HashSet<TargetId>, StorageError> {
         let message_id_bytes = message_id.as_bytes();
-        let mut stmt = self.conn.prepare(
-            "SELECT target_id FROM outbox_successes WHERE message_id = ?",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT target_id FROM outbox_successes WHERE message_id = ?")?;
 
         let rows = stmt.query_map(params![&message_id_bytes[..]], |row| {
             let target_id: String = row.get(0)?;
@@ -683,8 +695,7 @@ impl Storage {
                 targets.insert(TargetId::mqtt(url));
             } else {
                 return Err(StorageError::Serialization(format!(
-                    "Unknown target_id prefix in '{}'",
-                    target_str
+                    "Unknown target_id prefix in '{target_str}'"
                 )));
             }
         }
@@ -693,15 +704,18 @@ impl Storage {
     }
 
     /// Load tiered delivery phase for an outbox entry
-    fn load_tiered_phase(&self, message_id: &MessageID) -> Result<TieredDeliveryPhase, StorageError> {
+    fn load_tiered_phase(
+        &self,
+        message_id: &MessageID,
+    ) -> Result<TieredDeliveryPhase, StorageError> {
         let message_id_bytes = message_id.as_bytes();
         let result: Option<(
-            String,           // delivery_phase
-            Option<u64>,      // quorum_reached_at_ms
-            Option<u64>,      // last_maintenance_ms
-            Option<u32>,      // quorum_count
-            Option<u32>,      // quorum_required
-            Option<String>,   // direct_target_id
+            String,         // delivery_phase
+            Option<u64>,    // quorum_reached_at_ms
+            Option<u64>,    // last_maintenance_ms
+            Option<u32>,    // quorum_count
+            Option<u32>,    // quorum_required
+            Option<String>, // direct_target_id
         )> = self
             .conn
             .query_row(
@@ -712,7 +726,8 @@ impl Storage {
                 params![&message_id_bytes[..]],
                 |row| {
                     Ok((
-                        row.get::<_, Option<String>>(0)?.unwrap_or_else(|| "urgent".to_string()),
+                        row.get::<_, Option<String>>(0)?
+                            .unwrap_or_else(|| "urgent".to_string()),
                         row.get(1)?,
                         row.get(2)?,
                         row.get(3)?,
@@ -724,7 +739,14 @@ impl Storage {
             .optional()?;
 
         match result {
-            Some((phase, reached_at_ms, last_maintenance_ms, quorum_count, quorum_required, direct_target_id)) => {
+            Some((
+                phase,
+                reached_at_ms,
+                last_maintenance_ms,
+                quorum_count,
+                quorum_required,
+                direct_target_id,
+            )) => {
                 match phase.as_str() {
                     "distributed" => {
                         let confidence = if let Some(target_str) = direct_target_id {
@@ -735,8 +757,7 @@ impl Storage {
                                 TargetId::mqtt(url)
                             } else {
                                 return Err(StorageError::Serialization(format!(
-                                    "Unknown target_id prefix in '{}'",
-                                    target_str
+                                    "Unknown target_id prefix in '{target_str}'"
                                 )));
                             };
                             DeliveryConfidence::DirectDelivery { target }
@@ -769,7 +790,7 @@ impl Storage {
         }
     }
 
-    /// Load a PendingMessage from row data
+    /// Load a `PendingMessage` from row data
     ///
     /// Note: `message_id` serves as both the primary key and the entry ID.
     #[allow(clippy::too_many_arguments)]
@@ -897,16 +918,16 @@ impl OutboxStore for Storage {
 
         let rows = stmt.query_map([], |row| {
             Ok((
-                row.get::<_, Vec<u8>>(0)?,  // message_id
-                row.get::<_, Vec<u8>>(1)?,  // recipient_id
-                row.get::<_, Vec<u8>>(2)?,  // content_id
-                row.get::<_, Vec<u8>>(3)?,  // envelope_bytes
-                row.get::<_, Vec<u8>>(4)?,  // inner_bytes
-                row.get::<_, u64>(5)?,      // created_at_ms
-                row.get::<_, Option<u64>>(6)?,  // expires_at_ms
-                row.get::<_, Option<u64>>(7)?,  // next_retry_at_ms
+                row.get::<_, Vec<u8>>(0)?,         // message_id
+                row.get::<_, Vec<u8>>(1)?,         // recipient_id
+                row.get::<_, Vec<u8>>(2)?,         // content_id
+                row.get::<_, Vec<u8>>(3)?,         // envelope_bytes
+                row.get::<_, Vec<u8>>(4)?,         // inner_bytes
+                row.get::<_, u64>(5)?,             // created_at_ms
+                row.get::<_, Option<u64>>(6)?,     // expires_at_ms
+                row.get::<_, Option<u64>>(7)?,     // next_retry_at_ms
                 row.get::<_, Option<String>>(8)?,  // confirmation_type
-                row.get::<_, Option<Vec<u8>>>(9)?,  // confirmation_data
+                row.get::<_, Option<Vec<u8>>>(9)?, // confirmation_data
             ))
         })?;
 
@@ -943,7 +964,10 @@ impl OutboxStore for Storage {
         Ok(messages)
     }
 
-    fn outbox_get_for_recipient(&self, recipient: &PublicID) -> Result<Vec<PendingMessage>, Self::Error> {
+    fn outbox_get_for_recipient(
+        &self,
+        recipient: &PublicID,
+    ) -> Result<Vec<PendingMessage>, Self::Error> {
         let recipient_bytes = recipient.to_bytes();
 
         let mut stmt = self.conn.prepare(
@@ -956,16 +980,16 @@ impl OutboxStore for Storage {
 
         let rows = stmt.query_map(params![&recipient_bytes[..]], |row| {
             Ok((
-                row.get::<_, Vec<u8>>(0)?,  // message_id
-                row.get::<_, Vec<u8>>(1)?,  // recipient_id
-                row.get::<_, Vec<u8>>(2)?,  // content_id
-                row.get::<_, Vec<u8>>(3)?,  // envelope_bytes
-                row.get::<_, Vec<u8>>(4)?,  // inner_bytes
-                row.get::<_, u64>(5)?,      // created_at_ms
-                row.get::<_, Option<u64>>(6)?,  // expires_at_ms
-                row.get::<_, Option<u64>>(7)?,  // next_retry_at_ms
+                row.get::<_, Vec<u8>>(0)?,         // message_id
+                row.get::<_, Vec<u8>>(1)?,         // recipient_id
+                row.get::<_, Vec<u8>>(2)?,         // content_id
+                row.get::<_, Vec<u8>>(3)?,         // envelope_bytes
+                row.get::<_, Vec<u8>>(4)?,         // inner_bytes
+                row.get::<_, u64>(5)?,             // created_at_ms
+                row.get::<_, Option<u64>>(6)?,     // expires_at_ms
+                row.get::<_, Option<u64>>(7)?,     // next_retry_at_ms
                 row.get::<_, Option<String>>(8)?,  // confirmation_type
-                row.get::<_, Option<Vec<u8>>>(9)?,  // confirmation_data
+                row.get::<_, Option<Vec<u8>>>(9)?, // confirmation_data
             ))
         })?;
 
@@ -1016,16 +1040,16 @@ impl OutboxStore for Storage {
 
         let rows = stmt.query_map(params![now_ms as i64, now_ms as i64], |row| {
             Ok((
-                row.get::<_, Vec<u8>>(0)?,  // message_id
-                row.get::<_, Vec<u8>>(1)?,  // recipient_id
-                row.get::<_, Vec<u8>>(2)?,  // content_id
-                row.get::<_, Vec<u8>>(3)?,  // envelope_bytes
-                row.get::<_, Vec<u8>>(4)?,  // inner_bytes
-                row.get::<_, u64>(5)?,      // created_at_ms
-                row.get::<_, Option<u64>>(6)?,  // expires_at_ms
-                row.get::<_, Option<u64>>(7)?,  // next_retry_at_ms
+                row.get::<_, Vec<u8>>(0)?,         // message_id
+                row.get::<_, Vec<u8>>(1)?,         // recipient_id
+                row.get::<_, Vec<u8>>(2)?,         // content_id
+                row.get::<_, Vec<u8>>(3)?,         // envelope_bytes
+                row.get::<_, Vec<u8>>(4)?,         // inner_bytes
+                row.get::<_, u64>(5)?,             // created_at_ms
+                row.get::<_, Option<u64>>(6)?,     // expires_at_ms
+                row.get::<_, Option<u64>>(7)?,     // next_retry_at_ms
                 row.get::<_, Option<String>>(8)?,  // confirmation_type
-                row.get::<_, Option<Vec<u8>>>(9)?,  // confirmation_data
+                row.get::<_, Option<Vec<u8>>>(9)?, // confirmation_data
             ))
         })?;
 
@@ -1062,7 +1086,10 @@ impl OutboxStore for Storage {
         Ok(messages)
     }
 
-    fn outbox_get_by_id(&self, entry_id: OutboxEntryId) -> Result<Option<PendingMessage>, Self::Error> {
+    fn outbox_get_by_id(
+        &self,
+        entry_id: OutboxEntryId,
+    ) -> Result<Option<PendingMessage>, Self::Error> {
         let entry_id_bytes = entry_id.as_bytes();
         let result: Option<(
             Vec<u8>,  // message_id
@@ -1132,7 +1159,10 @@ impl OutboxStore for Storage {
         }
     }
 
-    fn outbox_get_by_content_id(&self, content_id: ContentId) -> Result<Option<PendingMessage>, Self::Error> {
+    fn outbox_get_by_content_id(
+        &self,
+        content_id: ContentId,
+    ) -> Result<Option<PendingMessage>, Self::Error> {
         let result: Option<(
             Vec<u8>,  // message_id
             Vec<u8>,  // recipient_id
@@ -1221,7 +1251,7 @@ impl OutboxStore for Storage {
                     "failed",
                     Some(err_type),
                     Some(err_msg),
-                    Some(if err.is_transient() { 1 } else { 0 }),
+                    Some(i32::from(err.is_transient())),
                 )
             }
         };
@@ -1263,7 +1293,8 @@ impl OutboxStore for Storage {
                 if let Err(rollback_err) = self.conn.execute("ROLLBACK", []) {
                     tracing::error!(
                         "Transaction rollback failed after error: {} (rollback error: {})",
-                        e, rollback_err
+                        e,
+                        rollback_err
                     );
                 }
                 Err(e)
@@ -1283,9 +1314,9 @@ impl OutboxStore for Storage {
             .as_millis() as u64;
 
         let (confirmation_type, confirmation_data) = match confirmation {
-            DeliveryConfirmation::Dag { observed_in_message_id } => {
-                ("dag", observed_in_message_id.to_vec())
-            }
+            DeliveryConfirmation::Dag {
+                observed_in_message_id,
+            } => ("dag", observed_in_message_id.to_vec()),
         };
 
         self.conn.execute(
@@ -1312,7 +1343,11 @@ impl OutboxStore for Storage {
         Ok(())
     }
 
-    fn outbox_schedule_retry(&self, entry_ids: &[OutboxEntryId], now_ms: u64) -> Result<(), Self::Error> {
+    fn outbox_schedule_retry(
+        &self,
+        entry_ids: &[OutboxEntryId],
+        now_ms: u64,
+    ) -> Result<(), Self::Error> {
         if entry_ids.is_empty() {
             return Ok(());
         }
@@ -1340,7 +1375,8 @@ impl OutboxStore for Storage {
                 if let Err(rollback_err) = self.conn.execute("ROLLBACK", []) {
                     tracing::error!(
                         "Transaction rollback failed after error: {} (rollback error: {})",
-                        e, rollback_err
+                        e,
+                        rollback_err
                     );
                 }
                 Err(e)
@@ -1595,7 +1631,9 @@ mod tests {
         let storage = Storage::in_memory().unwrap();
         let contact_id = Identity::generate();
 
-        let id = storage.add_contact(contact_id.public_id(), Some("Alice")).unwrap();
+        let id = storage
+            .add_contact(contact_id.public_id(), Some("Alice"))
+            .unwrap();
         assert!(id > 0);
 
         let retrieved_id = storage.get_contact_id(contact_id.public_id()).unwrap();
@@ -1609,14 +1647,18 @@ mod tests {
     fn test_message_storage() {
         let storage = Storage::in_memory().unwrap();
         let contact = Identity::generate();
-        let contact_id = storage.add_contact(contact.public_id(), Some("Bob")).unwrap();
+        let contact_id = storage
+            .add_contact(contact.public_id(), Some("Bob"))
+            .unwrap();
 
         let msg_id = MessageID::new();
         let content = Content::Text(reme_message::TextContent {
             body: "Hello!".to_string(),
         });
 
-        storage.store_sent_message(contact_id, msg_id, &content).unwrap();
+        storage
+            .store_sent_message(contact_id, msg_id, &content)
+            .unwrap();
         storage.mark_delivered(msg_id).unwrap();
         storage.mark_read(msg_id).unwrap();
     }
@@ -1681,7 +1723,9 @@ mod tests {
 
         // Add a contact to the client storage
         let contact = Identity::generate();
-        let contact_id = storage.add_contact(contact.public_id(), Some("Test")).unwrap();
+        let contact_id = storage
+            .add_contact(contact.public_id(), Some("Test"))
+            .unwrap();
         assert!(contact_id > 0);
 
         // Create mailbox store using the same database

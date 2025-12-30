@@ -19,7 +19,7 @@ pub const DEFAULT_MAX_SIZE: usize = 100_000;
 /// Used for loop prevention in mesh topologies where messages
 /// may traverse multiple nodes and MQTT brokers.
 pub struct SeenCache {
-    /// Map from message_id to when it was first seen
+    /// Map from `message_id` to when it was first seen
     seen: HashMap<MessageID, Instant>,
     /// Time-to-live for entries
     ttl: Duration,
@@ -32,7 +32,7 @@ pub struct SeenCache {
 }
 
 impl SeenCache {
-    /// Create a new SeenCache with specified TTL and max size.
+    /// Create a new `SeenCache` with specified TTL and max size.
     pub fn new(ttl: Duration, max_size: usize) -> Self {
         Self {
             seen: HashMap::with_capacity(max_size.min(1000)),
@@ -43,7 +43,7 @@ impl SeenCache {
         }
     }
 
-    /// Create a SeenCache with default settings.
+    /// Create a `SeenCache` with default settings.
     pub fn with_defaults() -> Self {
         Self::new(DEFAULT_TTL, DEFAULT_MAX_SIZE)
     }
@@ -116,7 +116,7 @@ impl SeenCache {
         self.last_cleanup = now;
     }
 
-    /// Evict oldest entries until under max_size.
+    /// Evict oldest entries until under `max_size`.
     ///
     /// Uses `select_nth_unstable_by_key` for O(N) average performance
     /// instead of O(N log N) full sort.
@@ -165,11 +165,11 @@ impl Default for SeenCache {
     }
 }
 
-/// Thread-safe wrapper around SeenCache.
+/// Thread-safe wrapper around `SeenCache`.
 pub struct SharedSeenCache(Mutex<SeenCache>);
 
 impl SharedSeenCache {
-    /// Create a new SharedSeenCache.
+    /// Create a new `SharedSeenCache`.
     pub fn new(ttl: Duration, max_size: usize) -> Self {
         Self(Mutex::new(SeenCache::new(ttl, max_size)))
     }
@@ -205,7 +205,7 @@ impl SharedSeenCache {
         self.0
             .lock()
             .expect("SeenCache lock poisoned")
-            .mark(message_id)
+            .mark(message_id);
     }
 
     /// Get the current number of entries.
@@ -220,7 +220,7 @@ impl SharedSeenCache {
 
     /// Clear all entries.
     pub fn clear(&self) {
-        self.0.lock().expect("SeenCache lock poisoned").clear()
+        self.0.lock().expect("SeenCache lock poisoned").clear();
     }
 }
 

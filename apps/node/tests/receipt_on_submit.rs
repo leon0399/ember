@@ -1,9 +1,11 @@
-//! Integration tests for ack_secret receipt on submit
+//! Integration tests for `ack_secret` receipt on submit
 //!
 //! Tests that nodes return cryptographic receipts proving they can decrypt messages.
 
 use base64::prelude::*;
-use node::{api, node_identity::NodeIdentity, replication, PersistentMailboxStore, PersistentStoreConfig};
+use node::{
+    api, node_identity::NodeIdentity, replication, PersistentMailboxStore, PersistentStoreConfig,
+};
 use reme_encryption::{derive_ack_hash, encrypt_to_mik};
 use reme_identity::Identity;
 use reme_message::{Content, InnerEnvelope, MessageID, OuterEnvelope, TextContent};
@@ -31,23 +33,25 @@ fn create_temp_identity() -> (NodeIdentity, tempfile::TempDir) {
 }
 
 /// Start a test node with optional signing identity
-async fn start_test_node(identity: Option<Arc<NodeIdentity>>) -> (String, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind");
+async fn start_test_node(
+    identity: Option<Arc<NodeIdentity>>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Failed to bind");
     let addr = listener.local_addr().expect("Failed to get local addr");
-    let url = format!("http://{}", addr);
+    let url = format!("http://{addr}");
 
     let config = PersistentStoreConfig {
         max_messages_per_mailbox: 1000,
         default_ttl_secs: 3600,
     };
-    let store = Arc::new(
-        PersistentMailboxStore::open(":memory:", config).expect("Failed to create store"),
-    );
+    let store =
+        Arc::new(PersistentMailboxStore::open(":memory:", config).expect("Failed to create store"));
 
     let node_id = identity
         .as_ref()
-        .map(|i| i.node_id().to_string())
-        .unwrap_or_else(|| "test-node".to_string());
+        .map_or_else(|| "test-node".to_string(), |i| i.node_id().to_string());
 
     let replication = Arc::new(replication::ReplicationClient::with_identity(
         node_id,
@@ -73,7 +77,7 @@ async fn start_test_node(identity: Option<Arc<NodeIdentity>>) -> (String, tokio:
     });
 
     // Wait for server readiness
-    let health_url = format!("{}/api/v1/health", url_clone);
+    let health_url = format!("{url_clone}/api/v1/health");
     let client = reqwest::Client::new();
     let mut server_ready = false;
     for _ in 0..50 {
@@ -115,13 +119,8 @@ fn create_encrypted_envelope(
     let message_id = MessageID::new();
 
     // Encrypt to recipient
-    let enc_output = encrypt_to_mik(
-        &inner,
-        recipient_pubkey,
-        &message_id,
-        &sender.to_bytes(),
-    )
-    .expect("Encryption failed");
+    let enc_output = encrypt_to_mik(&inner, recipient_pubkey, &message_id, &sender.to_bytes())
+        .expect("Encryption failed");
 
     // Create outer envelope with the message_id
     let mut envelope = OuterEnvelope::new(
@@ -143,7 +142,7 @@ async fn submit_envelope(url: &str, envelope: OuterEnvelope) -> SubmitResponse {
     let body = BASE64_STANDARD.encode(wire_payload.encode());
 
     let response = client
-        .post(format!("{}/api/v1/submit", url))
+        .post(format!("{url}/api/v1/submit"))
         .body(body)
         .send()
         .await
@@ -153,7 +152,7 @@ async fn submit_envelope(url: &str, envelope: OuterEnvelope) -> SubmitResponse {
     response.json().await.expect("Failed to parse response")
 }
 
-/// Test: Node is the intended recipient → returns valid ack_secret
+/// Test: Node is the intended recipient → returns valid `ack_secret`
 #[tokio::test]
 async fn test_recipient_returns_ack_secret() {
     // Create node identity (this will be the recipient)
@@ -173,7 +172,10 @@ async fn test_recipient_returns_ack_secret() {
 
     // Should have ack_secret
     assert_eq!(response.status, "ok");
-    assert!(response.ack_secret.is_some(), "Node should return ack_secret when it's the recipient");
+    assert!(
+        response.ack_secret.is_some(),
+        "Node should return ack_secret when it's the recipient"
+    );
 
     // Verify ack_secret is correct
     let returned_ack_secret_b64 = response.ack_secret.unwrap();
@@ -190,12 +192,15 @@ async fn test_recipient_returns_ack_secret() {
 
     // Double-check: hash(ack_secret) should equal ack_hash
     let computed_ack_hash = derive_ack_hash(&returned_ack_secret);
-    assert_eq!(computed_ack_hash, ack_hash, "hash(ack_secret) should equal ack_hash");
+    assert_eq!(
+        computed_ack_hash, ack_hash,
+        "hash(ack_secret) should equal ack_hash"
+    );
 
     println!("Node correctly returned ack_secret as intended recipient");
 }
 
-/// Test: Node is a relay (different routing_key) → returns null
+/// Test: Node is a relay (different `routing_key`) → returns null
 #[tokio::test]
 async fn test_relay_returns_no_ack_secret() {
     // Create node identity
@@ -246,7 +251,7 @@ async fn test_no_identity_returns_no_ack_secret() {
     println!("Node without identity correctly returned no ack_secret");
 }
 
-/// Test: Duplicate message submission also returns no ack_secret (idempotent)
+/// Test: Duplicate message submission also returns no `ack_secret` (idempotent)
 #[tokio::test]
 async fn test_duplicate_returns_no_ack_secret() {
     // Create node identity (this will be the recipient)
@@ -263,7 +268,10 @@ async fn test_duplicate_returns_no_ack_secret() {
     // First submission - should have ack_secret
     let response1 = submit_envelope(&url, envelope.clone()).await;
     assert_eq!(response1.status, "ok");
-    assert!(response1.ack_secret.is_some(), "First submit should return ack_secret");
+    assert!(
+        response1.ack_secret.is_some(),
+        "First submit should return ack_secret"
+    );
 
     // Second submission (duplicate) - should NOT have ack_secret
     let response2 = submit_envelope(&url, envelope).await;
@@ -276,7 +284,7 @@ async fn test_duplicate_returns_no_ack_secret() {
     println!("Duplicate submission correctly returned no ack_secret");
 }
 
-/// Test: Malformed ephemeral key (low-order point) → returns no ack_secret
+/// Test: Malformed ephemeral key (low-order point) → returns no `ack_secret`
 #[tokio::test]
 async fn test_low_order_ephemeral_key_returns_no_ack_secret() {
     // Create node identity (this will be the recipient)
@@ -294,7 +302,7 @@ async fn test_low_order_ephemeral_key_returns_no_ack_secret() {
         node_pubkey.routing_key(),
         Some(1),
         low_order_ephemeral_key,
-        [0u8; 16], // dummy ack_hash
+        [0u8; 16],        // dummy ack_hash
         vec![1, 2, 3, 4], // dummy ciphertext
     );
     envelope.message_id = MessageID::new();

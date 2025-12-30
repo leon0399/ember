@@ -5,7 +5,7 @@
 //!
 //! ## Signed Requests
 //!
-//! When a node identity is configured, outgoing requests are signed with XEdDSA
+//! When a node identity is configured, outgoing requests are signed with `XEdDSA`
 //! signatures. Peer nodes verify these signatures to authenticate the source.
 //!
 //! ## Per-Peer Authentication
@@ -63,7 +63,7 @@ impl ReplicationClient {
     /// Replicate a wire payload (message or tombstone) to all peer nodes (except the source)
     ///
     /// Uses fire-and-forget pattern - spawns tasks and returns immediately.
-    /// Signs requests with XEdDSA if node identity is configured.
+    /// Signs requests with `XEdDSA` if node identity is configured.
     /// Supports URL-embedded credentials for per-peer authentication.
     pub fn replicate_payload(self: &Arc<Self>, payload_b64: String, from_node: Option<String>) {
         if self.peer_urls.is_empty() {
@@ -204,7 +204,7 @@ fn extract_host_from_url(url_str: &str) -> Option<String> {
     let host = parsed.host_str()?;
 
     match parsed.port() {
-        Some(port) => Some(format!("{}:{}", host, port)),
+        Some(port) => Some(format!("{host}:{port}")),
         None => Some(host.to_string()),
     }
 }

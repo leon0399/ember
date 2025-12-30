@@ -3,6 +3,9 @@ name = "reme-transport"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [dependencies]
 reme-message = { workspace = true }
 reme-node-core = { workspace = true, optional = true }

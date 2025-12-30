@@ -11,7 +11,7 @@
 //! The main entry point is [`ClientOutbox`], which coordinates:
 //! - Message enqueueing with envelope storage for fast retry
 //! - Per-transport retry scheduling with configurable policies
-//! - DAG-based delivery confirmation (peer's observed_heads includes our content_id)
+//! - DAG-based delivery confirmation (peer's `observed_heads` includes our `content_id`)
 //! - Gap detection and automatic retry triggering
 //!
 //! # Example
@@ -57,7 +57,7 @@ use std::time::Duration;
 /// - Enqueueing messages with stored envelopes for retry
 /// - Tracking per-transport delivery attempts
 /// - Computing retry schedules based on transport policies
-/// - Detecting delivery confirmation via DAG (observed_heads)
+/// - Detecting delivery confirmation via DAG (`observed_heads`)
 /// - Finding messages that need retry due to gaps
 ///
 /// # Thread Safety
@@ -65,7 +65,7 @@ use std::time::Duration;
 /// Most `ClientOutbox` operations use `&self` with interior mutability handled
 /// by the storage backend. Only `set_transport_policy` requires `&mut self`.
 pub struct ClientOutbox<S: OutboxStore> {
-    /// Storage backend (implements OutboxStore)
+    /// Storage backend (implements `OutboxStore`)
     store: S,
     /// Outbox configuration
     config: OutboxConfig,
@@ -111,14 +111,12 @@ impl<S: OutboxStore> ClientOutbox<S> {
         // Extract prefix from transport_id (e.g., "http:node1" -> "http")
         let prefix = transport_id.split(':').next().unwrap_or(transport_id);
 
-        self.transport_policies
-            .get(prefix)
-            .unwrap_or_else(|| {
-                // Check for full transport_id match as fallback
-                self.transport_policies
-                    .get(transport_id)
-                    .unwrap_or(&DEFAULT_RETRY_POLICY)
-            })
+        self.transport_policies.get(prefix).unwrap_or_else(|| {
+            // Check for full transport_id match as fallback
+            self.transport_policies
+                .get(transport_id)
+                .unwrap_or(&DEFAULT_RETRY_POLICY)
+        })
     }
 
     /// Get current configuration.
@@ -140,8 +138,8 @@ impl<S: OutboxStore> ClientOutbox<S> {
     /// * `recipient` - Recipient's public ID
     /// * `content_id` - Content ID for DAG tracking
     /// * `message_id` - Wire message ID
-    /// * `envelope_bytes` - Serialized OuterEnvelope
-    /// * `inner_bytes` - Serialized InnerEnvelope
+    /// * `envelope_bytes` - Serialized `OuterEnvelope`
+    /// * `inner_bytes` - Serialized `InnerEnvelope`
     /// * `ttl_ms` - Optional TTL override (uses config default if None)
     ///
     /// # Returns
@@ -196,7 +194,7 @@ impl<S: OutboxStore> ClientOutbox<S> {
         self.store.outbox_get_by_id(entry_id)
     }
 
-    /// Get entry by content_id (for DAG confirmation lookup).
+    /// Get entry by `content_id` (for DAG confirmation lookup).
     pub fn get_by_content_id(
         &self,
         content_id: ContentId,
@@ -211,7 +209,7 @@ impl<S: OutboxStore> ClientOutbox<S> {
     ///
     /// # Arguments
     /// * `entry_id` - Outbox entry ID
-    /// * `transport_id` - Transport identifier (e.g., "http:node1.example.com")
+    /// * `transport_id` - Transport identifier (e.g., "<http:node1.example.com>")
     /// * `result` - Result of the attempt
     pub fn record_attempt(
         &self,
@@ -237,9 +235,11 @@ impl<S: OutboxStore> ClientOutbox<S> {
                 if error.is_transient() {
                     // Get attempt count for this transport to calculate backoff
                     let pending = self.store.outbox_get_by_id(entry_id)?;
-                    let attempt_count = pending
-                        .map(|p| p.attempts_for_transport(transport_id.split(':').next().unwrap_or(transport_id)))
-                        .unwrap_or(0) as u32;
+                    let attempt_count = pending.map_or(0, |p| {
+                        p.attempts_for_transport(
+                            transport_id.split(':').next().unwrap_or(transport_id),
+                        )
+                    }) as u32;
 
                     let policy = self.get_transport_policy(transport_id);
                     if policy.should_give_up(attempt_count + 1) {
@@ -263,7 +263,7 @@ impl<S: OutboxStore> ClientOutbox<S> {
     /// Process a received message from a peer for potential confirmations.
     ///
     /// When we receive a message, check if the peer's `observed_heads` includes
-    /// any of our pending messages' content_ids. If so, mark them as confirmed.
+    /// any of our pending messages' `content_ids`. If so, mark them as confirmed.
     ///
     /// # Arguments
     /// * `from` - Sender's public ID
@@ -288,7 +288,8 @@ impl<S: OutboxStore> ClientOutbox<S> {
                     let confirmation = DeliveryConfirmation::Dag {
                         observed_in_message_id: received_content_id,
                     };
-                    self.store.outbox_mark_confirmed(pending.id, &confirmation)?;
+                    self.store
+                        .outbox_mark_confirmed(pending.id, &confirmation)?;
                     confirmed.push(pending.id);
                 }
             }
@@ -320,9 +321,7 @@ impl<S: OutboxStore> ClientOutbox<S> {
 
         let unacked: Vec<_> = pending
             .into_iter()
-            .filter(|msg| {
-                msg.confirmation.is_none() && !observed_set.contains(&msg.content_id)
-            })
+            .filter(|msg| msg.confirmation.is_none() && !observed_set.contains(&msg.content_id))
             .map(|msg| msg.id)
             .collect();
 
@@ -354,11 +353,7 @@ impl<S: OutboxStore> ClientOutbox<S> {
     ///
     /// # Returns
     /// Duration until next retry, or None if max attempts exceeded
-    pub fn calculate_next_retry(
-        &self,
-        transport_id: &str,
-        attempt_count: u32,
-    ) -> Option<Duration> {
+    pub fn calculate_next_retry(&self, transport_id: &str, attempt_count: u32) -> Option<Duration> {
         let policy = self.get_transport_policy(transport_id);
 
         if policy.should_give_up(attempt_count) {
@@ -400,7 +395,8 @@ impl<S: OutboxStore> ClientOutbox<S> {
 
         // Add successful targets
         for target_result in result.successful_targets() {
-            self.store.outbox_add_successful_target(entry_id, target_result)?;
+            self.store
+                .outbox_add_successful_target(entry_id, target_result)?;
         }
 
         // Check if we should transition to Distributed phase
@@ -410,17 +406,19 @@ impl<S: OutboxStore> ClientOutbox<S> {
                 reached_at_ms: now,
                 last_maintenance_ms: None,
             };
-            self.store.outbox_update_tiered_phase(entry_id, &new_phase)?;
+            self.store
+                .outbox_update_tiered_phase(entry_id, &new_phase)?;
 
             // Schedule maintenance (no urgent retry needed)
             let next_maintenance = now + config.maintenance_interval.as_millis() as u64;
-            self.store.outbox_schedule_retry(&[entry_id], next_maintenance)?;
+            self.store
+                .outbox_schedule_retry(&[entry_id], next_maintenance)?;
 
             Ok(new_phase)
         } else {
             // Still in urgent phase - schedule next retry with backoff
             let pending = self.store.outbox_get_by_id(entry_id)?;
-            let attempt_count = pending.map(|p| p.attempt_count()).unwrap_or(0) as u32;
+            let attempt_count = pending.map_or(0, |p| p.attempt_count()) as u32;
 
             let delay = config.calculate_retry_delay(attempt_count);
             let next_retry = now + delay.as_millis() as u64;
@@ -447,7 +445,8 @@ impl<S: OutboxStore> ClientOutbox<S> {
         maintenance_interval_ms: u64,
     ) -> Result<Vec<PendingMessage>, S::Error> {
         let now = now_ms();
-        self.store.outbox_get_maintenance_due(now, maintenance_interval_ms)
+        self.store
+            .outbox_get_maintenance_due(now, maintenance_interval_ms)
     }
 
     /// Record a maintenance refresh and update the last maintenance time.
@@ -622,7 +621,10 @@ mod tests {
                 .collect())
         }
 
-        fn outbox_get_due_for_retry(&self, now_ms: u64) -> Result<Vec<PendingMessage>, Self::Error> {
+        fn outbox_get_due_for_retry(
+            &self,
+            now_ms: u64,
+        ) -> Result<Vec<PendingMessage>, Self::Error> {
             Ok(self
                 .entries
                 .borrow()
@@ -630,8 +632,8 @@ mod tests {
                 .filter(|m| {
                     m.confirmation.is_none()
                         && m.expired_at_ms.is_none()
-                        && m.expires_at_ms.map(|e| e > now_ms).unwrap_or(true)
-                        && m.next_retry_at_ms.map(|t| t <= now_ms).unwrap_or(true)
+                        && m.expires_at_ms.is_none_or(|e| e > now_ms)
+                        && m.next_retry_at_ms.is_none_or(|t| t <= now_ms)
                 })
                 .cloned()
                 .collect())
@@ -708,14 +710,9 @@ mod tests {
             let before = entries.len();
             entries.retain(|_, m| {
                 // Keep if neither confirmed nor expired, or if more recent than cutoff
-                let is_confirmed_old = m
-                    .confirmation
-                    .is_some()
-                    && m.created_at_ms < confirmed_before_ms;
-                let is_expired_old = m
-                    .expired_at_ms
-                    .map(|exp| exp < confirmed_before_ms)
-                    .unwrap_or(false);
+                let is_confirmed_old =
+                    m.confirmation.is_some() && m.created_at_ms < confirmed_before_ms;
+                let is_expired_old = m.expired_at_ms.is_some_and(|exp| exp < confirmed_before_ms);
                 !is_confirmed_old && !is_expired_old
             });
             Ok((before - entries.len()) as u64)
@@ -729,7 +726,7 @@ mod tests {
                 // Only expire if: not confirmed, not already expired, has TTL that passed
                 if msg.confirmation.is_none()
                     && msg.expired_at_ms.is_none()
-                    && msg.expires_at_ms.map(|e| e < now_ms).unwrap_or(false)
+                    && msg.expires_at_ms.is_some_and(|e| e < now_ms)
                 {
                     msg.expired_at_ms = Some(now_ms);
                     msg.next_retry_at_ms = None;
@@ -761,7 +758,10 @@ mod tests {
             Ok(())
         }
 
-        fn outbox_get_urgent_retry_due(&self, now_ms: u64) -> Result<Vec<PendingMessage>, Self::Error> {
+        fn outbox_get_urgent_retry_due(
+            &self,
+            now_ms: u64,
+        ) -> Result<Vec<PendingMessage>, Self::Error> {
             Ok(self
                 .entries
                 .borrow()

@@ -32,16 +32,16 @@ fn is_zero_shared_secret(shared_secret: &[u8; 32]) -> bool {
     shared_secret == &[0u8; 32]
 }
 
-/// Sign data with XEdDSA using an X25519 private key.
+/// Sign data with `XEdDSA` using an X25519 private key.
 ///
-/// XEdDSA allows signing with X25519 keys by converting them to Ed25519-compatible
+/// `XEdDSA` allows signing with X25519 keys by converting them to Ed25519-compatible
 /// format internally. This enables using a single keypair for both DH and signatures.
 fn xeddsa_sign(private_key: &[u8; 32], message: &[u8]) -> [u8; 64] {
     let key = xed25519::PrivateKey(*private_key);
     key.sign(message, OsRng)
 }
 
-/// Verify an XEdDSA signature using an X25519 public key.
+/// Verify an `XEdDSA` signature using an X25519 public key.
 ///
 /// Returns true if the signature is valid, false otherwise.
 fn xeddsa_verify(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bool {
@@ -49,21 +49,21 @@ fn xeddsa_verify(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64]) ->
     key.verify(message, signature).is_ok()
 }
 
-/// Encrypt an InnerEnvelope to a recipient's MIK (stateless encryption)
+/// Encrypt an `InnerEnvelope` to a recipient's MIK (stateless encryption)
 ///
 /// This implements Session V1-style sealed box encryption with triple binding:
 /// 1. Generates an ephemeral X25519 keypair (e, E)
-/// 2. Computes shared_secret = X25519(e, recipient_MIK)
-/// 3. Derives encryption key from shared_secret using blake3
-/// 4. Signs the serialized envelope || message_id with XEdDSA
-/// 5. Encrypts (serialized_envelope || signature) with ChaCha20Poly1305
+/// 2. Computes `shared_secret` = X25519(e, `recipient_MIK`)
+/// 3. Derives encryption key from `shared_secret` using blake3
+/// 4. Signs the serialized envelope || `message_id` with `XEdDSA`
+/// 5. Encrypts (`serialized_envelope` || signature) with `ChaCha20Poly1305`
 ///
-/// Triple binding (message_id bound via):
-/// - Nonce derivation: nonce = BLAKE3(context, message_id || recipient_pk)
-/// - AAD: message_id passed as additional authenticated data
-/// - Signature: message_id included in signed data
+/// Triple binding (`message_id` bound via):
+/// - Nonce derivation: nonce = BLAKE3(context, `message_id` || `recipient_pk`)
+/// - AAD: `message_id` passed as additional authenticated data
+/// - Signature: `message_id` included in signed data
 ///
-/// Returns `EncryptionOutput` containing ephemeral_public, ciphertext, and ack credentials.
+/// Returns `EncryptionOutput` containing `ephemeral_public`, ciphertext, and ack credentials.
 pub fn encrypt_to_mik(
     inner_envelope: &InnerEnvelope,
     recipient_mik: &PublicID,
@@ -144,25 +144,25 @@ pub fn encrypt_to_mik(
 /// Decrypt a message using MIK private key (stateless decryption)
 ///
 /// This is the receiver side of MIK encryption:
-/// 1. Computes shared_secret = X25519(mik_private, ephemeral_public)
-/// 2. Derives encryption key from shared_secret + both public keys
-/// 3. Decrypts the ciphertext with ChaCha20Poly1305 (with AAD verification)
+/// 1. Computes `shared_secret` = `X25519(mik_private`, `ephemeral_public`)
+/// 2. Derives encryption key from `shared_secret` + both public keys
+/// 3. Decrypts the ciphertext with `ChaCha20Poly1305` (with AAD verification)
 /// 4. Splits signature from decrypted data (last 64 bytes)
-/// 5. Verifies XEdDSA signature against sender's public key from InnerEnvelope
+/// 5. Verifies `XEdDSA` signature against sender's public key from `InnerEnvelope`
 ///
-/// The outer_message_id is used for:
-/// - Nonce derivation (with recipient_pk)
-/// - AAD verification (tampering with message_id causes decryption failure)
-/// - Signature verification (message_id is part of signed data)
+/// The `outer_message_id` is used for:
+/// - Nonce derivation (with `recipient_pk`)
+/// - AAD verification (tampering with `message_id` causes decryption failure)
+/// - Signature verification (`message_id` is part of signed data)
 ///
-/// Returns `DecryptionOutput` containing the inner envelope and ack_secret for tombstones.
+/// Returns `DecryptionOutput` containing the inner envelope and `ack_secret` for tombstones.
 ///
 /// # Breaking Change (v0.1)
 ///
 /// This function expects the sign-all-bytes format where the signature is
-/// appended to serialized InnerEnvelope bytes before encryption. Messages
-/// encrypted with the previous format (signature inside InnerEnvelope) are
-/// not compatible. This is intentional for the PoC stage - no migration path
+/// appended to serialized `InnerEnvelope` bytes before encryption. Messages
+/// encrypted with the previous format (signature inside `InnerEnvelope`) are
+/// not compatible. This is intentional for the `PoC` stage - no migration path
 /// is provided.
 pub fn decrypt_with_mik(
     ephemeral_public: &[u8; 32],
@@ -251,10 +251,10 @@ pub fn decrypt_with_mik(
 ///
 /// Binding both public keys prevents key confusion attacks where an attacker
 /// might try to claim a ciphertext was intended for a different recipient.
-/// This construction is inspired by the principles of NaCl's crypto_box_seal,
+/// This construction is inspired by the principles of `NaCl`'s `crypto_box_seal`,
 /// but uses BLAKE3 KDF and does not follow the exact same nonce derivation.
 ///
-/// Key = BLAKE3_KDF("reme-encryption-key-v0", ephemeral_pub || recipient_pub || shared_secret)
+/// Key = BLAKE3_KDF("reme-encryption-key-v0", `ephemeral_pub` || `recipient_pub` || `shared_secret`)
 fn derive_key_from_shared(
     ephemeral_public: &[u8; 32],
     recipient_public: &[u8; 32],
@@ -268,13 +268,13 @@ fn derive_key_from_shared(
     *hash.as_bytes()
 }
 
-/// Derive a 12-byte nonce from MessageID and recipient public key
+/// Derive a 12-byte nonce from `MessageID` and recipient public key
 ///
-/// Including recipient_pk in nonce derivation provides:
-/// - Domain separation: same message_id to different recipients produces different nonces
+/// Including `recipient_pk` in nonce derivation provides:
+/// - Domain separation: same `message_id` to different recipients produces different nonces
 /// - Recipient binding: prevents message forwarding attacks
 ///
-/// Nonce = BLAKE3_KDF("reme-nonce-v0", message_id || recipient_pk)[0..12]
+/// Nonce = BLAKE3_KDF("reme-nonce-v0", `message_id` || `recipient_pk`)[0..12]
 fn derive_nonce(message_id: &MessageID, recipient_pk: &[u8; 32]) -> [u8; 12] {
     let mut hasher = blake3::Hasher::new_derive_key("reme-nonce-v0");
     hasher.update(message_id.as_bytes());
@@ -291,14 +291,14 @@ fn derive_nonce(message_id: &MessageID, recipient_pk: &[u8; 32]) -> [u8; 12] {
 // Tombstone V2: Ack Secret/Hash Derivation
 // ============================================
 
-/// Derive ack_secret from ECDH shared secret and message_id.
+/// Derive `ack_secret` from ECDH shared secret and `message_id`.
 ///
-/// Both sender and recipient can derive the same ack_secret because they
-/// compute the same shared_secret via ECDH:
-/// - Sender: shared_secret = X25519(ephemeral_secret, recipient_mik)
-/// - Recipient: shared_secret = X25519(mik_private, ephemeral_public)
+/// Both sender and recipient can derive the same `ack_secret` because they
+/// compute the same `shared_secret` via ECDH:
+/// - Sender: `shared_secret` = `X25519(ephemeral_secret`, `recipient_mik`)
+/// - Recipient: `shared_secret` = `X25519(mik_private`, `ephemeral_public`)
 ///
-/// ack_secret = BLAKE3_KDF("reme-ack-v1", shared_secret || message_id)[0..16]
+/// `ack_secret` = BLAKE3_KDF("reme-ack-v1", `shared_secret` || `message_id`)[0..16]
 pub fn derive_ack_secret(shared_secret: &[u8; 32], message_id: &MessageID) -> [u8; 16] {
     let mut hasher = blake3::Hasher::new_derive_key("reme-ack-v1");
     hasher.update(shared_secret);
@@ -310,16 +310,16 @@ pub fn derive_ack_secret(shared_secret: &[u8; 32], message_id: &MessageID) -> [u
     ack_secret
 }
 
-/// Derive ack_hash from ack_secret.
+/// Derive `ack_hash` from `ack_secret`.
 ///
-/// This hash is stored in OuterEnvelope for tombstone verification.
-/// Nodes verify tombstones by checking hash(ack_secret) == ack_hash.
+/// This hash is stored in `OuterEnvelope` for tombstone verification.
+/// Nodes verify tombstones by checking `hash(ack_secret)` == `ack_hash`.
 ///
-/// ack_hash = BLAKE3_KDF("reme-ack-hash-v1", ack_secret)[0..16]
+/// `ack_hash` = BLAKE3_KDF("reme-ack-hash-v1", `ack_secret`)[0..16]
 ///
 /// Domain separation provides defense-in-depth against:
 /// - Cross-protocol confusion attacks
-/// - Misuse of ack_secret in other contexts
+/// - Misuse of `ack_secret` in other contexts
 pub fn derive_ack_hash(ack_secret: &[u8; 16]) -> [u8; 16] {
     let derived = blake3::derive_key(ACK_HASH_DOMAIN, ack_secret);
     let mut ack_hash = [0u8; 16];
@@ -331,7 +331,7 @@ pub fn derive_ack_hash(ack_secret: &[u8; 16]) -> [u8; 16] {
 // Encryption/Decryption Output Structs
 // ============================================
 
-/// Output of encrypt_to_mik containing all values needed for OuterEnvelope.
+/// Output of `encrypt_to_mik` containing all values needed for `OuterEnvelope`.
 #[derive(Debug, Clone)]
 pub struct EncryptionOutput {
     /// Ephemeral X25519 public key (32 bytes)
@@ -340,11 +340,11 @@ pub struct EncryptionOutput {
     pub ciphertext: Vec<u8>,
     /// Ack secret for sender-side tombstone (store locally)
     pub ack_secret: [u8; 16],
-    /// Ack hash to include in OuterEnvelope
+    /// Ack hash to include in `OuterEnvelope`
     pub ack_hash: [u8; 16],
 }
 
-/// Output of decrypt_with_mik containing decrypted envelope and ack credentials.
+/// Output of `decrypt_with_mik` containing decrypted envelope and ack credentials.
 #[derive(Debug, Clone)]
 pub struct DecryptionOutput {
     /// Decrypted and verified inner envelope
@@ -359,7 +359,7 @@ mod tests {
     use reme_identity::Identity;
     use reme_message::{Content, TextContent};
 
-    /// Helper to create an InnerEnvelope (no signature field - signing happens during encryption)
+    /// Helper to create an `InnerEnvelope` (no signature field - signing happens during encryption)
     fn create_inner(sender: &Identity, body: &str, created_at_ms: u64) -> InnerEnvelope {
         InnerEnvelope {
             from: *sender.public_id(),
@@ -390,12 +390,16 @@ mod tests {
         let inner = create_inner(&alice, "Hello Bob via MIK!", 1234567890);
 
         // Alice encrypts to Bob's MIK (signing happens inside encrypt_to_mik)
-        let enc_output =
-            encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private).unwrap();
+        let enc_output = encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private).unwrap();
 
         // Bob decrypts with his MIK private key (signature verification happens inside)
-        let dec_output =
-            decrypt_with_mik(&enc_output.ephemeral_public, &enc_output.ciphertext, &bob_private, &message_id).unwrap();
+        let dec_output = decrypt_with_mik(
+            &enc_output.ephemeral_public,
+            &enc_output.ciphertext,
+            &bob_private,
+            &message_id,
+        )
+        .unwrap();
 
         assert_eq!(inner.from, dec_output.inner.from);
         assert_eq!(inner.created_at_ms, dec_output.inner.created_at_ms);
@@ -410,12 +414,17 @@ mod tests {
         }
 
         // Verify ack_secret matches between sender and recipient
-        assert_eq!(enc_output.ack_secret, dec_output.ack_secret,
-            "Sender and recipient should derive same ack_secret");
+        assert_eq!(
+            enc_output.ack_secret, dec_output.ack_secret,
+            "Sender and recipient should derive same ack_secret"
+        );
 
         // Verify ack_hash is consistent
-        assert_eq!(enc_output.ack_hash, derive_ack_hash(&enc_output.ack_secret),
-            "ack_hash should match derivation from ack_secret");
+        assert_eq!(
+            enc_output.ack_hash,
+            derive_ack_hash(&enc_output.ack_secret),
+            "ack_hash should match derivation from ack_secret"
+        );
     }
 
     #[test]
@@ -436,11 +445,15 @@ mod tests {
         let inner = create_inner(&alice, "Secret message for Bob", 1234567890);
 
         // Alice encrypts to Bob's MIK
-        let enc_output =
-            encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private).unwrap();
+        let enc_output = encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private).unwrap();
 
         // Eve tries to decrypt with her private key (should fail)
-        let result = decrypt_with_mik(&enc_output.ephemeral_public, &enc_output.ciphertext, &eve_private, &message_id);
+        let result = decrypt_with_mik(
+            &enc_output.ephemeral_public,
+            &enc_output.ciphertext,
+            &eve_private,
+            &message_id,
+        );
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -464,10 +477,8 @@ mod tests {
         let inner2 = create_inner(&alice, "Message 2", 1234567891);
 
         // Encrypt both
-        let enc1 =
-            encrypt_to_mik(&inner1, &bob_public, &message_id1, &alice_private).unwrap();
-        let enc2 =
-            encrypt_to_mik(&inner2, &bob_public, &message_id2, &alice_private).unwrap();
+        let enc1 = encrypt_to_mik(&inner1, &bob_public, &message_id1, &alice_private).unwrap();
+        let enc2 = encrypt_to_mik(&inner2, &bob_public, &message_id2, &alice_private).unwrap();
 
         // Each message should have a different ephemeral key
         assert_ne!(enc1.ephemeral_public, enc2.ephemeral_public);
@@ -508,7 +519,12 @@ mod tests {
 
         // Bob decrypts - signature verification should FAIL
         // (decrypt_with_mik verifies using `from` field = Alice's pubkey, but signed with Mallory's key)
-        let result = decrypt_with_mik(&enc_output.ephemeral_public, &enc_output.ciphertext, &bob_private, &message_id);
+        let result = decrypt_with_mik(
+            &enc_output.ephemeral_public,
+            &enc_output.ciphertext,
+            &bob_private,
+            &message_id,
+        );
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -532,11 +548,15 @@ mod tests {
         let inner = create_inner(&alice, "Test message", 1234567890);
 
         // Encrypt with correct message_id
-        let enc_output =
-            encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private).unwrap();
+        let enc_output = encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private).unwrap();
 
         // Try to decrypt with wrong message_id (should fail due to AAD mismatch)
-        let result = decrypt_with_mik(&enc_output.ephemeral_public, &enc_output.ciphertext, &bob_private, &wrong_message_id);
+        let result = decrypt_with_mik(
+            &enc_output.ephemeral_public,
+            &enc_output.ciphertext,
+            &bob_private,
+            &wrong_message_id,
+        );
         assert!(
             result.is_err(),
             "Decryption with wrong message_id should fail"
@@ -597,7 +617,12 @@ mod tests {
         // Test order-1 ephemeral key (identity point)
         let mut order1_ephemeral = [0u8; 32];
         order1_ephemeral[0] = 1;
-        let result = decrypt_with_mik(&order1_ephemeral, &fake_ciphertext, &bob_private, &message_id);
+        let result = decrypt_with_mik(
+            &order1_ephemeral,
+            &fake_ciphertext,
+            &bob_private,
+            &message_id,
+        );
         assert!(
             matches!(result, Err(EncryptionError::DecryptionFailed)),
             "Order-1 ephemeral key should be rejected"
@@ -620,9 +645,8 @@ mod tests {
         let inner = create_inner(&alice, &large_body, 1234567890);
 
         // Encrypt
-        let enc_output =
-            encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private)
-                .expect("Large message encryption should succeed");
+        let enc_output = encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private)
+            .expect("Large message encryption should succeed");
 
         // Ciphertext should be larger than plaintext (due to serialization + tag + signature)
         assert!(
@@ -631,8 +655,13 @@ mod tests {
         );
 
         // Decrypt and verify
-        let dec_output = decrypt_with_mik(&enc_output.ephemeral_public, &enc_output.ciphertext, &bob_private, &message_id)
-            .expect("Large message decryption should succeed");
+        let dec_output = decrypt_with_mik(
+            &enc_output.ephemeral_public,
+            &enc_output.ciphertext,
+            &bob_private,
+            &message_id,
+        )
+        .expect("Large message decryption should succeed");
 
         match dec_output.inner.content {
             Content::Text(text) => {
@@ -641,7 +670,10 @@ mod tests {
                     large_body.len(),
                     "Decrypted body length should match"
                 );
-                assert_eq!(text.body, large_body, "Decrypted body should match original");
+                assert_eq!(
+                    text.body, large_body,
+                    "Decrypted body should match original"
+                );
             }
             _ => panic!("Expected text content"),
         }
@@ -684,12 +716,20 @@ mod tests {
 
         // Both should still decrypt correctly
         let bob_private = bob.to_bytes();
-        let dec_alice =
-            decrypt_with_mik(&enc_alice.ephemeral_public, &enc_alice.ciphertext, &bob_private, &message_id)
-                .unwrap();
-        let dec_charlie =
-            decrypt_with_mik(&enc_charlie.ephemeral_public, &enc_charlie.ciphertext, &bob_private, &message_id)
-                .unwrap();
+        let dec_alice = decrypt_with_mik(
+            &enc_alice.ephemeral_public,
+            &enc_alice.ciphertext,
+            &bob_private,
+            &message_id,
+        )
+        .unwrap();
+        let dec_charlie = decrypt_with_mik(
+            &enc_charlie.ephemeral_public,
+            &enc_charlie.ciphertext,
+            &bob_private,
+            &message_id,
+        )
+        .unwrap();
 
         assert_eq!(dec_alice.inner.from, *alice.public_id());
         assert_eq!(dec_charlie.inner.from, *charlie.public_id());
@@ -711,13 +751,14 @@ mod tests {
         let inner1 = create_inner(&alice, "Same content", 1234567890);
         let inner2 = create_inner(&alice, "Same content", 1234567890);
 
-        let enc1 =
-            encrypt_to_mik(&inner1, &bob_public, &message_id1, &alice_private).unwrap();
-        let enc2 =
-            encrypt_to_mik(&inner2, &bob_public, &message_id2, &alice_private).unwrap();
+        let enc1 = encrypt_to_mik(&inner1, &bob_public, &message_id1, &alice_private).unwrap();
+        let enc2 = encrypt_to_mik(&inner2, &bob_public, &message_id2, &alice_private).unwrap();
 
         // Different ephemeral keys
-        assert_ne!(enc1.ephemeral_public, enc2.ephemeral_public, "Ephemeral keys should differ");
+        assert_ne!(
+            enc1.ephemeral_public, enc2.ephemeral_public,
+            "Ephemeral keys should differ"
+        );
 
         // Different ciphertexts (even with same content)
         assert_ne!(
@@ -740,13 +781,17 @@ mod tests {
         let inner = create_inner(&alice, "", 1234567890);
 
         // Encrypt empty message
-        let enc_output =
-            encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private)
-                .expect("Empty message encryption should succeed");
+        let enc_output = encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private)
+            .expect("Empty message encryption should succeed");
 
         // Decrypt and verify
-        let dec_output = decrypt_with_mik(&enc_output.ephemeral_public, &enc_output.ciphertext, &bob_private, &message_id)
-            .expect("Empty message decryption should succeed");
+        let dec_output = decrypt_with_mik(
+            &enc_output.ephemeral_public,
+            &enc_output.ciphertext,
+            &bob_private,
+            &message_id,
+        )
+        .expect("Empty message decryption should succeed");
 
         match dec_output.inner.content {
             Content::Text(text) => assert_eq!(text.body, "", "Decrypted body should be empty"),
@@ -758,21 +803,33 @@ mod tests {
     fn test_is_zero_shared_secret() {
         // Test that zero shared secret is detected
         let zero_secret = [0u8; 32];
-        assert!(is_zero_shared_secret(&zero_secret), "All-zero secret should be detected as zero");
+        assert!(
+            is_zero_shared_secret(&zero_secret),
+            "All-zero secret should be detected as zero"
+        );
 
         // Test that non-zero shared secrets are not flagged as zero
         let mut non_zero_secret = [0u8; 32];
         non_zero_secret[0] = 1;
-        assert!(!is_zero_shared_secret(&non_zero_secret), "Non-zero secret should not be detected as zero");
+        assert!(
+            !is_zero_shared_secret(&non_zero_secret),
+            "Non-zero secret should not be detected as zero"
+        );
 
         // Test with random non-zero secret
         let mut random_secret = [0u8; 32];
         random_secret[15] = 255;
         random_secret[31] = 128;
-        assert!(!is_zero_shared_secret(&random_secret), "Random non-zero secret should not be detected as zero");
+        assert!(
+            !is_zero_shared_secret(&random_secret),
+            "Random non-zero secret should not be detected as zero"
+        );
 
         // Test with secret that's all 0xFF (maximum non-zero)
         let max_secret = [0xFFu8; 32];
-        assert!(!is_zero_shared_secret(&max_secret), "All-max secret should not be detected as zero");
+        assert!(
+            !is_zero_shared_secret(&max_secret),
+            "All-max secret should not be detected as zero"
+        );
     }
 }

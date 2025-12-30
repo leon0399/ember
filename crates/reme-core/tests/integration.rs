@@ -30,9 +30,11 @@ impl TestServer {
         use node::{api, replication, PersistentMailboxStore, PersistentStoreConfig};
 
         // Bind to port 0 to get a random available port
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind");
         let addr = listener.local_addr().expect("Failed to get local addr");
-        let url = format!("http://{}", addr);
+        let url = format!("http://{addr}");
 
         // Create minimal node components (in-memory SQLite for testing)
         let config = PersistentStoreConfig {
@@ -64,7 +66,10 @@ impl TestServer {
         // Small delay to ensure server is ready
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        TestServer { url, _handle: handle }
+        TestServer {
+            url,
+            _handle: handle,
+        }
     }
 
     fn url(&self) -> &str {
@@ -87,7 +92,13 @@ async fn test_transport_roundtrip() {
     // Actual encryption/decryption is tested in test_e2e_encryption_mik_only.
     let ephemeral_key = [42u8; 32];
     let ack_hash = [0u8; 16]; // Placeholder for transport test
-    let test_envelope = OuterEnvelope::new(routing_key, Some(1), ephemeral_key, ack_hash, vec![1, 2, 3, 4]); // 1 hour TTL
+    let test_envelope = OuterEnvelope::new(
+        routing_key,
+        Some(1),
+        ephemeral_key,
+        ack_hash,
+        vec![1, 2, 3, 4],
+    ); // 1 hour TTL
     transport
         .submit_message(test_envelope)
         .await
@@ -138,9 +149,8 @@ async fn test_e2e_encryption_mik_only() {
     };
 
     // Encrypt to Bob's MIK (signing happens inside encrypt_to_mik)
-    let enc_output =
-        encrypt_to_mik(&inner, bob.public_id(), &message_id, &alice.to_bytes())
-            .expect("encrypt_to_mik failed");
+    let enc_output = encrypt_to_mik(&inner, bob.public_id(), &message_id, &alice.to_bytes())
+        .expect("encrypt_to_mik failed");
     println!("Alice encrypted message to Bob's MIK");
 
     // Alice sends the message
@@ -225,7 +235,7 @@ async fn test_two_client_messaging() {
         .send_text(bob.public_id(), "Hello Bob! This is Alice.")
         .await
         .expect("Alice send_text failed");
-    println!("Alice sent message: {:?}", msg_id);
+    println!("Alice sent message: {msg_id:?}");
 
     // Bob receives messages using push-based MessageReceiver
     let receiver = MessageReceiver::new(transport.clone());
@@ -260,7 +270,7 @@ async fn test_two_client_messaging() {
         .send_text(alice.public_id(), "Hi Alice! Got your message.")
         .await
         .expect("Bob send_text failed");
-    println!("Bob sent reply: {:?}", reply_id);
+    println!("Bob sent reply: {reply_id:?}");
 
     // Alice receives messages using push-based MessageReceiver
     let (mut alice_events, _alice_handle) = receiver.subscribe(alice.routing_key(), config);
@@ -296,16 +306,20 @@ async fn test_multi_node_replication() {
     use node::{api, replication, PersistentMailboxStore, PersistentStoreConfig};
 
     // Start two nodes
-    let listener1 = TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind node1");
+    let listener1 = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Failed to bind node1");
     let addr1 = listener1.local_addr().expect("Failed to get local addr");
-    let url1 = format!("http://{}", addr1);
+    let url1 = format!("http://{addr1}");
 
-    let listener2 = TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind node2");
+    let listener2 = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Failed to bind node2");
     let addr2 = listener2.local_addr().expect("Failed to get local addr");
-    let url2 = format!("http://{}", addr2);
+    let url2 = format!("http://{addr2}");
 
-    println!("Node 1: {}", url1);
-    println!("Node 2: {}", url2);
+    println!("Node 1: {url1}");
+    println!("Node 2: {url2}");
 
     // Create store config for both nodes (in-memory SQLite for testing)
     let config = PersistentStoreConfig {
@@ -372,7 +386,13 @@ async fn test_multi_node_replication() {
     // NOTE: Using fake ephemeral key - this test validates replication, not crypto.
     let ephemeral_key = [99u8; 32];
     let ack_hash = [0u8; 16];
-    let test_envelope = OuterEnvelope::new(routing_key, Some(1), ephemeral_key, ack_hash, vec![42, 43, 44, 45]);
+    let test_envelope = OuterEnvelope::new(
+        routing_key,
+        Some(1),
+        ephemeral_key,
+        ack_hash,
+        vec![42, 43, 44, 45],
+    );
     transport1
         .submit_message(test_envelope)
         .await
@@ -388,7 +408,10 @@ async fn test_multi_node_replication() {
         .await
         .expect("fetch_once from node2 failed");
     assert_eq!(messages_from_node2.len(), 1);
-    assert_eq!(messages_from_node2[0].inner_ciphertext, vec![42, 43, 44, 45]);
+    assert_eq!(
+        messages_from_node2[0].inner_ciphertext,
+        vec![42, 43, 44, 45]
+    );
     assert_eq!(messages_from_node2[0].ephemeral_key, ephemeral_key);
     println!("Message replicated to node 2: OK");
 
@@ -434,7 +457,10 @@ async fn test_outbox_message_queuing() {
     // After successful send, the message should have an attempt recorded
     // It will be in InFlight state briefly, then AwaitingRetry (waiting for DAG confirmation)
     assert_eq!(pending_for_bob.len(), 1);
-    println!("Message queued in outbox for Bob: {:?}", pending_for_bob[0].content_id);
+    println!(
+        "Message queued in outbox for Bob: {:?}",
+        pending_for_bob[0].content_id
+    );
 
     println!("\n✓ Outbox message queuing test passed!");
 }
@@ -472,7 +498,7 @@ async fn test_outbox_dag_confirmation() {
         .expect("get_pending_for failed");
     assert_eq!(alice_pending.len(), 1);
     let alice_entry_id = alice_pending[0].id;
-    println!("Alice's message is pending, entry_id: {:?}", alice_entry_id);
+    println!("Alice's message is pending, entry_id: {alice_entry_id:?}");
 
     // Bob receives the message using push-based MessageReceiver
     let receiver = MessageReceiver::new(transport.clone());
@@ -545,7 +571,12 @@ async fn test_outbox_cleanup() {
 
     let alice_identity = Identity::generate();
     let alice_storage = Storage::in_memory().unwrap();
-    let alice = Client::with_config(alice_identity, transport.clone(), alice_storage, alice_config);
+    let alice = Client::with_config(
+        alice_identity,
+        transport.clone(),
+        alice_storage,
+        alice_config,
+    );
 
     // Bob uses default config
     let bob_identity = Identity::generate();
@@ -570,7 +601,7 @@ async fn test_outbox_cleanup() {
         .expect("get_pending_for failed");
     assert_eq!(alice_pending.len(), 1);
     let entry_id = alice_pending[0].id;
-    println!("Alice's message is pending, entry_id: {:?}", entry_id);
+    println!("Alice's message is pending, entry_id: {entry_id:?}");
 
     // Bob receives and replies (confirms Alice's message)
     let receiver = MessageReceiver::new(transport.clone());
@@ -616,12 +647,16 @@ async fn test_outbox_cleanup() {
         .get_delivery_state(entry_id)
         .expect("get_delivery_state failed")
         .expect("entry not found");
-    assert_eq!(state, DeliveryState::Confirmed, "Message should be confirmed via DAG");
-    println!("Message confirmed, entry_id: {:?}", entry_id);
+    assert_eq!(
+        state,
+        DeliveryState::Confirmed,
+        "Message should be confirmed via DAG"
+    );
+    println!("Message confirmed, entry_id: {entry_id:?}");
 
     // Cleanup should remove confirmed entries (cleanup_after_ms=0 means immediate cleanup)
     let cleaned = alice.outbox_cleanup().expect("cleanup failed");
-    println!("Cleaned {} old confirmed entries", cleaned);
+    println!("Cleaned {cleaned} old confirmed entries");
     assert_eq!(cleaned, 1, "Should have cleaned exactly 1 confirmed entry");
 
     println!("\n✓ Outbox cleanup test passed!");
@@ -631,7 +666,7 @@ async fn test_outbox_cleanup() {
 ///
 /// This tests the full end-to-end flow where Mallory creates a message
 /// claiming to be from Alice, but signs it with her own key. The receiver
-/// (Bob) should reject the message with InvalidSenderSignature error.
+/// (Bob) should reject the message with `InvalidSenderSignature` error.
 #[tokio::test]
 async fn test_forged_signature_rejected_at_client_level() {
     let server = TestServer::start().await;
@@ -646,7 +681,10 @@ async fn test_forged_signature_rejected_at_client_level() {
 
     println!("Alice ID: {}", hex::encode(alice.public_id().to_bytes()));
     println!("Bob ID: {}", hex::encode(bob.public_id().to_bytes()));
-    println!("Mallory ID: {}", hex::encode(mallory.public_id().to_bytes()));
+    println!(
+        "Mallory ID: {}",
+        hex::encode(mallory.public_id().to_bytes())
+    );
 
     // Mallory creates a message claiming to be from Alice
     let message_id = MessageID::new();
@@ -664,9 +702,8 @@ async fn test_forged_signature_rejected_at_client_level() {
 
     // Mallory encrypts with HER private key (not Alice's)
     // The signature will be made with Mallory's key, but `from` claims Alice
-    let enc_output =
-        encrypt_to_mik(&inner, bob.public_id(), &message_id, &mallory.to_bytes())
-            .expect("encrypt_to_mik should succeed");
+    let enc_output = encrypt_to_mik(&inner, bob.public_id(), &message_id, &mallory.to_bytes())
+        .expect("encrypt_to_mik should succeed");
 
     // Mallory sends the forged message to Bob
     let outer = OuterEnvelope {
@@ -693,8 +730,7 @@ async fn test_forged_signature_rejected_at_client_level() {
     let err = result.unwrap_err();
     assert!(
         matches!(err, reme_core::ClientError::InvalidSenderSignature),
-        "Expected InvalidSenderSignature error, got: {:?}",
-        err
+        "Expected InvalidSenderSignature error, got: {err:?}"
     );
     println!("Bob correctly rejected forged message with InvalidSenderSignature");
 
@@ -770,17 +806,20 @@ async fn test_outbox_retry_mechanism() {
     let pending = alice.get_pending_messages().expect("get_pending failed");
     assert_eq!(pending.len(), 1);
     let entry_id = pending[0].id;
-    println!("Message is pending with entry_id: {:?}", entry_id);
+    println!("Message is pending with entry_id: {entry_id:?}");
 
     // Verify the message state after send (should have at least one attempt)
-    assert!(!pending[0].attempts.is_empty(), "Should have recorded an attempt");
+    assert!(
+        !pending[0].attempts.is_empty(),
+        "Should have recorded an attempt"
+    );
     println!("Message has {} attempts", pending[0].attempts.len());
 
     // Schedule immediate retry for this entry
     alice
         .schedule_retry(entry_id)
         .expect("schedule_retry failed");
-    println!("Scheduled immediate retry for entry {:?}", entry_id);
+    println!("Scheduled immediate retry for entry {entry_id:?}");
 
     // Get messages due for retry
     let due_for_retry = alice.get_ready_for_retry().expect("get_due failed");
@@ -795,7 +834,7 @@ async fn test_outbox_retry_mechanism() {
         .attempt_delivery(entry_id)
         .await
         .expect("attempt_delivery failed");
-    println!("Retry attempt result: {:?}", result);
+    println!("Retry attempt result: {result:?}");
 
     // Should have recorded another attempt
     let updated = alice
@@ -903,7 +942,7 @@ async fn test_sender_tombstone_retracts_message() {
         .send_text(bob_identity.public_id(), "Message to retract")
         .await
         .expect("Alice send_text failed");
-    println!("Alice sent message: {:?}", msg_id);
+    println!("Alice sent message: {msg_id:?}");
 
     // Note: We do NOT fetch here because fetch() deletes messages from the node.
     // The sender tombstone (retraction) only makes sense when the message hasn't
@@ -934,7 +973,7 @@ async fn test_sender_tombstone_retracts_message() {
     println!("\n✓ Sender tombstone retraction test passed!");
 }
 
-/// Test that invalid ack_secret is rejected by the node
+/// Test that invalid `ack_secret` is rejected by the node
 #[tokio::test]
 async fn test_invalid_ack_secret_rejected() {
     let server = TestServer::start().await;
@@ -956,25 +995,23 @@ async fn test_invalid_ack_secret_rejected() {
         .send_text(bob_identity.public_id(), "Secret message")
         .await
         .expect("Alice send_text failed");
-    println!("Alice sent message: {:?}", msg_id);
+    println!("Alice sent message: {msg_id:?}");
 
     // Mallory tries to forge a tombstone with wrong ack_secret
     let mallory = Identity::generate();
     let wrong_ack_secret: [u8; 16] = [0xDE; 16]; // Wrong secret
 
-    let forged_tombstone =
-        SignedAckTombstone::new(msg_id, wrong_ack_secret, &mallory.to_bytes());
+    let forged_tombstone = SignedAckTombstone::new(msg_id, wrong_ack_secret, &mallory.to_bytes());
 
     // Try to submit the forged tombstone - should fail with Forbidden
     let result = transport.submit_ack_tombstone(forged_tombstone).await;
     assert!(result.is_err(), "Forged tombstone should be rejected");
     let err = result.unwrap_err();
-    println!("Forged tombstone rejected with error: {:?}", err);
+    println!("Forged tombstone rejected with error: {err:?}");
     // Should be 403 Forbidden for invalid ack_secret, not 404 Not Found
     assert!(
-        format!("{:?}", err).contains("403") || format!("{:?}", err).contains("Forbidden"),
-        "Expected 403 Forbidden, got: {:?}",
-        err
+        format!("{err:?}").contains("403") || format!("{err:?}").contains("Forbidden"),
+        "Expected 403 Forbidden, got: {err:?}"
     );
 
     // Verify message is still in mailbox
@@ -1013,8 +1050,7 @@ async fn test_tombstone_without_message_returns_404() {
     let err = result.expect_err("Tombstone for non-existent message should fail");
     assert!(
         matches!(err, TransportError::NotFound),
-        "Expected NotFound (404) error, got: {:?}",
-        err
+        "Expected NotFound (404) error, got: {err:?}"
     );
     println!("Tombstone for non-existent message correctly rejected with 404");
 
@@ -1052,9 +1088,8 @@ async fn test_detached_message_skips_tombstone() {
     };
 
     // Encrypt and send
-    let enc_output =
-        encrypt_to_mik(&inner, &bob_pub_id, &message_id, &alice.to_bytes())
-            .expect("encrypt_to_mik failed");
+    let enc_output = encrypt_to_mik(&inner, &bob_pub_id, &message_id, &alice.to_bytes())
+        .expect("encrypt_to_mik failed");
 
     let outer = OuterEnvelope {
         version: CURRENT_VERSION,
@@ -1130,7 +1165,7 @@ async fn test_tombstone_fetch_interleaving() {
             from: *alice_identity.public_id(),
             created_at_ms: 1234567890 + i,
             content: Content::Text(TextContent {
-                body: format!("Message {}", i),
+                body: format!("Message {i}"),
             }),
             prev_self: None,
             observed_heads: Vec::new(),
@@ -1193,10 +1228,7 @@ async fn test_tombstone_fetch_interleaving() {
         .expect("final fetch failed");
 
     // We expect 0-5 messages depending on timing
-    assert!(
-        final_messages.len() <= 5,
-        "Should have at most 5 messages"
-    );
+    assert!(final_messages.len() <= 5, "Should have at most 5 messages");
     println!("Final fetch returned {} messages", final_messages.len());
 
     println!("\n✓ Tombstone/fetch interleaving test passed!");
@@ -1255,7 +1287,7 @@ async fn test_idempotent_tombstone() {
         .submit_message(outer)
         .await
         .expect("submit_message failed");
-    println!("Alice sent message: {:?}", message_id);
+    println!("Alice sent message: {message_id:?}");
 
     // Create tombstone (we have the ack_secret from encryption)
     let tombstone = SignedAckTombstone::new(

@@ -16,13 +16,16 @@ pub use app::{App, AppResult};
 use crate::config::AppConfig;
 use crossterm::{
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{
+        disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen,
+        LeaveAlternateScreen,
+    },
 };
 use password::prompt_for_password;
 use ratatui::prelude::*;
 use reme_identity::{is_encrypted, load_identity, save_identity, EncryptedIdentityError, Identity};
-use std::io::{self, Write};
 use std::fs;
+use std::io::{self, Write};
 use zeroize::Zeroizing;
 
 /// Initialize and run the TUI
@@ -57,7 +60,7 @@ pub async fn run(config: AppConfig) -> AppResult<()> {
 /// Setup identity: load existing or create new (with optional password protection)
 fn setup_identity(identity_path: &std::path::Path) -> AppResult<Identity> {
     if !identity_path.exists() {
-        return create_new_identity(identity_path)
+        return create_new_identity(identity_path);
     }
 
     load_existing_identity(identity_path)
@@ -71,7 +74,7 @@ fn load_existing_identity(identity_path: &std::path::Path) -> AppResult<Identity
     if !is_encrypted(&data) {
         // Plaintext identity - load directly
         return load_identity(&data, None)
-            .map_err(|e| format!("Failed to load identity: {}", e).into());
+            .map_err(|e| format!("Failed to load identity: {e}").into());
     }
 
     // Encrypted - prompt for password
@@ -94,7 +97,7 @@ fn load_existing_identity(identity_path: &std::path::Path) -> AppResult<Identity
                 println!();
             }
             Err(e) => {
-                return Err(format!("Failed to load identity: {}", e).into());
+                return Err(format!("Failed to load identity: {e}").into());
             }
         }
     }
@@ -120,8 +123,8 @@ fn create_new_identity(identity_path: &std::path::Path) -> AppResult<Identity> {
         println!();
         println!("No password set. Identity will be stored in plaintext.");
         let identity = Identity::generate();
-        let data = save_identity(&identity, None)
-            .map_err(|e| format!("Failed to save identity: {}", e))?;
+        let data =
+            save_identity(&identity, None).map_err(|e| format!("Failed to save identity: {e}"))?;
         fs::write(identity_path, data)?;
         identity
     } else {
@@ -135,13 +138,12 @@ fn create_new_identity(identity_path: &std::path::Path) -> AppResult<Identity> {
                 println!("Password set. Identity will be encrypted.");
                 let identity = Identity::generate();
                 let data = save_identity(&identity, Some(password.as_bytes()))
-                    .map_err(|e| format!("Failed to save identity: {}", e))?;
+                    .map_err(|e| format!("Failed to save identity: {e}"))?;
                 fs::write(identity_path, data)?;
                 break identity;
-            } else {
-                println!();
-                println!("Passwords do not match. Please try again.");
             }
+            println!();
+            println!("Passwords do not match. Please try again.");
         }
     };
 

@@ -46,7 +46,10 @@ impl fmt::Display for PinParseError {
             ),
             PinParseError::InvalidBase64 => write!(f, "Invalid base64 encoding"),
             PinParseError::InvalidHashLength { expected, actual } => {
-                write!(f, "Invalid hash length: expected {} bytes, got {}", expected, actual)
+                write!(
+                    f,
+                    "Invalid hash length: expected {expected} bytes, got {actual}"
+                )
             }
         }
     }
@@ -101,9 +104,10 @@ impl CertPin {
                 let actual = compute_spki_hash(cert);
                 match actual {
                     Some(actual_hash) if &actual_hash == sha256 => Ok(()),
-                    Some(actual_hash) => {
-                        Err(format!("spki//sha256/{}", BASE64_STANDARD.encode(actual_hash)))
-                    }
+                    Some(actual_hash) => Err(format!(
+                        "spki//sha256/{}",
+                        BASE64_STANDARD.encode(actual_hash)
+                    )),
                     None => Err("[failed to compute SPKI hash]".to_string()),
                 }
             }
@@ -193,9 +197,8 @@ impl PinningVerifier {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
 
         // Use platform verifier with webpki roots
-        let root_store = rustls::RootCertStore::from_iter(
-            webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
-        );
+        let root_store =
+            rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         let inner = rustls::client::WebPkiServerVerifier::builder_with_provider(
             Arc::new(root_store),
             provider,
@@ -214,12 +217,12 @@ impl PinningVerifier {
     }
 }
 
-/// Build a rustls ClientConfig with optional certificate pinning.
+/// Build a rustls `ClientConfig` with optional certificate pinning.
 ///
 /// This can be used for any rustls-based client (MQTT, custom transports, etc.).
 ///
 /// # Arguments
-/// * `pins` - Map of hostname -> CertPin. Hostnames without pins will
+/// * `pins` - Map of hostname -> `CertPin`. Hostnames without pins will
 ///   only receive standard certificate validation.
 ///
 /// # Errors
@@ -242,7 +245,7 @@ pub fn build_pinning_config(
     Ok(config)
 }
 
-/// Build a rustls ClientConfig for a single host with optional pinning.
+/// Build a rustls `ClientConfig` for a single host with optional pinning.
 ///
 /// Convenience wrapper around `build_pinning_config` for single-host use cases.
 ///
@@ -363,10 +366,7 @@ mod tests {
 
     #[test]
     fn test_parse_invalid_format() {
-        assert_eq!(
-            CertPin::parse("invalid"),
-            Err(PinParseError::InvalidFormat)
-        );
+        assert_eq!(CertPin::parse("invalid"), Err(PinParseError::InvalidFormat));
         assert_eq!(
             CertPin::parse("sha256/AAAA"),
             Err(PinParseError::InvalidFormat)
@@ -412,7 +412,9 @@ mod tests {
         hasher.update(test_cert);
         let expected_hash: [u8; 32] = hasher.finalize().into();
 
-        let pin = CertPin::Cert { sha256: expected_hash };
+        let pin = CertPin::Cert {
+            sha256: expected_hash,
+        };
         let cert = CertificateDer::from(test_cert.to_vec());
         assert!(pin.verify(&cert));
 

@@ -40,10 +40,13 @@ impl std::fmt::Display for QuorumStrategyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             QuorumStrategyError::InvalidFraction(v) => {
-                write!(f, "Invalid quorum fraction {}: must be in range (0.0, 1.0]", v)
+                write!(
+                    f,
+                    "Invalid quorum fraction {v}: must be in range (0.0, 1.0]"
+                )
             }
             QuorumStrategyError::InvalidCount(v) => {
-                write!(f, "Invalid quorum count {}: must be > 0", v)
+                write!(f, "Invalid quorum count {v}: must be > 0")
             }
         }
     }
@@ -68,9 +71,10 @@ pub enum DeliveryTier {
 }
 
 /// Quorum strategy for determining delivery success.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum QuorumStrategy {
     /// Any single transport success (legacy behavior).
+    #[default]
     Any,
 
     /// Fixed count: at least N transports must succeed.
@@ -81,13 +85,6 @@ pub enum QuorumStrategy {
 
     /// All configured stable transports must succeed.
     All,
-}
-
-impl Default for QuorumStrategy {
-    fn default() -> Self {
-        // Default to "any" for backward compatibility
-        QuorumStrategy::Any
-    }
 }
 
 impl QuorumStrategy {
@@ -684,8 +681,7 @@ mod tests {
     #[test]
     fn test_excluded_targets() {
         let excluded = TargetId::http("https://excluded.example.com");
-        let config =
-            TieredDeliveryConfig::default().with_excluded_target(excluded.clone());
+        let config = TieredDeliveryConfig::default().with_excluded_target(excluded.clone());
 
         assert!(config.is_excluded(&excluded));
         assert!(!config.is_excluded(&TargetId::http("https://other.example.com")));

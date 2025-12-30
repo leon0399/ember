@@ -2,7 +2,7 @@
 //!
 //! Handles loading, generating, and storing the node's cryptographic identity.
 //! The node identity is an X25519 keypair used for:
-//! - XEdDSA signatures on HTTP headers (proving message origin)
+//! - `XEdDSA` signatures on HTTP headers (proving message origin)
 //! - Cryptographic loop prevention (identifying self by public key)
 
 use reme_identity::{is_low_order_point, Identity, InvalidPublicKey, PublicID};
@@ -60,9 +60,7 @@ fn load_identity(path: &Path) -> Result<Identity, NodeIdentityError> {
         return Err(NodeIdentityError::InvalidLength(data.len()));
     }
 
-    let bytes: [u8; 32] = data
-        .try_into()
-        .expect("length already validated");
+    let bytes: [u8; 32] = data.try_into().expect("length already validated");
 
     Identity::try_from_bytes(&bytes).map_err(NodeIdentityError::InvalidKey)
 }
@@ -107,9 +105,7 @@ fn generate_and_save_identity(path: &Path) -> Result<Identity, NodeIdentityError
     if path.exists() {
         // Clean up our temp file
         let _ = fs::remove_file(&temp_path);
-        tracing::debug!(
-            "Identity file was created by another process, loading existing identity"
-        );
+        tracing::debug!("Identity file was created by another process, loading existing identity");
         return load_identity(path);
     }
 
@@ -139,7 +135,8 @@ fn write_secret_file(path: &Path, data: &[u8]) -> Result<(), NodeIdentityError> 
         .open(path)
         .map_err(NodeIdentityError::WriteError)?;
 
-    file.write_all(data).map_err(NodeIdentityError::WriteError)?;
+    file.write_all(data)
+        .map_err(NodeIdentityError::WriteError)?;
     file.sync_all().map_err(NodeIdentityError::WriteError)?;
     Ok(())
 }
@@ -162,7 +159,8 @@ fn write_secret_file(path: &Path, data: &[u8]) -> Result<(), NodeIdentityError> 
         .open(path)
         .map_err(NodeIdentityError::WriteError)?;
 
-    file.write_all(data).map_err(NodeIdentityError::WriteError)?;
+    file.write_all(data)
+        .map_err(NodeIdentityError::WriteError)?;
     file.sync_all().map_err(NodeIdentityError::WriteError)?;
 
     tracing::debug!(
@@ -188,7 +186,7 @@ pub struct NodeIdentity {
 }
 
 impl NodeIdentity {
-    /// Create a NodeIdentity from an Identity.
+    /// Create a `NodeIdentity` from an Identity.
     pub fn new(identity: Identity) -> Self {
         let node_id = node_id_hex(identity.public_id());
         Self { identity, node_id }
@@ -215,7 +213,7 @@ impl NodeIdentity {
         &self.node_id
     }
 
-    /// Sign a message using XEdDSA.
+    /// Sign a message using `XEdDSA`.
     pub fn sign(&self, message: &[u8]) -> [u8; 64] {
         self.identity.sign_xeddsa(message)
     }
@@ -320,9 +318,7 @@ mod tests {
         assert_eq!(signature.len(), 64);
 
         // Verify signature
-        assert!(node_identity
-            .public_id()
-            .verify_xeddsa(message, &signature));
+        assert!(node_identity.public_id().verify_xeddsa(message, &signature));
     }
 
     #[test]

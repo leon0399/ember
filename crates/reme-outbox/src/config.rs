@@ -44,13 +44,13 @@ pub struct RetryTriggerConfig {
     /// Retry when gap detected in peer's `observed_heads`.
     ///
     /// When we receive a message from a peer and detect they haven't
-    /// ACKed messages we sent, immediately retry those messages.
+    /// `ACKed` messages we sent, immediately retry those messages.
     #[derivative(Default(value = "true"))]
     pub on_gap_detected: bool,
 
     /// Retry when a transport becomes available.
     ///
-    /// When a transport (LoRa, BLE, P2P) becomes available,
+    /// When a transport (`LoRa`, BLE, P2P) becomes available,
     /// retry pending messages that can use that transport.
     #[derivative(Default(value = "true"))]
     pub on_transport_available: bool,
@@ -80,7 +80,7 @@ impl RetryTriggerConfig {
 ///
 /// Different transports have different characteristics:
 /// - HTTP: fast retry, exponential backoff
-/// - LoRa: slow retry, longer intervals, mesh propagation
+/// - `LoRa`: slow retry, longer intervals, mesh propagation
 /// - BLE: medium retry, device discovery dependent
 #[derive(Debug, Clone, Derivative)]
 #[derivative(Default)]
@@ -158,7 +158,9 @@ impl TransportRetryPolicy {
             return Duration::ZERO;
         }
 
-        let multiplier = self.backoff_multiplier.powi(attempt.saturating_sub(1) as i32);
+        let multiplier = self
+            .backoff_multiplier
+            .powi(attempt.saturating_sub(1) as i32);
         let delay_ms = self.initial_delay.as_millis() as f32 * multiplier;
         let delay = Duration::from_millis(delay_ms as u64);
 
@@ -167,7 +169,7 @@ impl TransportRetryPolicy {
 
     /// Check if we should give up after the given number of attempts.
     pub fn should_give_up(&self, attempts: u32) -> bool {
-        self.max_attempts.map(|max| attempts >= max).unwrap_or(false)
+        self.max_attempts.is_some_and(|max| attempts >= max)
     }
 }
 
@@ -190,7 +192,7 @@ pub struct OutboxConfig {
 
     /// How long a "Sent" attempt stays in-flight before timing out (ms).
     ///
-    /// After this, the message transitions from InFlight to AwaitingRetry.
+    /// After this, the message transitions from `InFlight` to `AwaitingRetry`.
     #[derivative(Default(value = "default_attempt_timeout_ms()"))]
     pub attempt_timeout_ms: u64,
 }

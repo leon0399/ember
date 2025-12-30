@@ -87,7 +87,10 @@ pub struct TransportPool<T: TransportTarget> {
 impl<T: TransportTarget + 'static> TransportPool<T> {
     /// Create a new transport pool with default configuration.
     pub fn new() -> Self {
-        Self::with_config(PoolConfig::default(), Arc::new(SharedSeenCache::with_defaults()))
+        Self::with_config(
+            PoolConfig::default(),
+            Arc::new(SharedSeenCache::with_defaults()),
+        )
     }
 
     /// Create a new transport pool with shared seen cache.
@@ -181,13 +184,21 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
 
     /// Check if any target is available.
     pub fn has_available(&self) -> bool {
-        self.targets.read().unwrap().iter().any(|t| t.is_available())
+        self.targets
+            .read()
+            .unwrap()
+            .iter()
+            .any(|t| t.is_available())
     }
 
     /// Select targets based on current strategy.
     fn select_targets(&self) -> Vec<Arc<T>> {
         let all_targets = self.targets.read().unwrap();
-        let available: Vec<_> = all_targets.iter().filter(|t| t.is_available()).cloned().collect();
+        let available: Vec<_> = all_targets
+            .iter()
+            .filter(|t| t.is_available())
+            .cloned()
+            .collect();
 
         if available.is_empty() {
             // If no healthy targets, try all (circuit breaker may have recovered)
@@ -205,7 +216,8 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
                 if available.is_empty() {
                     return vec![];
                 }
-                let index = self.round_robin_index.fetch_add(1, Ordering::Relaxed) % available.len();
+                let index =
+                    self.round_robin_index.fetch_add(1, Ordering::Relaxed) % available.len();
                 vec![available[index].clone()]
             }
             PoolStrategy::FastestFirst => {
@@ -238,7 +250,8 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
             PoolStrategy::Broadcast => self.broadcast_message(&targets, envelope.clone()).await,
             PoolStrategy::Race => self.race_message(&targets, envelope.clone()).await,
             PoolStrategy::PriorityFallback => {
-                self.priority_fallback_message(&targets, envelope.clone()).await
+                self.priority_fallback_message(&targets, envelope.clone())
+                    .await
             }
             PoolStrategy::RoundRobin | PoolStrategy::FastestFirst => {
                 // Single target selected
@@ -300,7 +313,11 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
         }
 
         if success_count > 0 {
-            debug!("Message sent to {}/{} targets", success_count, targets.len());
+            debug!(
+                "Message sent to {}/{} targets",
+                success_count,
+                targets.len()
+            );
             Ok(())
         } else {
             Err(last_error.unwrap_or(TransportError::Network("All targets failed".to_string())))
@@ -416,7 +433,6 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
             Err(last_error.unwrap_or(TransportError::Network("All targets failed".to_string())))
         }
     }
-
 }
 
 impl<T: TransportTarget + 'static> Default for TransportPool<T> {
@@ -425,14 +441,17 @@ impl<T: TransportTarget + 'static> Default for TransportPool<T> {
     }
 }
 
-/// Implement Transport trait for TransportPool to allow use with existing code.
+/// Implement Transport trait for `TransportPool` to allow use with existing code.
 #[async_trait]
 impl<T: TransportTarget + 'static> Transport for TransportPool<T> {
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
         TransportPool::submit_message(self, envelope).await
     }
 
-    async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
+    async fn submit_ack_tombstone(
+        &self,
+        tombstone: SignedAckTombstone,
+    ) -> Result<(), TransportError> {
         TransportPool::submit_ack_tombstone(self, tombstone).await
     }
 }
@@ -577,7 +596,7 @@ impl TransportPool<HttpTarget> {
     /// Fetch messages once from all healthy targets and deduplicate.
     ///
     /// This method performs a single fetch operation from all available targets
-    /// and returns unique messages (deduplicated by message_id).
+    /// and returns unique messages (deduplicated by `message_id`).
     pub async fn fetch_once(
         &self,
         routing_key: &RoutingKey,
@@ -692,7 +711,9 @@ mod tests {
         let pool: TransportPool<HttpTarget> = TransportPool::new();
 
         pool.add_target(HttpTarget::new(HttpTargetConfig::stable("http://stable:1")).unwrap());
-        pool.add_target(HttpTarget::new(HttpTargetConfig::ephemeral("http://ephemeral:1")).unwrap());
+        pool.add_target(
+            HttpTarget::new(HttpTargetConfig::ephemeral("http://ephemeral:1")).unwrap(),
+        );
         pool.add_target(HttpTarget::new(HttpTargetConfig::stable("http://stable:2")).unwrap());
 
         let stable = pool.targets_by_kind(TargetKind::Stable);

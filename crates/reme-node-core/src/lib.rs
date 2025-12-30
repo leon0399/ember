@@ -8,7 +8,7 @@
 //!
 //! The crate is organized into:
 //! - [`error`]: Error types for node operations
-//! - [`mailbox_store`]: Storage trait and SQLite implementation
+//! - [`mailbox_store`]: Storage trait and `SQLite` implementation
 //! - [`request`]: Request and event types for embedded node communication
 //! - [`embedded`]: Embedded node for in-process mailbox functionality
 //!

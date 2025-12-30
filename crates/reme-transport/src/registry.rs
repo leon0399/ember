@@ -121,7 +121,8 @@ impl TransportRegistry {
         tier: DeliveryTier,
     ) -> Result<TargetId, TransportError> {
         let url = url.into();
-        let config = HttpTargetConfig::ephemeral(&url).with_request_timeout(Duration::from_secs(10));
+        let config =
+            HttpTargetConfig::ephemeral(&url).with_request_timeout(Duration::from_secs(10));
         let target = HttpTarget::new(config)?;
         let id = target.id().clone();
 
@@ -186,7 +187,12 @@ impl TransportRegistry {
 
     /// List all ephemeral targets with their metadata.
     pub fn list_ephemeral(&self) -> Vec<EphemeralMeta> {
-        self.ephemeral_meta.read().unwrap().values().cloned().collect()
+        self.ephemeral_meta
+            .read()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect()
     }
 
     /// Get a combined list of all targets with tier and ephemeral metadata.
@@ -213,8 +219,8 @@ impl TransportRegistry {
                 let ephemeral_meta = meta.get(&snapshot.id);
                 results.push(EnrichedSnapshot {
                     snapshot,
-                    tier: ephemeral_meta.map(|m| m.tier).unwrap_or(DeliveryTier::Quorum),
-                    ephemeral: ephemeral_meta.map(|m| m.ephemeral).unwrap_or(false),
+                    tier: ephemeral_meta.map_or(DeliveryTier::Quorum, |m| m.tier),
+                    ephemeral: ephemeral_meta.is_some_and(|m| m.ephemeral),
                     custom_label: ephemeral_meta.and_then(|m| m.label.clone()),
                 });
             }
@@ -228,8 +234,8 @@ impl TransportRegistry {
                 let ephemeral_meta = meta.get(&snapshot.id);
                 results.push(EnrichedSnapshot {
                     snapshot,
-                    tier: ephemeral_meta.map(|m| m.tier).unwrap_or(DeliveryTier::Quorum),
-                    ephemeral: ephemeral_meta.map(|m| m.ephemeral).unwrap_or(false),
+                    tier: ephemeral_meta.map_or(DeliveryTier::Quorum, |m| m.tier),
+                    ephemeral: ephemeral_meta.is_some_and(|m| m.ephemeral),
                     custom_label: ephemeral_meta.and_then(|m| m.label.clone()),
                 });
             }
@@ -269,12 +275,12 @@ impl Default for TransportRegistry {
     }
 }
 
-/// Implement TransportQuery for unified access.
+/// Implement `TransportQuery` for unified access.
 ///
 /// This implementation includes targets from all sources:
 /// - HTTP pool targets (with health tracking)
 /// - MQTT pool targets (with health tracking)
-/// - Composite-only targets (from ephemeral_meta, without health tracking)
+/// - Composite-only targets (from `ephemeral_meta`, without health tracking)
 impl TransportQuery for TransportRegistry {
     fn list_targets(&self) -> Vec<TargetSnapshot> {
         let mut targets = Vec::new();
@@ -352,10 +358,10 @@ impl TransportQuery for TransportRegistry {
     }
 
     fn has_available(&self) -> bool {
-        let http_available = self.http_pool.as_ref().map_or(false, |p| p.has_available());
+        let http_available = self.http_pool.as_ref().is_some_and(|p| p.has_available());
 
         #[cfg(feature = "mqtt")]
-        let mqtt_available = self.mqtt_pool.as_ref().map_or(false, |p| p.has_available());
+        let mqtt_available = self.mqtt_pool.as_ref().is_some_and(|p| p.has_available());
         #[cfg(not(feature = "mqtt"))]
         let mqtt_available = false;
 
@@ -400,13 +406,16 @@ mod tests {
         assert!(registry.list_targets().is_empty());
     }
 
-
     #[tokio::test]
     async fn test_add_http_target() {
         let registry = TransportRegistry::new();
 
         let id = registry
-            .add_http_target("http://localhost:23004", Some("Test".to_string()), DeliveryTier::Direct)
+            .add_http_target(
+                "http://localhost:23004",
+                Some("Test".to_string()),
+                DeliveryTier::Direct,
+            )
             .await
             .unwrap();
 
@@ -421,11 +430,19 @@ mod tests {
         let registry = TransportRegistry::new();
 
         registry
-            .add_http_target("http://localhost:23004", Some("A".to_string()), DeliveryTier::Direct)
+            .add_http_target(
+                "http://localhost:23004",
+                Some("A".to_string()),
+                DeliveryTier::Direct,
+            )
             .await
             .unwrap();
         registry
-            .add_http_target("http://localhost:23005", Some("B".to_string()), DeliveryTier::Quorum)
+            .add_http_target(
+                "http://localhost:23005",
+                Some("B".to_string()),
+                DeliveryTier::Quorum,
+            )
             .await
             .unwrap();
 
@@ -469,7 +486,11 @@ mod tests {
 
         // Add an ephemeral target (goes to composite, not pool)
         let id = registry
-            .add_http_target("http://localhost:23006", Some("Composite Target".to_string()), DeliveryTier::Direct)
+            .add_http_target(
+                "http://localhost:23006",
+                Some("Composite Target".to_string()),
+                DeliveryTier::Direct,
+            )
             .await
             .unwrap();
 

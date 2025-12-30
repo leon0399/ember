@@ -52,7 +52,7 @@ use reme_message::{MessageID, OuterEnvelope, RoutingKey};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, trace, warn};
 
-use crate::{MailboxStore, NodeError, NodeRequest, NodeEvent};
+use crate::{MailboxStore, NodeError, NodeEvent, NodeRequest};
 
 /// Default channel buffer size for request/event channels.
 const DEFAULT_CHANNEL_SIZE: usize = 256;
@@ -114,7 +114,10 @@ impl<S: MailboxStore + 'static> EmbeddedNode<S> {
                     let _ = response.send(result);
                 }
 
-                NodeRequest::FetchMessages { routing_key, response } => {
+                NodeRequest::FetchMessages {
+                    routing_key,
+                    response,
+                } => {
                     let result = self.handle_fetch_messages(routing_key);
                     let _ = response.send(result);
                 }
@@ -142,7 +145,10 @@ impl<S: MailboxStore + 'static> EmbeddedNode<S> {
     }
 
     /// Handle a fetch messages request.
-    fn handle_fetch_messages(&self, routing_key: RoutingKey) -> Result<Vec<OuterEnvelope>, NodeError> {
+    fn handle_fetch_messages(
+        &self,
+        routing_key: RoutingKey,
+    ) -> Result<Vec<OuterEnvelope>, NodeError> {
         trace!(?routing_key, "Fetching messages");
         let messages = self.store.fetch(&routing_key)?;
         debug!(count = messages.len(), "Fetched messages");
@@ -159,7 +165,7 @@ pub struct EmbeddedNodeHandle {
     /// Channel for sending requests to the node.
     requests: mpsc::Sender<NodeRequest>,
 
-    /// Direct access to store for notify_message_received.
+    /// Direct access to store for `notify_message_received`.
     store: Arc<dyn MailboxStore>,
 
     /// Event sender for external notifications.
@@ -182,7 +188,10 @@ impl EmbeddedNodeHandle {
     }
 
     /// Fetch messages for a routing key from the embedded node.
-    pub async fn fetch_messages(&self, routing_key: RoutingKey) -> Result<Vec<OuterEnvelope>, NodeError> {
+    pub async fn fetch_messages(
+        &self,
+        routing_key: RoutingKey,
+    ) -> Result<Vec<OuterEnvelope>, NodeError> {
         let (tx, rx) = oneshot::channel();
         self.requests
             .send(NodeRequest::FetchMessages {
@@ -206,7 +215,11 @@ impl EmbeddedNodeHandle {
     /// Check if a message already exists in the mailbox.
     ///
     /// Useful for duplicate detection before storing.
-    pub fn has_message(&self, routing_key: &RoutingKey, message_id: &MessageID) -> Result<bool, NodeError> {
+    pub fn has_message(
+        &self,
+        routing_key: &RoutingKey,
+        message_id: &MessageID,
+    ) -> Result<bool, NodeError> {
         self.store.has_message(routing_key, message_id)
     }
 
@@ -229,7 +242,10 @@ impl EmbeddedNodeHandle {
         self.store.enqueue(routing_key, envelope.clone())?;
 
         // Push event to client
-        match self.event_sender.try_send(NodeEvent::MessageReceived(envelope)) {
+        match self
+            .event_sender
+            .try_send(NodeEvent::MessageReceived(envelope))
+        {
             Ok(()) => {
                 debug!(?message_id, "Message event sent to client");
             }
@@ -260,28 +276,36 @@ impl EmbeddedNodeHandle {
 
     /// Process an ack tombstone to delete a message from the mailbox.
     ///
-    /// This verifies the tombstone's ack_secret against the stored ack_hash
+    /// This verifies the tombstone's `ack_secret` against the stored `ack_hash`
     /// and deletes the message if valid.
     ///
     /// # Returns
     /// - `Ok(true)` if the message was deleted
     /// - `Ok(false)` if the message was not found (already deleted or never existed)
-    /// - `Err(NodeError::InvalidMessage)` if the ack_secret is invalid
-    pub fn process_ack_tombstone(&self, tombstone: &reme_message::SignedAckTombstone) -> Result<bool, NodeError> {
+    /// - `Err(NodeError::InvalidMessage)` if the `ack_secret` is invalid
+    pub fn process_ack_tombstone(
+        &self,
+        tombstone: &reme_message::SignedAckTombstone,
+    ) -> Result<bool, NodeError> {
         let message_id = tombstone.message_id;
 
         // Get the stored ack_hash for this message
-        let ack_hash = match self.store.get_ack_hash(&message_id)? {
-            Some(hash) => hash,
-            None => {
-                debug!(?message_id, "AckTombstone for unknown message (already deleted?)");
-                return Ok(false);
-            }
+        let ack_hash = if let Some(hash) = self.store.get_ack_hash(&message_id)? {
+            hash
+        } else {
+            debug!(
+                ?message_id,
+                "AckTombstone for unknown message (already deleted?)"
+            );
+            return Ok(false);
         };
 
         // Verify the ack_secret
         if !tombstone.verify_authorization(&ack_hash) {
-            warn!(?message_id, "AckTombstone authorization failed - invalid ack_secret");
+            warn!(
+                ?message_id,
+                "AckTombstone authorization failed - invalid ack_secret"
+            );
             return Err(NodeError::InvalidMessage("Invalid ack_secret".to_string()));
         }
 
@@ -294,7 +318,6 @@ impl EmbeddedNodeHandle {
         Ok(deleted)
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -392,6 +415,9 @@ mod tests {
         node_task.await.unwrap();
 
         // Channel should be closed after node stops
-        assert!(!handle.is_running(), "Node should not be running after shutdown");
+        assert!(
+            !handle.is_running(),
+            "Node should not be running after shutdown"
+        );
     }
 }

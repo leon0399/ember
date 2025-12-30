@@ -61,9 +61,12 @@ pub fn bincode_config() -> impl bincode::config::Config {
 
 pub use tombstone::{
     // Tombstone V2 (signed ack)
-    Attribution, SignedAckTombstone,
+    Attribution,
+    SignedAckTombstone,
     // Constants
-    ACK_HASH_DOMAIN, CLOCK_SKEW_ALLOWANCE_HOURS, TOMBSTONE_MAX_AGE_HOURS,
+    ACK_HASH_DOMAIN,
+    CLOCK_SKEW_ALLOWANCE_HOURS,
+    TOMBSTONE_MAX_AGE_HOURS,
 };
 pub use wire::{WirePayload, WireType};
 
@@ -117,7 +120,7 @@ impl_borrow_decode!(MessageID);
 /// 8 bytes (64 bits) - sufficient for per-conversation uniqueness.
 /// Birthday bound ~4 billion messages - more than any conversation will have.
 ///
-/// Computed as truncated BLAKE3 hash of (from, created_at_ms, content).
+/// Computed as truncated BLAKE3 hash of (from, `created_at_ms`, content).
 /// BLAKE3 is designed as an XOF (extendable output function) where
 /// truncation is safe and expected.
 pub type ContentId = [u8; 8];
@@ -128,25 +131,25 @@ pub struct Version {
     pub minor: u8,
 }
 
-/// Current protocol version (0.0 - PoC)
+/// Current protocol version (0.0 - `PoC`)
 /// Using u8 for major/minor: max version 255.255, saves 2 bytes per envelope
 ///
-/// Note: ack_hash was added to OuterEnvelope in this version.
-/// No version bump needed since this is a PoC with no deployed clients.
+/// Note: `ack_hash` was added to `OuterEnvelope` in this version.
+/// No version bump needed since this is a `PoC` with no deployed clients.
 pub const CURRENT_VERSION: Version = Version { major: 0, minor: 0 };
 
 /// Outer envelope for MIK-only encryption (Session V1-style stateless)
 ///
 /// Each message includes an ephemeral X25519 public key. The sender:
 /// 1. Generates ephemeral keypair (e, E)
-/// 2. Computes shared_secret = X25519(e, recipient_MIK)
-/// 3. Derives encryption key from shared_secret
-/// 4. Encrypts InnerEnvelope with derived key
+/// 2. Computes `shared_secret` = X25519(e, `recipient_MIK`)
+/// 3. Derives encryption key from `shared_secret`
+/// 4. Encrypts `InnerEnvelope` with derived key
 ///
 /// The recipient:
-/// 1. Computes shared_secret = X25519(mik_private, ephemeral_key)
+/// 1. Computes `shared_secret` = `X25519(mik_private`, `ephemeral_key`)
 /// 2. Derives same encryption key
-/// 3. Decrypts InnerEnvelope
+/// 3. Decrypts `InnerEnvelope`
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct OuterEnvelope {
     pub version: Version,
@@ -168,10 +171,9 @@ pub struct OuterEnvelope {
     pub ephemeral_key: [u8; 32],
 
     // ===== Tombstone V2: Ack Hash =====
-
     /// Ack hash (16 bytes) for tombstone authorization.
-    /// Computed as BLAKE3(ack_secret)[0..16] where
-    /// ack_secret = BLAKE3_KDF("reme-ack-v1", shared_secret || message_id).
+    /// Computed as `BLAKE3(ack_secret)`[0..16] where
+    /// `ack_secret` = BLAKE3_KDF("reme-ack-v1", `shared_secret` || `message_id`).
     /// Allows nodes to verify tombstones with O(1) hash check.
     pub ack_hash: [u8; 16],
 
@@ -182,11 +184,11 @@ impl OuterEnvelope {
     /// Create a new envelope for MIK-only encryption
     ///
     /// # Arguments
-    /// * `routing_key` - 16-byte routing key (truncated blake3 hash of recipient PublicID)
+    /// * `routing_key` - 16-byte routing key (truncated blake3 hash of recipient `PublicID`)
     /// * `ttl_hours` - Optional time-to-live in hours
     /// * `ephemeral_key` - 32-byte ephemeral X25519 public key used for ECDH
     /// * `ack_hash` - 16-byte hash for tombstone authorization
-    /// * `inner_ciphertext` - Encrypted InnerEnvelope bytes
+    /// * `inner_ciphertext` - Encrypted `InnerEnvelope` bytes
     pub fn new(
         routing_key: RoutingKey,
         ttl_hours: Option<u16>,
@@ -207,7 +209,7 @@ impl OuterEnvelope {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        bincode::encode_to_vec(&self, bincode::config::standard()).unwrap()
+        bincode::encode_to_vec(self, bincode::config::standard()).unwrap()
     }
 }
 
@@ -231,12 +233,11 @@ pub struct InnerEnvelope {
     // =============================================
     // Merkle DAG fields for message ordering
     // =============================================
-
-    /// My previous message's content_id (per-sender continuity).
+    /// My previous message's `content_id` (per-sender continuity).
     /// None for first message in conversation or detached messages.
     pub prev_self: Option<ContentId>,
 
-    /// Latest content_id(s) observed from peer(s).
+    /// Latest `content_id(s)` observed from peer(s).
     /// Enables sender-side gap detection.
     /// Usually 1 element, can be 2+ in multi-party or fork scenarios.
     /// Empty for detached messages (constrained transports).
@@ -253,8 +254,8 @@ pub struct InnerEnvelope {
 }
 
 /// Flag: Message is intentionally detached (no DAG linkage).
-/// Used for constrained transports (LoRa, BLE) where bandwidth is limited.
-/// When set, prev_self=None and observed_heads=[] is intentional, not state loss.
+/// Used for constrained transports (`LoRa`, BLE) where bandwidth is limited.
+/// When set, `prev_self=None` and `observed_heads`=[] is intentional, not state loss.
 pub const FLAG_DETACHED: u8 = 0x01;
 
 // Bits 1-7 reserved for future use
@@ -272,7 +273,7 @@ impl InnerEnvelope {
     ///
     /// Hash covers: identity + timestamp + content (NOT DAG fields).
     /// This ensures the same content can be resent with different DAG
-    /// fields while maintaining the same content_id.
+    /// fields while maintaining the same `content_id`.
     pub fn content_id(&self) -> ContentId {
         let mut hasher = blake3::Hasher::new();
 
@@ -286,9 +287,8 @@ impl InnerEnvelope {
         hasher.update(&self.created_at_ms.to_le_bytes());
 
         // Content
-        let content_bytes =
-            bincode::encode_to_vec(&self.content, bincode::config::standard())
-                .expect("content serialization");
+        let content_bytes = bincode::encode_to_vec(&self.content, bincode::config::standard())
+            .expect("content serialization");
         hasher.update(&content_bytes);
 
         // Truncate to 8 bytes - safe for BLAKE3 (XOF design)
@@ -298,9 +298,9 @@ impl InnerEnvelope {
 
     /// Check if this is an intentionally detached (unlinked) message.
     ///
-    /// Detached messages have the FLAG_DETACHED flag set and are used on
-    /// constrained transports (LoRa, BLE). They can be linked into the DAG
-    /// later when a subsequent message references them via prev_self.
+    /// Detached messages have the `FLAG_DETACHED` flag set and are used on
+    /// constrained transports (`LoRa`, BLE). They can be linked into the DAG
+    /// later when a subsequent message references them via `prev_self`.
     ///
     /// Note: This checks the explicit flag, not just empty DAG fields.
     /// A message with empty DAG fields but no flag may indicate state loss.

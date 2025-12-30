@@ -147,13 +147,23 @@ pub struct CliArgs {
 // Outbox default value helpers (for serde and derivative Default)
 // =============================================================================
 
-fn default_outbox_tick_interval() -> u64 { 5 }
-fn default_outbox_ttl_days() -> u64 { 7 }
+fn default_outbox_tick_interval() -> u64 {
+    5
+}
+fn default_outbox_ttl_days() -> u64 {
+    7
+}
 /// 1 minute - attempt timeout
-fn default_outbox_attempt_timeout() -> u64 { 60 }
-fn default_outbox_retry_initial_delay() -> u64 { 5 }
+fn default_outbox_attempt_timeout() -> u64 {
+    60
+}
+fn default_outbox_retry_initial_delay() -> u64 {
+    5
+}
 /// 5 minutes - max retry delay
-fn default_outbox_retry_max_delay() -> u64 { 300 }
+fn default_outbox_retry_max_delay() -> u64 {
+    300
+}
 
 /// Outbox configuration
 #[derive(Debug, Clone, Deserialize, Serialize, Derivative)]
@@ -211,12 +221,12 @@ impl QuorumStrategyConfig {
                 Err("Quorum count must be > 0".to_string())
             }
             QuorumStrategyConfig::Count(_) => Ok(()),
-            QuorumStrategyConfig::Fraction(f) if f.is_nan() || f.is_infinite() => {
-                Err(format!("Invalid quorum fraction {}: must be a finite number", f))
-            }
-            QuorumStrategyConfig::Fraction(f) if *f <= 0.0 || *f > 1.0 => {
-                Err(format!("Quorum fraction {} out of range: must be in (0.0, 1.0]", f))
-            }
+            QuorumStrategyConfig::Fraction(f) if f.is_nan() || f.is_infinite() => Err(format!(
+                "Invalid quorum fraction {f}: must be a finite number"
+            )),
+            QuorumStrategyConfig::Fraction(f) if *f <= 0.0 || *f > 1.0 => Err(format!(
+                "Quorum fraction {f} out of range: must be in (0.0, 1.0]"
+            )),
             QuorumStrategyConfig::Fraction(_) => Ok(()),
         }
     }
@@ -226,16 +236,30 @@ impl QuorumStrategyConfig {
 // Delivery default value helpers (for serde and derivative Default)
 // =============================================================================
 
-fn default_urgent_initial_delay() -> u64 { 5 }
+fn default_urgent_initial_delay() -> u64 {
+    5
+}
 /// 1 minute - max urgent delay
-fn default_urgent_max_delay() -> u64 { 60 }
-fn default_urgent_backoff_multiplier() -> f32 { 2.0 }
+fn default_urgent_max_delay() -> u64 {
+    60
+}
+fn default_urgent_backoff_multiplier() -> f32 {
+    2.0
+}
 /// 4 hours - maintenance interval
-fn default_maintenance_interval_hours() -> u64 { 4 }
-fn default_maintenance_enabled() -> bool { true }
+fn default_maintenance_interval_hours() -> u64 {
+    4
+}
+fn default_maintenance_enabled() -> bool {
+    true
+}
 /// 500ms - direct tier timeout
-fn default_direct_tier_timeout_ms() -> u64 { 500 }
-fn default_quorum_tier_timeout_secs() -> u64 { 5 }
+fn default_direct_tier_timeout_ms() -> u64 {
+    500
+}
+fn default_quorum_tier_timeout_secs() -> u64 {
+    5
+}
 
 /// Tiered delivery configuration for quorum semantics.
 ///
@@ -251,7 +275,6 @@ pub struct DeliveryAppConfig {
     pub quorum: QuorumStrategyConfig,
 
     // Phase 1 (Urgent) retry settings
-
     /// Initial retry delay in seconds for urgent phase.
     #[serde(default = "default_urgent_initial_delay")]
     #[derivative(Default(value = "default_urgent_initial_delay()"))]
@@ -268,7 +291,6 @@ pub struct DeliveryAppConfig {
     pub urgent_backoff_multiplier: f32,
 
     // Phase 2 (Maintenance) settings
-
     /// Maintenance refresh interval in hours for distributed phase.
     #[serde(default = "default_maintenance_interval_hours")]
     #[derivative(Default(value = "default_maintenance_interval_hours()"))]
@@ -280,7 +302,6 @@ pub struct DeliveryAppConfig {
     pub maintenance_enabled: bool,
 
     // Tier timeouts
-
     /// Direct tier timeout in milliseconds.
     #[serde(default = "default_direct_tier_timeout_ms")]
     #[derivative(Default(value = "default_direct_tier_timeout_ms()"))]
@@ -451,9 +472,13 @@ impl HttpEndpoint {
 // Embedded node default value helpers (for serde and derivative Default)
 // =============================================================================
 
-fn default_embedded_max_messages() -> u32 { 1000 }
+fn default_embedded_max_messages() -> u32 {
+    1000
+}
 /// 24 hours - default TTL for embedded node
-fn default_embedded_ttl_secs() -> u64 { 86400 }
+fn default_embedded_ttl_secs() -> u64 {
+    86400
+}
 
 /// Embedded node configuration for in-process mailbox.
 ///
@@ -496,7 +521,7 @@ pub struct DirectPeerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_id: Option<String>,
 
-    /// HTTP address of the peer's embedded node (e.g., "http://192.168.1.101:23004").
+    /// HTTP address of the peer's embedded node (e.g., "<http://192.168.1.101:23004>").
     pub address: String,
 
     /// Human-readable name for the peer.
@@ -654,7 +679,7 @@ struct RawConfig {
     delivery: RawDeliveryConfig,
 }
 
-/// Parse HTTP endpoints from REME_HTTP environment variable (JSON format)
+/// Parse HTTP endpoints from `REME_HTTP` environment variable (JSON format)
 fn parse_http_from_env() -> Option<Vec<HttpEndpoint>> {
     let json = std::env::var("REME_HTTP").ok()?;
     match serde_json::from_str(&json) {
@@ -669,7 +694,7 @@ fn parse_http_from_env() -> Option<Vec<HttpEndpoint>> {
     }
 }
 
-/// Parse MQTT brokers from REME_MQTT environment variable (JSON format)
+/// Parse MQTT brokers from `REME_MQTT` environment variable (JSON format)
 fn parse_mqtt_from_env() -> Option<Vec<MqttBroker>> {
     let json = std::env::var("REME_MQTT").ok()?;
     match serde_json::from_str(&json) {
@@ -753,10 +778,12 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
     let config = builder.build()?;
 
     // Get other config values first (before consuming config)
-    let data_dir_str: String = config.get("data_dir").unwrap_or_else(|_| {
-        defaults.data_dir.to_string_lossy().to_string()
-    });
-    let log_level: String = config.get("log_level").unwrap_or_else(|_| "info".to_string());
+    let data_dir_str: String = config
+        .get("data_dir")
+        .unwrap_or_else(|_| defaults.data_dir.to_string_lossy().to_string());
+    let log_level: String = config
+        .get("log_level")
+        .unwrap_or_else(|_| "info".to_string());
 
     // Deserialize raw config for file-based settings
     let raw: RawConfig = config.try_deserialize().unwrap_or_default();
@@ -839,19 +866,24 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
     // Build outbox config with priority: CLI > config file > defaults
     let outbox_defaults = OutboxAppConfig::default();
     let outbox = OutboxAppConfig {
-        tick_interval_secs: cli.outbox_tick_interval
+        tick_interval_secs: cli
+            .outbox_tick_interval
             .or(raw.outbox.tick_interval_secs)
             .unwrap_or(outbox_defaults.tick_interval_secs),
-        ttl_days: cli.outbox_ttl_days
+        ttl_days: cli
+            .outbox_ttl_days
             .or(raw.outbox.ttl_days)
             .unwrap_or(outbox_defaults.ttl_days),
-        attempt_timeout_secs: cli.outbox_attempt_timeout
+        attempt_timeout_secs: cli
+            .outbox_attempt_timeout
             .or(raw.outbox.attempt_timeout_secs)
             .unwrap_or(outbox_defaults.attempt_timeout_secs),
-        retry_initial_delay_secs: cli.outbox_retry_initial_delay
+        retry_initial_delay_secs: cli
+            .outbox_retry_initial_delay
             .or(raw.outbox.retry_initial_delay_secs)
             .unwrap_or(outbox_defaults.retry_initial_delay_secs),
-        retry_max_delay_secs: cli.outbox_retry_max_delay
+        retry_max_delay_secs: cli
+            .outbox_retry_max_delay
             .or(raw.outbox.retry_max_delay_secs)
             .unwrap_or(outbox_defaults.retry_max_delay_secs),
     };
@@ -860,21 +892,34 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
     // (No CLI arguments for delivery config - use config file or env vars)
     let delivery_defaults = DeliveryAppConfig::default();
     let delivery = DeliveryAppConfig {
-        quorum: raw.delivery.quorum
-            .unwrap_or(delivery_defaults.quorum),
-        urgent_initial_delay_secs: raw.delivery.urgent_initial_delay_secs
+        quorum: raw.delivery.quorum.unwrap_or(delivery_defaults.quorum),
+        urgent_initial_delay_secs: raw
+            .delivery
+            .urgent_initial_delay_secs
             .unwrap_or(delivery_defaults.urgent_initial_delay_secs),
-        urgent_max_delay_secs: raw.delivery.urgent_max_delay_secs
+        urgent_max_delay_secs: raw
+            .delivery
+            .urgent_max_delay_secs
             .unwrap_or(delivery_defaults.urgent_max_delay_secs),
-        urgent_backoff_multiplier: raw.delivery.urgent_backoff_multiplier
+        urgent_backoff_multiplier: raw
+            .delivery
+            .urgent_backoff_multiplier
             .unwrap_or(delivery_defaults.urgent_backoff_multiplier),
-        maintenance_interval_hours: raw.delivery.maintenance_interval_hours
+        maintenance_interval_hours: raw
+            .delivery
+            .maintenance_interval_hours
             .unwrap_or(delivery_defaults.maintenance_interval_hours),
-        maintenance_enabled: raw.delivery.maintenance_enabled
+        maintenance_enabled: raw
+            .delivery
+            .maintenance_enabled
             .unwrap_or(delivery_defaults.maintenance_enabled),
-        direct_tier_timeout_ms: raw.delivery.direct_tier_timeout_ms
+        direct_tier_timeout_ms: raw
+            .delivery
+            .direct_tier_timeout_ms
             .unwrap_or(delivery_defaults.direct_tier_timeout_ms),
-        quorum_tier_timeout_secs: raw.delivery.quorum_tier_timeout_secs
+        quorum_tier_timeout_secs: raw
+            .delivery
+            .quorum_tier_timeout_secs
             .unwrap_or(delivery_defaults.quorum_tier_timeout_secs),
     };
 
@@ -890,8 +935,7 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
             embedded_node_file.enabled
         },
         // CLI --embedded-http-bind overrides config file
-        http_bind: cli.embedded_http_bind
-            .or(embedded_node_file.http_bind),
+        http_bind: cli.embedded_http_bind.or(embedded_node_file.http_bind),
         max_messages: embedded_node_file.max_messages,
         default_ttl_secs: embedded_node_file.default_ttl_secs,
     };
@@ -931,8 +975,8 @@ pub fn default_config_toml() -> String {
     let defaults = AppConfig::default();
     let quorum_str = match &defaults.delivery.quorum {
         QuorumStrategyConfig::Any => "\"any\"".to_string(),
-        QuorumStrategyConfig::Count(n) => format!("{{ count = {} }}", n),
-        QuorumStrategyConfig::Fraction(f) => format!("{{ fraction = {} }}", f),
+        QuorumStrategyConfig::Count(n) => format!("{{ count = {n} }}"),
+        QuorumStrategyConfig::Fraction(f) => format!("{{ fraction = {f} }}"),
         QuorumStrategyConfig::All => "\"all\"".to_string(),
     };
     format!(
@@ -1295,7 +1339,10 @@ mod tests {
         assert_eq!(transport.urgent_initial_delay, Duration::from_secs(10));
         assert_eq!(transport.urgent_max_delay, Duration::from_secs(120));
         assert!((transport.urgent_backoff_multiplier - 1.5).abs() < 0.001);
-        assert_eq!(transport.maintenance_interval, Duration::from_secs(6 * 60 * 60));
+        assert_eq!(
+            transport.maintenance_interval,
+            Duration::from_secs(6 * 60 * 60)
+        );
         assert!(!transport.maintenance_enabled);
         assert_eq!(transport.direct_tier_timeout, Duration::from_millis(1000));
         assert_eq!(transport.quorum_tier_timeout, Duration::from_secs(10));
@@ -1345,7 +1392,10 @@ mod tests {
             "name": "Bob (LAN)"
         }"#;
         let config: DirectPeerConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(config.public_id, Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string()));
+        assert_eq!(
+            config.public_id,
+            Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string())
+        );
         assert_eq!(config.address, "http://192.168.1.101:23004");
         assert_eq!(config.name, Some("Bob (LAN)".to_string()));
     }
@@ -1393,7 +1443,10 @@ mod tests {
         "#;
         let config: AppConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.direct_peers.len(), 2);
-        assert_eq!(config.direct_peers[0].public_id, Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string()));
+        assert_eq!(
+            config.direct_peers[0].public_id,
+            Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string())
+        );
         assert_eq!(config.direct_peers[0].name, Some("Alice".to_string()));
         assert!(config.direct_peers[1].public_id.is_none());
         assert!(config.direct_peers[1].name.is_none());

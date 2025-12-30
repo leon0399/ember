@@ -26,7 +26,10 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use futures::future::join_all;
 use reme_message::{OuterEnvelope, RoutingKey, SignedAckTombstone, WirePayload};
-use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, Publish, QoS, Transport as MqttTransportType};
+use rumqttc::{
+    AsyncClient, Event, EventLoop, Incoming, MqttOptions, Publish, QoS,
+    Transport as MqttTransportType,
+};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, trace, warn};
@@ -40,7 +43,7 @@ pub const DEFAULT_TOPIC_PREFIX: &str = "reme/v1";
 /// Certificate pinning is not currently supported for MQTT connections.
 #[derive(Debug, Clone)]
 pub struct MqttBrokerSpec {
-    /// Broker URL (e.g., "mqtts://broker:8883" or "mqtt://broker:1883")
+    /// Broker URL (e.g., "<mqtts://broker:8883>" or "<mqtt://broker:1883>")
     pub url: String,
     /// Client ID (auto-generated if None)
     pub client_id: Option<String>,
@@ -149,8 +152,10 @@ impl MqttTransport {
     }
 
     /// Connect to all brokers in parallel.
-    async fn connect_brokers(brokers: &[MqttBrokerSpec]) -> Result<Vec<ConnectedBroker>, TransportError> {
-        let futures: Vec<_> = brokers.iter().map(|b| Self::connect_broker(b)).collect();
+    async fn connect_brokers(
+        brokers: &[MqttBrokerSpec],
+    ) -> Result<Vec<ConnectedBroker>, TransportError> {
+        let futures: Vec<_> = brokers.iter().map(Self::connect_broker).collect();
         let results = join_all(futures).await;
 
         let mut connected = Vec::with_capacity(brokers.len());
@@ -165,8 +170,7 @@ impl MqttTransport {
 
         if connected.is_empty() {
             return Err(TransportError::Network(format!(
-                "Failed to connect to any MQTT brokers: {:?}",
-                errors
+                "Failed to connect to any MQTT brokers: {errors:?}"
             )));
         }
 
@@ -224,8 +228,7 @@ impl MqttTransport {
 
         if !is_mqtt {
             return Err(TransportError::Network(format!(
-                "Invalid MQTT URL scheme: {}. Expected mqtt:// or mqtts://",
-                url
+                "Invalid MQTT URL scheme: {url}. Expected mqtt:// or mqtts://"
             )));
         }
 
@@ -243,28 +246,26 @@ impl MqttTransport {
 
                 if let Some(port_str) = after_bracket.strip_prefix(':') {
                     let port: u16 = port_str.parse().map_err(|_| {
-                        TransportError::Network(format!("Invalid port in URL: {}", url))
+                        TransportError::Network(format!("Invalid port in URL: {url}"))
                     })?;
                     (host, port)
                 } else if after_bracket.is_empty() {
                     (host, default_port)
                 } else {
                     return Err(TransportError::Network(format!(
-                        "Invalid IPv6 URL format: {}",
-                        url
+                        "Invalid IPv6 URL format: {url}"
                     )));
                 }
             } else {
                 return Err(TransportError::Network(format!(
-                    "Unclosed bracket in IPv6 URL: {}",
-                    url
+                    "Unclosed bracket in IPv6 URL: {url}"
                 )));
             }
         } else if let Some((h, p)) = rest.rsplit_once(':') {
             // IPv4/hostname: host:port
             let port: u16 = p
                 .parse()
-                .map_err(|_| TransportError::Network(format!("Invalid port in URL: {}", url)))?;
+                .map_err(|_| TransportError::Network(format!("Invalid port in URL: {url}")))?;
             (h.to_string(), port)
         } else {
             // No port specified, use default
@@ -303,7 +304,9 @@ impl MqttTransport {
     /// Publish a payload to all connected brokers.
     async fn publish_to_all(&self, topic: &str, payload: &[u8]) -> Result<(), TransportError> {
         if self.clients.is_empty() {
-            return Err(TransportError::Network("No MQTT brokers connected".to_string()));
+            return Err(TransportError::Network(
+                "No MQTT brokers connected".to_string(),
+            ));
         }
 
         let payload_b64 = BASE64_STANDARD.encode(payload);
@@ -328,17 +331,20 @@ impl MqttTransport {
         // Success if ANY broker accepts
         let success_count = results.iter().filter(|r| r.is_ok()).count();
         if success_count > 0 {
-            trace!("Published to {}/{} MQTT brokers", success_count, self.clients.len());
+            trace!(
+                "Published to {}/{} MQTT brokers",
+                success_count,
+                self.clients.len()
+            );
             Ok(())
         } else {
             let errors: Vec<_> = results
                 .into_iter()
-                .filter_map(|r| r.err())
+                .filter_map(std::result::Result::err)
                 .map(|e| e.to_string())
                 .collect();
             Err(TransportError::Network(format!(
-                "All MQTT brokers failed: {:?}",
-                errors
+                "All MQTT brokers failed: {errors:?}"
             )))
         }
     }
@@ -359,7 +365,10 @@ impl Transport for MqttTransport {
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
         // Check seen cache for deduplication (without marking yet)
         if self.seen_cache.was_seen(&envelope.message_id) {
-            trace!("Skipping duplicate message via MQTT: {:?}", envelope.message_id);
+            trace!(
+                "Skipping duplicate message via MQTT: {:?}",
+                envelope.message_id
+            );
             return Ok(());
         }
 
@@ -379,7 +388,10 @@ impl Transport for MqttTransport {
         result
     }
 
-    async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
+    async fn submit_ack_tombstone(
+        &self,
+        tombstone: SignedAckTombstone,
+    ) -> Result<(), TransportError> {
         // MQTT tombstones go to the general tombstone topic
         // Since AckTombstone doesn't have routing_key, we use a broadcast topic
         let topic = format!("{}/ack-tombstones", self.topic_prefix);
@@ -397,15 +409,15 @@ struct ParsedMqttUrl {
     use_tls: bool,
 }
 
-/// Parse a base64-encoded MQTT message payload into an OuterEnvelope.
+/// Parse a base64-encoded MQTT message payload into an `OuterEnvelope`.
 pub fn parse_mqtt_message(publish: &Publish) -> Result<OuterEnvelope, TransportError> {
     // Payload is base64-encoded WirePayload
     let wire_bytes = BASE64_STANDARD
         .decode(&publish.payload)
-        .map_err(|e| TransportError::Serialization(format!("Invalid base64: {}", e)))?;
+        .map_err(|e| TransportError::Serialization(format!("Invalid base64: {e}")))?;
 
     let wire = WirePayload::decode(&wire_bytes)
-        .map_err(|e| TransportError::Serialization(format!("Invalid wire format: {}", e)))?;
+        .map_err(|e| TransportError::Serialization(format!("Invalid wire format: {e}")))?;
 
     match wire {
         WirePayload::Message(envelope) => Ok(envelope),
@@ -460,16 +472,23 @@ mod tests {
     #[test]
     fn test_topic_for_routing_key() {
         let routing_key = RoutingKey::from_bytes([
-            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
-            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+            0x77, 0x88,
         ]);
 
         // Create a minimal transport for testing (will fail to connect but that's ok)
         let topic_prefix = "reme/v1".to_string();
-        let expected = format!("{}/messages/{}", topic_prefix, hex::encode(routing_key.as_bytes()));
+        let expected = format!(
+            "{}/messages/{}",
+            topic_prefix,
+            hex::encode(routing_key.as_bytes())
+        );
 
         // Direct test of topic generation
-        assert_eq!(expected, "reme/v1/messages/123456789abcdef01122334455667788");
+        assert_eq!(
+            expected,
+            "reme/v1/messages/123456789abcdef01122334455667788"
+        );
     }
 
     #[test]

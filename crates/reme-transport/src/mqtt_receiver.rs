@@ -8,11 +8,13 @@ use crate::{TransportError, TransportEvent};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use reme_message::{OuterEnvelope, RoutingKey, WirePayload};
-use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS, Transport as MqttTransportType};
+use rumqttc::{
+    AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS, Transport as MqttTransportType,
+};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, trace, warn, error};
+use tracing::{debug, error, trace, warn};
 
 /// Default topic prefix for REME messages.
 pub const DEFAULT_TOPIC_PREFIX: &str = "reme/v1";
@@ -23,7 +25,7 @@ pub const DEFAULT_TOPIC_PREFIX: &str = "reme/v1";
 /// Certificate pinning is not currently supported for MQTT connections.
 #[derive(Debug, Clone)]
 pub struct MqttReceiverConfig {
-    /// Broker URL (e.g., "mqtts://broker:8883")
+    /// Broker URL (e.g., "<mqtts://broker:8883>")
     pub url: String,
     /// Client ID (auto-generated if None)
     pub client_id: Option<String>,
@@ -126,8 +128,7 @@ impl MqttReceiver {
 
         if !is_mqtt {
             return Err(TransportError::Network(format!(
-                "Invalid MQTT URL scheme: {}. Expected mqtt:// or mqtts://",
-                url
+                "Invalid MQTT URL scheme: {url}. Expected mqtt:// or mqtts://"
             )));
         }
 
@@ -145,33 +146,35 @@ impl MqttReceiver {
 
                 if let Some(port_str) = after_bracket.strip_prefix(':') {
                     let port: u16 = port_str.parse().map_err(|_| {
-                        TransportError::Network(format!("Invalid port in URL: {}", url))
+                        TransportError::Network(format!("Invalid port in URL: {url}"))
                     })?;
                     (host, port)
                 } else if after_bracket.is_empty() {
                     (host, default_port)
                 } else {
                     return Err(TransportError::Network(format!(
-                        "Invalid IPv6 URL format: {}",
-                        url
+                        "Invalid IPv6 URL format: {url}"
                     )));
                 }
             } else {
                 return Err(TransportError::Network(format!(
-                    "Unclosed bracket in IPv6 URL: {}",
-                    url
+                    "Unclosed bracket in IPv6 URL: {url}"
                 )));
             }
         } else if let Some((h, p)) = rest.rsplit_once(':') {
             let port: u16 = p
                 .parse()
-                .map_err(|_| TransportError::Network(format!("Invalid port in URL: {}", url)))?;
+                .map_err(|_| TransportError::Network(format!("Invalid port in URL: {url}")))?;
             (h.to_string(), port)
         } else {
             (rest.to_string(), default_port)
         };
 
-        Ok(ParsedMqttUrl { host, port, use_tls })
+        Ok(ParsedMqttUrl {
+            host,
+            port,
+            use_tls,
+        })
     }
 
     /// Subscribe to all messages (wildcard) and run the event loop.
@@ -181,7 +184,9 @@ impl MqttReceiver {
     ///
     /// # Node Usage
     /// Nodes should call this to receive messages from all routing keys.
-    pub async fn subscribe_all(self: Arc<Self>) -> Result<(mpsc::UnboundedReceiver<TransportEvent>, MqttReceiverHandle), TransportError> {
+    pub async fn subscribe_all(
+        self: Arc<Self>,
+    ) -> Result<(mpsc::UnboundedReceiver<TransportEvent>, MqttReceiverHandle), TransportError> {
         let topic = format!("{}/messages/#", self.topic_prefix);
         self.subscribe_and_run(topic).await
     }
@@ -194,7 +199,11 @@ impl MqttReceiver {
         self: Arc<Self>,
         routing_key: &RoutingKey,
     ) -> Result<(mpsc::UnboundedReceiver<TransportEvent>, MqttReceiverHandle), TransportError> {
-        let topic = format!("{}/messages/{}", self.topic_prefix, hex::encode(routing_key.as_bytes()));
+        let topic = format!(
+            "{}/messages/{}",
+            self.topic_prefix,
+            hex::encode(routing_key.as_bytes())
+        );
         self.subscribe_and_run(topic).await
     }
 
@@ -207,7 +216,7 @@ impl MqttReceiver {
         self.client
             .subscribe(&topic, QoS::AtLeastOnce)
             .await
-            .map_err(|e| TransportError::Network(format!("Failed to subscribe: {}", e)))?;
+            .map_err(|e| TransportError::Network(format!("Failed to subscribe: {e}")))?;
 
         debug!("MQTT subscribed to topic: {} on {}", topic, self.url);
 
@@ -293,10 +302,10 @@ impl MqttReceiver {
         // Payload is base64-encoded WirePayload
         let wire_bytes = BASE64_STANDARD
             .decode(payload)
-            .map_err(|e| TransportError::Serialization(format!("Invalid base64: {}", e)))?;
+            .map_err(|e| TransportError::Serialization(format!("Invalid base64: {e}")))?;
 
         let wire = WirePayload::decode(&wire_bytes)
-            .map_err(|e| TransportError::Serialization(format!("Invalid wire format: {}", e)))?;
+            .map_err(|e| TransportError::Serialization(format!("Invalid wire format: {e}")))?;
 
         match wire {
             WirePayload::Message(envelope) => Ok(envelope),
@@ -351,17 +360,23 @@ impl MultiBrokerReceiver {
         if receivers.is_empty() {
             return Err(TransportError::Network(format!(
                 "Failed to connect to any MQTT brokers: {:?}",
-                errors.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+                errors
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect::<Vec<_>>()
             )));
         }
 
-        Ok(Self { receivers, seen_cache })
+        Ok(Self {
+            receivers,
+            seen_cache,
+        })
     }
 
     /// Create a multi-broker receiver with a shared seen cache.
     ///
     /// Use this when you want to share deduplication state with other components
-    /// (e.g., an MqttTransport that publishes to the same brokers).
+    /// (e.g., an `MqttTransport` that publishes to the same brokers).
     pub async fn with_seen_cache(
         configs: Vec<MqttReceiverConfig>,
         seen_cache: Arc<SharedSeenCache>,
@@ -388,17 +403,31 @@ impl MultiBrokerReceiver {
         if receivers.is_empty() {
             return Err(TransportError::Network(format!(
                 "Failed to connect to any MQTT brokers: {:?}",
-                errors.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+                errors
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect::<Vec<_>>()
             )));
         }
 
-        Ok(Self { receivers, seen_cache })
+        Ok(Self {
+            receivers,
+            seen_cache,
+        })
     }
 
     /// Subscribe to all messages on all brokers.
     ///
     /// Returns a single event receiver that aggregates events from all brokers.
-    pub async fn subscribe_all(self) -> Result<(mpsc::UnboundedReceiver<TransportEvent>, Vec<MqttReceiverHandle>), TransportError> {
+    pub async fn subscribe_all(
+        self,
+    ) -> Result<
+        (
+            mpsc::UnboundedReceiver<TransportEvent>,
+            Vec<MqttReceiverHandle>,
+        ),
+        TransportError,
+    > {
         let (merged_tx, merged_rx) = mpsc::unbounded_channel();
         let mut handles = Vec::with_capacity(self.receivers.len());
 
@@ -425,7 +454,13 @@ impl MultiBrokerReceiver {
     pub async fn subscribe_routing_key(
         self,
         routing_key: &RoutingKey,
-    ) -> Result<(mpsc::UnboundedReceiver<TransportEvent>, Vec<MqttReceiverHandle>), TransportError> {
+    ) -> Result<
+        (
+            mpsc::UnboundedReceiver<TransportEvent>,
+            Vec<MqttReceiverHandle>,
+        ),
+        TransportError,
+    > {
         let (merged_tx, merged_rx) = mpsc::unbounded_channel();
         let mut handles = Vec::with_capacity(self.receivers.len());
 

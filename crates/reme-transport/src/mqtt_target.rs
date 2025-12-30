@@ -9,11 +9,15 @@ use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use reme_message::{OuterEnvelope, RoutingKey, SignedAckTombstone, WirePayload};
-use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS, Transport as MqttTransportType};
+use rumqttc::{
+    AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS, Transport as MqttTransportType,
+};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
-use crate::target::{HealthState, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget};
+use crate::target::{
+    HealthState, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget,
+};
 use crate::url_auth::sanitize_url_for_logging;
 use crate::TransportError;
 
@@ -26,7 +30,7 @@ pub struct MqttTargetConfig {
     /// Base target configuration.
     pub base: TargetConfig,
 
-    /// Broker URL (e.g., "mqtts://broker:8883" or "mqtt://broker:1883").
+    /// Broker URL (e.g., "<mqtts://broker:8883>" or "<mqtt://broker:1883>").
     pub url: String,
 
     /// Client ID (auto-generated if None).
@@ -147,7 +151,7 @@ impl MqttTarget {
                 tokio::select! {
                     biased;
 
-                    _ = shutdown.cancelled() => {
+                    () = shutdown.cancelled() => {
                         debug!("MQTT event loop shutting down for {}", url);
                         break;
                     }
@@ -264,14 +268,21 @@ impl TransportTarget for MqttTarget {
             }
             Err(e) => {
                 self.record_failure(e);
-                warn!("Failed to publish message to {}: {}", self.display_label(), e);
+                warn!(
+                    "Failed to publish message to {}: {}",
+                    self.display_label(),
+                    e
+                );
             }
         }
 
         result
     }
 
-    async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
+    async fn submit_ack_tombstone(
+        &self,
+        tombstone: SignedAckTombstone,
+    ) -> Result<(), TransportError> {
         let start = Instant::now();
 
         // Ack tombstones go to a broadcast topic
@@ -288,7 +299,11 @@ impl TransportTarget for MqttTarget {
             }
             Err(e) => {
                 self.record_failure(e);
-                warn!("Failed to publish ack tombstone to {}: {}", self.display_label(), e);
+                warn!(
+                    "Failed to publish ack tombstone to {}: {}",
+                    self.display_label(),
+                    e
+                );
             }
         }
 
@@ -318,8 +333,7 @@ fn parse_mqtt_url(url: &str) -> Result<ParsedMqttUrl, TransportError> {
 
     if !is_mqtt {
         return Err(TransportError::Network(format!(
-            "Invalid MQTT URL scheme: {}. Expected mqtt:// or mqtts://",
-            url
+            "Invalid MQTT URL scheme: {url}. Expected mqtt:// or mqtts://"
         )));
     }
 
@@ -335,29 +349,27 @@ fn parse_mqtt_url(url: &str) -> Result<ParsedMqttUrl, TransportError> {
             let after_bracket = &rest[bracket_end + 1..];
 
             if let Some(port_str) = after_bracket.strip_prefix(':') {
-                let port: u16 = port_str.parse().map_err(|_| {
-                    TransportError::Network(format!("Invalid port in URL: {}", url))
-                })?;
+                let port: u16 = port_str
+                    .parse()
+                    .map_err(|_| TransportError::Network(format!("Invalid port in URL: {url}")))?;
                 (host, port)
             } else if after_bracket.is_empty() {
                 (host, default_port)
             } else {
                 return Err(TransportError::Network(format!(
-                    "Invalid IPv6 URL format: {}",
-                    url
+                    "Invalid IPv6 URL format: {url}"
                 )));
             }
         } else {
             return Err(TransportError::Network(format!(
-                "Unclosed bracket in IPv6 URL: {}",
-                url
+                "Unclosed bracket in IPv6 URL: {url}"
             )));
         }
     } else if let Some((h, p)) = rest.rsplit_once(':') {
         // IPv4/hostname: host:port
         let port: u16 = p
             .parse()
-            .map_err(|_| TransportError::Network(format!("Invalid port in URL: {}", url)))?;
+            .map_err(|_| TransportError::Network(format!("Invalid port in URL: {url}")))?;
         (h.to_string(), port)
     } else {
         // No port specified, use default

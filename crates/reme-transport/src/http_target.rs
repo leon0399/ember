@@ -14,7 +14,9 @@ use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
-use crate::target::{HealthData, HealthState, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget};
+use crate::target::{
+    HealthData, HealthState, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget,
+};
 use crate::tls::{CertPin, PinningVerifier};
 use crate::url_auth::parse_url_with_auth;
 use crate::TransportError;
@@ -144,7 +146,7 @@ impl HttpTarget {
     async fn submit_payload(&self, payload_b64: &str) -> Result<(), TransportError> {
         // Parse URL and extract credentials if present
         let parsed = parse_url_with_auth(&self.config.url)
-            .map_err(|e| TransportError::Network(format!("Invalid URL: {}", e)))?;
+            .map_err(|e| TransportError::Network(format!("Invalid URL: {e}")))?;
 
         let url = format!("{}/api/v1/submit", parsed.url.trim_end_matches('/'));
 
@@ -178,8 +180,7 @@ impl HttpTarget {
                 .await
                 .unwrap_or_else(|_| "unknown error".to_string());
             return Err(TransportError::ServerError(format!(
-                "HTTP {}: {}",
-                status, body
+                "HTTP {status}: {body}"
             )));
         }
 
@@ -240,7 +241,7 @@ impl HttpTarget {
     ) -> Result<Vec<OuterEnvelope>, TransportError> {
         // Parse URL and extract credentials if present
         let parsed = parse_url_with_auth(&self.config.url)
-            .map_err(|e| TransportError::Network(format!("Invalid URL: {}", e)))?;
+            .map_err(|e| TransportError::Network(format!("Invalid URL: {e}")))?;
 
         let url = format!(
             "{}/api/v1/fetch/{}",
@@ -248,7 +249,10 @@ impl HttpTarget {
             routing_key_b64
         );
 
-        let mut request = self.client.get(&url).timeout(self.config.base.request_timeout);
+        let mut request = self
+            .client
+            .get(&url)
+            .timeout(self.config.base.request_timeout);
 
         // Add Basic Auth if credentials were embedded in URL
         if let Some((username, password)) = parsed.auth {
@@ -273,8 +277,7 @@ impl HttpTarget {
                 .await
                 .unwrap_or_else(|_| "unknown error".to_string());
             return Err(TransportError::ServerError(format!(
-                "HTTP {}: {}",
-                status, body
+                "HTTP {status}: {body}"
             )));
         }
 
@@ -288,10 +291,10 @@ impl HttpTarget {
         for blob in result.payloads {
             let wire_bytes = BASE64_STANDARD
                 .decode(&blob)
-                .map_err(|e| TransportError::Serialization(format!("base64 decode: {}", e)))?;
+                .map_err(|e| TransportError::Serialization(format!("base64 decode: {e}")))?;
 
             let payload = WirePayload::decode(&wire_bytes)
-                .map_err(|e| TransportError::Serialization(format!("wire decode: {}", e)))?;
+                .map_err(|e| TransportError::Serialization(format!("wire decode: {e}")))?;
 
             // Only extract messages (tombstones are handled separately)
             if let WirePayload::Message(envelope) = payload {
@@ -342,14 +345,21 @@ impl TransportTarget for HttpTarget {
             }
             Err(e) => {
                 self.record_failure(e);
-                warn!("Failed to submit message to {}: {}", self.display_label(), e);
+                warn!(
+                    "Failed to submit message to {}: {}",
+                    self.display_label(),
+                    e
+                );
             }
         }
 
         result
     }
 
-    async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
+    async fn submit_ack_tombstone(
+        &self,
+        tombstone: SignedAckTombstone,
+    ) -> Result<(), TransportError> {
         let start = Instant::now();
 
         // Encode as WirePayload
@@ -366,7 +376,11 @@ impl TransportTarget for HttpTarget {
             }
             Err(e) => {
                 self.record_failure(e);
-                warn!("Failed to submit ack tombstone to {}: {}", self.display_label(), e);
+                warn!(
+                    "Failed to submit ack tombstone to {}: {}",
+                    self.display_label(),
+                    e
+                );
             }
         }
 
@@ -392,7 +406,10 @@ impl crate::Transport for HttpTarget {
         <Self as TransportTarget>::submit_message(self, envelope).await
     }
 
-    async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
+    async fn submit_ack_tombstone(
+        &self,
+        tombstone: SignedAckTombstone,
+    ) -> Result<(), TransportError> {
         <Self as TransportTarget>::submit_ack_tombstone(self, tombstone).await
     }
 }
@@ -405,9 +422,9 @@ fn build_target_client(config: &HttpTargetConfig) -> Result<Client, TransportErr
     if has_pin {
         // Extract hostname from URL
         let hostname = extract_hostname(&config.url).ok_or_else(|| {
-            TransportError::TlsConfig(format!(
-                "Could not extract hostname from URL to apply certificate pin"
-            ))
+            TransportError::TlsConfig(
+                "Could not extract hostname from URL to apply certificate pin".to_string(),
+            )
         })?;
 
         // Create pins map with single entry
@@ -417,15 +434,15 @@ fn build_target_client(config: &HttpTargetConfig) -> Result<Client, TransportErr
         }
 
         // Create pinning verifier
-        let verifier = PinningVerifier::new(pins)
-            .map_err(|e| TransportError::TlsConfig(e.to_string()))?;
+        let verifier =
+            PinningVerifier::new(pins).map_err(|e| TransportError::TlsConfig(e.to_string()))?;
 
         // Build rustls client config with custom verifier
         let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
             rustls::crypto::ring::default_provider(),
         ))
         .with_safe_default_protocol_versions()
-        .map_err(|e| TransportError::TlsConfig(format!("Failed to set protocol versions: {}", e)))?
+        .map_err(|e| TransportError::TlsConfig(format!("Failed to set protocol versions: {e}")))?
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(verifier))
         .with_no_client_auth();
@@ -451,7 +468,7 @@ fn build_target_client(config: &HttpTargetConfig) -> Result<Client, TransportErr
 fn extract_hostname(url_str: &str) -> Option<String> {
     url::Url::parse(url_str)
         .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .and_then(|u| u.host_str().map(std::string::ToString::to_string))
 }
 
 /// Sanitize URL for logging (remove credentials).
