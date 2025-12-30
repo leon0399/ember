@@ -158,7 +158,9 @@ impl TransportRetryPolicy {
             return Duration::ZERO;
         }
 
-        let multiplier = self.backoff_multiplier.powi(attempt.saturating_sub(1) as i32);
+        let multiplier = self
+            .backoff_multiplier
+            .powi(attempt.saturating_sub(1) as i32);
         let delay_ms = self.initial_delay.as_millis() as f32 * multiplier;
         let delay = Duration::from_millis(delay_ms as u64);
 
@@ -167,7 +169,7 @@ impl TransportRetryPolicy {
 
     /// Check if we should give up after the given number of attempts.
     pub fn should_give_up(&self, attempts: u32) -> bool {
-        self.max_attempts.map(|max| attempts >= max).unwrap_or(false)
+        self.max_attempts.is_some_and(|max| attempts >= max)
     }
 }
 

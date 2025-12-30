@@ -54,8 +54,8 @@ use cleanup::run_cleanup_task;
 use config::{default_identity_path, load_config};
 use mqtt_bridge::MqttBridge;
 use node_identity::NodeIdentity;
-use reme_node_core::{PersistentMailboxStore, PersistentStoreConfig};
 use rate_limit::RateLimiters;
+use reme_node_core::{PersistentMailboxStore, PersistentStoreConfig};
 use replication::ReplicationClient;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -127,29 +127,29 @@ async fn main() {
     let subscriber = FmtSubscriber::builder().with_max_level(log_level).finish();
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    info!("Starting Branch Messenger Node v{}", env!("CARGO_PKG_VERSION"));
+    info!(
+        "Starting Branch Messenger Node v{}",
+        env!("CARGO_PKG_VERSION")
+    );
 
     // Load or generate node identity
     let identity_path = config.identity_path.clone().or_else(default_identity_path);
-    let identity = match identity_path {
-        Some(path) => {
-            info!("Identity path: {}", path.display());
-            match NodeIdentity::load_or_generate(&path) {
-                Ok(id) => {
-                    info!("Node ID: {}", id.node_id());
-                    Some(Arc::new(id))
-                }
-                Err(e) => {
-                    error!("Failed to load/generate node identity: {}", e);
-                    std::process::exit(1);
-                }
+    let identity = if let Some(path) = identity_path {
+        info!("Identity path: {}", path.display());
+        match NodeIdentity::load_or_generate(&path) {
+            Ok(id) => {
+                info!("Node ID: {}", id.node_id());
+                Some(Arc::new(id))
+            }
+            Err(e) => {
+                error!("Failed to load/generate node identity: {}", e);
+                std::process::exit(1);
             }
         }
-        None => {
-            warn!("No identity path configured and default location unavailable");
-            warn!("Node will run without cryptographic identity (signatures disabled)");
-            None
-        }
+    } else {
+        warn!("No identity path configured and default location unavailable");
+        warn!("Node will run without cryptographic identity (signatures disabled)");
+        None
     };
 
     // Log public host configuration for signature verification
@@ -167,7 +167,10 @@ async fn main() {
     info!("Default TTL: {} seconds", config.default_ttl);
 
     // Determine storage path (default: :memory:)
-    let storage_path = config.storage_path.clone().unwrap_or_else(|| ":memory:".to_string());
+    let storage_path = config
+        .storage_path
+        .clone()
+        .unwrap_or_else(|| ":memory:".to_string());
 
     if storage_path == ":memory:" {
         info!("Using in-memory storage (data will not persist across restarts)");
@@ -187,7 +190,7 @@ async fn main() {
     // Create store
     let store_config = PersistentStoreConfig {
         max_messages_per_mailbox: config.max_messages,
-        default_ttl_secs: config.default_ttl as u64,
+        default_ttl_secs: u64::from(config.default_ttl),
     };
 
     let store = match PersistentMailboxStore::open(&storage_path, store_config) {
@@ -343,13 +346,19 @@ async fn main() {
 
         let local_addr = listener.local_addr().unwrap_or_else(|_| {
             // Fallback: parse the config address for logging
-            config.bind_addr.parse().unwrap_or_else(|_| {
-                SocketAddr::from(([127, 0, 0, 1], 23003))
-            })
+            config
+                .bind_addr
+                .parse()
+                .unwrap_or_else(|_| SocketAddr::from(([127, 0, 0, 1], 23003)))
         });
         info!("Node listening on http://{}", local_addr);
 
-        if let Err(e) = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await {
+        if let Err(e) = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        {
             error!("Server failed: {}", e);
             std::process::exit(1);
         }

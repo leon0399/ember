@@ -171,9 +171,9 @@ impl TransportCoordinator {
 
     /// Check if any transport pools are available.
     pub fn has_transports(&self) -> bool {
-        let has_http = self.http_pool.as_ref().map_or(false, |p| p.has_available());
+        let has_http = self.http_pool.as_ref().is_some_and(|p| p.has_available());
         #[cfg(feature = "mqtt")]
-        let has_mqtt = self.mqtt_pool.as_ref().map_or(false, |p| p.has_available());
+        let has_mqtt = self.mqtt_pool.as_ref().is_some_and(|p| p.has_available());
         #[cfg(not(feature = "mqtt"))]
         let has_mqtt = false;
 
@@ -209,12 +209,7 @@ impl TransportCoordinator {
 
         // Spawn HTTP polling if available
         if let Some(ref pool) = self.http_pool {
-            self.spawn_http_receiver(
-                pool.clone(),
-                routing_key.clone(),
-                tx.clone(),
-                cancel_token.clone(),
-            );
+            self.spawn_http_receiver(pool.clone(), routing_key, tx.clone(), cancel_token.clone());
         }
 
         // MQTT subscription would be added here when MqttTarget supports receiving
@@ -248,7 +243,7 @@ impl TransportCoordinator {
 
             loop {
                 tokio::select! {
-                    _ = cancel_token.cancelled() => {
+                    () = cancel_token.cancelled() => {
                         debug!("Coordinator: HTTP polling cancelled");
                         break;
                     }
@@ -281,10 +276,7 @@ impl TransportCoordinator {
     }
 
     /// Submit a message using the configured routing strategy.
-    async fn submit_with_strategy(
-        &self,
-        envelope: OuterEnvelope,
-    ) -> Result<(), TransportError> {
+    async fn submit_with_strategy(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
         match self.config.routing_strategy {
             RoutingStrategy::BroadcastAll => self.broadcast_message(envelope).await,
             RoutingStrategy::DirectFirst => self.direct_first_message(envelope).await,
@@ -301,22 +293,20 @@ impl TransportCoordinator {
         if let Some(ref pool) = self.http_pool {
             let env = envelope.clone();
             let pool = pool.clone();
-            futures.push(Box::pin(async move {
-                pool.submit_message(env).await
-            }));
+            futures.push(Box::pin(async move { pool.submit_message(env).await }));
         }
 
         #[cfg(feature = "mqtt")]
         if let Some(ref pool) = self.mqtt_pool {
             let env = envelope.clone();
             let pool = pool.clone();
-            futures.push(Box::pin(async move {
-                pool.submit_message(env).await
-            }));
+            futures.push(Box::pin(async move { pool.submit_message(env).await }));
         }
 
         if futures.is_empty() {
-            return Err(TransportError::Network("No transports configured".to_string()));
+            return Err(TransportError::Network(
+                "No transports configured".to_string(),
+            ));
         }
 
         self.broadcast_await_any_success(futures).await
@@ -354,7 +344,9 @@ impl TransportCoordinator {
         if let Some(ref pool) = self.http_pool {
             pool.submit_message(envelope).await
         } else {
-            Err(TransportError::Network("No HTTP transport configured".to_string()))
+            Err(TransportError::Network(
+                "No HTTP transport configured".to_string(),
+            ))
         }
     }
 
@@ -364,7 +356,9 @@ impl TransportCoordinator {
         if let Some(ref pool) = self.mqtt_pool {
             pool.submit_message(envelope).await
         } else {
-            Err(TransportError::Network("No MQTT transport configured".to_string()))
+            Err(TransportError::Network(
+                "No MQTT transport configured".to_string(),
+            ))
         }
     }
 
@@ -381,21 +375,30 @@ impl TransportCoordinator {
         let results = join_all(futures).await;
 
         let success_count = results.iter().filter(|r| r.is_ok()).count();
-        let errors: Vec<_> = results.into_iter().filter_map(|r| r.err()).collect();
+        let errors: Vec<_> = results
+            .into_iter()
+            .filter_map(std::result::Result::err)
+            .collect();
 
         if success_count > 0 {
             trace!("Broadcast succeeded on {} transport(s)", success_count);
             if !errors.is_empty() {
                 warn!(
                     "Some transports failed: {:?}",
-                    errors.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+                    errors
+                        .iter()
+                        .map(std::string::ToString::to_string)
+                        .collect::<Vec<_>>()
                 );
             }
             Ok(())
         } else {
             Err(TransportError::Network(format!(
                 "All transports failed: {:?}",
-                errors.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+                errors
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect::<Vec<_>>()
             )))
         }
     }
@@ -510,7 +513,11 @@ impl TransportCoordinator {
 
             futures.push(async move {
                 let start = Instant::now();
-                let result = timeout(tier_timeout, TransportTarget::submit_message(&*target_clone, envelope_clone)).await;
+                let result = timeout(
+                    tier_timeout,
+                    TransportTarget::submit_message(&*target_clone, envelope_clone),
+                )
+                .await;
                 let latency = start.elapsed();
                 (target_id, result, latency)
             });
@@ -529,11 +536,7 @@ impl TransportCoordinator {
                     return tier_result;
                 }
                 Ok(Err(e)) => {
-                    tier_result.push(TargetResult::failed(
-                        target_id,
-                        DeliveryTier::Direct,
-                        e,
-                    ));
+                    tier_result.push(TargetResult::failed(target_id, DeliveryTier::Direct, e));
                 }
                 Err(_) => {
                     tier_result.push(TargetResult::timeout(target_id, DeliveryTier::Direct));
@@ -566,7 +569,8 @@ impl TransportCoordinator {
         target_ids: &[TargetId],
         config: &TieredDeliveryConfig,
     ) -> TierResult {
-        self.submit_to_quorum_targets(envelope, config, Some(target_ids)).await
+        self.submit_to_quorum_targets(envelope, config, Some(target_ids))
+            .await
     }
 
     /// Submit envelope to Quorum tier targets (HTTP stable + MQTT) in parallel.
@@ -586,7 +590,8 @@ impl TransportCoordinator {
         let tier_timeout = config.quorum_tier_timeout;
 
         // Collect HTTP stable targets
-        let http_targets: Vec<Arc<HttpTarget>> = self.http_pool
+        let http_targets: Vec<Arc<HttpTarget>> = self
+            .http_pool
             .as_ref()
             .map(|pool| {
                 pool.targets_by_kind(TargetKind::Stable)
@@ -594,7 +599,7 @@ impl TransportCoordinator {
                     .filter(|t| {
                         !config.is_excluded(t.id())
                             && t.is_available()
-                            && filter_ids.map_or(true, |ids| ids.contains(t.id()))
+                            && filter_ids.is_none_or(|ids| ids.contains(t.id()))
                     })
                     .collect()
             })
@@ -602,7 +607,8 @@ impl TransportCoordinator {
 
         // Collect MQTT targets
         #[cfg(feature = "mqtt")]
-        let mqtt_targets: Vec<Arc<MqttTarget>> = self.mqtt_pool
+        let mqtt_targets: Vec<Arc<MqttTarget>> = self
+            .mqtt_pool
             .as_ref()
             .map(|pool| {
                 pool.all_targets()
@@ -610,7 +616,7 @@ impl TransportCoordinator {
                     .filter(|t| {
                         !config.is_excluded(t.id())
                             && t.is_available()
-                            && filter_ids.map_or(true, |ids| ids.contains(t.id()))
+                            && filter_ids.is_none_or(|ids| ids.contains(t.id()))
                     })
                     .collect()
             })
@@ -624,7 +630,8 @@ impl TransportCoordinator {
                 let env = envelope.clone();
                 async move {
                     let start = Instant::now();
-                    let result = timeout(tier_timeout, TransportTarget::submit_message(&*target, env)).await;
+                    let result =
+                        timeout(tier_timeout, TransportTarget::submit_message(&*target, env)).await;
                     let latency = start.elapsed();
                     // Map timeout to TransportError::Timeout
                     let mapped = match result {
@@ -752,14 +759,13 @@ pub struct CoordinatorHealth {
 impl CoordinatorHealth {
     /// Check if any transport has healthy targets.
     pub fn has_healthy(&self) -> bool {
-        self.http.as_ref().map_or(false, |h| h.healthy > 0)
-            || self.mqtt.as_ref().map_or(false, |h| h.healthy > 0)
+        self.http.as_ref().is_some_and(|h| h.healthy > 0)
+            || self.mqtt.as_ref().is_some_and(|h| h.healthy > 0)
     }
 
     /// Get total healthy target count.
     pub fn total_healthy(&self) -> usize {
-        self.http.as_ref().map_or(0, |h| h.healthy)
-            + self.mqtt.as_ref().map_or(0, |h| h.healthy)
+        self.http.as_ref().map_or(0, |h| h.healthy) + self.mqtt.as_ref().map_or(0, |h| h.healthy)
     }
 }
 
@@ -769,29 +775,30 @@ impl Transport for TransportCoordinator {
         self.submit_with_strategy(envelope).await
     }
 
-    async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
+    async fn submit_ack_tombstone(
+        &self,
+        tombstone: SignedAckTombstone,
+    ) -> Result<(), TransportError> {
         // Broadcast ack tombstone to all available transports
         let mut futures: Vec<BoxedFuture> = Vec::new();
 
         if let Some(ref pool) = self.http_pool {
             let ts = tombstone.clone();
             let pool = pool.clone();
-            futures.push(Box::pin(async move {
-                pool.submit_ack_tombstone(ts).await
-            }));
+            futures.push(Box::pin(async move { pool.submit_ack_tombstone(ts).await }));
         }
 
         #[cfg(feature = "mqtt")]
         if let Some(ref pool) = self.mqtt_pool {
             let ts = tombstone.clone();
             let pool = pool.clone();
-            futures.push(Box::pin(async move {
-                pool.submit_ack_tombstone(ts).await
-            }));
+            futures.push(Box::pin(async move { pool.submit_ack_tombstone(ts).await }));
         }
 
         if futures.is_empty() {
-            return Err(TransportError::Network("No transports configured".to_string()));
+            return Err(TransportError::Network(
+                "No transports configured".to_string(),
+            ));
         }
 
         self.broadcast_await_any_success(futures).await
@@ -867,10 +874,16 @@ mod tests {
     #[test]
     fn test_routing_strategy_change() {
         let mut coordinator = TransportCoordinator::with_defaults();
-        assert_eq!(coordinator.config.routing_strategy, RoutingStrategy::BroadcastAll);
+        assert_eq!(
+            coordinator.config.routing_strategy,
+            RoutingStrategy::BroadcastAll
+        );
 
         coordinator.set_routing_strategy(RoutingStrategy::DirectFirst);
-        assert_eq!(coordinator.config.routing_strategy, RoutingStrategy::DirectFirst);
+        assert_eq!(
+            coordinator.config.routing_strategy,
+            RoutingStrategy::DirectFirst
+        );
     }
 
     // ========================================================================
@@ -914,7 +927,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tiered_submit_empty_coordinator() {
-        use reme_message::{OuterEnvelope, RoutingKey, MessageID, CURRENT_VERSION};
+        use reme_message::{MessageID, OuterEnvelope, RoutingKey, CURRENT_VERSION};
 
         let coordinator = TransportCoordinator::with_defaults();
         let config = TieredDeliveryConfig::default();
@@ -941,7 +954,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_direct_tier_empty() {
-        use reme_message::{OuterEnvelope, RoutingKey, MessageID, CURRENT_VERSION};
+        use reme_message::{MessageID, OuterEnvelope, RoutingKey, CURRENT_VERSION};
 
         let coordinator = TransportCoordinator::with_defaults();
         let config = TieredDeliveryConfig::default();
@@ -966,7 +979,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_quorum_tier_empty() {
-        use reme_message::{OuterEnvelope, RoutingKey, MessageID, CURRENT_VERSION};
+        use reme_message::{MessageID, OuterEnvelope, RoutingKey, CURRENT_VERSION};
 
         let coordinator = TransportCoordinator::with_defaults();
         let config = TieredDeliveryConfig::default();

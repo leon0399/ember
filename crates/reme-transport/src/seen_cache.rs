@@ -205,7 +205,7 @@ impl SharedSeenCache {
         self.0
             .lock()
             .expect("SeenCache lock poisoned")
-            .mark(message_id)
+            .mark(message_id);
     }
 
     /// Get the current number of entries.
@@ -220,7 +220,7 @@ impl SharedSeenCache {
 
     /// Clear all entries.
     pub fn clear(&self) {
-        self.0.lock().expect("SeenCache lock poisoned").clear()
+        self.0.lock().expect("SeenCache lock poisoned").clear();
     }
 }
 

@@ -21,12 +21,12 @@ use axum::{
 use base64::prelude::*;
 use reme_encryption::derive_ack_secret;
 use reme_identity::{is_low_order_point, Identity};
-use subtle::ConstantTimeEq;
 use reme_message::{MessageID, OuterEnvelope, RoutingKey, WirePayload};
 use reme_node_core::{EmbeddedNodeHandle, NodeError};
 use serde::Serialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing::{debug, error, info, warn};
@@ -68,7 +68,13 @@ impl IntoResponse for ApiError {
             ),
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
-        (status, Json(ErrorResponse { error: error_message })).into_response()
+        (
+            status,
+            Json(ErrorResponse {
+                error: error_message,
+            }),
+        )
+            .into_response()
     }
 }
 
@@ -361,9 +367,9 @@ pub async fn bind_server(
     let state = Arc::new(HttpServerState::new(node_handle, our_routing_key, identity));
     let app = build_router(state);
 
-    let listener = TcpListener::bind(socket_addr).await.map_err(|e| {
-        HttpServerError::BindFailed(bind_addr.to_string(), e)
-    })?;
+    let listener = TcpListener::bind(socket_addr)
+        .await
+        .map_err(|e| HttpServerError::BindFailed(bind_addr.to_string(), e))?;
 
     Ok((listener, app))
 }
@@ -406,7 +412,9 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use reme_encryption::encrypt_to_mik;
-    use reme_message::{Content, InnerEnvelope, MessageID, OuterEnvelope, TextContent, CURRENT_VERSION};
+    use reme_message::{
+        Content, InnerEnvelope, MessageID, OuterEnvelope, TextContent, CURRENT_VERSION,
+    };
     use reme_node_core::{EmbeddedNode, PersistentMailboxStore, PersistentStoreConfig};
     use tower::ServiceExt;
 
@@ -447,13 +455,8 @@ mod tests {
         };
 
         let message_id = MessageID::new();
-        let enc_output = encrypt_to_mik(
-            &inner,
-            recipient_pubkey,
-            &message_id,
-            &sender.to_bytes(),
-        )
-        .expect("Encryption failed");
+        let enc_output = encrypt_to_mik(&inner, recipient_pubkey, &message_id, &sender.to_bytes())
+            .expect("Encryption failed");
 
         let mut envelope = OuterEnvelope::new(
             recipient_pubkey.routing_key(),
@@ -476,7 +479,11 @@ mod tests {
         // Create identity for the embedded node
         let identity = Identity::generate();
         let our_routing_key = identity.public_id().routing_key();
-        let state = Arc::new(HttpServerState::new(handle, our_routing_key, Arc::new(identity)));
+        let state = Arc::new(HttpServerState::new(
+            handle,
+            our_routing_key,
+            Arc::new(identity),
+        ));
         let app = build_router(state);
 
         // Create envelope for us (with zeroed ephemeral key - no ack_secret)
@@ -508,7 +515,11 @@ mod tests {
         let identity = Identity::generate();
         let our_routing_key = identity.public_id().routing_key();
         let wrong_routing_key = RoutingKey::from_bytes([99u8; 16]);
-        let state = Arc::new(HttpServerState::new(handle, our_routing_key, Arc::new(identity)));
+        let state = Arc::new(HttpServerState::new(
+            handle,
+            our_routing_key,
+            Arc::new(identity),
+        ));
         let app = build_router(state);
 
         // Create envelope for someone else
@@ -541,7 +552,11 @@ mod tests {
 
         let identity = Identity::generate();
         let our_routing_key = identity.public_id().routing_key();
-        let state = Arc::new(HttpServerState::new(handle, our_routing_key, Arc::new(identity)));
+        let state = Arc::new(HttpServerState::new(
+            handle,
+            our_routing_key,
+            Arc::new(identity),
+        ));
         let app = build_router(state);
 
         // Create tombstone (V2)
@@ -577,7 +592,11 @@ mod tests {
 
         let identity = Identity::generate();
         let our_routing_key = identity.public_id().routing_key();
-        let state = Arc::new(HttpServerState::new(handle, our_routing_key, Arc::new(identity)));
+        let state = Arc::new(HttpServerState::new(
+            handle,
+            our_routing_key,
+            Arc::new(identity),
+        ));
         let app = build_router(state);
 
         let response = app
@@ -602,7 +621,11 @@ mod tests {
 
         let identity = Identity::generate();
         let our_routing_key = identity.public_id().routing_key();
-        let state = Arc::new(HttpServerState::new(handle, our_routing_key, Arc::new(identity)));
+        let state = Arc::new(HttpServerState::new(
+            handle,
+            our_routing_key,
+            Arc::new(identity),
+        ));
         let app = build_router(state);
 
         // Create envelope for us with a fixed message ID
@@ -726,7 +749,11 @@ mod tests {
 
         let identity = Identity::generate();
         let our_routing_key = identity.public_id().routing_key();
-        let state = Arc::new(HttpServerState::new(handle, our_routing_key, Arc::new(identity)));
+        let state = Arc::new(HttpServerState::new(
+            handle,
+            our_routing_key,
+            Arc::new(identity),
+        ));
         let app = build_router(state);
 
         // Create envelope with low-order ephemeral key (zeroed = low-order point)
@@ -757,8 +784,7 @@ mod tests {
 
         // Should NOT have ack_secret (low-order point rejected)
         assert!(
-            response_json.get("ack_secret").is_none()
-                || response_json["ack_secret"].is_null(),
+            response_json.get("ack_secret").is_none() || response_json["ack_secret"].is_null(),
             "Low-order ephemeral key should NOT produce ack_secret"
         );
     }
@@ -832,8 +858,7 @@ mod tests {
         let response_json2: serde_json::Value =
             serde_json::from_slice(&body_bytes2).expect("Invalid JSON");
         assert!(
-            response_json2.get("ack_secret").is_none()
-                || response_json2["ack_secret"].is_null(),
+            response_json2.get("ack_secret").is_none() || response_json2["ack_secret"].is_null(),
             "Duplicate submit should NOT return ack_secret"
         );
     }

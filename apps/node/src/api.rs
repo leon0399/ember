@@ -7,10 +7,8 @@
 use crate::mqtt_bridge::MqttBridge;
 use crate::node_identity::NodeIdentity;
 use crate::rate_limit::{KeyedLimiter, RateLimiters};
-use reme_node_core::{MailboxStore, NodeError, PersistentMailboxStore};
 use crate::replication::ReplicationClient;
 use crate::signed_headers::{SignatureError, SignatureVerifier, HEADER_NODE_SIGNATURE};
-use reme_identity::PublicID;
 use axum::{
     body::Bytes,
     extract::{DefaultBodyLimit, Path, Request, State},
@@ -23,7 +21,9 @@ use axum::{
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
 use reme_encryption::derive_ack_secret;
+use reme_identity::PublicID;
 use reme_message::{OuterEnvelope, RoutingKey, WirePayload};
+use reme_node_core::{MailboxStore, NodeError, PersistentMailboxStore};
 use serde::Serialize;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
@@ -111,9 +111,7 @@ async fn check_basic_auth(
     };
 
     // Parse "Basic <base64>" header
-    let auth_str = auth_header
-        .to_str()
-        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let auth_str = auth_header.to_str().map_err(|_| StatusCode::UNAUTHORIZED)?;
 
     if !auth_str.starts_with("Basic ") {
         return Err(StatusCode::UNAUTHORIZED);
@@ -176,9 +174,7 @@ impl RequestSource {
     /// Get a string representation for logging/replication
     pub fn to_from_node_string(&self) -> Option<String> {
         match self {
-            RequestSource::VerifiedNode(pubkey) => {
-                Some(crate::node_identity::node_id_hex(pubkey))
-            }
+            RequestSource::VerifiedNode(pubkey) => Some(crate::node_identity::node_id_hex(pubkey)),
             RequestSource::Client => None,
         }
     }
@@ -275,12 +271,13 @@ fn identify_request_source(
     // Check if signed headers are present
     if headers.contains_key(HEADER_NODE_SIGNATURE) {
         // Signed headers present - must verify
-        let verifier = SignatureVerifier::new(
-            state.public_host.as_deref(),
-            &state.additional_hosts,
-        );
+        let verifier =
+            SignatureVerifier::new(state.public_host.as_deref(), &state.additional_hosts);
         let public_id = verifier.verify(headers, method, path, body)?;
-        debug!("Verified signed request from node {}", crate::node_identity::node_id_hex(&public_id));
+        debug!(
+            "Verified signed request from node {}",
+            crate::node_identity::node_id_hex(&public_id)
+        );
         return Ok(RequestSource::VerifiedNode(public_id));
     }
 
@@ -340,11 +337,7 @@ async fn submit_payload(
         Ok(result) => result,
         Err(e) => {
             error!("Failed to parse wire payload: {}", e);
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse { error: e }),
-            )
-                .into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
 
@@ -403,12 +396,26 @@ async fn submit_payload(
                     // This ensures message is deleted across all nodes in the cluster
                     state.replication.replicate_payload(payload_b64, from_node);
 
-                    (StatusCode::OK, Json(SubmitResponse { status: "ok", ack_secret: None })).into_response()
+                    (
+                        StatusCode::OK,
+                        Json(SubmitResponse {
+                            status: "ok",
+                            ack_secret: None,
+                        }),
+                    )
+                        .into_response()
                 }
                 Ok(false) => {
                     // Message was already deleted (race condition, not an error)
                     // Don't replicate - this is likely a replicated tombstone arriving
-                    (StatusCode::OK, Json(SubmitResponse { status: "ok", ack_secret: None })).into_response()
+                    (
+                        StatusCode::OK,
+                        Json(SubmitResponse {
+                            status: "ok",
+                            ack_secret: None,
+                        }),
+                    )
+                        .into_response()
                 }
                 Err(e) => {
                     error!("Failed to delete message: {}", e);
@@ -437,7 +444,10 @@ async fn handle_message(
         debug!("Rejecting message from ourselves (loop prevention)");
         return (
             StatusCode::OK,
-            Json(SubmitResponse { status: "ok", ack_secret: None }),
+            Json(SubmitResponse {
+                status: "ok",
+                ack_secret: None,
+            }),
         )
             .into_response();
     }
@@ -456,7 +466,10 @@ async fn handle_message(
         // Use URL-safe base64 of routing key as the rate limit key
         let key = URL_SAFE_NO_PAD.encode(routing_key.as_bytes());
         if limiter.check_key(&key).is_err() {
-            debug!("Rate limited submit for routing key {:?}", &routing_key[..4]);
+            debug!(
+                "Rate limited submit for routing key {:?}",
+                &routing_key[..4]
+            );
             return (
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(ErrorResponse {
@@ -471,7 +484,13 @@ async fn handle_message(
     match state.store.has_message(&routing_key, &message_id) {
         Ok(true) => {
             debug!("Duplicate message {:?}, skipping", message_id);
-            return (StatusCode::OK, Json(SubmitResponse { status: "ok", ack_secret: None }))
+            return (
+                StatusCode::OK,
+                Json(SubmitResponse {
+                    status: "ok",
+                    ack_secret: None,
+                }),
+            )
                 .into_response();
         }
         Ok(false) => {}
@@ -479,7 +498,9 @@ async fn handle_message(
             error!("Failed to check message existence: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse { error: e.to_string() }),
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
             )
                 .into_response();
         }
@@ -487,7 +508,7 @@ async fn handle_message(
 
     // Enqueue
     match state.store.enqueue(routing_key, envelope) {
-        Ok(_) => {
+        Ok(()) => {
             debug!("Message enqueued for {:?}", &routing_key[..4]);
 
             // Trigger replication to peers (fire-and-forget)
@@ -503,7 +524,14 @@ async fn handle_message(
                 });
             }
 
-            (StatusCode::OK, Json(SubmitResponse { status: "ok", ack_secret })).into_response()
+            (
+                StatusCode::OK,
+                Json(SubmitResponse {
+                    status: "ok",
+                    ack_secret,
+                }),
+            )
+                .into_response()
         }
         Err(e) => {
             error!("Failed to enqueue message: {}", e);
@@ -511,7 +539,13 @@ async fn handle_message(
                 NodeError::MailboxFull => StatusCode::INSUFFICIENT_STORAGE,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
-            (status, Json(ErrorResponse { error: e.to_string() })).into_response()
+            (
+                status,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response()
         }
     }
 }

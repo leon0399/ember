@@ -61,9 +61,12 @@ pub fn bincode_config() -> impl bincode::config::Config {
 
 pub use tombstone::{
     // Tombstone V2 (signed ack)
-    Attribution, SignedAckTombstone,
+    Attribution,
+    SignedAckTombstone,
     // Constants
-    ACK_HASH_DOMAIN, CLOCK_SKEW_ALLOWANCE_HOURS, TOMBSTONE_MAX_AGE_HOURS,
+    ACK_HASH_DOMAIN,
+    CLOCK_SKEW_ALLOWANCE_HOURS,
+    TOMBSTONE_MAX_AGE_HOURS,
 };
 pub use wire::{WirePayload, WireType};
 
@@ -168,7 +171,6 @@ pub struct OuterEnvelope {
     pub ephemeral_key: [u8; 32],
 
     // ===== Tombstone V2: Ack Hash =====
-
     /// Ack hash (16 bytes) for tombstone authorization.
     /// Computed as BLAKE3(ack_secret)[0..16] where
     /// ack_secret = BLAKE3_KDF("reme-ack-v1", shared_secret || message_id).
@@ -207,7 +209,7 @@ impl OuterEnvelope {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        bincode::encode_to_vec(&self, bincode::config::standard()).unwrap()
+        bincode::encode_to_vec(self, bincode::config::standard()).unwrap()
     }
 }
 
@@ -231,7 +233,6 @@ pub struct InnerEnvelope {
     // =============================================
     // Merkle DAG fields for message ordering
     // =============================================
-
     /// My previous message's content_id (per-sender continuity).
     /// None for first message in conversation or detached messages.
     pub prev_self: Option<ContentId>,
@@ -286,9 +287,8 @@ impl InnerEnvelope {
         hasher.update(&self.created_at_ms.to_le_bytes());
 
         // Content
-        let content_bytes =
-            bincode::encode_to_vec(&self.content, bincode::config::standard())
-                .expect("content serialization");
+        let content_bytes = bincode::encode_to_vec(&self.content, bincode::config::standard())
+            .expect("content serialization");
         hasher.update(&content_bytes);
 
         // Truncate to 8 bytes - safe for BLAKE3 (XOF design)

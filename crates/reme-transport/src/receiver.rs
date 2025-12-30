@@ -141,7 +141,7 @@ async fn polling_loop(
 
     loop {
         tokio::select! {
-            _ = cancel_token.cancelled() => {
+            () = cancel_token.cancelled() => {
                 debug!("Message polling cancelled for routing key {:?}", &routing_key[..4]);
                 break;
             }

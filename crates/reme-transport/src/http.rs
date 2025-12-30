@@ -329,7 +329,6 @@ impl HttpTransport {
             Err(last_error.unwrap_or(TransportError::Network("All nodes failed".to_string())))
         }
     }
-
 }
 
 #[async_trait]
@@ -386,7 +385,10 @@ impl Transport for HttpTransport {
     /// Submit ack tombstone to all configured nodes (broadcast)
     ///
     /// Returns success if ANY node accepts the tombstone.
-    async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
+    async fn submit_ack_tombstone(
+        &self,
+        tombstone: SignedAckTombstone,
+    ) -> Result<(), TransportError> {
         // Encode as WirePayload (includes type discriminator)
         let wire_payload = WirePayload::AckTombstone(tombstone);
         let wire_bytes = wire_payload.encode();
@@ -414,7 +416,10 @@ impl Transport for HttpTransport {
                     success_count += 1;
                 }
                 Err(e) => {
-                    warn!("Failed to submit ack tombstone to node {}: {}", self.base_urls[i], e);
+                    warn!(
+                        "Failed to submit ack tombstone to node {}: {}",
+                        self.base_urls[i], e
+                    );
                     last_error = Some(e);
                 }
             }
@@ -435,7 +440,9 @@ impl Transport for HttpTransport {
 
 /// Extract hostname from URL for pin lookup.
 fn extract_hostname(url_str: &str) -> Option<String> {
-    Url::parse(url_str).ok().and_then(|u| u.host_str().map(|h| h.to_string()))
+    Url::parse(url_str)
+        .ok()
+        .and_then(|u| u.host_str().map(std::string::ToString::to_string))
 }
 
 /// Sanitize URL for logging (remove credentials).
@@ -450,8 +457,8 @@ fn sanitize_url_for_log(url_str: &str) -> String {
 /// Build a reqwest client with TLS certificate pinning.
 fn build_pinning_client(pins: HashMap<String, CertPin>) -> Result<Client, TransportError> {
     // Create pinning verifier (empty pins map = standard verification only)
-    let verifier = PinningVerifier::new(pins)
-        .map_err(|e| TransportError::TlsConfig(e.to_string()))?;
+    let verifier =
+        PinningVerifier::new(pins).map_err(|e| TransportError::TlsConfig(e.to_string()))?;
 
     // Build rustls client config with custom verifier.
     // Use ring as the crypto provider explicitly.
@@ -555,7 +562,8 @@ mod tests {
 
     #[test]
     fn test_with_nodes_config_with_pins() {
-        let pin = CertPin::parse("spki//sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").unwrap();
+        let pin =
+            CertPin::parse("spki//sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").unwrap();
         let nodes = vec![NodeSpec {
             url: "https://example.com".to_string(),
             cert_pin: Some(pin),

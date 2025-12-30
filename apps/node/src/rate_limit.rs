@@ -31,7 +31,7 @@ impl KeyExtractor for RoutingKeyExtractor {
     fn extract<B>(&self, req: &Request<B>) -> Result<Self::Key, GovernorError> {
         let path = req.uri().path();
         path.strip_prefix("/api/v1/fetch/")
-            .map(|key| key.to_string())
+            .map(std::string::ToString::to_string)
             .ok_or(GovernorError::UnableToExtractKey)
     }
 }
@@ -70,7 +70,10 @@ impl RateLimiters {
     }
 
     /// Apply submit endpoint IP rate limiting to a router.
-    pub fn apply_submit_ip<S: Clone + Send + Sync + 'static>(&self, router: Router<S>) -> Router<S> {
+    pub fn apply_submit_ip<S: Clone + Send + Sync + 'static>(
+        &self,
+        router: Router<S>,
+    ) -> Router<S> {
         if let Some(ref config) = self.submit_ip_config {
             router.layer(GovernorLayer::new(Arc::clone(config)))
         } else {
@@ -109,7 +112,7 @@ fn make_ip_config(rps: u32, burst: u32) -> Option<Arc<IpGovernorConfig>> {
     let burst = if burst == 0 { rps } else { burst };
     Some(Arc::new(
         GovernorConfigBuilder::default()
-            .per_second(rps as u64)
+            .per_second(u64::from(rps))
             .burst_size(burst)
             .key_extractor(SmartIpKeyExtractor)
             .use_headers()
@@ -127,7 +130,7 @@ fn make_fetch_key_config(rps: u32, burst: u32) -> Option<Arc<RoutingKeyGovernorC
     let burst = if burst == 0 { rps } else { burst };
     Some(Arc::new(
         GovernorConfigBuilder::default()
-            .per_second(rps as u64)
+            .per_second(u64::from(rps))
             .burst_size(burst)
             .key_extractor(RoutingKeyExtractor)
             .use_headers()

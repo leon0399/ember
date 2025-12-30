@@ -53,8 +53,8 @@ pub const PLAINTEXT_FILE_SIZE: usize = 32;
 
 // OWASP 2024 recommended Argon2id parameters (hardcoded)
 const ARGON2_M: u32 = 47104; // 46 MiB
-const ARGON2_T: u32 = 2;     // 2 iterations (OWASP minimum)
-const ARGON2_P: u32 = 1;     // 1 parallelism
+const ARGON2_T: u32 = 2; // 2 iterations (OWASP minimum)
+const ARGON2_P: u32 = 1; // 1 parallelism
 
 /// Errors that can occur during encrypted identity operations
 #[derive(Debug, Error)]
@@ -119,8 +119,8 @@ impl EncryptedIdentity {
             .map_err(|e| EncryptedIdentityError::EncryptionFailed(e.to_string()))?;
 
         // Encrypt identity key with ChaCha20-Poly1305
-        let cipher = ChaCha20Poly1305::new_from_slice(key.as_ref())
-            .expect("derived key has correct length");
+        let cipher =
+            ChaCha20Poly1305::new_from_slice(key.as_ref()).expect("derived key has correct length");
 
         let plaintext = Zeroizing::new(identity.to_bytes());
         let ciphertext_vec = cipher
@@ -158,8 +158,8 @@ impl EncryptedIdentity {
             .map_err(|_| EncryptedIdentityError::DecryptionFailed)?;
 
         // Decrypt with ChaCha20-Poly1305
-        let cipher = ChaCha20Poly1305::new_from_slice(key.as_ref())
-            .expect("derived key has correct length");
+        let cipher =
+            ChaCha20Poly1305::new_from_slice(key.as_ref()).expect("derived key has correct length");
 
         let plaintext = Zeroizing::new(
             cipher

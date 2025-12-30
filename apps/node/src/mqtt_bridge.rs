@@ -6,8 +6,8 @@
 //! - Uses message ID deduplication to prevent loops in mesh topologies
 
 use crate::config::{MqttBridgeConfig, MqttBrokerConfig};
-use reme_node_core::{MailboxStore, PersistentMailboxStore};
 use reme_message::OuterEnvelope;
+use reme_node_core::{MailboxStore, PersistentMailboxStore};
 use reme_transport::{
     MqttBrokerSpec, MqttReceiverConfig, MqttTransport, MultiBrokerReceiver, SharedSeenCache,
     Transport, TransportEvent,
@@ -166,7 +166,7 @@ impl MqttBridge {
                     );
 
                     // Store in local mailbox
-                    let routing_key = envelope.routing_key.clone();
+                    let routing_key = envelope.routing_key;
                     if let Err(e) = store.enqueue(routing_key, envelope) {
                         error!("Failed to store MQTT message: {}", e);
                         // Continue processing other messages

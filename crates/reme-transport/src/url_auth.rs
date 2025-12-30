@@ -119,7 +119,7 @@ mod tests {
     fn test_url_with_username_only() {
         let parsed = parse_url_with_auth("http://user@example.com:3000").unwrap();
         assert_eq!(parsed.url, "http://example.com:3000/");
-        assert_eq!(parsed.auth, Some(("user".to_string(), "".to_string())));
+        assert_eq!(parsed.auth, Some(("user".to_string(), String::new())));
     }
 
     #[test]
@@ -161,7 +161,7 @@ mod tests {
         // Edge case: empty username but password present - must still strip credentials
         let parsed = parse_url_with_auth("http://:secret@example.com:3000").unwrap();
         assert_eq!(parsed.url, "http://example.com:3000/");
-        assert_eq!(parsed.auth, Some(("".to_string(), "secret".to_string())));
+        assert_eq!(parsed.auth, Some((String::new(), "secret".to_string())));
     }
 
     #[test]

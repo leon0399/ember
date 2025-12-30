@@ -92,11 +92,7 @@ impl SignedAckTombstone {
     /// * `message_id` - ID of the message being acknowledged
     /// * `ack_secret` - 16-byte secret derived from ECDH shared secret
     /// * `signer_private` - X25519 private key for signing (sender or recipient)
-    pub fn new(
-        message_id: MessageID,
-        ack_secret: [u8; 16],
-        signer_private: &[u8; 32],
-    ) -> Self {
+    pub fn new(message_id: MessageID, ack_secret: [u8; 16], signer_private: &[u8; 32]) -> Self {
         use rand_core::OsRng;
 
         let mut tombstone = Self {
@@ -181,7 +177,6 @@ impl SignedAckTombstone {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,8 +230,10 @@ mod tests {
 
     #[test]
     fn test_ack_hash_deterministic() {
-        let ack_secret: [u8; 16] = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0,
-                                    0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        let ack_secret: [u8; 16] = [
+            0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+            0x77, 0x88,
+        ];
 
         let hash1 = derive_ack_hash_for_test(&ack_secret);
         let hash2 = derive_ack_hash_for_test(&ack_secret);
@@ -252,7 +249,10 @@ mod tests {
         let hash1 = derive_ack_hash_for_test(&secret1);
         let hash2 = derive_ack_hash_for_test(&secret2);
 
-        assert_ne!(hash1, hash2, "Different ack_secrets should produce different ack_hashes");
+        assert_ne!(
+            hash1, hash2,
+            "Different ack_secrets should produce different ack_hashes"
+        );
     }
 
     #[test]
@@ -335,7 +335,10 @@ mod tests {
         let bytes = tombstone.to_bytes();
 
         // SignedAckTombstone should be 96 bytes
-        assert_eq!(bytes.len(), 96, "SignedAckTombstone should be exactly 96 bytes");
+        assert_eq!(
+            bytes.len(),
+            96,
+            "SignedAckTombstone should be exactly 96 bytes"
+        );
     }
-
 }

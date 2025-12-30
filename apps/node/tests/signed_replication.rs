@@ -2,7 +2,9 @@
 //!
 //! Tests cryptographic identity and signature verification between nodes.
 
-use node::{api, node_identity::NodeIdentity, replication, PersistentMailboxStore, PersistentStoreConfig};
+use node::{
+    api, node_identity::NodeIdentity, replication, PersistentMailboxStore, PersistentStoreConfig,
+};
 use reme_identity::Identity;
 use reme_message::OuterEnvelope;
 use reme_transport::http_target::HttpTarget;
@@ -28,7 +30,9 @@ async fn start_test_node(
     peer_urls: Vec<String>,
     use_public_host: bool, // If true, sets public_host to the actual bound address
 ) -> (String, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Failed to bind");
     let addr = listener.local_addr().expect("Failed to get local addr");
     let url = format!("http://{}", addr);
     let host = addr.to_string(); // "127.0.0.1:PORT"
@@ -37,15 +41,12 @@ async fn start_test_node(
         max_messages_per_mailbox: 1000,
         default_ttl_secs: 3600,
     };
-    let store = Arc::new(
-        PersistentMailboxStore::open(":memory:", config)
-            .expect("Failed to create store"),
-    );
+    let store =
+        Arc::new(PersistentMailboxStore::open(":memory:", config).expect("Failed to create store"));
 
     let node_id = identity
         .as_ref()
-        .map(|i| i.node_id().to_string())
-        .unwrap_or_else(|| "test-node".to_string());
+        .map_or_else(|| "test-node".to_string(), |i| i.node_id().to_string());
 
     let replication = Arc::new(replication::ReplicationClient::with_identity(
         node_id,
@@ -113,7 +114,7 @@ async fn test_signed_replication_between_nodes() {
     let (url1, _handle1) = start_test_node(
         Some(Arc::new(identity1)),
         vec![url2.clone()],
-        true,   // Use public_host
+        true, // Use public_host
     )
     .await;
 
@@ -129,7 +130,13 @@ async fn test_signed_replication_between_nodes() {
     let routing_key = identity.public_id().routing_key();
     let ephemeral_key = [42u8; 32];
     let ack_hash = [0u8; 16];
-    let test_envelope = OuterEnvelope::new(routing_key, Some(1), ephemeral_key, ack_hash, vec![1, 2, 3, 4]);
+    let test_envelope = OuterEnvelope::new(
+        routing_key,
+        Some(1),
+        ephemeral_key,
+        ack_hash,
+        vec![1, 2, 3, 4],
+    );
 
     // Send to node 1
     transport1
@@ -147,7 +154,11 @@ async fn test_signed_replication_between_nodes() {
         .await
         .expect("fetch_once from node2 failed");
 
-    assert_eq!(messages.len(), 1, "Message should have replicated to node 2");
+    assert_eq!(
+        messages.len(),
+        1,
+        "Message should have replicated to node 2"
+    );
     assert_eq!(messages[0].inner_ciphertext, vec![1, 2, 3, 4]);
     println!("Message replicated to node 2 via signed replication: OK");
 
@@ -159,9 +170,9 @@ async fn test_signed_replication_between_nodes() {
 async fn test_unsigned_replication_fallback() {
     // Start node 2 without identity (accepts unsigned requests)
     let (url2, _handle2) = start_test_node(
-        None,    // No identity
-        vec![],  // No peers
-        false,   // No public_host (accepts any destination)
+        None,   // No identity
+        vec![], // No peers
+        false,  // No public_host (accepts any destination)
     )
     .await;
 
@@ -169,7 +180,7 @@ async fn test_unsigned_replication_fallback() {
     let (url1, _handle1) = start_test_node(
         None,
         vec![url2.clone()],
-        false,   // No public_host
+        false, // No public_host
     )
     .await;
 
@@ -184,7 +195,13 @@ async fn test_unsigned_replication_fallback() {
     let routing_key = identity.public_id().routing_key();
     let ephemeral_key = [99u8; 32];
     let ack_hash = [0u8; 16];
-    let test_envelope = OuterEnvelope::new(routing_key, Some(1), ephemeral_key, ack_hash, vec![5, 6, 7, 8]);
+    let test_envelope = OuterEnvelope::new(
+        routing_key,
+        Some(1),
+        ephemeral_key,
+        ack_hash,
+        vec![5, 6, 7, 8],
+    );
 
     // Send to node 1
     transport1
@@ -202,7 +219,11 @@ async fn test_unsigned_replication_fallback() {
         .await
         .expect("fetch_once from node2 failed");
 
-    assert_eq!(messages.len(), 1, "Message should have replicated via unsigned replication");
+    assert_eq!(
+        messages.len(),
+        1,
+        "Message should have replicated via unsigned replication"
+    );
     assert_eq!(messages[0].inner_ciphertext, vec![5, 6, 7, 8]);
     println!("Message replicated via legacy unsigned replication: OK");
 
@@ -216,9 +237,9 @@ async fn test_mixed_cluster_replication() {
 
     // Node 2: unsigned (accepts all requests)
     let (url2, _handle2) = start_test_node(
-        None,    // No identity
+        None, // No identity
         vec![],
-        false,   // No public_host (insecure mode)
+        false, // No public_host (insecure mode)
     )
     .await;
 
@@ -226,7 +247,7 @@ async fn test_mixed_cluster_replication() {
     let (url1, _handle1) = start_test_node(
         Some(Arc::new(identity1)),
         vec![url2.clone()],
-        true,    // Use public_host
+        true, // Use public_host
     )
     .await;
 
@@ -241,7 +262,13 @@ async fn test_mixed_cluster_replication() {
     let routing_key = identity.public_id().routing_key();
     let ephemeral_key = [11u8; 32];
     let ack_hash = [0u8; 16];
-    let test_envelope = OuterEnvelope::new(routing_key, Some(1), ephemeral_key, ack_hash, vec![9, 10, 11, 12]);
+    let test_envelope = OuterEnvelope::new(
+        routing_key,
+        Some(1),
+        ephemeral_key,
+        ack_hash,
+        vec![9, 10, 11, 12],
+    );
 
     // Send to node 1 (signed)
     transport1
@@ -259,7 +286,11 @@ async fn test_mixed_cluster_replication() {
         .await
         .expect("fetch_once from node2 failed");
 
-    assert_eq!(messages.len(), 1, "Signed node should be able to replicate to unsigned node");
+    assert_eq!(
+        messages.len(),
+        1,
+        "Signed node should be able to replicate to unsigned node"
+    );
     assert_eq!(messages[0].inner_ciphertext, vec![9, 10, 11, 12]);
     println!("Signed node replicated to unsigned node: OK");
 
@@ -285,7 +316,10 @@ async fn test_node_identity_persistence() {
     let pubkey2 = identity2.public_id().to_bytes();
 
     assert_eq!(node_id1, node_id2, "Node ID should persist across restarts");
-    assert_eq!(pubkey1, pubkey2, "Public key should persist across restarts");
+    assert_eq!(
+        pubkey1, pubkey2,
+        "Public key should persist across restarts"
+    );
     println!("Identity persisted correctly: {}", node_id2);
 
     println!("\n✓ Node identity persistence test passed!");

@@ -230,8 +230,8 @@ fn render_status(frame: &mut Frame, app: &App) {
     let id_display = app.my_short_id();
     let status_text = format!(" [{}] {} ", id_display, app.status);
 
-    let status = Paragraph::new(status_text)
-        .style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    let status =
+        Paragraph::new(status_text).style(Style::default().bg(Color::DarkGray).fg(Color::White));
 
     frame.render_widget(Clear, status_area);
     frame.render_widget(status, status_area);
@@ -372,7 +372,11 @@ fn render_my_id_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(id_block, chunks[1]);
 
     let id_text = Paragraph::new(full_id)
-        .style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )
         .alignment(Alignment::Center);
     frame.render_widget(id_text, id_inner);
 
@@ -415,10 +419,9 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
         .split(inner);
 
     // Instructions
-    let instructions =
-        Paragraph::new("Add HTTP or MQTT upstream for this session")
-            .style(Style::default().fg(Color::DarkGray))
-            .wrap(Wrap { trim: true });
+    let instructions = Paragraph::new("Add HTTP or MQTT upstream for this session")
+        .style(Style::default().fg(Color::DarkGray))
+        .wrap(Wrap { trim: true });
     frame.render_widget(instructions, chunks[0]);
 
     // Type selector
@@ -430,12 +433,16 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
     };
 
     let http_style = if app.add_upstream_popup.transport_type == UpstreamType::Http {
-        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
     let mqtt_style = if app.add_upstream_popup.transport_type == UpstreamType::Mqtt {
-        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
@@ -469,17 +476,23 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
     };
 
     let direct_style = if app.add_upstream_popup.tier == DeliveryTier::Direct {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
     let quorum_style = if app.add_upstream_popup.tier == DeliveryTier::Quorum {
-        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
     let besteffort_style = if app.add_upstream_popup.tier == DeliveryTier::BestEffort {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
@@ -620,10 +633,10 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
                 let address = enriched.snapshot.address();
 
                 // Show label if different from address
-                let label_part = if display_label != address {
-                    format!(" ({})", display_label)
-                } else {
+                let label_part = if display_label == address {
                     String::new()
+                } else {
+                    format!(" ({})", display_label)
                 };
 
                 // Latency info (if available)

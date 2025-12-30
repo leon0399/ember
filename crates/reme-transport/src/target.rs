@@ -452,7 +452,10 @@ pub trait TransportTarget: Send + Sync {
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError>;
 
     /// Submit an ack tombstone to this specific target (Tombstone V2).
-    async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError>;
+    async fn submit_ack_tombstone(
+        &self,
+        tombstone: SignedAckTombstone,
+    ) -> Result<(), TransportError>;
 
     /// Record a successful operation (updates health).
     fn record_success(&self, latency: Duration);
@@ -508,8 +511,14 @@ mod tests {
     fn test_target_kind_defaults() {
         assert_eq!(TargetKind::Stable.default_priority(), 100);
         assert_eq!(TargetKind::Ephemeral.default_priority(), 200);
-        assert_eq!(TargetKind::Stable.default_request_timeout(), Duration::from_secs(30));
-        assert_eq!(TargetKind::Ephemeral.default_request_timeout(), Duration::from_secs(5));
+        assert_eq!(
+            TargetKind::Stable.default_request_timeout(),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            TargetKind::Ephemeral.default_request_timeout(),
+            Duration::from_secs(5)
+        );
     }
 
     #[test]

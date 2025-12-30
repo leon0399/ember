@@ -1,6 +1,9 @@
 //! Storage trait for outbox persistence.
 
-use crate::state::*;
+use crate::state::{
+    DeliveryConfirmation, OutboxEntryId, PendingMessage, TargetId, TieredDeliveryPhase,
+    TransportAttempt,
+};
 use reme_identity::PublicID;
 use reme_message::{ContentId, MessageID};
 use std::sync::Arc;
@@ -30,16 +33,25 @@ pub trait OutboxStore {
     fn outbox_get_pending(&self) -> Result<Vec<PendingMessage>, Self::Error>;
 
     /// Get pending messages for a specific recipient.
-    fn outbox_get_for_recipient(&self, recipient: &PublicID) -> Result<Vec<PendingMessage>, Self::Error>;
+    fn outbox_get_for_recipient(
+        &self,
+        recipient: &PublicID,
+    ) -> Result<Vec<PendingMessage>, Self::Error>;
 
     /// Get pending messages that are due for retry (`next_retry_at <= now`).
     fn outbox_get_due_for_retry(&self, now_ms: u64) -> Result<Vec<PendingMessage>, Self::Error>;
 
     /// Get a specific outbox entry by ID.
-    fn outbox_get_by_id(&self, entry_id: OutboxEntryId) -> Result<Option<PendingMessage>, Self::Error>;
+    fn outbox_get_by_id(
+        &self,
+        entry_id: OutboxEntryId,
+    ) -> Result<Option<PendingMessage>, Self::Error>;
 
     /// Get entry by content_id (for DAG confirmation lookup).
-    fn outbox_get_by_content_id(&self, content_id: ContentId) -> Result<Option<PendingMessage>, Self::Error>;
+    fn outbox_get_by_content_id(
+        &self,
+        content_id: ContentId,
+    ) -> Result<Option<PendingMessage>, Self::Error>;
 
     /// Record a delivery attempt.
     ///
@@ -67,7 +79,11 @@ pub trait OutboxStore {
     /// Schedule immediate retry for specific entries.
     ///
     /// Sets `next_retry_at_ms` to `now_ms` for the given entries.
-    fn outbox_schedule_retry(&self, entry_ids: &[OutboxEntryId], now_ms: u64) -> Result<(), Self::Error>;
+    fn outbox_schedule_retry(
+        &self,
+        entry_ids: &[OutboxEntryId],
+        now_ms: u64,
+    ) -> Result<(), Self::Error>;
 
     /// Remove confirmed/expired entries older than given timestamp.
     ///
@@ -144,14 +160,24 @@ impl<T: OutboxStore> OutboxStore for Arc<T> {
         inner_bytes: &[u8],
         expires_at_ms: Option<u64>,
     ) -> Result<OutboxEntryId, Self::Error> {
-        (**self).outbox_enqueue(recipient, content_id, message_id, envelope_bytes, inner_bytes, expires_at_ms)
+        (**self).outbox_enqueue(
+            recipient,
+            content_id,
+            message_id,
+            envelope_bytes,
+            inner_bytes,
+            expires_at_ms,
+        )
     }
 
     fn outbox_get_pending(&self) -> Result<Vec<PendingMessage>, Self::Error> {
         (**self).outbox_get_pending()
     }
 
-    fn outbox_get_for_recipient(&self, recipient: &PublicID) -> Result<Vec<PendingMessage>, Self::Error> {
+    fn outbox_get_for_recipient(
+        &self,
+        recipient: &PublicID,
+    ) -> Result<Vec<PendingMessage>, Self::Error> {
         (**self).outbox_get_for_recipient(recipient)
     }
 
@@ -159,11 +185,17 @@ impl<T: OutboxStore> OutboxStore for Arc<T> {
         (**self).outbox_get_due_for_retry(now_ms)
     }
 
-    fn outbox_get_by_id(&self, entry_id: OutboxEntryId) -> Result<Option<PendingMessage>, Self::Error> {
+    fn outbox_get_by_id(
+        &self,
+        entry_id: OutboxEntryId,
+    ) -> Result<Option<PendingMessage>, Self::Error> {
         (**self).outbox_get_by_id(entry_id)
     }
 
-    fn outbox_get_by_content_id(&self, content_id: ContentId) -> Result<Option<PendingMessage>, Self::Error> {
+    fn outbox_get_by_content_id(
+        &self,
+        content_id: ContentId,
+    ) -> Result<Option<PendingMessage>, Self::Error> {
         (**self).outbox_get_by_content_id(content_id)
     }
 
@@ -188,7 +220,11 @@ impl<T: OutboxStore> OutboxStore for Arc<T> {
         (**self).outbox_mark_expired(entry_id)
     }
 
-    fn outbox_schedule_retry(&self, entry_ids: &[OutboxEntryId], now_ms: u64) -> Result<(), Self::Error> {
+    fn outbox_schedule_retry(
+        &self,
+        entry_ids: &[OutboxEntryId],
+        now_ms: u64,
+    ) -> Result<(), Self::Error> {
         (**self).outbox_schedule_retry(entry_ids, now_ms)
     }
 

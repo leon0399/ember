@@ -28,7 +28,6 @@ mod tui;
 
 use crate::config::{load_config, parse_log_level};
 use std::fs::{self, File};
-use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
 #[tokio::main]

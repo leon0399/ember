@@ -419,8 +419,8 @@ impl Default for NodeConfig {
             rate_limit: RateLimitConfig::default(),
             tls: TlsConfig::default(),
             mqtt: MqttBridgeConfig::default(),
-            identity_path: None,   // None means use default location
-            public_host: None,     // None means accept any (insecure mode)
+            identity_path: None, // None means use default location
+            public_host: None,   // None means accept any (insecure mode)
             additional_hosts: Vec::new(),
         }
     }
@@ -433,7 +433,8 @@ fn default_config_path() -> Option<PathBuf> {
 
 /// Get the default identity file path based on platform conventions
 pub fn default_identity_path() -> Option<PathBuf> {
-    ProjectDirs::from("com", "branch", "reme").map(|dirs| dirs.config_dir().join("node-identity.key"))
+    ProjectDirs::from("com", "branch", "reme")
+        .map(|dirs| dirs.config_dir().join("node-identity.key"))
 }
 
 /// Safely convert i64 to u32, clamping negative values to 0.
@@ -469,7 +470,7 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         // Layer 1: Built-in defaults (lowest priority)
         .set_default("bind_addr", defaults.bind_addr.clone())?
         .set_default("max_messages", defaults.max_messages as i64)?
-        .set_default("default_ttl", defaults.default_ttl as i64)?
+        .set_default("default_ttl", i64::from(defaults.default_ttl))?
         .set_default("log_level", defaults.log_level.clone())?
         .set_default("node_id", defaults.node_id.clone())?
         .set_default::<_, Vec<String>>("peers", defaults.peers.clone())?
@@ -507,7 +508,7 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         builder = builder.set_override("max_messages", max_messages as i64)?;
     }
     if let Some(default_ttl) = cli.default_ttl {
-        builder = builder.set_override("default_ttl", default_ttl as i64)?;
+        builder = builder.set_override("default_ttl", i64::from(default_ttl))?;
     }
     if let Some(ref log_level) = cli.log_level {
         builder = builder.set_override("log_level", log_level.clone())?;
@@ -546,9 +547,7 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         .unwrap_or(defaults.default_ttl);
     let log_level: String = config.get("log_level").unwrap_or(defaults.log_level);
     let node_id: String = config.get("node_id").unwrap_or(defaults.node_id);
-    let peers: Vec<String> = config
-        .get::<Vec<String>>("peers")
-        .unwrap_or(defaults.peers);
+    let peers: Vec<String> = config.get::<Vec<String>>("peers").unwrap_or(defaults.peers);
 
     // Extract cleanup config (using clamped conversions for safety)
     let cleanup = CleanupConfig {
@@ -658,10 +657,7 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
             .get::<String>("tls.cert_path")
             .ok()
             .map(PathBuf::from),
-        key_path: config
-            .get::<String>("tls.key_path")
-            .ok()
-            .map(PathBuf::from),
+        key_path: config.get::<String>("tls.key_path").ok().map(PathBuf::from),
     };
 
     // Apply CLI overrides for TLS
@@ -695,13 +691,19 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
             .collect();
         MqttBridgeConfig {
             brokers,
-            topic_prefix: cli.mqtt_topic_prefix.clone().or(mqtt_topic_prefix_from_config),
+            topic_prefix: cli
+                .mqtt_topic_prefix
+                .clone()
+                .or(mqtt_topic_prefix_from_config),
         }
     } else {
         // Use file/env config
         MqttBridgeConfig {
             brokers: mqtt_brokers_from_config,
-            topic_prefix: cli.mqtt_topic_prefix.clone().or(mqtt_topic_prefix_from_config),
+            topic_prefix: cli
+                .mqtt_topic_prefix
+                .clone()
+                .or(mqtt_topic_prefix_from_config),
         }
     };
 

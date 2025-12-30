@@ -28,33 +28,35 @@ pub mod mqtt_target;
 pub mod embedded_target;
 
 pub use composite::{CompositeTransport, CompositeTransportBuilder};
+pub use coordinator::{
+    CoordinatorConfig, CoordinatorHandle, CoordinatorHealth, RoutingStrategy, TransportCoordinator,
+};
+pub use delivery::{
+    DeliveryConfidence, DeliveryResult, DeliveryTier, QuorumStrategy, QuorumStrategyError,
+    TargetOutcome, TargetResult, TierResult, TieredDeliveryConfig,
+};
 pub use http::NodeSpec;
 pub use http_target::{HttpTarget, HttpTargetConfig};
+pub use pool::{PoolConfig, PoolStrategy, TransportPool};
+pub use query::{HealthSummary, TargetSnapshot, TransportQuery};
 pub use receiver::{MessageReceiver, ReceiverConfig, ReceiverHandle};
+pub use registry::{EnrichedSnapshot, EphemeralMeta, TransportRegistry};
 pub use seen_cache::{SeenCache, SharedSeenCache};
 pub use target::{
     HealthData, HealthState, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget,
-};
-pub use pool::{PoolConfig, PoolStrategy, TransportPool};
-pub use query::{HealthSummary, TargetSnapshot, TransportQuery};
-pub use registry::{EnrichedSnapshot, EphemeralMeta, TransportRegistry};
-pub use coordinator::{
-    CoordinatorConfig, CoordinatorHandle, CoordinatorHealth, RoutingStrategy, TransportCoordinator,
 };
 pub use tls::{
     build_pinning_config, build_pinning_config_single, CertPin, PinParseError, PinningVerifier,
     VerifierBuildError,
 };
 pub use url_auth::{parse_url_with_auth, sanitize_url_for_logging, ParsedUrl};
-pub use delivery::{
-    DeliveryConfidence, DeliveryResult, DeliveryTier, QuorumStrategy, QuorumStrategyError,
-    TargetOutcome, TargetResult, TierResult, TieredDeliveryConfig,
-};
 
 #[cfg(feature = "mqtt")]
 pub use mqtt::{MqttBrokerSpec, MqttTransport};
 #[cfg(feature = "mqtt")]
-pub use mqtt_receiver::{MultiBrokerReceiver, MqttReceiver, MqttReceiverConfig, MqttReceiverHandle};
+pub use mqtt_receiver::{
+    MqttReceiver, MqttReceiverConfig, MqttReceiverHandle, MultiBrokerReceiver,
+};
 #[cfg(feature = "mqtt")]
 pub use mqtt_target::{MqttTarget, MqttTargetConfig};
 
@@ -113,9 +115,7 @@ impl TransportError {
     pub fn is_transient(&self) -> bool {
         matches!(
             self,
-            TransportError::Network(_)
-                | TransportError::Timeout
-                | TransportError::ServerError(_)
+            TransportError::Network(_) | TransportError::Timeout | TransportError::ServerError(_)
         )
     }
 }
@@ -140,7 +140,10 @@ pub trait Transport: Send + Sync {
     ///
     /// Both sender and recipient can create valid tombstones without
     /// leaking identity information.
-    async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError>;
+    async fn submit_ack_tombstone(
+        &self,
+        tombstone: SignedAckTombstone,
+    ) -> Result<(), TransportError>;
 }
 
 /// Event delivered by the message receiver

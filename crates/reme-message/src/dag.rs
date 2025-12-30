@@ -101,7 +101,10 @@ impl ReceiverGapDetector {
                         },
                     );
                     // Index for O(1) lookup when parent arrives
-                    self.waiting_on.entry(parent_id).or_default().push(content_id);
+                    self.waiting_on
+                        .entry(parent_id)
+                        .or_default()
+                        .push(content_id);
                     GapResult::Gap {
                         missing: vec![parent_id],
                     }
@@ -332,7 +335,7 @@ impl SenderGapDetector {
             .collect();
 
         // Sort for consistent ordering (by byte value)
-        result.sort();
+        result.sort_unstable();
         result
     }
 
@@ -501,12 +504,7 @@ mod tests {
             // Receive id2 without id1
             let result = detector.on_receive(id2, Some(id1), 2000);
 
-            assert_eq!(
-                result,
-                GapResult::Gap {
-                    missing: vec![id1]
-                }
-            );
+            assert_eq!(result, GapResult::Gap { missing: vec![id1] });
             assert!(detector.is_orphan(&id2));
             assert!(!detector.is_complete(&id2));
         }
@@ -663,7 +661,7 @@ mod tests {
             assert!(detector.heads().contains(&id2));
 
             detector.on_send(id3, Some(id1)); // Another child of id1
-            // Note: id1 already removed, so this just adds id3
+                                              // Note: id1 already removed, so this just adds id3
             assert_eq!(detector.heads().len(), 2); // Both id2 and id3 are heads
             assert!(detector.heads().contains(&id2));
             assert!(detector.heads().contains(&id3));

@@ -10,7 +10,9 @@ use reme_message::{OuterEnvelope, SignedAckTombstone};
 use reme_node_core::{EmbeddedNodeHandle, NodeError};
 use tracing::debug;
 
-use crate::target::{HealthState, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget};
+use crate::target::{
+    HealthState, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget,
+};
 use crate::TransportError;
 
 /// Configuration for an embedded node target.
@@ -34,8 +36,7 @@ impl EmbeddedTargetConfig {
     pub fn new() -> Self {
         let id = TargetId::embedded();
         Self {
-            base: TargetConfig::new(id, TargetKind::Ephemeral)
-                .with_label("Embedded Node"),
+            base: TargetConfig::new(id, TargetKind::Ephemeral).with_label("Embedded Node"),
         }
     }
 
@@ -108,12 +109,18 @@ fn convert_error(error: NodeError) -> TransportError {
     match error {
         NodeError::ChannelClosed => TransportError::ChannelClosed,
         NodeError::Serialization(msg) => TransportError::Serialization(msg),
-        NodeError::Deserialization(msg) => TransportError::Serialization(format!("deserialization: {}", msg)),
+        NodeError::Deserialization(msg) => {
+            TransportError::Serialization(format!("deserialization: {}", msg))
+        }
         NodeError::Database(e) => TransportError::ServerError(format!("database error: {}", e)),
         NodeError::LockPoisoned => TransportError::ServerError("lock poisoned".to_string()),
         NodeError::MailboxFull => TransportError::ServerError("mailbox full".to_string()),
-        NodeError::InvalidMessage(msg) => TransportError::ServerError(format!("invalid message: {}", msg)),
-        NodeError::InvalidConfig(msg) => TransportError::ServerError(format!("invalid config: {}", msg)),
+        NodeError::InvalidMessage(msg) => {
+            TransportError::ServerError(format!("invalid message: {}", msg))
+        }
+        NodeError::InvalidConfig(msg) => {
+            TransportError::ServerError(format!("invalid config: {}", msg))
+        }
         // NodeError is non_exhaustive, handle future variants
         _ => TransportError::ServerError(format!("node error: {}", error)),
     }
@@ -144,7 +151,11 @@ impl TransportTarget for EmbeddedTarget {
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
         let start = Instant::now();
 
-        let result = self.handle.submit_message(envelope).await.map_err(convert_error);
+        let result = self
+            .handle
+            .submit_message(envelope)
+            .await
+            .map_err(convert_error);
 
         match &result {
             Ok(()) => {
@@ -153,30 +164,50 @@ impl TransportTarget for EmbeddedTarget {
             }
             Err(e) => {
                 self.record_failure(e);
-                debug!("Failed to submit message to {}: {}", self.display_label(), e);
+                debug!(
+                    "Failed to submit message to {}: {}",
+                    self.display_label(),
+                    e
+                );
             }
         }
 
         result
     }
 
-    async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
+    async fn submit_ack_tombstone(
+        &self,
+        tombstone: SignedAckTombstone,
+    ) -> Result<(), TransportError> {
         let start = Instant::now();
 
-        let result = self.handle.process_ack_tombstone(&tombstone).map_err(convert_error);
+        let result = self
+            .handle
+            .process_ack_tombstone(&tombstone)
+            .map_err(convert_error);
 
         match &result {
             Ok(deleted) => {
                 self.record_success(start.elapsed());
                 if *deleted {
-                    debug!("AckTombstone processed, message deleted from {}", self.display_label());
+                    debug!(
+                        "AckTombstone processed, message deleted from {}",
+                        self.display_label()
+                    );
                 } else {
-                    debug!("AckTombstone processed, message not found in {} (already deleted?)", self.display_label());
+                    debug!(
+                        "AckTombstone processed, message not found in {} (already deleted?)",
+                        self.display_label()
+                    );
                 }
             }
             Err(e) => {
                 self.record_failure(e);
-                debug!("Failed to process AckTombstone in {}: {}", self.display_label(), e);
+                debug!(
+                    "Failed to process AckTombstone in {}: {}",
+                    self.display_label(),
+                    e
+                );
             }
         }
 
@@ -203,7 +234,10 @@ impl crate::Transport for EmbeddedTarget {
         <Self as TransportTarget>::submit_message(self, envelope).await
     }
 
-    async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
+    async fn submit_ack_tombstone(
+        &self,
+        tombstone: SignedAckTombstone,
+    ) -> Result<(), TransportError> {
         <Self as TransportTarget>::submit_ack_tombstone(self, tombstone).await
     }
 }
@@ -211,8 +245,8 @@ impl crate::Transport for EmbeddedTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reme_node_core::{EmbeddedNode, PersistentMailboxStore, PersistentStoreConfig};
     use reme_message::{MessageID, RoutingKey, CURRENT_VERSION};
+    use reme_node_core::{EmbeddedNode, PersistentMailboxStore, PersistentStoreConfig};
 
     fn create_test_envelope(routing_key: RoutingKey) -> OuterEnvelope {
         OuterEnvelope {
@@ -393,7 +427,10 @@ mod tests {
 
         // Verify message is deleted
         let messages = handle.fetch_messages(routing_key).await.unwrap();
-        assert!(messages.is_empty(), "Message should have been deleted by tombstone");
+        assert!(
+            messages.is_empty(),
+            "Message should have been deleted by tombstone"
+        );
 
         // Cleanup
         handle.shutdown().await.unwrap();
@@ -439,11 +476,18 @@ mod tests {
 
         // Submit tombstone - should fail with invalid ack_secret
         let result = target.submit_ack_tombstone(tombstone).await;
-        assert!(result.is_err(), "Tombstone with invalid ack_secret should fail");
+        assert!(
+            result.is_err(),
+            "Tombstone with invalid ack_secret should fail"
+        );
 
         // Verify message is NOT deleted
         let messages = handle.fetch_messages(routing_key).await.unwrap();
-        assert_eq!(messages.len(), 1, "Message should not be deleted on invalid tombstone");
+        assert_eq!(
+            messages.len(),
+            1,
+            "Message should not be deleted on invalid tombstone"
+        );
 
         // Cleanup
         handle.shutdown().await.unwrap();

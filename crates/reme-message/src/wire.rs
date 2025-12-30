@@ -71,12 +71,15 @@ impl WirePayload {
         match self {
             WirePayload::Message(envelope) => {
                 let mut bytes = vec![WireType::Message as u8];
-                bytes.extend(bincode::encode_to_vec(envelope, bincode::config::standard()).unwrap());
+                bytes
+                    .extend(bincode::encode_to_vec(envelope, bincode::config::standard()).unwrap());
                 bytes
             }
             WirePayload::AckTombstone(tombstone) => {
                 let mut bytes = vec![WireType::AckTombstone as u8];
-                bytes.extend(bincode::encode_to_vec(tombstone, bincode::config::standard()).unwrap());
+                bytes.extend(
+                    bincode::encode_to_vec(tombstone, bincode::config::standard()).unwrap(),
+                );
                 bytes
             }
         }

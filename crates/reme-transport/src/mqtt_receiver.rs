@@ -8,11 +8,13 @@ use crate::{TransportError, TransportEvent};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use reme_message::{OuterEnvelope, RoutingKey, WirePayload};
-use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS, Transport as MqttTransportType};
+use rumqttc::{
+    AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS, Transport as MqttTransportType,
+};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, trace, warn, error};
+use tracing::{debug, error, trace, warn};
 
 /// Default topic prefix for REME messages.
 pub const DEFAULT_TOPIC_PREFIX: &str = "reme/v1";
@@ -171,7 +173,11 @@ impl MqttReceiver {
             (rest.to_string(), default_port)
         };
 
-        Ok(ParsedMqttUrl { host, port, use_tls })
+        Ok(ParsedMqttUrl {
+            host,
+            port,
+            use_tls,
+        })
     }
 
     /// Subscribe to all messages (wildcard) and run the event loop.
@@ -181,7 +187,9 @@ impl MqttReceiver {
     ///
     /// # Node Usage
     /// Nodes should call this to receive messages from all routing keys.
-    pub async fn subscribe_all(self: Arc<Self>) -> Result<(mpsc::UnboundedReceiver<TransportEvent>, MqttReceiverHandle), TransportError> {
+    pub async fn subscribe_all(
+        self: Arc<Self>,
+    ) -> Result<(mpsc::UnboundedReceiver<TransportEvent>, MqttReceiverHandle), TransportError> {
         let topic = format!("{}/messages/#", self.topic_prefix);
         self.subscribe_and_run(topic).await
     }
@@ -194,7 +202,11 @@ impl MqttReceiver {
         self: Arc<Self>,
         routing_key: &RoutingKey,
     ) -> Result<(mpsc::UnboundedReceiver<TransportEvent>, MqttReceiverHandle), TransportError> {
-        let topic = format!("{}/messages/{}", self.topic_prefix, hex::encode(routing_key.as_bytes()));
+        let topic = format!(
+            "{}/messages/{}",
+            self.topic_prefix,
+            hex::encode(routing_key.as_bytes())
+        );
         self.subscribe_and_run(topic).await
     }
 
@@ -351,11 +363,17 @@ impl MultiBrokerReceiver {
         if receivers.is_empty() {
             return Err(TransportError::Network(format!(
                 "Failed to connect to any MQTT brokers: {:?}",
-                errors.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+                errors
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect::<Vec<_>>()
             )));
         }
 
-        Ok(Self { receivers, seen_cache })
+        Ok(Self {
+            receivers,
+            seen_cache,
+        })
     }
 
     /// Create a multi-broker receiver with a shared seen cache.
@@ -388,17 +406,31 @@ impl MultiBrokerReceiver {
         if receivers.is_empty() {
             return Err(TransportError::Network(format!(
                 "Failed to connect to any MQTT brokers: {:?}",
-                errors.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+                errors
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect::<Vec<_>>()
             )));
         }
 
-        Ok(Self { receivers, seen_cache })
+        Ok(Self {
+            receivers,
+            seen_cache,
+        })
     }
 
     /// Subscribe to all messages on all brokers.
     ///
     /// Returns a single event receiver that aggregates events from all brokers.
-    pub async fn subscribe_all(self) -> Result<(mpsc::UnboundedReceiver<TransportEvent>, Vec<MqttReceiverHandle>), TransportError> {
+    pub async fn subscribe_all(
+        self,
+    ) -> Result<
+        (
+            mpsc::UnboundedReceiver<TransportEvent>,
+            Vec<MqttReceiverHandle>,
+        ),
+        TransportError,
+    > {
         let (merged_tx, merged_rx) = mpsc::unbounded_channel();
         let mut handles = Vec::with_capacity(self.receivers.len());
 
@@ -425,7 +457,13 @@ impl MultiBrokerReceiver {
     pub async fn subscribe_routing_key(
         self,
         routing_key: &RoutingKey,
-    ) -> Result<(mpsc::UnboundedReceiver<TransportEvent>, Vec<MqttReceiverHandle>), TransportError> {
+    ) -> Result<
+        (
+            mpsc::UnboundedReceiver<TransportEvent>,
+            Vec<MqttReceiverHandle>,
+        ),
+        TransportError,
+    > {
         let (merged_tx, merged_rx) = mpsc::unbounded_channel();
         let mut handles = Vec::with_capacity(self.receivers.len());
 

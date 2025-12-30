@@ -9,11 +9,15 @@ use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use reme_message::{OuterEnvelope, RoutingKey, SignedAckTombstone, WirePayload};
-use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS, Transport as MqttTransportType};
+use rumqttc::{
+    AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS, Transport as MqttTransportType,
+};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
-use crate::target::{HealthState, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget};
+use crate::target::{
+    HealthState, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget,
+};
 use crate::url_auth::sanitize_url_for_logging;
 use crate::TransportError;
 
@@ -147,7 +151,7 @@ impl MqttTarget {
                 tokio::select! {
                     biased;
 
-                    _ = shutdown.cancelled() => {
+                    () = shutdown.cancelled() => {
                         debug!("MQTT event loop shutting down for {}", url);
                         break;
                     }
@@ -264,14 +268,21 @@ impl TransportTarget for MqttTarget {
             }
             Err(e) => {
                 self.record_failure(e);
-                warn!("Failed to publish message to {}: {}", self.display_label(), e);
+                warn!(
+                    "Failed to publish message to {}: {}",
+                    self.display_label(),
+                    e
+                );
             }
         }
 
         result
     }
 
-    async fn submit_ack_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), TransportError> {
+    async fn submit_ack_tombstone(
+        &self,
+        tombstone: SignedAckTombstone,
+    ) -> Result<(), TransportError> {
         let start = Instant::now();
 
         // Ack tombstones go to a broadcast topic
@@ -288,7 +299,11 @@ impl TransportTarget for MqttTarget {
             }
             Err(e) => {
                 self.record_failure(e);
-                warn!("Failed to publish ack tombstone to {}: {}", self.display_label(), e);
+                warn!(
+                    "Failed to publish ack tombstone to {}: {}",
+                    self.display_label(),
+                    e
+                );
             }
         }
 

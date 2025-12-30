@@ -144,8 +144,7 @@ impl TargetSnapshot {
         self.id
             .as_str()
             .split_once(':')
-            .map(|(_, addr)| addr)
-            .unwrap_or(self.id.as_str())
+            .map_or(self.id.as_str(), |(_, addr)| addr)
     }
 }
 
@@ -206,8 +205,8 @@ mod tests {
 
     #[test]
     fn test_target_snapshot_from_config() {
-        let config = TargetConfig::stable(TargetId::http("https://example.com"))
-            .with_label("Test Node");
+        let config =
+            TargetConfig::stable(TargetId::http("https://example.com")).with_label("Test Node");
 
         let snapshot = TargetSnapshot::from_config(
             &config,
@@ -229,43 +228,23 @@ mod tests {
     #[test]
     fn test_target_snapshot_display_label() {
         let config = TargetConfig::stable(TargetId::http("https://example.com"));
-        let snapshot = TargetSnapshot::from_config(
-            &config,
-            HealthState::Healthy,
-            0,
-            0,
-            None,
-            None,
-        );
+        let snapshot = TargetSnapshot::from_config(&config, HealthState::Healthy, 0, 0, None, None);
 
         // No label set, should use ID
         assert!(snapshot.display_label().contains("example.com"));
 
         // With label
-        let config_with_label = TargetConfig::stable(TargetId::http("https://example.com"))
-            .with_label("Primary");
-        let snapshot_with_label = TargetSnapshot::from_config(
-            &config_with_label,
-            HealthState::Healthy,
-            0,
-            0,
-            None,
-            None,
-        );
+        let config_with_label =
+            TargetConfig::stable(TargetId::http("https://example.com")).with_label("Primary");
+        let snapshot_with_label =
+            TargetSnapshot::from_config(&config_with_label, HealthState::Healthy, 0, 0, None, None);
         assert_eq!(snapshot_with_label.display_label(), "Primary");
     }
 
     #[test]
     fn test_target_snapshot_address() {
         let config = TargetConfig::stable(TargetId::http("https://example.com:23003/api"));
-        let snapshot = TargetSnapshot::from_config(
-            &config,
-            HealthState::Healthy,
-            0,
-            0,
-            None,
-            None,
-        );
+        let snapshot = TargetSnapshot::from_config(&config, HealthState::Healthy, 0, 0, None, None);
 
         assert_eq!(snapshot.transport_type(), "http");
         assert_eq!(snapshot.address(), "https://example.com:23003/api");

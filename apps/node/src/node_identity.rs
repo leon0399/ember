@@ -60,9 +60,7 @@ fn load_identity(path: &Path) -> Result<Identity, NodeIdentityError> {
         return Err(NodeIdentityError::InvalidLength(data.len()));
     }
 
-    let bytes: [u8; 32] = data
-        .try_into()
-        .expect("length already validated");
+    let bytes: [u8; 32] = data.try_into().expect("length already validated");
 
     Identity::try_from_bytes(&bytes).map_err(NodeIdentityError::InvalidKey)
 }
@@ -107,9 +105,7 @@ fn generate_and_save_identity(path: &Path) -> Result<Identity, NodeIdentityError
     if path.exists() {
         // Clean up our temp file
         let _ = fs::remove_file(&temp_path);
-        tracing::debug!(
-            "Identity file was created by another process, loading existing identity"
-        );
+        tracing::debug!("Identity file was created by another process, loading existing identity");
         return load_identity(path);
     }
 
@@ -139,7 +135,8 @@ fn write_secret_file(path: &Path, data: &[u8]) -> Result<(), NodeIdentityError> 
         .open(path)
         .map_err(NodeIdentityError::WriteError)?;
 
-    file.write_all(data).map_err(NodeIdentityError::WriteError)?;
+    file.write_all(data)
+        .map_err(NodeIdentityError::WriteError)?;
     file.sync_all().map_err(NodeIdentityError::WriteError)?;
     Ok(())
 }
@@ -162,7 +159,8 @@ fn write_secret_file(path: &Path, data: &[u8]) -> Result<(), NodeIdentityError> 
         .open(path)
         .map_err(NodeIdentityError::WriteError)?;
 
-    file.write_all(data).map_err(NodeIdentityError::WriteError)?;
+    file.write_all(data)
+        .map_err(NodeIdentityError::WriteError)?;
     file.sync_all().map_err(NodeIdentityError::WriteError)?;
 
     tracing::debug!(
@@ -320,9 +318,7 @@ mod tests {
         assert_eq!(signature.len(), 64);
 
         // Verify signature
-        assert!(node_identity
-            .public_id()
-            .verify_xeddsa(message, &signature));
+        assert!(node_identity.public_id().verify_xeddsa(message, &signature));
     }
 
     #[test]

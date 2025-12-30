@@ -92,7 +92,9 @@ impl SignedHeaders {
     ) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("system clock is before UNIX epoch (1970-01-01) - check system time configuration")
+            .expect(
+                "system clock is before UNIX epoch (1970-01-01) - check system time configuration",
+            )
             .as_secs();
 
         Self::sign_with_timestamp(identity, method, path, body, dest_host, timestamp)
@@ -485,8 +487,14 @@ mod tests {
             .as_secs()
             - 6 * 60;
 
-        let headers =
-            SignedHeaders::sign_with_timestamp(&identity, method, path, body, dest_host, old_timestamp);
+        let headers = SignedHeaders::sign_with_timestamp(
+            &identity,
+            method,
+            path,
+            body,
+            dest_host,
+            old_timestamp,
+        );
 
         let mut header_map = axum::http::HeaderMap::new();
         for (name, value) in headers.to_headers() {
@@ -516,8 +524,14 @@ mod tests {
             .as_secs()
             + 60;
 
-        let headers =
-            SignedHeaders::sign_with_timestamp(&identity, method, path, body, dest_host, future_timestamp);
+        let headers = SignedHeaders::sign_with_timestamp(
+            &identity,
+            method,
+            path,
+            body,
+            dest_host,
+            future_timestamp,
+        );
 
         let mut header_map = axum::http::HeaderMap::new();
         for (name, value) in headers.to_headers() {
@@ -553,7 +567,10 @@ mod tests {
         // Verify with different destination
         let verifier = SignatureVerifier::new(Some("node3.example.com:3000"), &[]);
         let result = verifier.verify(&header_map, method, path, body);
-        assert!(matches!(result, Err(SignatureError::DestinationMismatch { .. })));
+        assert!(matches!(
+            result,
+            Err(SignatureError::DestinationMismatch { .. })
+        ));
     }
 
     #[test]
@@ -584,7 +601,10 @@ mod tests {
     #[test]
     fn test_canonicalize_host() {
         // Lowercase
-        assert_eq!(canonicalize_host("Node.Example.COM:3000"), "node.example.com:3000");
+        assert_eq!(
+            canonicalize_host("Node.Example.COM:3000"),
+            "node.example.com:3000"
+        );
 
         // Ports are preserved (no scheme-dependent stripping)
         assert_eq!(canonicalize_host("example.com:80"), "example.com:80");
@@ -599,8 +619,14 @@ mod tests {
         assert_eq!(canonicalize_host("[::1]:3000"), "[::1]:3000");
         assert_eq!(canonicalize_host("[::1]:80"), "[::1]:80");
         assert_eq!(canonicalize_host("[::1]:443"), "[::1]:443");
-        assert_eq!(canonicalize_host("[2001:db8::1]:8080"), "[2001:db8::1]:8080");
-        assert_eq!(canonicalize_host("[2001:DB8::1]:8080"), "[2001:db8::1]:8080"); // lowercase
+        assert_eq!(
+            canonicalize_host("[2001:db8::1]:8080"),
+            "[2001:db8::1]:8080"
+        );
+        assert_eq!(
+            canonicalize_host("[2001:DB8::1]:8080"),
+            "[2001:db8::1]:8080"
+        ); // lowercase
         assert_eq!(canonicalize_host("[::1]"), "[::1]"); // no port
     }
 
@@ -617,7 +643,10 @@ mod tests {
 
         // Parent dir
         assert_eq!(canonicalize_path("/api/v2/../v1/submit"), "/api/v1/submit");
-        assert_eq!(canonicalize_path("/api/v1/../v1/./submit"), "/api/v1/submit");
+        assert_eq!(
+            canonicalize_path("/api/v1/../v1/./submit"),
+            "/api/v1/submit"
+        );
 
         // Root
         assert_eq!(canonicalize_path("/"), "/");
@@ -670,14 +699,14 @@ mod tests {
         }
 
         // Add duplicate signature header
-        header_map.append(
-            HEADER_NODE_SIGNATURE,
-            "duplicate_value".parse().unwrap(),
-        );
+        header_map.append(HEADER_NODE_SIGNATURE, "duplicate_value".parse().unwrap());
 
         let verifier = SignatureVerifier::new(Some(dest_host), &[]);
         let result = verifier.verify(&header_map, method, path, body);
-        assert_eq!(result, Err(SignatureError::DuplicateHeader(HEADER_NODE_SIGNATURE)));
+        assert_eq!(
+            result,
+            Err(SignatureError::DuplicateHeader(HEADER_NODE_SIGNATURE))
+        );
     }
 
     #[test]

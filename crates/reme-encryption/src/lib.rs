@@ -390,12 +390,16 @@ mod tests {
         let inner = create_inner(&alice, "Hello Bob via MIK!", 1234567890);
 
         // Alice encrypts to Bob's MIK (signing happens inside encrypt_to_mik)
-        let enc_output =
-            encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private).unwrap();
+        let enc_output = encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private).unwrap();
 
         // Bob decrypts with his MIK private key (signature verification happens inside)
-        let dec_output =
-            decrypt_with_mik(&enc_output.ephemeral_public, &enc_output.ciphertext, &bob_private, &message_id).unwrap();
+        let dec_output = decrypt_with_mik(
+            &enc_output.ephemeral_public,
+            &enc_output.ciphertext,
+            &bob_private,
+            &message_id,
+        )
+        .unwrap();
 
         assert_eq!(inner.from, dec_output.inner.from);
         assert_eq!(inner.created_at_ms, dec_output.inner.created_at_ms);
@@ -410,12 +414,17 @@ mod tests {
         }
 
         // Verify ack_secret matches between sender and recipient
-        assert_eq!(enc_output.ack_secret, dec_output.ack_secret,
-            "Sender and recipient should derive same ack_secret");
+        assert_eq!(
+            enc_output.ack_secret, dec_output.ack_secret,
+            "Sender and recipient should derive same ack_secret"
+        );
 
         // Verify ack_hash is consistent
-        assert_eq!(enc_output.ack_hash, derive_ack_hash(&enc_output.ack_secret),
-            "ack_hash should match derivation from ack_secret");
+        assert_eq!(
+            enc_output.ack_hash,
+            derive_ack_hash(&enc_output.ack_secret),
+            "ack_hash should match derivation from ack_secret"
+        );
     }
 
     #[test]
@@ -436,11 +445,15 @@ mod tests {
         let inner = create_inner(&alice, "Secret message for Bob", 1234567890);
 
         // Alice encrypts to Bob's MIK
-        let enc_output =
-            encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private).unwrap();
+        let enc_output = encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private).unwrap();
 
         // Eve tries to decrypt with her private key (should fail)
-        let result = decrypt_with_mik(&enc_output.ephemeral_public, &enc_output.ciphertext, &eve_private, &message_id);
+        let result = decrypt_with_mik(
+            &enc_output.ephemeral_public,
+            &enc_output.ciphertext,
+            &eve_private,
+            &message_id,
+        );
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -464,10 +477,8 @@ mod tests {
         let inner2 = create_inner(&alice, "Message 2", 1234567891);
 
         // Encrypt both
-        let enc1 =
-            encrypt_to_mik(&inner1, &bob_public, &message_id1, &alice_private).unwrap();
-        let enc2 =
-            encrypt_to_mik(&inner2, &bob_public, &message_id2, &alice_private).unwrap();
+        let enc1 = encrypt_to_mik(&inner1, &bob_public, &message_id1, &alice_private).unwrap();
+        let enc2 = encrypt_to_mik(&inner2, &bob_public, &message_id2, &alice_private).unwrap();
 
         // Each message should have a different ephemeral key
         assert_ne!(enc1.ephemeral_public, enc2.ephemeral_public);
@@ -508,7 +519,12 @@ mod tests {
 
         // Bob decrypts - signature verification should FAIL
         // (decrypt_with_mik verifies using `from` field = Alice's pubkey, but signed with Mallory's key)
-        let result = decrypt_with_mik(&enc_output.ephemeral_public, &enc_output.ciphertext, &bob_private, &message_id);
+        let result = decrypt_with_mik(
+            &enc_output.ephemeral_public,
+            &enc_output.ciphertext,
+            &bob_private,
+            &message_id,
+        );
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -532,11 +548,15 @@ mod tests {
         let inner = create_inner(&alice, "Test message", 1234567890);
 
         // Encrypt with correct message_id
-        let enc_output =
-            encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private).unwrap();
+        let enc_output = encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private).unwrap();
 
         // Try to decrypt with wrong message_id (should fail due to AAD mismatch)
-        let result = decrypt_with_mik(&enc_output.ephemeral_public, &enc_output.ciphertext, &bob_private, &wrong_message_id);
+        let result = decrypt_with_mik(
+            &enc_output.ephemeral_public,
+            &enc_output.ciphertext,
+            &bob_private,
+            &wrong_message_id,
+        );
         assert!(
             result.is_err(),
             "Decryption with wrong message_id should fail"
@@ -597,7 +617,12 @@ mod tests {
         // Test order-1 ephemeral key (identity point)
         let mut order1_ephemeral = [0u8; 32];
         order1_ephemeral[0] = 1;
-        let result = decrypt_with_mik(&order1_ephemeral, &fake_ciphertext, &bob_private, &message_id);
+        let result = decrypt_with_mik(
+            &order1_ephemeral,
+            &fake_ciphertext,
+            &bob_private,
+            &message_id,
+        );
         assert!(
             matches!(result, Err(EncryptionError::DecryptionFailed)),
             "Order-1 ephemeral key should be rejected"
@@ -620,9 +645,8 @@ mod tests {
         let inner = create_inner(&alice, &large_body, 1234567890);
 
         // Encrypt
-        let enc_output =
-            encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private)
-                .expect("Large message encryption should succeed");
+        let enc_output = encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private)
+            .expect("Large message encryption should succeed");
 
         // Ciphertext should be larger than plaintext (due to serialization + tag + signature)
         assert!(
@@ -631,8 +655,13 @@ mod tests {
         );
 
         // Decrypt and verify
-        let dec_output = decrypt_with_mik(&enc_output.ephemeral_public, &enc_output.ciphertext, &bob_private, &message_id)
-            .expect("Large message decryption should succeed");
+        let dec_output = decrypt_with_mik(
+            &enc_output.ephemeral_public,
+            &enc_output.ciphertext,
+            &bob_private,
+            &message_id,
+        )
+        .expect("Large message decryption should succeed");
 
         match dec_output.inner.content {
             Content::Text(text) => {
@@ -641,7 +670,10 @@ mod tests {
                     large_body.len(),
                     "Decrypted body length should match"
                 );
-                assert_eq!(text.body, large_body, "Decrypted body should match original");
+                assert_eq!(
+                    text.body, large_body,
+                    "Decrypted body should match original"
+                );
             }
             _ => panic!("Expected text content"),
         }
@@ -684,12 +716,20 @@ mod tests {
 
         // Both should still decrypt correctly
         let bob_private = bob.to_bytes();
-        let dec_alice =
-            decrypt_with_mik(&enc_alice.ephemeral_public, &enc_alice.ciphertext, &bob_private, &message_id)
-                .unwrap();
-        let dec_charlie =
-            decrypt_with_mik(&enc_charlie.ephemeral_public, &enc_charlie.ciphertext, &bob_private, &message_id)
-                .unwrap();
+        let dec_alice = decrypt_with_mik(
+            &enc_alice.ephemeral_public,
+            &enc_alice.ciphertext,
+            &bob_private,
+            &message_id,
+        )
+        .unwrap();
+        let dec_charlie = decrypt_with_mik(
+            &enc_charlie.ephemeral_public,
+            &enc_charlie.ciphertext,
+            &bob_private,
+            &message_id,
+        )
+        .unwrap();
 
         assert_eq!(dec_alice.inner.from, *alice.public_id());
         assert_eq!(dec_charlie.inner.from, *charlie.public_id());
@@ -711,13 +751,14 @@ mod tests {
         let inner1 = create_inner(&alice, "Same content", 1234567890);
         let inner2 = create_inner(&alice, "Same content", 1234567890);
 
-        let enc1 =
-            encrypt_to_mik(&inner1, &bob_public, &message_id1, &alice_private).unwrap();
-        let enc2 =
-            encrypt_to_mik(&inner2, &bob_public, &message_id2, &alice_private).unwrap();
+        let enc1 = encrypt_to_mik(&inner1, &bob_public, &message_id1, &alice_private).unwrap();
+        let enc2 = encrypt_to_mik(&inner2, &bob_public, &message_id2, &alice_private).unwrap();
 
         // Different ephemeral keys
-        assert_ne!(enc1.ephemeral_public, enc2.ephemeral_public, "Ephemeral keys should differ");
+        assert_ne!(
+            enc1.ephemeral_public, enc2.ephemeral_public,
+            "Ephemeral keys should differ"
+        );
 
         // Different ciphertexts (even with same content)
         assert_ne!(
@@ -740,13 +781,17 @@ mod tests {
         let inner = create_inner(&alice, "", 1234567890);
 
         // Encrypt empty message
-        let enc_output =
-            encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private)
-                .expect("Empty message encryption should succeed");
+        let enc_output = encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private)
+            .expect("Empty message encryption should succeed");
 
         // Decrypt and verify
-        let dec_output = decrypt_with_mik(&enc_output.ephemeral_public, &enc_output.ciphertext, &bob_private, &message_id)
-            .expect("Empty message decryption should succeed");
+        let dec_output = decrypt_with_mik(
+            &enc_output.ephemeral_public,
+            &enc_output.ciphertext,
+            &bob_private,
+            &message_id,
+        )
+        .expect("Empty message decryption should succeed");
 
         match dec_output.inner.content {
             Content::Text(text) => assert_eq!(text.body, "", "Decrypted body should be empty"),
@@ -758,21 +803,33 @@ mod tests {
     fn test_is_zero_shared_secret() {
         // Test that zero shared secret is detected
         let zero_secret = [0u8; 32];
-        assert!(is_zero_shared_secret(&zero_secret), "All-zero secret should be detected as zero");
+        assert!(
+            is_zero_shared_secret(&zero_secret),
+            "All-zero secret should be detected as zero"
+        );
 
         // Test that non-zero shared secrets are not flagged as zero
         let mut non_zero_secret = [0u8; 32];
         non_zero_secret[0] = 1;
-        assert!(!is_zero_shared_secret(&non_zero_secret), "Non-zero secret should not be detected as zero");
+        assert!(
+            !is_zero_shared_secret(&non_zero_secret),
+            "Non-zero secret should not be detected as zero"
+        );
 
         // Test with random non-zero secret
         let mut random_secret = [0u8; 32];
         random_secret[15] = 255;
         random_secret[31] = 128;
-        assert!(!is_zero_shared_secret(&random_secret), "Random non-zero secret should not be detected as zero");
+        assert!(
+            !is_zero_shared_secret(&random_secret),
+            "Random non-zero secret should not be detected as zero"
+        );
 
         // Test with secret that's all 0xFF (maximum non-zero)
         let max_secret = [0xFFu8; 32];
-        assert!(!is_zero_shared_secret(&max_secret), "All-max secret should not be detected as zero");
+        assert!(
+            !is_zero_shared_secret(&max_secret),
+            "All-max secret should not be detected as zero"
+        );
     }
 }

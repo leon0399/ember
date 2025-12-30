@@ -91,7 +91,11 @@ pub trait MailboxStore: Send + Sync {
     fn fetch(&self, routing_key: &RoutingKey) -> Result<Vec<OuterEnvelope>, NodeError>;
 
     /// Check if a message with the given ID exists for the routing key
-    fn has_message(&self, routing_key: &RoutingKey, message_id: &MessageID) -> Result<bool, NodeError>;
+    fn has_message(
+        &self,
+        routing_key: &RoutingKey,
+        message_id: &MessageID,
+    ) -> Result<bool, NodeError>;
 
     /// Delete a message by ID (for tombstone support)
     ///
@@ -166,13 +170,13 @@ impl PersistentMailboxStore {
 
         // Enable WAL mode for better concurrent performance
         conn.execute_batch(
-            r#"
+            r"
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous = NORMAL;
             PRAGMA cache_size = -64000;
             PRAGMA temp_store = MEMORY;
             PRAGMA mmap_size = 268435456;
-            "#,
+            ",
         )?;
 
         Ok(())
@@ -183,7 +187,7 @@ impl PersistentMailboxStore {
         let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
 
         conn.execute_batch(
-            r#"
+            r"
             CREATE TABLE IF NOT EXISTS mailbox_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 routing_key BLOB NOT NULL,
@@ -208,7 +212,7 @@ impl PersistentMailboxStore {
             );
 
             INSERT OR IGNORE INTO schema_version (version) VALUES (1);
-            "#,
+            ",
         )?;
 
         debug!("persistent store schema initialized");
@@ -365,8 +369,7 @@ impl MailboxStore for PersistentMailboxStore {
         // Calculate expiration
         let ttl_secs = envelope
             .ttl_hours
-            .map(|h| h as u64 * 3600)
-            .unwrap_or(self.config.default_ttl_secs);
+            .map_or(self.config.default_ttl_secs, |h| u64::from(h) * 3600);
         let expires_at = now + ttl_secs;
 
         let envelope_data = Self::serialize_envelope(&envelope)?;
@@ -485,7 +488,11 @@ impl MailboxStore for PersistentMailboxStore {
         Ok(envelopes)
     }
 
-    fn has_message(&self, routing_key: &RoutingKey, message_id: &MessageID) -> Result<bool, NodeError> {
+    fn has_message(
+        &self,
+        routing_key: &RoutingKey,
+        message_id: &MessageID,
+    ) -> Result<bool, NodeError> {
         let now = Self::now_secs();
         let message_id_bytes = message_id.as_bytes();
 
@@ -581,8 +588,12 @@ mod tests {
         let store = PersistentMailboxStore::in_memory(config).unwrap();
         let routing_key = RoutingKey::from_bytes([4u8; 16]);
 
-        store.enqueue(routing_key, create_test_envelope(routing_key, Some(1))).unwrap();
-        store.enqueue(routing_key, create_test_envelope(routing_key, Some(1))).unwrap();
+        store
+            .enqueue(routing_key, create_test_envelope(routing_key, Some(1)))
+            .unwrap();
+        store
+            .enqueue(routing_key, create_test_envelope(routing_key, Some(1)))
+            .unwrap();
 
         // Third should fail
         let result = store.enqueue(routing_key, create_test_envelope(routing_key, Some(1)));
@@ -654,9 +665,15 @@ mod tests {
         let rk1 = RoutingKey::from_bytes([10u8; 16]);
         let rk2 = RoutingKey::from_bytes([11u8; 16]);
 
-        store.enqueue(rk1, create_test_envelope(rk1, Some(1))).unwrap();
-        store.enqueue(rk1, create_test_envelope(rk1, Some(1))).unwrap();
-        store.enqueue(rk2, create_test_envelope(rk2, Some(1))).unwrap();
+        store
+            .enqueue(rk1, create_test_envelope(rk1, Some(1)))
+            .unwrap();
+        store
+            .enqueue(rk1, create_test_envelope(rk1, Some(1)))
+            .unwrap();
+        store
+            .enqueue(rk2, create_test_envelope(rk2, Some(1)))
+            .unwrap();
 
         let stats = store.stats().unwrap();
         assert_eq!(stats.mailbox_count, 2);
