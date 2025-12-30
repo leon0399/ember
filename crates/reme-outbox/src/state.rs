@@ -142,7 +142,7 @@ impl AttemptResult {
 /// Record of a single delivery attempt.
 #[derive(Debug, Clone)]
 pub struct TransportAttempt {
-    /// Which transport was used (e.g., "http:node1.example.com")
+    /// Which transport was used (e.g., "<http:node1.example.com>")
     pub transport_id: TransportId,
     /// When this attempt was made (ms since epoch)
     pub attempted_at_ms: u64,
@@ -155,11 +155,11 @@ pub struct TransportAttempt {
 /// Extensible enum for different confirmation mechanisms.
 #[derive(Debug, Clone)]
 pub enum DeliveryConfirmation {
-    /// Peer's message included our content_id in their `observed_heads`.
+    /// Peer's message included our `content_id` in their `observed_heads`.
     ///
     /// This is the primary confirmation mechanism using the Merkle DAG.
     Dag {
-        /// The content_id of the peer's message that contained our ACK
+        /// The `content_id` of the peer's message that contained our ACK
         observed_in_message_id: ContentId,
     },
     // Future variants:
@@ -276,9 +276,9 @@ pub struct PendingMessage {
     pub recipient: PublicID,
     /// Content ID for DAG tracking (used to detect confirmation)
     pub content_id: ContentId,
-    /// Serialized OuterEnvelope for fast retry
+    /// Serialized `OuterEnvelope` for fast retry
     pub envelope_bytes: Vec<u8>,
-    /// Serialized InnerEnvelope for re-encryption if needed
+    /// Serialized `InnerEnvelope` for re-encryption if needed
     pub inner_bytes: Vec<u8>,
     /// When the message was created (ms since epoch)
     pub created_at_ms: u64,

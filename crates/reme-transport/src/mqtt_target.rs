@@ -30,7 +30,7 @@ pub struct MqttTargetConfig {
     /// Base target configuration.
     pub base: TargetConfig,
 
-    /// Broker URL (e.g., "mqtts://broker:8883" or "mqtt://broker:1883").
+    /// Broker URL (e.g., "<mqtts://broker:8883>" or "<mqtt://broker:1883>").
     pub url: String,
 
     /// Client ID (auto-generated if None).
@@ -333,8 +333,7 @@ fn parse_mqtt_url(url: &str) -> Result<ParsedMqttUrl, TransportError> {
 
     if !is_mqtt {
         return Err(TransportError::Network(format!(
-            "Invalid MQTT URL scheme: {}. Expected mqtt:// or mqtts://",
-            url
+            "Invalid MQTT URL scheme: {url}. Expected mqtt:// or mqtts://"
         )));
     }
 
@@ -350,29 +349,27 @@ fn parse_mqtt_url(url: &str) -> Result<ParsedMqttUrl, TransportError> {
             let after_bracket = &rest[bracket_end + 1..];
 
             if let Some(port_str) = after_bracket.strip_prefix(':') {
-                let port: u16 = port_str.parse().map_err(|_| {
-                    TransportError::Network(format!("Invalid port in URL: {}", url))
-                })?;
+                let port: u16 = port_str
+                    .parse()
+                    .map_err(|_| TransportError::Network(format!("Invalid port in URL: {url}")))?;
                 (host, port)
             } else if after_bracket.is_empty() {
                 (host, default_port)
             } else {
                 return Err(TransportError::Network(format!(
-                    "Invalid IPv6 URL format: {}",
-                    url
+                    "Invalid IPv6 URL format: {url}"
                 )));
             }
         } else {
             return Err(TransportError::Network(format!(
-                "Unclosed bracket in IPv6 URL: {}",
-                url
+                "Unclosed bracket in IPv6 URL: {url}"
             )));
         }
     } else if let Some((h, p)) = rest.rsplit_once(':') {
         // IPv4/hostname: host:port
         let port: u16 = p
             .parse()
-            .map_err(|_| TransportError::Network(format!("Invalid port in URL: {}", url)))?;
+            .map_err(|_| TransportError::Network(format!("Invalid port in URL: {url}")))?;
         (h.to_string(), port)
     } else {
         // No port specified, use default

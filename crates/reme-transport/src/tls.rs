@@ -48,8 +48,7 @@ impl fmt::Display for PinParseError {
             PinParseError::InvalidHashLength { expected, actual } => {
                 write!(
                     f,
-                    "Invalid hash length: expected {} bytes, got {}",
-                    expected, actual
+                    "Invalid hash length: expected {expected} bytes, got {actual}"
                 )
             }
         }
@@ -218,12 +217,12 @@ impl PinningVerifier {
     }
 }
 
-/// Build a rustls ClientConfig with optional certificate pinning.
+/// Build a rustls `ClientConfig` with optional certificate pinning.
 ///
 /// This can be used for any rustls-based client (MQTT, custom transports, etc.).
 ///
 /// # Arguments
-/// * `pins` - Map of hostname -> CertPin. Hostnames without pins will
+/// * `pins` - Map of hostname -> `CertPin`. Hostnames without pins will
 ///   only receive standard certificate validation.
 ///
 /// # Errors
@@ -246,7 +245,7 @@ pub fn build_pinning_config(
     Ok(config)
 }
 
-/// Build a rustls ClientConfig for a single host with optional pinning.
+/// Build a rustls `ClientConfig` for a single host with optional pinning.
 ///
 /// Convenience wrapper around `build_pinning_config` for single-host use cases.
 ///

@@ -34,7 +34,7 @@ use tracing_subscriber::FmtSubscriber;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration
     let config = load_config().unwrap_or_else(|e| {
-        eprintln!("Failed to load configuration: {}", e);
+        eprintln!("Failed to load configuration: {e}");
         eprintln!("Using default configuration...");
         config::AppConfig::default()
     });

@@ -275,12 +275,12 @@ impl Default for TransportRegistry {
     }
 }
 
-/// Implement TransportQuery for unified access.
+/// Implement `TransportQuery` for unified access.
 ///
 /// This implementation includes targets from all sources:
 /// - HTTP pool targets (with health tracking)
 /// - MQTT pool targets (with health tracking)
-/// - Composite-only targets (from ephemeral_meta, without health tracking)
+/// - Composite-only targets (from `ephemeral_meta`, without health tracking)
 impl TransportQuery for TransportRegistry {
     fn list_targets(&self) -> Vec<TargetSnapshot> {
         let mut targets = Vec::new();

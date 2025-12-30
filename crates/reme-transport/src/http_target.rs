@@ -146,7 +146,7 @@ impl HttpTarget {
     async fn submit_payload(&self, payload_b64: &str) -> Result<(), TransportError> {
         // Parse URL and extract credentials if present
         let parsed = parse_url_with_auth(&self.config.url)
-            .map_err(|e| TransportError::Network(format!("Invalid URL: {}", e)))?;
+            .map_err(|e| TransportError::Network(format!("Invalid URL: {e}")))?;
 
         let url = format!("{}/api/v1/submit", parsed.url.trim_end_matches('/'));
 
@@ -180,8 +180,7 @@ impl HttpTarget {
                 .await
                 .unwrap_or_else(|_| "unknown error".to_string());
             return Err(TransportError::ServerError(format!(
-                "HTTP {}: {}",
-                status, body
+                "HTTP {status}: {body}"
             )));
         }
 
@@ -242,7 +241,7 @@ impl HttpTarget {
     ) -> Result<Vec<OuterEnvelope>, TransportError> {
         // Parse URL and extract credentials if present
         let parsed = parse_url_with_auth(&self.config.url)
-            .map_err(|e| TransportError::Network(format!("Invalid URL: {}", e)))?;
+            .map_err(|e| TransportError::Network(format!("Invalid URL: {e}")))?;
 
         let url = format!(
             "{}/api/v1/fetch/{}",
@@ -278,8 +277,7 @@ impl HttpTarget {
                 .await
                 .unwrap_or_else(|_| "unknown error".to_string());
             return Err(TransportError::ServerError(format!(
-                "HTTP {}: {}",
-                status, body
+                "HTTP {status}: {body}"
             )));
         }
 
@@ -293,10 +291,10 @@ impl HttpTarget {
         for blob in result.payloads {
             let wire_bytes = BASE64_STANDARD
                 .decode(&blob)
-                .map_err(|e| TransportError::Serialization(format!("base64 decode: {}", e)))?;
+                .map_err(|e| TransportError::Serialization(format!("base64 decode: {e}")))?;
 
             let payload = WirePayload::decode(&wire_bytes)
-                .map_err(|e| TransportError::Serialization(format!("wire decode: {}", e)))?;
+                .map_err(|e| TransportError::Serialization(format!("wire decode: {e}")))?;
 
             // Only extract messages (tombstones are handled separately)
             if let WirePayload::Message(envelope) = payload {
@@ -444,7 +442,7 @@ fn build_target_client(config: &HttpTargetConfig) -> Result<Client, TransportErr
             rustls::crypto::ring::default_provider(),
         ))
         .with_safe_default_protocol_versions()
-        .map_err(|e| TransportError::TlsConfig(format!("Failed to set protocol versions: {}", e)))?
+        .map_err(|e| TransportError::TlsConfig(format!("Failed to set protocol versions: {e}")))?
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(verifier))
         .with_no_client_auth();

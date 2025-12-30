@@ -2,7 +2,7 @@
 //!
 //! This module provides a push-based interface for receiving messages.
 //! Currently implemented via HTTP polling, but the interface is designed
-//! to support future transport mechanisms (WebSocket, DHT, BLE, LoRa).
+//! to support future transport mechanisms (WebSocket, DHT, BLE, `LoRa`).
 
 use std::sync::Arc;
 use std::time::Duration;

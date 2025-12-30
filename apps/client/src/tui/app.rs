@@ -34,7 +34,7 @@ use zeroize::Zeroizing;
 
 pub type AppResult<T> = Result<T, Box<dyn std::error::Error>>;
 
-/// Length of a PublicID when encoded as hexadecimal (32 bytes = 64 hex chars)
+/// Length of a `PublicID` when encoded as hexadecimal (32 bytes = 64 hex chars)
 const PUBLIC_ID_HEX_LENGTH: usize = 64;
 
 /// Help text shown in status bar (Alt+H or initial startup)
@@ -105,11 +105,11 @@ pub struct AddContactPopup<'a> {
     pub error: Option<String>,
 }
 
-impl<'a> Default for AddContactPopup<'a> {
+impl Default for AddContactPopup<'_> {
     fn default() -> Self {
         let mut public_id_input = TextArea::default();
         public_id_input
-            .set_placeholder_text(format!("{}-character hex string", PUBLIC_ID_HEX_LENGTH));
+            .set_placeholder_text(format!("{PUBLIC_ID_HEX_LENGTH}-character hex string"));
         public_id_input.set_cursor_line_style(Style::default());
 
         let mut name_input = TextArea::default();
@@ -125,7 +125,7 @@ impl<'a> Default for AddContactPopup<'a> {
     }
 }
 
-impl<'a> AddContactPopup<'a> {
+impl AddContactPopup<'_> {
     /// Reset the popup to initial state
     pub fn reset(&mut self) {
         *self = Self::default();
@@ -196,7 +196,7 @@ pub struct AddUpstreamPopup<'a> {
     pub error: Option<String>,
 }
 
-impl<'a> Default for AddUpstreamPopup<'a> {
+impl Default for AddUpstreamPopup<'_> {
     fn default() -> Self {
         let mut url_input = TextArea::default();
         url_input.set_placeholder_text("http://192.168.1.50:23003");
@@ -212,7 +212,7 @@ impl<'a> Default for AddUpstreamPopup<'a> {
     }
 }
 
-impl<'a> AddUpstreamPopup<'a> {
+impl AddUpstreamPopup<'_> {
     /// Reset the popup to initial state
     pub fn reset(&mut self) {
         *self = Self::default();
@@ -269,7 +269,7 @@ impl<'a> AddUpstreamPopup<'a> {
             .find_map(|s| url.strip_prefix(s))
             .unwrap_or("");
         if after_scheme.is_empty() || after_scheme.starts_with('/') {
-            return Err(format!("Invalid {} URL: missing host", type_name));
+            return Err(format!("Invalid {type_name} URL: missing host"));
         }
 
         Ok(url)
@@ -313,7 +313,7 @@ pub struct App<'a> {
     pub input: TextArea<'a>,
     /// Status message
     pub status: String,
-    /// The messenger client (uses CompositeTransport for sending via HTTP and/or MQTT)
+    /// The messenger client (uses `CompositeTransport` for sending via HTTP and/or MQTT)
     client: Client<CompositeTransport>,
     /// HTTP transport pool for message receiving (HTTP polling-based receiver)
     http_pool: Arc<TransportPool<HttpTarget>>,
@@ -345,7 +345,7 @@ pub struct App<'a> {
     outbox_tick_interval: Duration,
 }
 
-impl<'a> App<'a> {
+impl App<'_> {
     /// Create a new app instance
     ///
     /// # Arguments
@@ -440,7 +440,7 @@ impl<'a> App<'a> {
                 config.embedded_node.max_messages as usize,
                 config.embedded_node.default_ttl_secs,
             )
-            .map_err(|e| format!("Invalid embedded node config: {}", e))?;
+            .map_err(|e| format!("Invalid embedded node config: {e}"))?;
 
             // Create mailbox store in the same data directory
             let mailbox_db_path = config.data_dir.join("mailbox.db");
@@ -448,7 +448,7 @@ impl<'a> App<'a> {
                 .to_str()
                 .ok_or("Mailbox database path contains invalid UTF-8 characters")?;
             let mailbox_store = PersistentMailboxStore::open(mailbox_db_str, store_config)
-                .map_err(|e| format!("Failed to open mailbox store: {}", e))?;
+                .map_err(|e| format!("Failed to open mailbox store: {e}"))?;
 
             // Create and spawn embedded node, keeping JoinHandle for graceful shutdown
             let (node, handle, event_rx) = EmbeddedNode::new(mailbox_store);
@@ -474,7 +474,7 @@ impl<'a> App<'a> {
                     http_identity,
                 )
                 .await
-                .map_err(|e| format!("Failed to start HTTP server: {}", e))?;
+                .map_err(|e| format!("Failed to start HTTP server: {e}"))?;
 
                 // Now spawn the server task - binding already succeeded
                 tokio::spawn(async move {
@@ -707,7 +707,7 @@ impl<'a> App<'a> {
                     }
                     NodeEvent::Error(e) => {
                         tracing::error!("Embedded node error: {}", e);
-                        self.status = format!("Node error: {}", e);
+                        self.status = format!("Node error: {e}");
                     }
                 }
             }
@@ -789,7 +789,7 @@ impl<'a> App<'a> {
             }
             Err(e) => {
                 warn!("Failed to process {} message: {}", source, e);
-                self.status = format!("Message decrypt failed: {}", e);
+                self.status = format!("Message decrypt failed: {e}");
             }
         }
     }
@@ -1068,7 +1068,7 @@ impl<'a> App<'a> {
                             self.status = "Message sent!".to_string();
                         }
                         Err(e) => {
-                            self.status = format!("Send failed: {}", e);
+                            self.status = format!("Send failed: {e}");
                         }
                     }
                 }
@@ -1081,7 +1081,7 @@ impl<'a> App<'a> {
         Ok(())
     }
 
-    /// Cache a message with size limit (O(1) eviction using VecDeque)
+    /// Cache a message with size limit (O(1) eviction using `VecDeque`)
     fn cache_message(&mut self, contact: PublicID, message: Message) {
         let cache = self.message_cache.entry(contact).or_default();
         cache.push_back(message);
@@ -1120,7 +1120,7 @@ impl<'a> App<'a> {
                     AddContactField::PublicId => "Public ID",
                     AddContactField::Name => "Name",
                 };
-                self.status = format!("Focus: {} field", field_name);
+                self.status = format!("Focus: {field_name} field");
             }
             KeyCode::Enter => {
                 // Attempt to add contact
@@ -1185,10 +1185,10 @@ impl<'a> App<'a> {
                 // Close popup and show success
                 self.show_add_contact_popup = false;
                 self.add_contact_popup.reset();
-                self.status = format!("Added contact: {}", display_name);
+                self.status = format!("Added contact: {display_name}");
             }
             Err(e) => {
-                self.add_contact_popup.error = Some(format!("Failed to add contact: {}", e));
+                self.add_contact_popup.error = Some(format!("Failed to add contact: {e}"));
             }
         }
 
@@ -1309,7 +1309,7 @@ impl<'a> App<'a> {
                 self.registry
                     .add_http_target(url, None, tier)
                     .await
-                    .map_err(|e| format!("Failed to create HTTP transport: {}", e))?;
+                    .map_err(|e| format!("Failed to create HTTP transport: {e}"))?;
                 info!(url = %url, "Added ephemeral HTTP upstream");
             }
             UpstreamType::Mqtt => {
@@ -1320,7 +1320,7 @@ impl<'a> App<'a> {
                 };
                 let transport = MqttTransport::new(vec![broker_spec])
                     .await
-                    .map_err(|e| format!("Failed to connect to MQTT broker: {}", e))?;
+                    .map_err(|e| format!("Failed to connect to MQTT broker: {e}"))?;
 
                 // Add to composite transport via registry
                 self.registry.composite().add_transport(transport).await;
@@ -1347,7 +1347,7 @@ fn utc_time_now() -> String {
 
     let hours = (secs % 86400) / 3600;
     let mins = (secs % 3600) / 60;
-    format!("{:02}:{:02}", hours, mins)
+    format!("{hours:02}:{mins:02}")
 }
 
 /// Format a display name from optional name and public ID

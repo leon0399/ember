@@ -11,7 +11,7 @@ use std::sync::Arc;
 /// Storage operations for the outbox.
 ///
 /// This trait is implemented by `reme-storage::Storage` to provide
-/// SQLite persistence for the outbox.
+/// `SQLite` persistence for the outbox.
 pub trait OutboxStore {
     /// Error type for storage operations.
     type Error: std::error::Error + Send + Sync + 'static;
@@ -47,7 +47,7 @@ pub trait OutboxStore {
         entry_id: OutboxEntryId,
     ) -> Result<Option<PendingMessage>, Self::Error>;
 
-    /// Get entry by content_id (for DAG confirmation lookup).
+    /// Get entry by `content_id` (for DAG confirmation lookup).
     fn outbox_get_by_content_id(
         &self,
         content_id: ContentId,
@@ -93,7 +93,7 @@ pub trait OutboxStore {
     /// Mark all entries with `expires_at_ms < now_ms` as expired.
     ///
     /// Returns the number of entries expired.
-    /// This is more efficient than loading all pending and calling mark_expired individually.
+    /// This is more efficient than loading all pending and calling `mark_expired` individually.
     fn outbox_expire_due(&self, now_ms: u64) -> Result<u64, Self::Error>;
 
     // ========== Tiered Delivery Methods ==========
@@ -144,9 +144,9 @@ pub trait OutboxStore {
     ) -> Result<(), Self::Error>;
 }
 
-/// Blanket implementation for Arc<T> where T: OutboxStore.
+/// Blanket implementation for Arc<T> where T: `OutboxStore`.
 ///
-/// This enables sharing storage between Client and ClientOutbox
+/// This enables sharing storage between Client and `ClientOutbox`
 /// without requiring Clone on the storage implementation.
 impl<T: OutboxStore> OutboxStore for Arc<T> {
     type Error = T::Error;

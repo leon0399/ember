@@ -34,7 +34,7 @@ pub enum StorageError {
     Node(#[from] NodeError),
 }
 
-/// Simple SQLite storage for desktop v0.1
+/// Simple `SQLite` storage for desktop v0.1
 ///
 /// Supports unified storage for both client data (contacts, messages, outbox)
 /// and embedded node mailbox data.
@@ -230,7 +230,7 @@ impl Storage {
     ///
     /// This creates a new `PersistentMailboxStore` that connects to the same
     /// database file with its own connection. Both connections can safely
-    /// coexist using SQLite's WAL mode.
+    /// coexist using `SQLite`'s WAL mode.
     ///
     /// # Note
     /// For in-memory databases (testing mode), this creates a separate in-memory
@@ -473,7 +473,7 @@ impl Storage {
 
     /// Store a pending ack secret for a sent message.
     ///
-    /// This is used by senders to retain the ack_secret so they can create
+    /// This is used by senders to retain the `ack_secret` so they can create
     /// tombstones for their own messages (e.g., to retract before delivery).
     pub fn store_pending_ack(
         &self,
@@ -541,7 +541,7 @@ impl Storage {
         Ok(())
     }
 
-    /// Clean up old pending ack secrets that are older than max_age_secs.
+    /// Clean up old pending ack secrets that are older than `max_age_secs`.
     ///
     /// Returns the number of deleted entries.
     pub fn cleanup_old_pending_acks(&self, max_age_secs: u64) -> Result<usize, StorageError> {
@@ -695,8 +695,7 @@ impl Storage {
                 targets.insert(TargetId::mqtt(url));
             } else {
                 return Err(StorageError::Serialization(format!(
-                    "Unknown target_id prefix in '{}'",
-                    target_str
+                    "Unknown target_id prefix in '{target_str}'"
                 )));
             }
         }
@@ -758,8 +757,7 @@ impl Storage {
                                 TargetId::mqtt(url)
                             } else {
                                 return Err(StorageError::Serialization(format!(
-                                    "Unknown target_id prefix in '{}'",
-                                    target_str
+                                    "Unknown target_id prefix in '{target_str}'"
                                 )));
                             };
                             DeliveryConfidence::DirectDelivery { target }
@@ -792,7 +790,7 @@ impl Storage {
         }
     }
 
-    /// Load a PendingMessage from row data
+    /// Load a `PendingMessage` from row data
     ///
     /// Note: `message_id` serves as both the primary key and the entry ID.
     #[allow(clippy::too_many_arguments)]

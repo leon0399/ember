@@ -412,7 +412,7 @@ impl TransportCoordinator {
     /// Tiers are attempted in order:
     /// 1. **Direct**: Race all ephemeral targets, exit on any success
     /// 2. **Quorum**: Broadcast to all stable targets, require quorum
-    /// 3. **Best-Effort**: Future expansion (BLE, LoRa)
+    /// 3. **Best-Effort**: Future expansion (BLE, `LoRa`)
     ///
     /// Returns a `DeliveryResult` with per-target outcomes and confidence level.
     pub async fn submit_tiered(

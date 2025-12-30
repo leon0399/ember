@@ -113,14 +113,14 @@ pub fn is_low_order_point(public_key: &[u8; 32]) -> bool {
     LOW_ORDER_POINTS.iter().any(|p| p == public_key)
 }
 
-/// PublicID is a 32-byte address for a user identity using XEdDSA.
+/// `PublicID` is a 32-byte address for a user identity using `XEdDSA`.
 ///
 /// **Structure**: Single 32-byte X25519 public key (Curve25519 Montgomery form)
 /// **Serialization**: 32 bytes on wire
 ///
-/// Uses XEdDSA protocol:
+/// Uses `XEdDSA` protocol:
 /// - X25519 for encryption and key exchange (direct usage)
-/// - XEdDSA signatures for authentication (via birational map to Ed25519)
+/// - `XEdDSA` signatures for authentication (via birational map to Ed25519)
 /// - Sign bit convention: Always 0 (enforced during key generation)
 ///
 /// This achieves 32-byte compact addresses while supporting both encryption
@@ -187,10 +187,10 @@ impl PublicID {
         &self.x25519_public
     }
 
-    /// Verify an XEdDSA signature
+    /// Verify an `XEdDSA` signature
     ///
     /// This converts the X25519 public key to Ed25519 form (with sign bit = 0)
-    /// and verifies the signature using XEdDSA.
+    /// and verifies the signature using `XEdDSA`.
     pub fn verify_xeddsa(&self, message: &[u8], signature: &[u8; 64]) -> bool {
         // Convert to xeddsa PublicKey type
         let xed_public = xed25519::PublicKey(self.x25519_public.to_bytes());
@@ -219,13 +219,13 @@ impl PublicID {
 
 /// Routing key for mailbox addressing (16 bytes).
 ///
-/// Derived from the first 16 bytes of a BLAKE3 hash of a PublicID.
+/// Derived from the first 16 bytes of a BLAKE3 hash of a `PublicID`.
 /// Used to address messages without revealing the full public key.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Encode, Decode, From, Deref, DerefMut)]
 pub struct RoutingKey(pub [u8; 16]);
 
 impl RoutingKey {
-    /// Create a new RoutingKey from raw bytes
+    /// Create a new `RoutingKey` from raw bytes
     pub fn from_bytes(bytes: [u8; 16]) -> Self {
         Self(bytes)
     }
@@ -319,9 +319,9 @@ impl Identity {
         &self.x25519_secret
     }
 
-    /// Sign a message using XEdDSA
+    /// Sign a message using `XEdDSA`
     ///
-    /// This uses the XEdDSA signing algorithm which produces Ed25519-compatible
+    /// This uses the `XEdDSA` signing algorithm which produces Ed25519-compatible
     /// signatures from X25519 keys via the birational map.
     pub fn sign_xeddsa(&self, message: &[u8]) -> [u8; 64] {
         // Convert to xeddsa PrivateKey type
@@ -341,7 +341,7 @@ impl Identity {
     ///
     /// Derives a single X25519 key that will be used for both:
     /// - X25519 DH operations (direct usage)
-    /// - XEdDSA signatures (via birational map to Ed25519)
+    /// - `XEdDSA` signatures (via birational map to Ed25519)
     ///
     /// Returns an error if the derived public key is a low-order point
     /// (mathematically impossible with proper clamping, but checked for defense-in-depth).
@@ -579,14 +579,12 @@ mod tests {
         for (i, point) in low_order_points.iter().enumerate() {
             assert!(
                 is_low_order_point(point),
-                "Point {} should be detected as low-order",
-                i
+                "Point {i} should be detected as low-order"
             );
             assert_eq!(
                 PublicID::try_from_bytes(point),
                 Err(InvalidPublicKey),
-                "Point {} should be rejected by try_from_bytes",
-                i
+                "Point {i} should be rejected by try_from_bytes"
             );
         }
     }

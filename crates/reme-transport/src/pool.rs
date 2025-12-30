@@ -441,7 +441,7 @@ impl<T: TransportTarget + 'static> Default for TransportPool<T> {
     }
 }
 
-/// Implement Transport trait for TransportPool to allow use with existing code.
+/// Implement Transport trait for `TransportPool` to allow use with existing code.
 #[async_trait]
 impl<T: TransportTarget + 'static> Transport for TransportPool<T> {
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
@@ -596,7 +596,7 @@ impl TransportPool<HttpTarget> {
     /// Fetch messages once from all healthy targets and deduplicate.
     ///
     /// This method performs a single fetch operation from all available targets
-    /// and returns unique messages (deduplicated by message_id).
+    /// and returns unique messages (deduplicated by `message_id`).
     pub async fn fetch_once(
         &self,
         routing_key: &RoutingKey,

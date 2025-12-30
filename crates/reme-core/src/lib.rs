@@ -85,10 +85,10 @@ pub struct ReceivedMessage {
     pub content_id: ContentId,
     /// Whether this message has gaps in the DAG (missing parents)
     pub has_gaps: bool,
-    /// Sender likely lost state: we have history from them but they sent prev_self=None
+    /// Sender likely lost state: we have history from them but they sent `prev_self=None`
     /// (not including intentionally detached messages)
     pub sender_state_reset: bool,
-    /// We likely lost state: sender's observed_heads contains IDs we don't recognize
+    /// We likely lost state: sender's `observed_heads` contains IDs we don't recognize
     /// This means the peer saw messages from us that we have no record of sending
     pub local_state_behind: bool,
 }
@@ -112,7 +112,7 @@ pub struct ReceivedMessage {
 /// - DAG-based delivery confirmation
 /// - Gap detection triggers automatic retry
 ///
-/// ## Tiered Delivery (with TransportCoordinator)
+/// ## Tiered Delivery (with `TransportCoordinator`)
 ///
 /// When using `Client<TransportCoordinator>`, additional methods are available
 /// for tiered delivery with quorum semantics:
@@ -123,12 +123,12 @@ pub struct Client<T: Transport> {
     identity: Identity,
     transport: Arc<T>,
     storage: Arc<Storage>,
-    /// DAG state per contact (keyed by PublicID bytes)
+    /// DAG state per contact (keyed by `PublicID` bytes)
     /// Tracks message ordering for gap detection
     dag_state: Mutex<HashMap<[u8; 32], ConversationDag>>,
     /// Client outbox for resilient delivery tracking
     outbox: ClientOutbox<Arc<Storage>>,
-    /// Configuration for tiered delivery (when using TransportCoordinator)
+    /// Configuration for tiered delivery (when using `TransportCoordinator`)
     tiered_config: TieredDeliveryConfig,
 }
 
@@ -223,7 +223,7 @@ impl<T: Transport> Client<T> {
 
     /// Get the latest observed heads from the receiver tracker for a contact.
     ///
-    /// Returns the content_ids of messages we've received from the peer.
+    /// Returns the `content_ids` of messages we've received from the peer.
     /// In 1:1 chat, this is typically just the peer's latest message.
     fn get_observed_heads(&self, dag: &ConversationDag) -> Vec<ContentId> {
         dag.observed_heads()
@@ -280,7 +280,7 @@ impl<T: Transport> Client<T> {
     /// This increments the DAG epoch for this conversation, which:
     /// - Clears all DAG tracking state (sender chain, receiver state, peer head)
     /// - Future messages will start fresh chains
-    /// - Messages referencing pre-epoch content_ids will be detected as gaps
+    /// - Messages referencing pre-epoch `content_ids` will be detected as gaps
     ///
     /// Note: This does NOT delete stored messages from local storage.
     /// Use this when both parties agree to clear history.
@@ -316,9 +316,9 @@ impl<T: Transport> Client<T> {
 
     /// Send a detached text message (no DAG linkage).
     ///
-    /// Use this for constrained transports (LoRa, BLE) where bandwidth is limited
-    /// and DAG overhead should be avoided. Detached messages have no prev_self
-    /// or observed_heads, making them "floating" in the message history.
+    /// Use this for constrained transports (`LoRa`, BLE) where bandwidth is limited
+    /// and DAG overhead should be avoided. Detached messages have no `prev_self`
+    /// or `observed_heads`, making them "floating" in the message history.
     pub async fn send_text_detached(
         &self,
         to: &PublicID,
@@ -444,9 +444,9 @@ impl<T: Transport> Client<T> {
 
         // Serialize envelopes for outbox storage
         let envelope_bytes = bincode::encode_to_vec(&outer, bincode::config::standard())
-            .map_err(|e| ClientError::Serialization(format!("envelope: {}", e)))?;
+            .map_err(|e| ClientError::Serialization(format!("envelope: {e}")))?;
         let inner_bytes = bincode::encode_to_vec(&inner, bincode::config::standard())
-            .map_err(|e| ClientError::Serialization(format!("inner: {}", e)))?;
+            .map_err(|e| ClientError::Serialization(format!("inner: {e}")))?;
 
         // Enqueue to outbox
         let entry_id = self
@@ -765,7 +765,7 @@ impl<T: Transport> Client<T> {
     /// Use this to delete a message from relay nodes before the recipient
     /// fetches it. This is the "unsend" or "retract" functionality.
     ///
-    /// The ack_secret is retrieved from local storage (stored during
+    /// The `ack_secret` is retrieved from local storage (stored during
     /// message preparation). If the message has already been acknowledged
     /// by the recipient, this will fail at the node with 404.
     ///
@@ -773,7 +773,7 @@ impl<T: Transport> Client<T> {
     /// * `message_id` - The message ID to retract
     ///
     /// # Errors
-    /// - `ClientError::AckSecretNotFound` if no pending_ack exists for this message
+    /// - `ClientError::AckSecretNotFound` if no `pending_ack` exists for this message
     /// - `ClientError::Transport` if the tombstone submission fails
     pub async fn acknowledge_sent(&self, message_id: MessageID) -> Result<(), ClientError> {
         // Retrieve stored ack_secret
@@ -803,14 +803,14 @@ impl<T: Transport> Client<T> {
     /// Use this when the auto-tombstone in `process_message()` failed and you
     /// want to retry clearing the message from relay nodes.
     ///
-    /// The ack_secret is automatically retrieved from storage (stored during
+    /// The `ack_secret` is automatically retrieved from storage (stored during
     /// `process_message()` before attempting auto-tombstone).
     ///
     /// # Arguments
     /// * `message_id` - The message ID to acknowledge
     ///
     /// # Errors
-    /// - `ClientError::AckSecretNotFound` if no pending_ack exists for this message
+    /// - `ClientError::AckSecretNotFound` if no `pending_ack` exists for this message
     /// - `ClientError::Transport` if the tombstone submission fails
     pub async fn acknowledge_received(&self, message_id: MessageID) -> Result<(), ClientError> {
         // Retrieve stored ack_secret
@@ -860,7 +860,7 @@ impl<T: Transport> Client<T> {
     /// Get the transport ID for the current transport.
     ///
     /// Format: `"{type}:{identifier}"` based on transport configuration.
-    /// Currently defaults to "http:default" - will be enhanced when
+    /// Currently defaults to "<http:default>" - will be enhanced when
     /// multi-transport support is added.
     fn transport_id(&self) -> String {
         // TODO: Extract transport identifier from transport instance
@@ -913,7 +913,7 @@ impl<T: Transport> Client<T> {
 
     /// Retry delivery via a specific transport.
     ///
-    /// Use this for user-initiated transport override (e.g., "send via LoRa").
+    /// Use this for user-initiated transport override (e.g., "send via `LoRa`").
     /// This schedules the message for immediate retry.
     ///
     /// # Arguments
@@ -971,7 +971,7 @@ impl<T: Transport> Client<T> {
     /// pending retries and clean up expired messages.
     ///
     /// # Returns
-    /// Tuple of (messages_retried, messages_expired)
+    /// Tuple of (`messages_retried`, `messages_expired`)
     pub async fn outbox_tick(&self) -> Result<(usize, u64), ClientError> {
         // Check for expired messages first
         let expired = self
@@ -1045,7 +1045,7 @@ fn transport_error_to_attempt_error(e: &TransportError) -> AttemptError {
             message: "channel closed".to_string(),
         },
         TransportError::TlsConfig(msg) => AttemptError::Rejected {
-            message: format!("TLS configuration error: {}", msg),
+            message: format!("TLS configuration error: {msg}"),
             is_transient: false,
         },
         TransportError::CertificatePinMismatch {
@@ -1054,8 +1054,7 @@ fn transport_error_to_attempt_error(e: &TransportError) -> AttemptError {
             actual,
         } => AttemptError::Rejected {
             message: format!(
-                "Certificate pin mismatch for {}: expected {}, got {}",
-                hostname, expected, actual
+                "Certificate pin mismatch for {hostname}: expected {expected}, got {actual}"
             ),
             is_transient: false,
         },
@@ -1263,7 +1262,7 @@ impl Client<TransportCoordinator> {
         let outer: OuterEnvelope =
             bincode::decode_from_slice(&pending.envelope_bytes, bincode::config::standard())
                 .map(|(envelope, _)| envelope)
-                .map_err(|e| ClientError::Serialization(format!("envelope: {}", e)))?;
+                .map_err(|e| ClientError::Serialization(format!("envelope: {e}")))?;
 
         // Try Direct tier first - recipient may be online now
         let direct_result = self
@@ -1384,7 +1383,7 @@ impl Client<TransportCoordinator> {
         let outer: OuterEnvelope =
             bincode::decode_from_slice(&pending.envelope_bytes, bincode::config::standard())
                 .map(|(envelope, _)| envelope)
-                .map_err(|e| ClientError::Serialization(format!("envelope: {}", e)))?;
+                .map_err(|e| ClientError::Serialization(format!("envelope: {e}")))?;
 
         // Try Direct tier first - recipient may be online now
         let direct_result = self
@@ -1463,7 +1462,7 @@ impl Client<TransportCoordinator> {
     /// 3. Maintenance refreshes (Phase 2)
     ///
     /// # Returns
-    /// Tuple of (urgent_retried, maintenance_refreshed, expired)
+    /// Tuple of (`urgent_retried`, `maintenance_refreshed`, expired)
     pub async fn tiered_outbox_tick(&self) -> Result<(usize, usize, u64), ClientError> {
         // Check for expired messages first
         let expired = self

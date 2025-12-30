@@ -34,7 +34,7 @@ async fn start_test_node(
         .await
         .expect("Failed to bind");
     let addr = listener.local_addr().expect("Failed to get local addr");
-    let url = format!("http://{}", addr);
+    let url = format!("http://{addr}");
     let host = addr.to_string(); // "127.0.0.1:PORT"
 
     let config = PersistentStoreConfig {
@@ -75,7 +75,7 @@ async fn start_test_node(
     });
 
     // Wait for server readiness with retry loop instead of fixed delay
-    let health_url = format!("{}/api/v1/health", url_clone);
+    let health_url = format!("{url_clone}/api/v1/health");
     let client = reqwest::Client::new();
     let mut server_ready = false;
     for _ in 0..50 {
@@ -88,8 +88,7 @@ async fn start_test_node(
     }
     assert!(
         server_ready,
-        "Test server failed to start within 500ms at {}",
-        url_clone
+        "Test server failed to start within 500ms at {url_clone}"
     );
 
     (url, handle)
@@ -118,8 +117,8 @@ async fn test_signed_replication_between_nodes() {
     )
     .await;
 
-    println!("Node 1: {}", url1);
-    println!("Node 2: {}", url2);
+    println!("Node 1: {url1}");
+    println!("Node 2: {url2}");
 
     // Create transports
     let transport1 = TransportPool::<HttpTarget>::single(&url1).unwrap();
@@ -184,8 +183,8 @@ async fn test_unsigned_replication_fallback() {
     )
     .await;
 
-    println!("Node 1 (unsigned): {}", url1);
-    println!("Node 2 (unsigned): {}", url2);
+    println!("Node 1 (unsigned): {url1}");
+    println!("Node 2 (unsigned): {url2}");
 
     let transport1 = TransportPool::<HttpTarget>::single(&url1).unwrap();
     let transport2 = TransportPool::<HttpTarget>::single(&url2).unwrap();
@@ -251,8 +250,8 @@ async fn test_mixed_cluster_replication() {
     )
     .await;
 
-    println!("Node 1 (signed): {}", url1);
-    println!("Node 2 (unsigned): {}", url2);
+    println!("Node 1 (signed): {url1}");
+    println!("Node 2 (unsigned): {url2}");
 
     let transport1 = TransportPool::<HttpTarget>::single(&url1).unwrap();
     let transport2 = TransportPool::<HttpTarget>::single(&url2).unwrap();
@@ -307,7 +306,7 @@ async fn test_node_identity_persistence() {
     let identity1 = NodeIdentity::load_or_generate(&identity_path).expect("First load failed");
     let node_id1 = identity1.node_id().to_string();
     let pubkey1 = identity1.public_id().to_bytes();
-    println!("Generated node ID: {}", node_id1);
+    println!("Generated node ID: {node_id1}");
 
     // Drop and reload - should have same identity
     drop(identity1);
@@ -320,7 +319,7 @@ async fn test_node_identity_persistence() {
         pubkey1, pubkey2,
         "Public key should persist across restarts"
     );
-    println!("Identity persisted correctly: {}", node_id2);
+    println!("Identity persisted correctly: {node_id2}");
 
     println!("\n✓ Node identity persistence test passed!");
 }

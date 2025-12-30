@@ -11,7 +11,7 @@
 //! The main entry point is [`ClientOutbox`], which coordinates:
 //! - Message enqueueing with envelope storage for fast retry
 //! - Per-transport retry scheduling with configurable policies
-//! - DAG-based delivery confirmation (peer's observed_heads includes our content_id)
+//! - DAG-based delivery confirmation (peer's `observed_heads` includes our `content_id`)
 //! - Gap detection and automatic retry triggering
 //!
 //! # Example
@@ -57,7 +57,7 @@ use std::time::Duration;
 /// - Enqueueing messages with stored envelopes for retry
 /// - Tracking per-transport delivery attempts
 /// - Computing retry schedules based on transport policies
-/// - Detecting delivery confirmation via DAG (observed_heads)
+/// - Detecting delivery confirmation via DAG (`observed_heads`)
 /// - Finding messages that need retry due to gaps
 ///
 /// # Thread Safety
@@ -65,7 +65,7 @@ use std::time::Duration;
 /// Most `ClientOutbox` operations use `&self` with interior mutability handled
 /// by the storage backend. Only `set_transport_policy` requires `&mut self`.
 pub struct ClientOutbox<S: OutboxStore> {
-    /// Storage backend (implements OutboxStore)
+    /// Storage backend (implements `OutboxStore`)
     store: S,
     /// Outbox configuration
     config: OutboxConfig,
@@ -138,8 +138,8 @@ impl<S: OutboxStore> ClientOutbox<S> {
     /// * `recipient` - Recipient's public ID
     /// * `content_id` - Content ID for DAG tracking
     /// * `message_id` - Wire message ID
-    /// * `envelope_bytes` - Serialized OuterEnvelope
-    /// * `inner_bytes` - Serialized InnerEnvelope
+    /// * `envelope_bytes` - Serialized `OuterEnvelope`
+    /// * `inner_bytes` - Serialized `InnerEnvelope`
     /// * `ttl_ms` - Optional TTL override (uses config default if None)
     ///
     /// # Returns
@@ -194,7 +194,7 @@ impl<S: OutboxStore> ClientOutbox<S> {
         self.store.outbox_get_by_id(entry_id)
     }
 
-    /// Get entry by content_id (for DAG confirmation lookup).
+    /// Get entry by `content_id` (for DAG confirmation lookup).
     pub fn get_by_content_id(
         &self,
         content_id: ContentId,
@@ -209,7 +209,7 @@ impl<S: OutboxStore> ClientOutbox<S> {
     ///
     /// # Arguments
     /// * `entry_id` - Outbox entry ID
-    /// * `transport_id` - Transport identifier (e.g., "http:node1.example.com")
+    /// * `transport_id` - Transport identifier (e.g., "<http:node1.example.com>")
     /// * `result` - Result of the attempt
     pub fn record_attempt(
         &self,
@@ -263,7 +263,7 @@ impl<S: OutboxStore> ClientOutbox<S> {
     /// Process a received message from a peer for potential confirmations.
     ///
     /// When we receive a message, check if the peer's `observed_heads` includes
-    /// any of our pending messages' content_ids. If so, mark them as confirmed.
+    /// any of our pending messages' `content_ids`. If so, mark them as confirmed.
     ///
     /// # Arguments
     /// * `from` - Sender's public ID
@@ -632,8 +632,8 @@ mod tests {
                 .filter(|m| {
                     m.confirmation.is_none()
                         && m.expired_at_ms.is_none()
-                        && m.expires_at_ms.map_or(true, |e| e > now_ms)
-                        && m.next_retry_at_ms.map_or(true, |t| t <= now_ms)
+                        && m.expires_at_ms.is_none_or(|e| e > now_ms)
+                        && m.next_retry_at_ms.is_none_or(|t| t <= now_ms)
                 })
                 .cloned()
                 .collect())

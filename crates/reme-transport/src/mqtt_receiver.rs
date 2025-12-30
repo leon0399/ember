@@ -25,7 +25,7 @@ pub const DEFAULT_TOPIC_PREFIX: &str = "reme/v1";
 /// Certificate pinning is not currently supported for MQTT connections.
 #[derive(Debug, Clone)]
 pub struct MqttReceiverConfig {
-    /// Broker URL (e.g., "mqtts://broker:8883")
+    /// Broker URL (e.g., "<mqtts://broker:8883>")
     pub url: String,
     /// Client ID (auto-generated if None)
     pub client_id: Option<String>,
@@ -128,8 +128,7 @@ impl MqttReceiver {
 
         if !is_mqtt {
             return Err(TransportError::Network(format!(
-                "Invalid MQTT URL scheme: {}. Expected mqtt:// or mqtts://",
-                url
+                "Invalid MQTT URL scheme: {url}. Expected mqtt:// or mqtts://"
             )));
         }
 
@@ -147,27 +146,25 @@ impl MqttReceiver {
 
                 if let Some(port_str) = after_bracket.strip_prefix(':') {
                     let port: u16 = port_str.parse().map_err(|_| {
-                        TransportError::Network(format!("Invalid port in URL: {}", url))
+                        TransportError::Network(format!("Invalid port in URL: {url}"))
                     })?;
                     (host, port)
                 } else if after_bracket.is_empty() {
                     (host, default_port)
                 } else {
                     return Err(TransportError::Network(format!(
-                        "Invalid IPv6 URL format: {}",
-                        url
+                        "Invalid IPv6 URL format: {url}"
                     )));
                 }
             } else {
                 return Err(TransportError::Network(format!(
-                    "Unclosed bracket in IPv6 URL: {}",
-                    url
+                    "Unclosed bracket in IPv6 URL: {url}"
                 )));
             }
         } else if let Some((h, p)) = rest.rsplit_once(':') {
             let port: u16 = p
                 .parse()
-                .map_err(|_| TransportError::Network(format!("Invalid port in URL: {}", url)))?;
+                .map_err(|_| TransportError::Network(format!("Invalid port in URL: {url}")))?;
             (h.to_string(), port)
         } else {
             (rest.to_string(), default_port)
@@ -219,7 +216,7 @@ impl MqttReceiver {
         self.client
             .subscribe(&topic, QoS::AtLeastOnce)
             .await
-            .map_err(|e| TransportError::Network(format!("Failed to subscribe: {}", e)))?;
+            .map_err(|e| TransportError::Network(format!("Failed to subscribe: {e}")))?;
 
         debug!("MQTT subscribed to topic: {} on {}", topic, self.url);
 
@@ -305,10 +302,10 @@ impl MqttReceiver {
         // Payload is base64-encoded WirePayload
         let wire_bytes = BASE64_STANDARD
             .decode(payload)
-            .map_err(|e| TransportError::Serialization(format!("Invalid base64: {}", e)))?;
+            .map_err(|e| TransportError::Serialization(format!("Invalid base64: {e}")))?;
 
         let wire = WirePayload::decode(&wire_bytes)
-            .map_err(|e| TransportError::Serialization(format!("Invalid wire format: {}", e)))?;
+            .map_err(|e| TransportError::Serialization(format!("Invalid wire format: {e}")))?;
 
         match wire {
             WirePayload::Message(envelope) => Ok(envelope),
@@ -379,7 +376,7 @@ impl MultiBrokerReceiver {
     /// Create a multi-broker receiver with a shared seen cache.
     ///
     /// Use this when you want to share deduplication state with other components
-    /// (e.g., an MqttTransport that publishes to the same brokers).
+    /// (e.g., an `MqttTransport` that publishes to the same brokers).
     pub async fn with_seen_cache(
         configs: Vec<MqttReceiverConfig>,
         seen_cache: Arc<SharedSeenCache>,

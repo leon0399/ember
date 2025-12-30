@@ -62,7 +62,7 @@ pub enum TargetKind {
     /// - Expected to be reliably available
     /// - Aggressive retry with long backoff (5s → 300s)
     /// - Failure is a problem to address
-    /// - No max_attempts limit
+    /// - No `max_attempts` limit
     #[default]
     Stable,
 
@@ -473,7 +473,7 @@ mod tests {
         // URL is sanitized and normalized (adds trailing slash when no path)
         let id = TargetId::http("https://example.com:23003");
         assert_eq!(id.as_str(), "http:https://example.com:23003/");
-        assert_eq!(format!("{}", id), "http:https://example.com:23003/");
+        assert_eq!(format!("{id}"), "http:https://example.com:23003/");
     }
 
     #[test]

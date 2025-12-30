@@ -32,16 +32,16 @@ fn is_zero_shared_secret(shared_secret: &[u8; 32]) -> bool {
     shared_secret == &[0u8; 32]
 }
 
-/// Sign data with XEdDSA using an X25519 private key.
+/// Sign data with `XEdDSA` using an X25519 private key.
 ///
-/// XEdDSA allows signing with X25519 keys by converting them to Ed25519-compatible
+/// `XEdDSA` allows signing with X25519 keys by converting them to Ed25519-compatible
 /// format internally. This enables using a single keypair for both DH and signatures.
 fn xeddsa_sign(private_key: &[u8; 32], message: &[u8]) -> [u8; 64] {
     let key = xed25519::PrivateKey(*private_key);
     key.sign(message, OsRng)
 }
 
-/// Verify an XEdDSA signature using an X25519 public key.
+/// Verify an `XEdDSA` signature using an X25519 public key.
 ///
 /// Returns true if the signature is valid, false otherwise.
 fn xeddsa_verify(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bool {
@@ -49,21 +49,21 @@ fn xeddsa_verify(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64]) ->
     key.verify(message, signature).is_ok()
 }
 
-/// Encrypt an InnerEnvelope to a recipient's MIK (stateless encryption)
+/// Encrypt an `InnerEnvelope` to a recipient's MIK (stateless encryption)
 ///
 /// This implements Session V1-style sealed box encryption with triple binding:
 /// 1. Generates an ephemeral X25519 keypair (e, E)
-/// 2. Computes shared_secret = X25519(e, recipient_MIK)
-/// 3. Derives encryption key from shared_secret using blake3
-/// 4. Signs the serialized envelope || message_id with XEdDSA
-/// 5. Encrypts (serialized_envelope || signature) with ChaCha20Poly1305
+/// 2. Computes `shared_secret` = X25519(e, `recipient_MIK`)
+/// 3. Derives encryption key from `shared_secret` using blake3
+/// 4. Signs the serialized envelope || `message_id` with `XEdDSA`
+/// 5. Encrypts (`serialized_envelope` || signature) with `ChaCha20Poly1305`
 ///
-/// Triple binding (message_id bound via):
-/// - Nonce derivation: nonce = BLAKE3(context, message_id || recipient_pk)
-/// - AAD: message_id passed as additional authenticated data
-/// - Signature: message_id included in signed data
+/// Triple binding (`message_id` bound via):
+/// - Nonce derivation: nonce = BLAKE3(context, `message_id` || `recipient_pk`)
+/// - AAD: `message_id` passed as additional authenticated data
+/// - Signature: `message_id` included in signed data
 ///
-/// Returns `EncryptionOutput` containing ephemeral_public, ciphertext, and ack credentials.
+/// Returns `EncryptionOutput` containing `ephemeral_public`, ciphertext, and ack credentials.
 pub fn encrypt_to_mik(
     inner_envelope: &InnerEnvelope,
     recipient_mik: &PublicID,
@@ -144,25 +144,25 @@ pub fn encrypt_to_mik(
 /// Decrypt a message using MIK private key (stateless decryption)
 ///
 /// This is the receiver side of MIK encryption:
-/// 1. Computes shared_secret = X25519(mik_private, ephemeral_public)
-/// 2. Derives encryption key from shared_secret + both public keys
-/// 3. Decrypts the ciphertext with ChaCha20Poly1305 (with AAD verification)
+/// 1. Computes `shared_secret` = `X25519(mik_private`, `ephemeral_public`)
+/// 2. Derives encryption key from `shared_secret` + both public keys
+/// 3. Decrypts the ciphertext with `ChaCha20Poly1305` (with AAD verification)
 /// 4. Splits signature from decrypted data (last 64 bytes)
-/// 5. Verifies XEdDSA signature against sender's public key from InnerEnvelope
+/// 5. Verifies `XEdDSA` signature against sender's public key from `InnerEnvelope`
 ///
-/// The outer_message_id is used for:
-/// - Nonce derivation (with recipient_pk)
-/// - AAD verification (tampering with message_id causes decryption failure)
-/// - Signature verification (message_id is part of signed data)
+/// The `outer_message_id` is used for:
+/// - Nonce derivation (with `recipient_pk`)
+/// - AAD verification (tampering with `message_id` causes decryption failure)
+/// - Signature verification (`message_id` is part of signed data)
 ///
-/// Returns `DecryptionOutput` containing the inner envelope and ack_secret for tombstones.
+/// Returns `DecryptionOutput` containing the inner envelope and `ack_secret` for tombstones.
 ///
 /// # Breaking Change (v0.1)
 ///
 /// This function expects the sign-all-bytes format where the signature is
-/// appended to serialized InnerEnvelope bytes before encryption. Messages
-/// encrypted with the previous format (signature inside InnerEnvelope) are
-/// not compatible. This is intentional for the PoC stage - no migration path
+/// appended to serialized `InnerEnvelope` bytes before encryption. Messages
+/// encrypted with the previous format (signature inside `InnerEnvelope`) are
+/// not compatible. This is intentional for the `PoC` stage - no migration path
 /// is provided.
 pub fn decrypt_with_mik(
     ephemeral_public: &[u8; 32],
@@ -251,10 +251,10 @@ pub fn decrypt_with_mik(
 ///
 /// Binding both public keys prevents key confusion attacks where an attacker
 /// might try to claim a ciphertext was intended for a different recipient.
-/// This construction is inspired by the principles of NaCl's crypto_box_seal,
+/// This construction is inspired by the principles of `NaCl`'s `crypto_box_seal`,
 /// but uses BLAKE3 KDF and does not follow the exact same nonce derivation.
 ///
-/// Key = BLAKE3_KDF("reme-encryption-key-v0", ephemeral_pub || recipient_pub || shared_secret)
+/// Key = BLAKE3_KDF("reme-encryption-key-v0", `ephemeral_pub` || `recipient_pub` || `shared_secret`)
 fn derive_key_from_shared(
     ephemeral_public: &[u8; 32],
     recipient_public: &[u8; 32],
@@ -268,13 +268,13 @@ fn derive_key_from_shared(
     *hash.as_bytes()
 }
 
-/// Derive a 12-byte nonce from MessageID and recipient public key
+/// Derive a 12-byte nonce from `MessageID` and recipient public key
 ///
-/// Including recipient_pk in nonce derivation provides:
-/// - Domain separation: same message_id to different recipients produces different nonces
+/// Including `recipient_pk` in nonce derivation provides:
+/// - Domain separation: same `message_id` to different recipients produces different nonces
 /// - Recipient binding: prevents message forwarding attacks
 ///
-/// Nonce = BLAKE3_KDF("reme-nonce-v0", message_id || recipient_pk)[0..12]
+/// Nonce = BLAKE3_KDF("reme-nonce-v0", `message_id` || `recipient_pk`)[0..12]
 fn derive_nonce(message_id: &MessageID, recipient_pk: &[u8; 32]) -> [u8; 12] {
     let mut hasher = blake3::Hasher::new_derive_key("reme-nonce-v0");
     hasher.update(message_id.as_bytes());
@@ -291,14 +291,14 @@ fn derive_nonce(message_id: &MessageID, recipient_pk: &[u8; 32]) -> [u8; 12] {
 // Tombstone V2: Ack Secret/Hash Derivation
 // ============================================
 
-/// Derive ack_secret from ECDH shared secret and message_id.
+/// Derive `ack_secret` from ECDH shared secret and `message_id`.
 ///
-/// Both sender and recipient can derive the same ack_secret because they
-/// compute the same shared_secret via ECDH:
-/// - Sender: shared_secret = X25519(ephemeral_secret, recipient_mik)
-/// - Recipient: shared_secret = X25519(mik_private, ephemeral_public)
+/// Both sender and recipient can derive the same `ack_secret` because they
+/// compute the same `shared_secret` via ECDH:
+/// - Sender: `shared_secret` = `X25519(ephemeral_secret`, `recipient_mik`)
+/// - Recipient: `shared_secret` = `X25519(mik_private`, `ephemeral_public`)
 ///
-/// ack_secret = BLAKE3_KDF("reme-ack-v1", shared_secret || message_id)[0..16]
+/// `ack_secret` = BLAKE3_KDF("reme-ack-v1", `shared_secret` || `message_id`)[0..16]
 pub fn derive_ack_secret(shared_secret: &[u8; 32], message_id: &MessageID) -> [u8; 16] {
     let mut hasher = blake3::Hasher::new_derive_key("reme-ack-v1");
     hasher.update(shared_secret);
@@ -310,16 +310,16 @@ pub fn derive_ack_secret(shared_secret: &[u8; 32], message_id: &MessageID) -> [u
     ack_secret
 }
 
-/// Derive ack_hash from ack_secret.
+/// Derive `ack_hash` from `ack_secret`.
 ///
-/// This hash is stored in OuterEnvelope for tombstone verification.
-/// Nodes verify tombstones by checking hash(ack_secret) == ack_hash.
+/// This hash is stored in `OuterEnvelope` for tombstone verification.
+/// Nodes verify tombstones by checking `hash(ack_secret)` == `ack_hash`.
 ///
-/// ack_hash = BLAKE3_KDF("reme-ack-hash-v1", ack_secret)[0..16]
+/// `ack_hash` = BLAKE3_KDF("reme-ack-hash-v1", `ack_secret`)[0..16]
 ///
 /// Domain separation provides defense-in-depth against:
 /// - Cross-protocol confusion attacks
-/// - Misuse of ack_secret in other contexts
+/// - Misuse of `ack_secret` in other contexts
 pub fn derive_ack_hash(ack_secret: &[u8; 16]) -> [u8; 16] {
     let derived = blake3::derive_key(ACK_HASH_DOMAIN, ack_secret);
     let mut ack_hash = [0u8; 16];
@@ -331,7 +331,7 @@ pub fn derive_ack_hash(ack_secret: &[u8; 16]) -> [u8; 16] {
 // Encryption/Decryption Output Structs
 // ============================================
 
-/// Output of encrypt_to_mik containing all values needed for OuterEnvelope.
+/// Output of `encrypt_to_mik` containing all values needed for `OuterEnvelope`.
 #[derive(Debug, Clone)]
 pub struct EncryptionOutput {
     /// Ephemeral X25519 public key (32 bytes)
@@ -340,11 +340,11 @@ pub struct EncryptionOutput {
     pub ciphertext: Vec<u8>,
     /// Ack secret for sender-side tombstone (store locally)
     pub ack_secret: [u8; 16],
-    /// Ack hash to include in OuterEnvelope
+    /// Ack hash to include in `OuterEnvelope`
     pub ack_hash: [u8; 16],
 }
 
-/// Output of decrypt_with_mik containing decrypted envelope and ack credentials.
+/// Output of `decrypt_with_mik` containing decrypted envelope and ack credentials.
 #[derive(Debug, Clone)]
 pub struct DecryptionOutput {
     /// Decrypted and verified inner envelope
@@ -359,7 +359,7 @@ mod tests {
     use reme_identity::Identity;
     use reme_message::{Content, TextContent};
 
-    /// Helper to create an InnerEnvelope (no signature field - signing happens during encryption)
+    /// Helper to create an `InnerEnvelope` (no signature field - signing happens during encryption)
     fn create_inner(sender: &Identity, body: &str, created_at_ms: u64) -> InnerEnvelope {
         InnerEnvelope {
             from: *sender.public_id(),

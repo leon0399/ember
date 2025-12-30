@@ -1,8 +1,8 @@
 //! HTTP API for the mailbox node (MIK-only, no prekeys)
 //!
 //! Provides REST endpoints for:
-//! - POST /api/v1/submit - Submit a message (tombstones temporarily disabled)
-//! - GET /api/v1/fetch/:routing_key - Fetch messages
+//! - `POST /api/v1/submit` - Submit a message (tombstones temporarily disabled)
+//! - `GET /api/v1/fetch/:routing_key` - Fetch messages
 
 use crate::mqtt_bridge::MqttBridge;
 use crate::node_identity::NodeIdentity;
@@ -51,16 +51,16 @@ pub struct AppState {
 
 /// Maximum request body size (256 KiB)
 /// Prevents memory exhaustion from oversized payloads.
-/// Typical OuterEnvelope is ~2 KiB; 256 KiB provides ample headroom.
+/// Typical `OuterEnvelope` is ~2 KiB; 256 KiB provides ample headroom.
 const MAX_BODY_SIZE: usize = 256 * 1024;
 
 /// Create the API router
 ///
 /// Rate limiters are applied per-route if configured:
-/// - submit_ip: Per-IP limit on submit endpoint
-/// - submit_key: Per-routing-key limit on submit (checked inline in handler)
-/// - fetch_ip: Per-IP limit on fetch endpoint
-/// - fetch_key: Per-routing-key limit on fetch endpoint
+/// - `submit_ip`: Per-IP limit on submit endpoint
+/// - `submit_key`: Per-routing-key limit on submit (checked inline in handler)
+/// - `fetch_ip`: Per-IP limit on fetch endpoint
+/// - `fetch_key`: Per-routing-key limit on fetch endpoint
 pub fn router(state: Arc<AppState>, rate_limiters: Option<&RateLimiters>) -> Router {
     // Build submit route with optional IP rate limiting
     let submit_route = Router::new().route("/api/v1/submit", post(submit_payload));
@@ -188,7 +188,7 @@ impl RequestSource {
 pub struct SubmitResponse {
     pub status: &'static str,
     /// Ack secret proving the node can decrypt this message.
-    /// Present only if the node is the intended recipient (routing_key matches).
+    /// Present only if the node is the intended recipient (`routing_key` matches).
     /// Base64-encoded 16-byte secret.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ack_secret: Option<String>,
@@ -196,7 +196,7 @@ pub struct SubmitResponse {
 
 #[derive(Debug, Serialize)]
 pub struct FetchResponse {
-    /// Base64-encoded WirePayload bytes (includes wire type prefix)
+    /// Base64-encoded `WirePayload` bytes (includes wire type prefix)
     pub payloads: Vec<String>,
 }
 
@@ -222,14 +222,14 @@ pub struct ErrorResponse {
 // Ack Secret Derivation
 // ============================================
 
-/// Try to derive ack_secret if this node is the intended recipient.
+/// Try to derive `ack_secret` if this node is the intended recipient.
 ///
 /// Returns `Some(base64-encoded ack_secret)` if:
 /// - Node has an identity configured
-/// - The message's routing_key matches this node's routing_key
+/// - The message's `routing_key` matches this node's `routing_key`
 /// - ECDH shared secret derivation succeeds
 ///
-/// Returns `None` if this node is just a relay (routing_key doesn't match).
+/// Returns `None` if this node is just a relay (`routing_key` doesn't match).
 fn try_derive_ack_secret(
     identity: Option<&NodeIdentity>,
     envelope: &OuterEnvelope,
@@ -305,12 +305,12 @@ fn parse_wire_payload(body: &Bytes) -> Result<(String, WirePayload), String> {
 /// Unified submit endpoint for messages and tombstones
 ///
 /// Accepts base64-encoded wire format: `[type: u8][payload: bincode bytes]`
-/// - type 0x00: Message (OuterEnvelope)
-/// - type 0x02: AckTombstone (SignedAckTombstone) - Tombstone V2
+/// - type 0x00: Message (`OuterEnvelope`)
+/// - type 0x02: `AckTombstone` (`SignedAckTombstone`) - Tombstone V2
 ///
 /// ## Authentication
 ///
-/// If `x-node-signature` header is present, verifies XEdDSA signature.
+/// If `x-node-signature` header is present, verifies `XEdDSA` signature.
 /// Invalid signatures are rejected with 401 Unauthorized.
 async fn submit_payload(
     State(state): State<Arc<AppState>>,
@@ -325,7 +325,7 @@ async fn submit_payload(
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(ErrorResponse {
-                    error: format!("Signature verification failed: {}", e),
+                    error: format!("Signature verification failed: {e}"),
                 }),
             )
                 .into_response();

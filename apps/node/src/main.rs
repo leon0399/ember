@@ -36,7 +36,7 @@
 //!
 //! ## API Endpoints
 //! - POST /api/v1/submit - Submit a message
-//! - GET /api/v1/fetch/:routing_key - Fetch messages
+//! - GET /`api/v1/fetch/:routing_key` - Fetch messages
 //! - GET /api/v1/health - Health check
 //! - GET /api/v1/stats - Store statistics
 
@@ -64,7 +64,7 @@ use tracing_subscriber::FmtSubscriber;
 
 /// Resolve bind address, supporting both IP:port and hostname:port formats.
 ///
-/// Tries parsing as SocketAddr first (IP:port), then falls back to DNS resolution
+/// Tries parsing as `SocketAddr` first (IP:port), then falls back to DNS resolution
 /// for hostnames like "localhost:23003".
 async fn resolve_bind_addr(addr_str: &str) -> Result<SocketAddr, String> {
     // Try direct parse first (IP:port)
@@ -81,14 +81,12 @@ async fn resolve_bind_addr(addr_str: &str) -> Result<SocketAddr, String> {
                 Ok(addr)
             } else {
                 Err(format!(
-                    "No addresses found for '{}'. Expected format: IP:port or hostname:port (e.g., '127.0.0.1:23003' or 'localhost:23003')",
-                    addr_str
+                    "No addresses found for '{addr_str}'. Expected format: IP:port or hostname:port (e.g., '127.0.0.1:23003' or 'localhost:23003')"
                 ))
             }
         }
         Err(e) => Err(format!(
-            "Failed to resolve bind address '{}': {}. Expected format: IP:port or hostname:port (e.g., '127.0.0.1:23003' or 'localhost:23003')",
-            addr_str, e
+            "Failed to resolve bind address '{addr_str}': {e}. Expected format: IP:port or hostname:port (e.g., '127.0.0.1:23003' or 'localhost:23003')"
         )),
     }
 }
@@ -113,7 +111,7 @@ async fn main() {
     let config = match load_config() {
         Ok(config) => config,
         Err(e) => {
-            eprintln!("ERROR: Failed to load configuration: {}", e);
+            eprintln!("ERROR: Failed to load configuration: {e}");
             eprintln!();
             eprintln!("The node cannot start with invalid configuration.");
             eprintln!("Please fix the configuration error above, or delete the config file");

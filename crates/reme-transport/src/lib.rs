@@ -122,7 +122,7 @@ impl TransportError {
 
 /// Transport trait for sending messages (MIK-only, no prekeys)
 ///
-/// This trait abstracts the underlying transport mechanism (HTTP, LoRa, BLE, etc.)
+/// This trait abstracts the underlying transport mechanism (HTTP, `LoRa`, BLE, etc.)
 /// for outgoing operations. Incoming messages are handled separately via
 /// `MessageReceiver` which provides push-based delivery.
 ///
@@ -130,7 +130,7 @@ impl TransportError {
 /// Each message includes an ephemeral key for stateless ECDH.
 #[async_trait]
 pub trait Transport: Send + Sync {
-    /// Submit an OuterEnvelope to the mailbox
+    /// Submit an `OuterEnvelope` to the mailbox
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError>;
 
     /// Submit a signed ack tombstone (Tombstone V2)

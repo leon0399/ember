@@ -62,7 +62,7 @@ mod tests {
             response: tx,
         };
         // Should be debuggable without panic
-        let _ = format!("{:?}", req);
+        let _ = format!("{req:?}");
     }
 
     #[test]

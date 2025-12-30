@@ -42,12 +42,11 @@ impl std::fmt::Display for QuorumStrategyError {
             QuorumStrategyError::InvalidFraction(v) => {
                 write!(
                     f,
-                    "Invalid quorum fraction {}: must be in range (0.0, 1.0]",
-                    v
+                    "Invalid quorum fraction {v}: must be in range (0.0, 1.0]"
                 )
             }
             QuorumStrategyError::InvalidCount(v) => {
-                write!(f, "Invalid quorum count {}: must be > 0", v)
+                write!(f, "Invalid quorum count {v}: must be > 0")
             }
         }
     }

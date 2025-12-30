@@ -1,11 +1,11 @@
 //! Embedded HTTP server for receiving messages from LAN peers.
 //!
-//! This server only accepts messages addressed to this client (matching routing_key).
+//! This server only accepts messages addressed to this client (matching `routing_key`).
 //! Messages for other recipients are rejected with 403 Forbidden.
 //!
 //! # Security Model
 //!
-//! - Only accepts messages with matching `routing_key` (derived from our PublicID)
+//! - Only accepts messages with matching `routing_key` (derived from our `PublicID`)
 //! - Rejects tombstones (tombstones are for quorum nodes, not P2P)
 //! - Rejects duplicate messages (idempotent operation)
 //! - Body size limited to 256 KiB
@@ -124,7 +124,7 @@ impl HttpServerState {
         &self.our_routing_key
     }
 
-    /// Derive ack_secret for an envelope (embedded node is always the recipient).
+    /// Derive `ack_secret` for an envelope (embedded node is always the recipient).
     ///
     /// Returns `None` if:
     /// - The ephemeral key is a known low-order point (security check)
@@ -335,7 +335,7 @@ fn validate_bind_address(bind_addr: &str) -> Result<SocketAddr, HttpServerError>
     bind_addr.parse::<SocketAddr>().map_err(|e| {
         HttpServerError::InvalidBindAddress(
             bind_addr.to_string(),
-            format!("expected format like '0.0.0.0:23004': {}", e),
+            format!("expected format like '0.0.0.0:23004': {e}"),
         )
     })
 }
@@ -350,11 +350,11 @@ fn validate_bind_address(bind_addr: &str) -> Result<SocketAddr, HttpServerError>
 /// * `bind_addr` - Address to bind to (e.g., "0.0.0.0:23004")
 /// * `node_handle` - Handle to the embedded node for storing received messages
 /// * `our_routing_key` - Our routing key; messages for other recipients are rejected
-/// * `identity` - Client identity for deriving ack_secret (proves we can decrypt)
+/// * `identity` - Client identity for deriving `ack_secret` (proves we can decrypt)
 ///
 /// # Returns
 ///
-/// A tuple of (TcpListener, Router) ready to be passed to `run_server`.
+/// A tuple of (`TcpListener`, Router) ready to be passed to `run_server`.
 pub async fn bind_server(
     bind_addr: &str,
     node_handle: EmbeddedNodeHandle,
@@ -395,7 +395,7 @@ pub async fn run_server(listener: TcpListener, app: Router) -> Result<(), HttpSe
 /// * `bind_addr` - Address to bind to (e.g., "0.0.0.0:23004")
 /// * `node_handle` - Handle to the embedded node for storing received messages
 /// * `our_routing_key` - Our routing key; messages for other recipients are rejected
-/// * `identity` - Client identity for deriving ack_secret (proves we can decrypt)
+/// * `identity` - Client identity for deriving `ack_secret` (proves we can decrypt)
 pub async fn start_server(
     bind_addr: &str,
     node_handle: EmbeddedNodeHandle,
@@ -418,7 +418,7 @@ mod tests {
     use reme_node_core::{EmbeddedNode, PersistentMailboxStore, PersistentStoreConfig};
     use tower::ServiceExt;
 
-    /// Create a simple test envelope with zeroed ephemeral key (won't validate for ack_secret)
+    /// Create a simple test envelope with zeroed ephemeral key (won't validate for `ack_secret`)
     fn create_test_envelope(routing_key: RoutingKey) -> OuterEnvelope {
         OuterEnvelope {
             version: CURRENT_VERSION,
@@ -432,7 +432,7 @@ mod tests {
         }
     }
 
-    /// Create a properly encrypted envelope that can derive ack_secret
+    /// Create a properly encrypted envelope that can derive `ack_secret`
     fn create_encrypted_envelope(
         sender: &Identity,
         recipient_pubkey: &reme_identity::PublicID,
@@ -663,7 +663,7 @@ mod tests {
         assert_eq!(response2.status(), StatusCode::OK);
     }
 
-    /// Test: Embedded node returns valid ack_secret for properly encrypted messages
+    /// Test: Embedded node returns valid `ack_secret` for properly encrypted messages
     #[tokio::test]
     async fn test_returns_ack_secret_for_encrypted_message() {
         use reme_encryption::derive_ack_hash;
@@ -740,7 +740,7 @@ mod tests {
         );
     }
 
-    /// Test: Low-order ephemeral key returns no ack_secret (security check)
+    /// Test: Low-order ephemeral key returns no `ack_secret` (security check)
     #[tokio::test]
     async fn test_low_order_ephemeral_key_returns_no_ack_secret() {
         let config = PersistentStoreConfig::default();
@@ -789,7 +789,7 @@ mod tests {
         );
     }
 
-    /// Test: Duplicate message returns no ack_secret
+    /// Test: Duplicate message returns no `ack_secret`
     #[tokio::test]
     async fn test_duplicate_returns_no_ack_secret() {
         let config = PersistentStoreConfig::default();

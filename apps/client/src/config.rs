@@ -222,12 +222,10 @@ impl QuorumStrategyConfig {
             }
             QuorumStrategyConfig::Count(_) => Ok(()),
             QuorumStrategyConfig::Fraction(f) if f.is_nan() || f.is_infinite() => Err(format!(
-                "Invalid quorum fraction {}: must be a finite number",
-                f
+                "Invalid quorum fraction {f}: must be a finite number"
             )),
             QuorumStrategyConfig::Fraction(f) if *f <= 0.0 || *f > 1.0 => Err(format!(
-                "Quorum fraction {} out of range: must be in (0.0, 1.0]",
-                f
+                "Quorum fraction {f} out of range: must be in (0.0, 1.0]"
             )),
             QuorumStrategyConfig::Fraction(_) => Ok(()),
         }
@@ -523,7 +521,7 @@ pub struct DirectPeerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_id: Option<String>,
 
-    /// HTTP address of the peer's embedded node (e.g., "http://192.168.1.101:23004").
+    /// HTTP address of the peer's embedded node (e.g., "<http://192.168.1.101:23004>").
     pub address: String,
 
     /// Human-readable name for the peer.
@@ -681,7 +679,7 @@ struct RawConfig {
     delivery: RawDeliveryConfig,
 }
 
-/// Parse HTTP endpoints from REME_HTTP environment variable (JSON format)
+/// Parse HTTP endpoints from `REME_HTTP` environment variable (JSON format)
 fn parse_http_from_env() -> Option<Vec<HttpEndpoint>> {
     let json = std::env::var("REME_HTTP").ok()?;
     match serde_json::from_str(&json) {
@@ -696,7 +694,7 @@ fn parse_http_from_env() -> Option<Vec<HttpEndpoint>> {
     }
 }
 
-/// Parse MQTT brokers from REME_MQTT environment variable (JSON format)
+/// Parse MQTT brokers from `REME_MQTT` environment variable (JSON format)
 fn parse_mqtt_from_env() -> Option<Vec<MqttBroker>> {
     let json = std::env::var("REME_MQTT").ok()?;
     match serde_json::from_str(&json) {
@@ -977,8 +975,8 @@ pub fn default_config_toml() -> String {
     let defaults = AppConfig::default();
     let quorum_str = match &defaults.delivery.quorum {
         QuorumStrategyConfig::Any => "\"any\"".to_string(),
-        QuorumStrategyConfig::Count(n) => format!("{{ count = {} }}", n),
-        QuorumStrategyConfig::Fraction(f) => format!("{{ fraction = {} }}", f),
+        QuorumStrategyConfig::Count(n) => format!("{{ count = {n} }}"),
+        QuorumStrategyConfig::Fraction(f) => format!("{{ fraction = {f} }}"),
         QuorumStrategyConfig::All => "\"all\"".to_string(),
     };
     format!(

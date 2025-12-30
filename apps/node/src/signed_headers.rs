@@ -7,7 +7,7 @@
 //! - `X-Node-Pubkey`: Base64-encoded X25519 public key
 //! - `X-Node-Timestamp`: Unix timestamp (seconds)
 //! - `X-Node-Dest`: Intended destination hostname:port
-//! - `X-Node-Signature`: Base64-encoded XEdDSA signature
+//! - `X-Node-Signature`: Base64-encoded `XEdDSA` signature
 //!
 //! The signature covers: `node_id:timestamp:method:path:body_hash:dest_host`
 
@@ -177,7 +177,7 @@ impl<'a> SignatureVerifier<'a> {
     /// * `body` - Request body bytes
     ///
     /// # Returns
-    /// The verified PublicID of the sending node on success.
+    /// The verified `PublicID` of the sending node on success.
     pub fn verify(
         &self,
         headers: &axum::http::HeaderMap,
@@ -369,7 +369,7 @@ fn canonicalize_host(host: &str) -> String {
         let hostname = &result[..colon_pos];
         let port_part = &result[colon_pos..]; // includes the colon
         let hostname_clean = hostname.strip_suffix('.').unwrap_or(hostname);
-        format!("{}{}", hostname_clean, port_part)
+        format!("{hostname_clean}{port_part}")
     } else {
         // No port - just strip trailing dot if present
         result.strip_suffix('.').unwrap_or(&result).to_string()

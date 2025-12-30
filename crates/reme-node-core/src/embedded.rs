@@ -165,7 +165,7 @@ pub struct EmbeddedNodeHandle {
     /// Channel for sending requests to the node.
     requests: mpsc::Sender<NodeRequest>,
 
-    /// Direct access to store for notify_message_received.
+    /// Direct access to store for `notify_message_received`.
     store: Arc<dyn MailboxStore>,
 
     /// Event sender for external notifications.
@@ -276,13 +276,13 @@ impl EmbeddedNodeHandle {
 
     /// Process an ack tombstone to delete a message from the mailbox.
     ///
-    /// This verifies the tombstone's ack_secret against the stored ack_hash
+    /// This verifies the tombstone's `ack_secret` against the stored `ack_hash`
     /// and deletes the message if valid.
     ///
     /// # Returns
     /// - `Ok(true)` if the message was deleted
     /// - `Ok(false)` if the message was not found (already deleted or never existed)
-    /// - `Err(NodeError::InvalidMessage)` if the ack_secret is invalid
+    /// - `Err(NodeError::InvalidMessage)` if the `ack_secret` is invalid
     pub fn process_ack_tombstone(
         &self,
         tombstone: &reme_message::SignedAckTombstone,

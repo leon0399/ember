@@ -104,25 +104,25 @@ impl EmbeddedTarget {
     }
 }
 
-/// Convert NodeError to TransportError.
+/// Convert `NodeError` to `TransportError`.
 fn convert_error(error: NodeError) -> TransportError {
     match error {
         NodeError::ChannelClosed => TransportError::ChannelClosed,
         NodeError::Serialization(msg) => TransportError::Serialization(msg),
         NodeError::Deserialization(msg) => {
-            TransportError::Serialization(format!("deserialization: {}", msg))
+            TransportError::Serialization(format!("deserialization: {msg}"))
         }
-        NodeError::Database(e) => TransportError::ServerError(format!("database error: {}", e)),
+        NodeError::Database(e) => TransportError::ServerError(format!("database error: {e}")),
         NodeError::LockPoisoned => TransportError::ServerError("lock poisoned".to_string()),
         NodeError::MailboxFull => TransportError::ServerError("mailbox full".to_string()),
         NodeError::InvalidMessage(msg) => {
-            TransportError::ServerError(format!("invalid message: {}", msg))
+            TransportError::ServerError(format!("invalid message: {msg}"))
         }
         NodeError::InvalidConfig(msg) => {
-            TransportError::ServerError(format!("invalid config: {}", msg))
+            TransportError::ServerError(format!("invalid config: {msg}"))
         }
         // NodeError is non_exhaustive, handle future variants
-        _ => TransportError::ServerError(format!("node error: {}", error)),
+        _ => TransportError::ServerError(format!("node error: {error}")),
     }
 }
 

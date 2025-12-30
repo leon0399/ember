@@ -2,7 +2,7 @@
 //!
 //! Handles loading, generating, and storing the node's cryptographic identity.
 //! The node identity is an X25519 keypair used for:
-//! - XEdDSA signatures on HTTP headers (proving message origin)
+//! - `XEdDSA` signatures on HTTP headers (proving message origin)
 //! - Cryptographic loop prevention (identifying self by public key)
 
 use reme_identity::{is_low_order_point, Identity, InvalidPublicKey, PublicID};
@@ -186,7 +186,7 @@ pub struct NodeIdentity {
 }
 
 impl NodeIdentity {
-    /// Create a NodeIdentity from an Identity.
+    /// Create a `NodeIdentity` from an Identity.
     pub fn new(identity: Identity) -> Self {
         let node_id = node_id_hex(identity.public_id());
         Self { identity, node_id }
@@ -213,7 +213,7 @@ impl NodeIdentity {
         &self.node_id
     }
 
-    /// Sign a message using XEdDSA.
+    /// Sign a message using `XEdDSA`.
     pub fn sign(&self, message: &[u8]) -> [u8; 64] {
         self.identity.sign_xeddsa(message)
     }

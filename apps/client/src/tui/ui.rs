@@ -636,7 +636,7 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
                 let label_part = if display_label == address {
                     String::new()
                 } else {
-                    format!(" ({})", display_label)
+                    format!(" ({display_label})")
                 };
 
                 // Latency info (if available)
@@ -656,14 +656,14 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
                 let line = Line::from(vec![
                     Span::styled(health_icon, health_style),
                     Span::raw(" "),
-                    Span::styled(format!("[{}]", type_str), type_style),
+                    Span::styled(format!("[{type_str}]"), type_style),
                     Span::raw(" "),
                     Span::styled(address, Style::default().fg(Color::White)),
                     Span::styled(label_part, Style::default().fg(Color::DarkGray)),
                     Span::styled(latency_str, Style::default().fg(Color::DarkGray)),
                     Span::styled(failure_str, Style::default().fg(Color::Red)),
                     Span::raw(" "),
-                    Span::styled(format!("[{}{}]", tier_str, ephemeral_marker), tier_style),
+                    Span::styled(format!("[{tier_str}{ephemeral_marker}]"), tier_style),
                 ]);
 
                 ListItem::new(line)

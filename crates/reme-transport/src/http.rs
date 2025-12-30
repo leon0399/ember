@@ -15,7 +15,7 @@ use crate::tls::{CertPin, PinningVerifier};
 use crate::url_auth::parse_url_with_auth;
 use crate::{Transport, TransportError};
 
-/// Node configuration for HttpTransport.
+/// Node configuration for `HttpTransport`.
 #[derive(Debug, Clone)]
 pub struct NodeSpec {
     /// Node URL (http:// or https://)
@@ -154,7 +154,7 @@ impl HttpTransport {
     ) -> Result<(), TransportError> {
         // Parse URL and extract credentials if present
         let parsed = parse_url_with_auth(base_url)
-            .map_err(|e| TransportError::Network(format!("Invalid URL: {}", e)))?;
+            .map_err(|e| TransportError::Network(format!("Invalid URL: {e}")))?;
 
         let url = format!("{}/api/v1/submit", parsed.url.trim_end_matches('/'));
 
@@ -184,8 +184,7 @@ impl HttpTransport {
                 .await
                 .unwrap_or_else(|_| "unknown error".to_string());
             return Err(TransportError::ServerError(format!(
-                "HTTP {}: {}",
-                status, body
+                "HTTP {status}: {body}"
             )));
         }
 
@@ -208,7 +207,7 @@ impl HttpTransport {
     ) -> Result<Vec<OuterEnvelope>, TransportError> {
         // Parse URL and extract credentials if present
         let parsed = parse_url_with_auth(base_url)
-            .map_err(|e| TransportError::Network(format!("Invalid URL: {}", e)))?;
+            .map_err(|e| TransportError::Network(format!("Invalid URL: {e}")))?;
 
         let url = format!(
             "{}/api/v1/fetch/{}",
@@ -238,8 +237,7 @@ impl HttpTransport {
                 .await
                 .unwrap_or_else(|_| "unknown error".to_string());
             return Err(TransportError::ServerError(format!(
-                "HTTP {}: {}",
-                status, body
+                "HTTP {status}: {body}"
             )));
         }
 
@@ -253,10 +251,10 @@ impl HttpTransport {
         for blob in result.payloads {
             let wire_bytes = BASE64_STANDARD
                 .decode(&blob)
-                .map_err(|e| TransportError::Serialization(format!("base64 decode: {}", e)))?;
+                .map_err(|e| TransportError::Serialization(format!("base64 decode: {e}")))?;
 
             let payload = WirePayload::decode(&wire_bytes)
-                .map_err(|e| TransportError::Serialization(format!("wire decode: {}", e)))?;
+                .map_err(|e| TransportError::Serialization(format!("wire decode: {e}")))?;
 
             // Only extract messages (tombstones are handled separately)
             if let WirePayload::Message(envelope) = payload {
@@ -466,7 +464,7 @@ fn build_pinning_client(pins: HashMap<String, CertPin>) -> Result<Client, Transp
         rustls::crypto::ring::default_provider(),
     ))
     .with_safe_default_protocol_versions()
-    .map_err(|e| TransportError::TlsConfig(format!("Failed to set protocol versions: {}", e)))?
+    .map_err(|e| TransportError::TlsConfig(format!("Failed to set protocol versions: {e}")))?
     // SAFETY: We use dangerous() to install a custom certificate verifier, but our
     // PinningVerifier still performs full certificate chain validation via the inner
     // WebPkiServerVerifier. The "dangerous" API is required because we add additional

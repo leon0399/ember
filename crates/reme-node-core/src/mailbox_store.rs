@@ -1,11 +1,11 @@
-//! Persistent mailbox storage using SQLite
+//! Persistent mailbox storage using `SQLite`
 //!
 //! This module provides durable storage for message envelopes that survives
 //! node restarts.
 //!
 //! ## Design Decisions
 //!
-//! - **SQLite with WAL mode**: Enables fast writes and crash recovery
+//! - **`SQLite` with WAL mode**: Enables fast writes and crash recovery
 //! - **Bincode serialization**: Compact binary format for envelopes
 //! - **Unix timestamps**: Portable, no `Instant` serialization issues
 //! - **Serialized access**: A `Mutex` ensures thread-safe access to the database connection
@@ -82,7 +82,7 @@ impl PersistentStoreConfig {
 /// Trait for mailbox storage backends
 ///
 /// This trait abstracts the storage layer for mailbox nodes, allowing
-/// different implementations (SQLite, in-memory, etc.)
+/// different implementations (`SQLite`, in-memory, etc.)
 pub trait MailboxStore: Send + Sync {
     /// Store a message in the mailbox for the given routing key
     fn enqueue(&self, routing_key: RoutingKey, envelope: OuterEnvelope) -> Result<(), NodeError>;
@@ -102,9 +102,9 @@ pub trait MailboxStore: Send + Sync {
     /// Returns `Ok(true)` if a message was deleted, `Ok(false)` if not found.
     fn delete_message(&self, message_id: &MessageID) -> Result<bool, NodeError>;
 
-    /// Get the ack_hash for a message (for tombstone verification)
+    /// Get the `ack_hash` for a message (for tombstone verification)
     ///
-    /// Returns the ack_hash from the stored message, or None if the message
+    /// Returns the `ack_hash` from the stored message, or None if the message
     /// doesn't exist or has expired.
     fn get_ack_hash(&self, message_id: &MessageID) -> Result<Option<[u8; 16]>, NodeError>;
 
@@ -120,7 +120,7 @@ pub struct PersistentStoreStats {
     pub expired_pending_cleanup: usize,
 }
 
-/// Persistent mailbox store backed by SQLite
+/// Persistent mailbox store backed by `SQLite`
 pub struct PersistentMailboxStore {
     conn: Mutex<Connection>,
     config: PersistentStoreConfig,
@@ -164,7 +164,7 @@ impl PersistentMailboxStore {
         Ok(store)
     }
 
-    /// Configure SQLite connection for optimal performance
+    /// Configure `SQLite` connection for optimal performance
     fn configure_connection(&self) -> Result<(), NodeError> {
         let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
 
@@ -227,14 +227,14 @@ impl PersistentMailboxStore {
             .as_secs()
     }
 
-    /// Serialize an OuterEnvelope to bytes
+    /// Serialize an `OuterEnvelope` to bytes
     fn serialize_envelope(envelope: &OuterEnvelope) -> Result<Vec<u8>, NodeError> {
         let bincode_config = config::standard();
         bincode::encode_to_vec(envelope, bincode_config)
             .map_err(|e| NodeError::Serialization(e.to_string()))
     }
 
-    /// Deserialize bytes to an OuterEnvelope
+    /// Deserialize bytes to an `OuterEnvelope`
     fn deserialize_envelope(data: &[u8]) -> Result<OuterEnvelope, NodeError> {
         let bincode_config = config::standard();
         let (envelope, _): (OuterEnvelope, _) = bincode::decode_from_slice(data, bincode_config)
@@ -311,9 +311,9 @@ impl PersistentMailboxStore {
         Ok(deleted > 0)
     }
 
-    /// Get the ack_hash for a message by ID (for Tombstone V2 verification)
+    /// Get the `ack_hash` for a message by ID (for Tombstone V2 verification)
     ///
-    /// Returns the ack_hash from the stored message, or None if the message
+    /// Returns the `ack_hash` from the stored message, or None if the message
     /// doesn't exist or has expired.
     pub fn get_ack_hash(&self, message_id: &MessageID) -> Result<Option<[u8; 16]>, NodeError> {
         match self.get_message(message_id)? {

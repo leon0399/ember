@@ -11,8 +11,8 @@
 //! ```
 //!
 //! Type discriminators:
-//! - `0x00`: Message (OuterEnvelope)
-//! - `0x02`: AckTombstone (SignedAckTombstone)
+//! - `0x00`: Message (`OuterEnvelope`)
+//! - `0x02`: `AckTombstone` (`SignedAckTombstone`)
 
 use strum::FromRepr;
 
@@ -31,8 +31,8 @@ pub enum WireType {
 /// Unified wire payload for messages and tombstones
 ///
 /// Wire format: `[type: u8][payload: bincode bytes]`
-/// - type 0x00: Message (OuterEnvelope)
-/// - type 0x02: AckTombstone (SignedAckTombstone)
+/// - type 0x00: Message (`OuterEnvelope`)
+/// - type 0x02: `AckTombstone` (`SignedAckTombstone`)
 #[derive(Debug, Clone)]
 pub enum WirePayload {
     Message(OuterEnvelope),
@@ -54,13 +54,13 @@ impl WirePayload {
             WireType::Message => {
                 let (envelope, _): (OuterEnvelope, _) =
                     bincode::decode_from_slice(&bytes[1..], bincode::config::standard())
-                        .map_err(|e| format!("Invalid message: {}", e))?;
+                        .map_err(|e| format!("Invalid message: {e}"))?;
                 Ok(WirePayload::Message(envelope))
             }
             WireType::AckTombstone => {
                 let (tombstone, _): (SignedAckTombstone, _) =
                     bincode::decode_from_slice(&bytes[1..], bincode::config::standard())
-                        .map_err(|e| format!("Invalid ack tombstone: {}", e))?;
+                        .map_err(|e| format!("Invalid ack tombstone: {e}"))?;
                 Ok(WirePayload::AckTombstone(tombstone))
             }
         }
@@ -93,7 +93,7 @@ impl WirePayload {
         }
     }
 
-    /// Get the message_id for this payload
+    /// Get the `message_id` for this payload
     pub fn message_id(&self) -> &MessageID {
         match self {
             WirePayload::Message(envelope) => &envelope.message_id,
