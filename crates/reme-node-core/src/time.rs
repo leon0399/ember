@@ -24,47 +24,49 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Convert a `u64` timestamp to `i64` for SQLite storage.
+/// Convert a `u64` timestamp to `i64` for `SQLite` storage.
 ///
-/// # Panics
+/// # Safety
 ///
-/// Panics if the value exceeds `i64::MAX`. This cannot happen for any
-/// practical Unix timestamp (would require year 292+ billion for seconds,
-/// or year 292+ million for milliseconds).
+/// In debug builds, asserts that the value does not exceed `i64::MAX`.
+/// In release builds, values exceeding `i64::MAX` will wrap to negative.
+/// This cannot happen for any practical Unix timestamp (would require
+/// year 292+ billion for seconds, or year 292+ million for milliseconds).
 #[inline]
 pub fn timestamp_to_i64(value: u64) -> i64 {
     debug_assert!(
-        value <= i64::MAX as u64,
+        i64::try_from(value).is_ok(),
         "timestamp overflow: {value} exceeds i64::MAX"
     );
     value as i64
 }
 
-/// Convert an optional `u64` timestamp to optional `i64` for SQLite storage.
+/// Convert an optional `u64` timestamp to optional `i64` for `SQLite` storage.
 #[inline]
 pub fn timestamp_opt_to_i64(value: Option<u64>) -> Option<i64> {
     value.map(timestamp_to_i64)
 }
 
-/// Convert an `i64` from SQLite back to `u64`.
+/// Convert an `i64` from `SQLite` back to `u64`.
 ///
-/// # Panics
+/// # Safety
 ///
-/// Panics if the value is negative. SQLite timestamps stored via this module
-/// should never be negative.
+/// In debug builds, asserts that the value is non-negative.
+/// In release builds, negative values will wrap to large `u64` values.
+/// `SQLite` timestamps stored via this module should never be negative.
 #[inline]
 pub fn i64_to_timestamp(value: i64) -> u64 {
     debug_assert!(value >= 0, "negative timestamp from database: {value}");
     value as u64
 }
 
-/// Convert an optional `i64` from SQLite back to optional `u64`.
+/// Convert an optional `i64` from `SQLite` back to optional `u64`.
 #[inline]
 pub fn i64_to_timestamp_opt(value: Option<i64>) -> Option<u64> {
     value.map(i64_to_timestamp)
 }
 
-/// Get the current Unix timestamp in seconds as `i64` for SQLite.
+/// Get the current Unix timestamp in seconds as `i64` for `SQLite`.
 #[inline]
 pub fn now_secs_i64() -> i64 {
     timestamp_to_i64(now_secs())
@@ -79,7 +81,7 @@ pub fn now_secs() -> u64 {
         .as_secs()
 }
 
-/// Get the current Unix timestamp in milliseconds as `i64` for SQLite.
+/// Get the current Unix timestamp in milliseconds as `i64` for `SQLite`.
 #[inline]
 pub fn now_ms_i64() -> i64 {
     timestamp_to_i64(now_ms())

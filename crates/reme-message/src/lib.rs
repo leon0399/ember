@@ -24,6 +24,7 @@ pub const HOUR_SECS: u64 = 60 * 60;
 /// - Saves 4 bytes per timestamp (u32 vs i64)
 /// - Matches the hour-granularity privacy protection
 /// - Range: ~490,000 years from 1970 (sufficient)
+#[allow(clippy::cast_possible_truncation)] // Hours since 1970 won't overflow u32 for ~490,000 years
 pub fn now_hours() -> u32 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -1,7 +1,7 @@
 use reme_identity::{InvalidPublicKey, PublicID};
 use reme_message::{Content, ContentId, MessageID};
 use reme_node_core::{
-    now_ms_i64, now_secs_i64, timestamp_opt_to_i64, timestamp_to_i64, NodeError,
+    now_ms, now_secs_i64, timestamp_opt_to_i64, timestamp_to_i64, NodeError,
     PersistentMailboxStore, PersistentStoreConfig,
 };
 use reme_outbox::{
@@ -862,10 +862,7 @@ impl OutboxStore for Storage {
         inner_bytes: &[u8],
         expires_at_ms: Option<u64>,
     ) -> Result<OutboxEntryId, Self::Error> {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("System time is before Unix epoch")
-            .as_millis() as u64;
+        let now_ms = now_ms();
 
         let recipient_bytes = recipient.to_bytes();
         let message_id_bytes = message_id.as_bytes();
@@ -1293,10 +1290,7 @@ impl OutboxStore for Storage {
         confirmation: &DeliveryConfirmation,
     ) -> Result<(), Self::Error> {
         let entry_id_bytes = entry_id.as_bytes();
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("System time is before Unix epoch")
-            .as_millis() as u64;
+        let now_ms = now_ms();
 
         let (confirmation_type, confirmation_data) = match confirmation {
             DeliveryConfirmation::Dag {
@@ -1315,10 +1309,7 @@ impl OutboxStore for Storage {
 
     fn outbox_mark_expired(&self, entry_id: OutboxEntryId) -> Result<(), Self::Error> {
         let entry_id_bytes = entry_id.as_bytes();
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("System time is before Unix epoch")
-            .as_millis() as u64;
+        let now_ms = now_ms();
 
         self.conn.execute(
             "UPDATE outbox SET expired_at_ms = ?, next_retry_at_ms = NULL WHERE message_id = ?",
@@ -1454,10 +1445,7 @@ impl OutboxStore for Storage {
         target_id: &TargetId,
     ) -> Result<(), Self::Error> {
         let entry_id_bytes = entry_id.as_bytes();
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("System time is before Unix epoch")
-            .as_millis() as u64;
+        let now_ms = now_ms();
 
         self.conn.execute(
             "INSERT OR REPLACE INTO outbox_successes (message_id, target_id, succeeded_at_ms)
