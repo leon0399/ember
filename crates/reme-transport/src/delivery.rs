@@ -521,6 +521,7 @@ impl TieredDeliveryConfig {
     }
 
     /// Calculate next retry delay using exponential backoff.
+    #[allow(clippy::cast_possible_wrap)] // attempt count will never exceed i32::MAX
     pub fn calculate_retry_delay(&self, attempt: u32) -> Duration {
         let delay = self.urgent_initial_delay.as_secs_f32()
             * self.urgent_backoff_multiplier.powi(attempt as i32);

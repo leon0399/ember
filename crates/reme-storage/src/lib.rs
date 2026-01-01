@@ -1,6 +1,9 @@
 use reme_identity::{InvalidPublicKey, PublicID};
 use reme_message::{Content, ContentId, MessageID};
-use reme_node_core::{NodeError, PersistentMailboxStore, PersistentStoreConfig};
+use reme_node_core::{
+    now_ms_i64, now_secs_i64, timestamp_opt_to_i64, timestamp_to_i64, NodeError,
+    PersistentMailboxStore, PersistentStoreConfig,
+};
 use reme_outbox::{
     AttemptError, AttemptResult, DeliveryConfidence, DeliveryConfirmation, OutboxEntryId,
     OutboxStore, PendingMessage, TargetId, TieredDeliveryPhase, TransportAttempt,
@@ -274,10 +277,7 @@ impl Storage {
     ) -> Result<i64, StorageError> {
         debug!(name = ?name, "adding contact");
         let public_id_bytes = public_id.to_bytes();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let now = now_secs_i64();
 
         self.conn.execute(
             "INSERT INTO contacts (public_id, name, created_at) VALUES (?, ?, ?)",
@@ -377,10 +377,7 @@ impl Storage {
         content: &Content,
     ) -> Result<(), StorageError> {
         trace!(contact_id = contact_id, ?message_id, "storing sent message");
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let now = now_secs_i64();
 
         let (content_type, body) = match content {
             Content::Text(text) => ("text", Some(text.body.as_str())),
@@ -411,10 +408,7 @@ impl Storage {
             ?message_id,
             "storing received message"
         );
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let now = now_secs_i64();
 
         let (content_type, body) = match content {
             Content::Text(text) => ("text", Some(text.body.as_str())),
@@ -435,10 +429,7 @@ impl Storage {
 
     /// Mark a message as delivered
     pub fn mark_delivered(&self, message_id: MessageID) -> Result<(), StorageError> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let now = now_secs_i64();
 
         let message_id_bytes = message_id.as_bytes();
 
@@ -452,10 +443,7 @@ impl Storage {
 
     /// Mark a message as read
     pub fn mark_read(&self, message_id: MessageID) -> Result<(), StorageError> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let now = now_secs_i64();
 
         let message_id_bytes = message_id.as_bytes();
 
@@ -480,10 +468,7 @@ impl Storage {
         message_id: MessageID,
         ack_secret: [u8; 16],
     ) -> Result<(), StorageError> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let now = now_secs_i64();
 
         let message_id_bytes = message_id.as_bytes();
 
@@ -545,12 +530,9 @@ impl Storage {
     ///
     /// Returns the number of deleted entries.
     pub fn cleanup_old_pending_acks(&self, max_age_secs: u64) -> Result<usize, StorageError> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let now = now_secs_i64();
 
-        let cutoff = now - max_age_secs as i64;
+        let cutoff = now - timestamp_to_i64(max_age_secs);
 
         let count = self.conn.execute(
             "DELETE FROM pending_acks WHERE created_at < ?",
@@ -897,9 +879,9 @@ impl OutboxStore for Storage {
                 &content_id[..],
                 envelope_bytes,
                 inner_bytes,
-                now_ms as i64,
-                expires_at_ms.map(|v| v as i64),
-                now_ms as i64, // Ready for immediate retry
+                timestamp_to_i64(now_ms),
+                timestamp_opt_to_i64(expires_at_ms),
+                timestamp_to_i64(now_ms), // Ready for immediate retry
             ],
         )?;
 
@@ -1038,20 +1020,23 @@ impl OutboxStore for Storage {
              ORDER BY next_retry_at_ms ASC",
         )?;
 
-        let rows = stmt.query_map(params![now_ms as i64, now_ms as i64], |row| {
-            Ok((
-                row.get::<_, Vec<u8>>(0)?,         // message_id
-                row.get::<_, Vec<u8>>(1)?,         // recipient_id
-                row.get::<_, Vec<u8>>(2)?,         // content_id
-                row.get::<_, Vec<u8>>(3)?,         // envelope_bytes
-                row.get::<_, Vec<u8>>(4)?,         // inner_bytes
-                row.get::<_, u64>(5)?,             // created_at_ms
-                row.get::<_, Option<u64>>(6)?,     // expires_at_ms
-                row.get::<_, Option<u64>>(7)?,     // next_retry_at_ms
-                row.get::<_, Option<String>>(8)?,  // confirmation_type
-                row.get::<_, Option<Vec<u8>>>(9)?, // confirmation_data
-            ))
-        })?;
+        let rows = stmt.query_map(
+            params![timestamp_to_i64(now_ms), timestamp_to_i64(now_ms)],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,         // message_id
+                    row.get::<_, Vec<u8>>(1)?,         // recipient_id
+                    row.get::<_, Vec<u8>>(2)?,         // content_id
+                    row.get::<_, Vec<u8>>(3)?,         // envelope_bytes
+                    row.get::<_, Vec<u8>>(4)?,         // inner_bytes
+                    row.get::<_, u64>(5)?,             // created_at_ms
+                    row.get::<_, Option<u64>>(6)?,     // expires_at_ms
+                    row.get::<_, Option<u64>>(7)?,     // next_retry_at_ms
+                    row.get::<_, Option<String>>(8)?,  // confirmation_type
+                    row.get::<_, Option<Vec<u8>>>(9)?, // confirmation_data
+                ))
+            },
+        )?;
 
         let mut messages = Vec::new();
         for row in rows {
@@ -1267,7 +1252,7 @@ impl OutboxStore for Storage {
                 params![
                     &entry_id_bytes[..],
                     &attempt.transport_id,
-                    attempt.attempted_at_ms as i64,
+                    timestamp_to_i64(attempt.attempted_at_ms),
                     result_type,
                     error_type,
                     error_message,
@@ -1278,7 +1263,7 @@ impl OutboxStore for Storage {
             // Update next_retry_at
             self.conn.execute(
                 "UPDATE outbox SET next_retry_at_ms = ? WHERE message_id = ?",
-                params![next_retry_at_ms.map(|v| v as i64), &entry_id_bytes[..]],
+                params![timestamp_opt_to_i64(next_retry_at_ms), &entry_id_bytes[..]],
             )?;
 
             Ok::<(), StorageError>(())
@@ -1322,7 +1307,7 @@ impl OutboxStore for Storage {
         self.conn.execute(
             "UPDATE outbox SET confirmed_at_ms = ?, confirmation_type = ?, confirmation_data = ?, next_retry_at_ms = NULL
              WHERE message_id = ?",
-            params![now_ms as i64, confirmation_type, confirmation_data, &entry_id_bytes[..]],
+            params![timestamp_to_i64(now_ms), confirmation_type, confirmation_data, &entry_id_bytes[..]],
         )?;
 
         Ok(())
@@ -1337,7 +1322,7 @@ impl OutboxStore for Storage {
 
         self.conn.execute(
             "UPDATE outbox SET expired_at_ms = ?, next_retry_at_ms = NULL WHERE message_id = ?",
-            params![now_ms as i64, &entry_id_bytes[..]],
+            params![timestamp_to_i64(now_ms), &entry_id_bytes[..]],
         )?;
 
         Ok(())
@@ -1360,7 +1345,7 @@ impl OutboxStore for Storage {
                 let id_bytes = id.as_bytes();
                 self.conn.execute(
                     "UPDATE outbox SET next_retry_at_ms = ? WHERE message_id = ? AND confirmed_at_ms IS NULL AND expired_at_ms IS NULL",
-                    params![now_ms as i64, &id_bytes[..]],
+                    params![timestamp_to_i64(now_ms), &id_bytes[..]],
                 )?;
             }
             Ok::<(), StorageError>(())
@@ -1387,7 +1372,7 @@ impl OutboxStore for Storage {
     fn outbox_cleanup(&self, confirmed_before_ms: u64) -> Result<u64, Self::Error> {
         let count = self.conn.execute(
             "DELETE FROM outbox WHERE (confirmed_at_ms IS NOT NULL AND confirmed_at_ms <= ?) OR (expired_at_ms IS NOT NULL AND expired_at_ms <= ?)",
-            params![confirmed_before_ms as i64, confirmed_before_ms as i64],
+            params![timestamp_to_i64(confirmed_before_ms), timestamp_to_i64(confirmed_before_ms)],
         )?;
 
         Ok(count as u64)
@@ -1400,7 +1385,7 @@ impl OutboxStore for Storage {
                AND expired_at_ms IS NULL
                AND expires_at_ms IS NOT NULL
                AND expires_at_ms < ?",
-            params![now_ms as i64, now_ms as i64],
+            params![timestamp_to_i64(now_ms), timestamp_to_i64(now_ms)],
         )?;
 
         Ok(count as u64)
@@ -1443,8 +1428,8 @@ impl OutboxStore for Storage {
                      direct_target_id = ?
                      WHERE message_id = ?",
                     params![
-                        *reached_at_ms as i64,
-                        last_maintenance_ms.map(|v| v as i64),
+                        timestamp_to_i64(*reached_at_ms),
+                        timestamp_opt_to_i64(*last_maintenance_ms),
                         quorum_count,
                         quorum_required,
                         direct_target_id,
@@ -1456,7 +1441,7 @@ impl OutboxStore for Storage {
                 self.conn.execute(
                     "UPDATE outbox SET delivery_phase = 'confirmed', quorum_reached_at_ms = ?
                      WHERE message_id = ?",
-                    params![*confirmed_at_ms as i64, &entry_id_bytes[..]],
+                    params![timestamp_to_i64(*confirmed_at_ms), &entry_id_bytes[..]],
                 )?;
             }
         }
@@ -1477,7 +1462,11 @@ impl OutboxStore for Storage {
         self.conn.execute(
             "INSERT OR REPLACE INTO outbox_successes (message_id, target_id, succeeded_at_ms)
              VALUES (?, ?, ?)",
-            params![&entry_id_bytes[..], target_id.as_str(), now_ms as i64],
+            params![
+                &entry_id_bytes[..],
+                target_id.as_str(),
+                timestamp_to_i64(now_ms)
+            ],
         )?;
         Ok(())
     }
@@ -1494,7 +1483,7 @@ impl OutboxStore for Storage {
              ORDER BY created_at_ms ASC",
         )?;
 
-        let rows = stmt.query_map(params![now_ms as i64], |row| {
+        let rows = stmt.query_map(params![timestamp_to_i64(now_ms)], |row| {
             Ok((
                 row.get::<_, Vec<u8>>(0)?,
                 row.get::<_, Vec<u8>>(1)?,
@@ -1560,20 +1549,23 @@ impl OutboxStore for Storage {
              ORDER BY last_maintenance_ms ASC NULLS FIRST",
         )?;
 
-        let rows = stmt.query_map(params![now_ms as i64, cutoff as i64], |row| {
-            Ok((
-                row.get::<_, Vec<u8>>(0)?,
-                row.get::<_, Vec<u8>>(1)?,
-                row.get::<_, Vec<u8>>(2)?,
-                row.get::<_, Vec<u8>>(3)?,
-                row.get::<_, Vec<u8>>(4)?,
-                row.get::<_, u64>(5)?,
-                row.get::<_, Option<u64>>(6)?,
-                row.get::<_, Option<u64>>(7)?,
-                row.get::<_, Option<String>>(8)?,
-                row.get::<_, Option<Vec<u8>>>(9)?,
-            ))
-        })?;
+        let rows = stmt.query_map(
+            params![timestamp_to_i64(now_ms), timestamp_to_i64(cutoff)],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, u64>(5)?,
+                    row.get::<_, Option<u64>>(6)?,
+                    row.get::<_, Option<u64>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<Vec<u8>>>(9)?,
+                ))
+            },
+        )?;
 
         let mut messages = Vec::new();
         for row in rows {
@@ -1615,7 +1607,7 @@ impl OutboxStore for Storage {
         let entry_id_bytes = entry_id.as_bytes();
         self.conn.execute(
             "UPDATE outbox SET last_maintenance_ms = ? WHERE message_id = ?",
-            params![last_maintenance_ms as i64, &entry_id_bytes[..]],
+            params![timestamp_to_i64(last_maintenance_ms), &entry_id_bytes[..]],
         )?;
         Ok(())
     }
