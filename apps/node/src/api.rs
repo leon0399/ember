@@ -248,41 +248,54 @@ struct Receipt {
 /// - `signature`: XEdDSA signature over (message_id || ack_secret) proving node identity
 ///
 /// Returns `None` if this node is just a relay (`routing_key` doesn't match).
-fn try_derive_receipt(
-    identity: Option<&NodeIdentity>,
+///
+/// Crypto operations (ECDH and XEdDSA signing) are offloaded to a blocking thread pool
+/// to avoid blocking the Tokio worker thread.
+async fn try_derive_receipt(
+    identity: Option<Arc<NodeIdentity>>,
     envelope: &OuterEnvelope,
 ) -> Option<Receipt> {
     let identity = identity?;
 
-    // Check if we're the intended recipient
+    // Check if we're the intended recipient (cheap comparison, no crypto)
     if envelope.routing_key != identity.routing_key() {
         return None;
     }
 
-    // Derive shared secret via ECDH
-    let shared_secret = identity.derive_shared_secret(&envelope.ephemeral_key)?;
+    // Capture owned values for spawn_blocking
+    let ephemeral_key = envelope.ephemeral_key;
+    let message_id = envelope.message_id;
 
-    // Derive ack_secret from shared_secret and message_id
-    let ack_secret = derive_ack_secret(&shared_secret, &envelope.message_id);
+    // Offload crypto-intensive operations (ECDH + signing) to thread pool
+    tokio::task::spawn_blocking(move || {
+        // Derive shared secret via ECDH
+        let shared_secret = identity.derive_shared_secret(&ephemeral_key)?;
 
-    // Sign with domain separation: "reme-receipt-v1:" || signer_pubkey || message_id || ack_secret
-    // This prevents cross-protocol signature confusion and binds the signature to the signer
-    const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
-    let signer_pubkey = identity.public_id().to_bytes();
-    let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16 + 16);
-    sign_data.extend_from_slice(DOMAIN_SEP);
-    sign_data.extend_from_slice(&signer_pubkey);
-    sign_data.extend_from_slice(envelope.message_id.as_bytes());
-    sign_data.extend_from_slice(&ack_secret);
-    let signature = identity.sign(&sign_data);
+        // Derive ack_secret from shared_secret and message_id
+        let ack_secret = derive_ack_secret(&shared_secret, &message_id);
 
-    // Zeroize sensitive intermediate data
-    sign_data.zeroize();
+        // Sign with domain separation: "reme-receipt-v1:" || signer_pubkey || message_id || ack_secret
+        // This prevents cross-protocol signature confusion and binds the signature to the signer
+        const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
+        let signer_pubkey = identity.public_id().to_bytes();
+        let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16 + 16);
+        sign_data.extend_from_slice(DOMAIN_SEP);
+        sign_data.extend_from_slice(&signer_pubkey);
+        sign_data.extend_from_slice(message_id.as_bytes());
+        sign_data.extend_from_slice(&ack_secret);
+        let signature = identity.sign(&sign_data);
 
-    Some(Receipt {
-        ack_secret: BASE64_STANDARD.encode(ack_secret),
-        signature: BASE64_STANDARD.encode(signature),
+        // Zeroize sensitive intermediate data
+        sign_data.zeroize();
+
+        Some(Receipt {
+            ack_secret: BASE64_STANDARD.encode(ack_secret),
+            signature: BASE64_STANDARD.encode(signature),
+        })
     })
+    .await
+    .ok()
+    .flatten()
 }
 
 // ============================================
@@ -494,7 +507,7 @@ async fn handle_message(
     let message_id = envelope.message_id;
 
     // Try to derive signed receipt if we're the intended recipient (before envelope is moved)
-    let receipt = try_derive_receipt(state.identity.as_deref(), &envelope);
+    let receipt = try_derive_receipt(state.identity.clone(), &envelope).await;
 
     // Clone envelope for MQTT publishing (enqueue takes ownership)
     let envelope_for_mqtt = envelope.clone();
