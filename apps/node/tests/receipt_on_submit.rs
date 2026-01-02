@@ -157,6 +157,9 @@ async fn submit_envelope(url: &str, envelope: OuterEnvelope) -> SubmitResponse {
 /// Test: Node is the intended recipient → returns valid `ack_secret`
 #[tokio::test]
 async fn test_recipient_returns_ack_secret() {
+    // Domain separator for signature verification
+    const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
+
     // Create node identity (this will be the recipient)
     let (node_identity, _dir) = create_temp_identity();
     let node_pubkey = *node_identity.public_id();
@@ -216,7 +219,6 @@ async fn test_recipient_returns_ack_secret() {
 
     // Reconstruct signed message with domain separation
     // Format: "reme-receipt-v1:" || signer_pubkey || message_id || ack_secret
-    const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
     let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16 + 16);
     sign_data.extend_from_slice(DOMAIN_SEP);
     sign_data.extend_from_slice(&node_pubkey.to_bytes());

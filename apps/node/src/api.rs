@@ -192,9 +192,9 @@ pub struct SubmitResponse {
     /// Base64-encoded 16-byte secret.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ack_secret: Option<String>,
-    /// XEdDSA signature proving node identity.
+    /// `XEdDSA` signature proving node identity.
     /// Signed data: `"reme-receipt-v1:" || signer_pubkey || message_id || ack_secret`
-    /// Present only when ack_secret is present.
+    /// Present only when `ack_secret` is present.
     /// Base64-encoded 64-byte signature.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
@@ -230,10 +230,10 @@ pub struct ErrorResponse {
 
 /// Receipt proving node received and can decrypt a message.
 struct Receipt {
-    /// Base64-encoded 16-byte ack_secret
+    /// Base64-encoded 16-byte `ack_secret`
     ack_secret: String,
-    /// Base64-encoded 64-byte XEdDSA signature over:
-    /// "reme-receipt-v1:" || signer_pubkey || message_id || ack_secret
+    /// Base64-encoded 64-byte `XEdDSA` signature over:
+    /// `"reme-receipt-v1:" || signer_pubkey || message_id || ack_secret`
     signature: String,
 }
 
@@ -246,11 +246,11 @@ struct Receipt {
 ///
 /// The receipt includes:
 /// - `ack_secret`: proves the node can decrypt the message
-/// - `signature`: XEdDSA signature over `"reme-receipt-v1:" || signer_pubkey || message_id || ack_secret`
+/// - `signature`: `XEdDSA` signature over `"reme-receipt-v1:" || signer_pubkey || message_id || ack_secret`
 ///
 /// Returns `None` if this node is just a relay (`routing_key` doesn't match).
 ///
-/// Crypto operations (ECDH and XEdDSA signing) are offloaded to a blocking thread pool
+/// Crypto operations (ECDH and `XEdDSA` signing) are offloaded to a blocking thread pool
 /// to avoid blocking the Tokio worker thread.
 async fn try_derive_receipt(
     identity: Option<Arc<NodeIdentity>>,
@@ -269,6 +269,9 @@ async fn try_derive_receipt(
 
     // Offload crypto-intensive operations (ECDH + signing) to thread pool
     tokio::task::spawn_blocking(move || {
+        // Domain separator for signature (prevents cross-protocol confusion)
+        const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
+
         // Derive shared secret via ECDH
         let shared_secret = identity.derive_shared_secret(&ephemeral_key)?;
 
@@ -276,8 +279,7 @@ async fn try_derive_receipt(
         let mut ack_secret = derive_ack_secret(&shared_secret, &message_id);
 
         // Sign with domain separation: "reme-receipt-v1:" || signer_pubkey || message_id || ack_secret
-        // This prevents cross-protocol signature confusion and binds the signature to the signer
-        const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
+        // This binds the signature to the signer's public key
         let signer_pubkey = identity.public_id().to_bytes();
         let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16 + 16);
         sign_data.extend_from_slice(DOMAIN_SEP);
