@@ -693,6 +693,7 @@ impl TransportCoordinator {
     }
 
     /// Get count of Quorum tier targets (for quorum calculation).
+    #[allow(clippy::cast_possible_truncation)] // Target count won't exceed u32::MAX
     pub fn quorum_target_count(&self, config: &TieredDeliveryConfig) -> u32 {
         let mut count = 0u32;
 

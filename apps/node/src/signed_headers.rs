@@ -245,6 +245,7 @@ impl<'a> SignatureVerifier<'a> {
     }
 
     /// Extract a single header value, rejecting duplicates.
+    #[allow(clippy::unused_self)] // Method for API consistency
     fn extract_single_header(
         &self,
         headers: &axum::http::HeaderMap,
@@ -267,6 +268,7 @@ impl<'a> SignatureVerifier<'a> {
     }
 
     /// Verify timestamp is within acceptable bounds.
+    #[allow(clippy::unused_self)] // Method for API consistency
     fn verify_timestamp(&self, timestamp: u64) -> Result<(), SignatureError> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)

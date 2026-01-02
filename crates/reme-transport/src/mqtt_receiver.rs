@@ -89,6 +89,7 @@ impl MqttReceiver {
     /// Create a new MQTT receiver with a shared seen cache.
     ///
     /// Use this when you want to share deduplication state with other transports.
+    #[allow(clippy::unused_async)] // Async for API consistency
     pub async fn with_seen_cache(
         config: MqttReceiverConfig,
         seen_cache: Arc<SharedSeenCache>,
@@ -298,6 +299,7 @@ impl MqttReceiver {
     }
 
     /// Parse a base64-encoded MQTT message payload.
+    #[allow(clippy::unused_self)] // Method for future extensibility
     fn parse_message(&self, payload: &[u8]) -> Result<OuterEnvelope, TransportError> {
         // Payload is base64-encoded WirePayload
         let wire_bytes = BASE64_STANDARD

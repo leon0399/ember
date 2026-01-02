@@ -235,6 +235,7 @@ impl TargetHealth {
     }
 
     /// Record a successful operation.
+    #[allow(clippy::cast_possible_truncation)] // Latency in ms won't exceed u32::MAX (~49 days)
     pub fn record_success(&self, latency: Duration) {
         // Reset failure counter
         self.consecutive_failures.store(0, Ordering::Relaxed);

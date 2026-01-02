@@ -119,16 +119,17 @@ impl QuorumStrategy {
     /// Returns an error if the strategy contains invalid values.
     pub fn validate(&self) -> Result<(), QuorumStrategyError> {
         match self {
-            QuorumStrategy::Any | QuorumStrategy::All => Ok(()),
             QuorumStrategy::Count(n) if *n == 0 => Err(QuorumStrategyError::InvalidCount(*n)),
-            QuorumStrategy::Count(_) => Ok(()),
             QuorumStrategy::Fraction(f) if f.is_nan() || f.is_infinite() => {
                 Err(QuorumStrategyError::InvalidFraction(*f))
             }
             QuorumStrategy::Fraction(f) if *f <= 0.0 || *f > 1.0 => {
                 Err(QuorumStrategyError::InvalidFraction(*f))
             }
-            QuorumStrategy::Fraction(_) => Ok(()),
+            QuorumStrategy::Any
+            | QuorumStrategy::All
+            | QuorumStrategy::Count(_)
+            | QuorumStrategy::Fraction(_) => Ok(()),
         }
     }
 
@@ -144,6 +145,11 @@ impl QuorumStrategy {
     /// Get the required count for this strategy given total targets.
     ///
     /// Returns 0 when `total` is 0 (you can't require anything from nothing).
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
     pub fn required_count(&self, total: u32) -> u32 {
         if total == 0 {
             return 0;
@@ -237,10 +243,9 @@ impl TargetOutcome {
     /// Check if this outcome represents a failure that should be retried.
     pub fn should_retry(&self) -> bool {
         match self {
-            TargetOutcome::Success => false,
             TargetOutcome::Failed(e) => e.is_transient(),
-            TargetOutcome::Skipped => false,
             TargetOutcome::Timeout => true,
+            TargetOutcome::Success | TargetOutcome::Skipped => false,
         }
     }
 }
@@ -333,6 +338,7 @@ impl TierResult {
     }
 
     /// Count successful targets.
+    #[allow(clippy::cast_possible_truncation)] // Results count won't exceed u32::MAX
     pub fn success_count(&self) -> u32 {
         self.results
             .iter()
@@ -418,6 +424,7 @@ impl DeliveryResult {
     }
 
     /// Count successful targets.
+    #[allow(clippy::cast_possible_truncation)] // Results count won't exceed u32::MAX
     pub fn success_count(&self) -> u32 {
         self.target_results
             .iter()

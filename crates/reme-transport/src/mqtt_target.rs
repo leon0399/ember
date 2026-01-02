@@ -98,6 +98,7 @@ impl MqttTarget {
     /// Create a new MQTT target and connect to the broker.
     ///
     /// This spawns an event loop task to manage the connection.
+    #[allow(clippy::unused_async)] // Async for API consistency with other transports
     pub async fn connect(config: MqttTargetConfig) -> Result<Self, TransportError> {
         let parsed = parse_mqtt_url(&config.url)?;
 

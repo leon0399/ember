@@ -296,6 +296,7 @@ pub struct Message {
 }
 
 /// Application state
+#[allow(clippy::struct_excessive_bools)] // UI state naturally has many boolean flags
 pub struct App<'a> {
     /// Is the application running?
     pub running: bool,
@@ -351,6 +352,7 @@ impl App<'_> {
     /// # Arguments
     /// * `config` - Application configuration
     /// * `identity` - The loaded/decrypted identity
+    #[allow(clippy::too_many_lines)] // App initialization requires many steps
     pub async fn new(config: AppConfig, identity: Identity) -> AppResult<Self> {
         // Ensure data directory exists
         fs::create_dir_all(&config.data_dir)?;
@@ -862,6 +864,7 @@ impl App<'_> {
     }
 
     /// Handle key events
+    #[allow(clippy::too_many_lines)] // Event handling has many cases
     async fn handle_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
         // Handle popups first if visible
         if self.show_add_contact_popup {
@@ -987,6 +990,7 @@ impl App<'_> {
     }
 
     /// Handle key events in conversation list
+    #[allow(clippy::unused_async)] // Async for interface consistency with other handlers
     async fn handle_conversation_key(&mut self, key: KeyEvent) -> AppResult<()> {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
@@ -1145,6 +1149,7 @@ impl App<'_> {
     }
 
     /// Attempt to add contact from popup data
+    #[allow(clippy::unnecessary_wraps)] // Returns Result for consistency with other handlers
     fn try_add_contact(&mut self) -> AppResult<()> {
         // Validate public ID
         let public_id = match self.add_contact_popup.validate_public_id() {
@@ -1196,6 +1201,7 @@ impl App<'_> {
     }
 
     /// Handle key events when my ID popup is visible
+    #[allow(clippy::unnecessary_wraps)] // Returns Result for consistency with other handlers
     fn handle_my_id_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
         match key.code {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | 'i') => {
@@ -1208,6 +1214,7 @@ impl App<'_> {
     }
 
     /// Handle key events when view upstreams popup is visible
+    #[allow(clippy::unnecessary_wraps)] // Returns Result for consistency with other handlers
     fn handle_upstreams_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
         match key.code {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | 'v') => {
@@ -1354,8 +1361,11 @@ fn utc_time_now() -> String {
 ///
 /// Uses the provided name if available, otherwise returns truncated hex of the public ID.
 fn format_display_name(name: Option<&str>, public_id: &PublicID) -> String {
-    name.map(String::from).unwrap_or_else(|| {
-        let hex = hex::encode(public_id.to_bytes());
-        format!("{}...", &hex[..8])
-    })
+    name.map_or_else(
+        || {
+            let hex = hex::encode(public_id.to_bytes());
+            format!("{}...", &hex[..8])
+        },
+        String::from,
+    )
 }

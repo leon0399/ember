@@ -179,6 +179,7 @@ impl HealthSummary {
     }
 
     /// Calculate the percentage of healthy targets.
+    #[allow(clippy::cast_precision_loss)] // Percentage calculation doesn't need full precision
     pub fn healthy_percentage(&self) -> f32 {
         if self.total == 0 {
             0.0
@@ -280,6 +281,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // Exact comparison is fine for test values
     fn test_health_summary_edge_cases() {
         let empty = HealthSummary::new();
         assert_eq!(empty.healthy_percentage(), 0.0);

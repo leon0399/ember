@@ -629,6 +629,7 @@ impl Storage {
     }
 
     /// Load confirmation from a row
+    #[allow(clippy::needless_pass_by_value)] // Private helper, value semantics simpler for Option<String>
     fn load_confirmation(
         confirmation_type: Option<String>,
         confirmation_data: Option<Vec<u8>>,
@@ -686,6 +687,7 @@ impl Storage {
     }
 
     /// Load tiered delivery phase for an outbox entry
+    #[allow(clippy::type_complexity)] // SQL row unpacking requires tuple type
     fn load_tiered_phase(
         &self,
         message_id: &MessageID,
@@ -1068,6 +1070,7 @@ impl OutboxStore for Storage {
         Ok(messages)
     }
 
+    #[allow(clippy::type_complexity)] // SQL row unpacking requires tuple type
     fn outbox_get_by_id(
         &self,
         entry_id: OutboxEntryId,
@@ -1141,6 +1144,7 @@ impl OutboxStore for Storage {
         }
     }
 
+    #[allow(clippy::type_complexity)] // SQL row unpacking requires tuple type
     fn outbox_get_by_content_id(
         &self,
         content_id: ContentId,

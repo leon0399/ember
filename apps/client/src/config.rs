@@ -216,18 +216,19 @@ impl QuorumStrategyConfig {
     /// Returns an error message if the configuration is invalid.
     pub fn validate(&self) -> Result<(), String> {
         match self {
-            QuorumStrategyConfig::Any | QuorumStrategyConfig::All => Ok(()),
             QuorumStrategyConfig::Count(n) if *n == 0 => {
                 Err("Quorum count must be > 0".to_string())
             }
-            QuorumStrategyConfig::Count(_) => Ok(()),
             QuorumStrategyConfig::Fraction(f) if f.is_nan() || f.is_infinite() => Err(format!(
                 "Invalid quorum fraction {f}: must be a finite number"
             )),
             QuorumStrategyConfig::Fraction(f) if *f <= 0.0 || *f > 1.0 => Err(format!(
                 "Quorum fraction {f} out of range: must be in (0.0, 1.0]"
             )),
-            QuorumStrategyConfig::Fraction(_) => Ok(()),
+            QuorumStrategyConfig::Any
+            | QuorumStrategyConfig::All
+            | QuorumStrategyConfig::Count(_)
+            | QuorumStrategyConfig::Fraction(_) => Ok(()),
         }
     }
 }
@@ -739,6 +740,7 @@ struct RawDeliveryConfig {
 /// 2. Environment variables (REME_*)
 /// 3. Config file
 /// 4. Built-in defaults
+#[allow(clippy::too_many_lines)] // Config loading requires many steps
 pub fn load_config() -> Result<AppConfig, config::ConfigError> {
     let cli = CliArgs::parse();
 
@@ -854,10 +856,8 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
             .collect()
     } else if let Some(env_mqtt) = parse_mqtt_from_env() {
         env_mqtt
-    } else if let Some(file_mqtt) = raw.mqtt {
-        file_mqtt
     } else {
-        Vec::new() // MQTT is optional
+        raw.mqtt.unwrap_or_default() // MQTT is optional
     };
 
     // Expand ~ in data_dir path
@@ -971,6 +971,7 @@ fn dirs_home() -> Option<PathBuf> {
 }
 
 /// Generate a default config file content
+#[allow(clippy::too_many_lines, dead_code)] // Template generation, may be used for init command
 pub fn default_config_toml() -> String {
     let defaults = AppConfig::default();
     let quorum_str = match &defaults.delivery.quorum {
@@ -1106,10 +1107,9 @@ pub(crate) fn parse_log_level(level: &str) -> Level {
     match level.to_lowercase().as_str() {
         "trace" => Level::TRACE,
         "debug" => Level::DEBUG,
-        "info" => Level::INFO,
         "warn" | "warning" => Level::WARN,
         "error" => Level::ERROR,
-        _ => Level::INFO,
+        _ => Level::INFO, // Default to INFO for "info" and unrecognized levels
     }
 }
 

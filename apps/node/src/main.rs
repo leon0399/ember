@@ -96,14 +96,14 @@ fn parse_log_level(level: &str) -> Level {
     match level.to_lowercase().as_str() {
         "trace" => Level::TRACE,
         "debug" => Level::DEBUG,
-        "info" => Level::INFO,
         "warn" | "warning" => Level::WARN,
         "error" => Level::ERROR,
-        _ => Level::INFO,
+        _ => Level::INFO, // Default to INFO for unrecognized levels
     }
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)] // Entry point, refactoring would reduce clarity
 async fn main() {
     // Load configuration from all sources
     // Configuration errors are fatal - we don't fall back to defaults as that

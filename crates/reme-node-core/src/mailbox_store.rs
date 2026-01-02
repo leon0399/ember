@@ -315,6 +315,7 @@ impl PersistentMailboxStore {
     }
 
     /// Get store statistics
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // SQLite COUNTs are non-negative
     pub fn stats(&self) -> Result<PersistentStoreStats, NodeError> {
         let now = now_secs();
 
@@ -355,6 +356,7 @@ impl PersistentMailboxStore {
 }
 
 impl MailboxStore for PersistentMailboxStore {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // SQLite COUNT is non-negative
     fn enqueue(&self, routing_key: RoutingKey, envelope: OuterEnvelope) -> Result<(), NodeError> {
         let now = now_secs();
 
@@ -544,7 +546,7 @@ mod tests {
         OuterEnvelope {
             version: CURRENT_VERSION,
             routing_key,
-            timestamp_hours: 482253,
+            timestamp_hours: 482_253,
             ttl_hours,
             message_id: MessageID::new(),
             ephemeral_key: [0u8; 32],

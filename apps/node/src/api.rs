@@ -432,6 +432,7 @@ async fn submit_payload(
     }
 }
 
+#[allow(clippy::unused_async)] // Async used in spawned task, function signature for consistency
 async fn handle_message(
     state: Arc<AppState>,
     envelope: OuterEnvelope,

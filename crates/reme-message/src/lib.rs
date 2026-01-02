@@ -363,7 +363,7 @@ mod tests {
 
     #[test]
     fn test_content_id_is_8_bytes() {
-        let inner = create_test_inner("Hello", 1234567890);
+        let inner = create_test_inner("Hello", 1_234_567_890);
         let content_id = inner.content_id();
         assert_eq!(content_id.len(), 8);
     }
@@ -373,7 +373,7 @@ mod tests {
         let sender = Identity::generate();
         let inner1 = InnerEnvelope {
             from: *sender.public_id(),
-            created_at_ms: 1234567890,
+            created_at_ms: 1_234_567_890,
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
@@ -384,7 +384,7 @@ mod tests {
         };
         let inner2 = InnerEnvelope {
             from: *sender.public_id(),
-            created_at_ms: 1234567890,
+            created_at_ms: 1_234_567_890,
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
@@ -401,7 +401,7 @@ mod tests {
         let sender = Identity::generate();
         let inner1 = InnerEnvelope {
             from: *sender.public_id(),
-            created_at_ms: 1234567890,
+            created_at_ms: 1_234_567_890,
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
@@ -412,7 +412,7 @@ mod tests {
         };
         let inner2 = InnerEnvelope {
             from: *sender.public_id(),
-            created_at_ms: 1234567890,
+            created_at_ms: 1_234_567_890,
             content: Content::Text(TextContent {
                 body: "World".to_string(),
             }),
@@ -429,7 +429,7 @@ mod tests {
         let sender = Identity::generate();
         let inner1 = InnerEnvelope {
             from: *sender.public_id(),
-            created_at_ms: 1234567890,
+            created_at_ms: 1_234_567_890,
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
@@ -440,7 +440,7 @@ mod tests {
         };
         let inner2 = InnerEnvelope {
             from: *sender.public_id(),
-            created_at_ms: 1234567891,
+            created_at_ms: 1_234_567_891,
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
@@ -459,7 +459,7 @@ mod tests {
         let sender2 = Identity::generate();
         let inner1 = InnerEnvelope {
             from: *sender1.public_id(),
-            created_at_ms: 1234567890,
+            created_at_ms: 1_234_567_890,
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
@@ -470,7 +470,7 @@ mod tests {
         };
         let inner2 = InnerEnvelope {
             from: *sender2.public_id(),
-            created_at_ms: 1234567890,
+            created_at_ms: 1_234_567_890,
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
@@ -491,7 +491,7 @@ mod tests {
 
         let inner1 = InnerEnvelope {
             from: *sender.public_id(),
-            created_at_ms: 1234567890,
+            created_at_ms: 1_234_567_890,
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
@@ -502,7 +502,7 @@ mod tests {
         };
         let inner2 = InnerEnvelope {
             from: *sender.public_id(),
-            created_at_ms: 1234567890,
+            created_at_ms: 1_234_567_890,
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
@@ -522,7 +522,7 @@ mod tests {
         // Message with FLAG_DETACHED set is detached
         let inner1 = InnerEnvelope {
             from: *sender.public_id(),
-            created_at_ms: 1234567890,
+            created_at_ms: 1_234_567_890,
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
@@ -536,7 +536,7 @@ mod tests {
         // Message without FLAG_DETACHED is not detached (even with empty DAG fields)
         let inner2 = InnerEnvelope {
             from: *sender.public_id(),
-            created_at_ms: 1234567890,
+            created_at_ms: 1_234_567_890,
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
@@ -551,7 +551,7 @@ mod tests {
         // (flag takes precedence - unusual but valid)
         let inner3 = InnerEnvelope {
             from: *sender.public_id(),
-            created_at_ms: 1234567890,
+            created_at_ms: 1_234_567_890,
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),
@@ -574,7 +574,7 @@ mod tests {
 
         let inner = InnerEnvelope {
             from: *sender.public_id(),
-            created_at_ms: 1234567890,
+            created_at_ms: 1_234_567_890,
             content: Content::Text(TextContent {
                 body: "Hello".to_string(),
             }),

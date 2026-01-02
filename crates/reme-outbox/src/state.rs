@@ -71,11 +71,11 @@ impl AttemptError {
     /// Whether this error is likely transient (worth retrying).
     pub fn is_transient(&self) -> bool {
         match self {
-            Self::Network { is_transient, .. } => *is_transient,
-            Self::Rejected { is_transient, .. } => *is_transient,
-            Self::Unavailable { .. } => true, // May become available later
-            Self::Encoding { .. } => false,   // Won't fix itself
-            Self::TimedOut { .. } => true,
+            Self::Network { is_transient, .. } | Self::Rejected { is_transient, .. } => {
+                *is_transient
+            }
+            Self::Encoding { .. } => false, // Won't fix itself
+            Self::Unavailable { .. } | Self::TimedOut { .. } => true, // May resolve on retry
         }
     }
 
