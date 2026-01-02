@@ -124,17 +124,21 @@ impl HttpServerState {
         &self.our_routing_key
     }
 
-    /// Derive `ack_secret` for an envelope (embedded node is always the recipient).
+    /// Derive a signed receipt for an envelope (embedded node is always the recipient).
     ///
     /// Returns `None` if:
     /// - The ephemeral key is a known low-order point (security check)
     /// - The ECDH result is all-zero (defense-in-depth)
-    fn derive_ack_secret_for_envelope(&self, envelope: &OuterEnvelope) -> Option<String> {
+    ///
+    /// The receipt includes:
+    /// - `ack_secret`: proves the node can decrypt the message
+    /// - `signature`: XEdDSA signature over (message_id || ack_secret) proving node identity
+    fn derive_receipt_for_envelope(&self, envelope: &OuterEnvelope) -> Option<Receipt> {
         // Pre-validation: reject known low-order points before ECDH
         if is_low_order_point(&envelope.ephemeral_key) {
             debug!(
                 message_id = ?envelope.message_id,
-                "Rejected low-order ephemeral key in ack_secret derivation"
+                "Rejected low-order ephemeral key in receipt derivation"
             );
             return None;
         }
@@ -148,14 +152,32 @@ impl HttpServerState {
         if bool::from(bytes.ct_eq(&[0u8; 32])) {
             debug!(
                 message_id = ?envelope.message_id,
-                "Rejected all-zero shared secret in ack_secret derivation"
+                "Rejected all-zero shared secret in receipt derivation"
             );
             return None;
         }
 
         let ack_secret = derive_ack_secret(bytes, &envelope.message_id);
-        Some(BASE64_STANDARD.encode(ack_secret))
+
+        // Sign (message_id || ack_secret) to prove node identity
+        let mut sign_data = Vec::with_capacity(16 + 16);
+        sign_data.extend_from_slice(envelope.message_id.as_bytes());
+        sign_data.extend_from_slice(&ack_secret);
+        let signature = self.identity.sign_xeddsa(&sign_data);
+
+        Some(Receipt {
+            ack_secret: BASE64_STANDARD.encode(ack_secret),
+            signature: BASE64_STANDARD.encode(signature),
+        })
     }
+}
+
+/// Receipt proving node received and can decrypt a message.
+struct Receipt {
+    /// Base64-encoded 16-byte ack_secret
+    ack_secret: String,
+    /// Base64-encoded 64-byte XEdDSA signature over (message_id || ack_secret)
+    signature: String,
 }
 
 /// Response for successful submission.
@@ -164,6 +186,11 @@ struct SubmitResponse {
     status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     ack_secret: Option<String>,
+    /// XEdDSA signature over (message_id || ack_secret) proving node identity.
+    /// Present only when ack_secret is present.
+    /// Base64-encoded 64-byte signature.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature: Option<String>,
 }
 
 /// Response for errors.
@@ -223,13 +250,14 @@ async fn submit_handler(
     }
 
     // === DUPLICATE CHECK ===
-    // Idempotent operation: return success if already stored (but no ack_secret for duplicates)
+    // Idempotent operation: return success if already stored (but no receipt for duplicates)
     match state.is_duplicate(&envelope) {
         Ok(true) => {
             debug!(message_id = ?message_id, "Duplicate message, already stored");
             return Ok(Json(SubmitResponse {
                 status: "ok",
                 ack_secret: None, // No ack_secret for duplicates
+                signature: None,
             }));
         }
         Ok(false) => {
@@ -246,15 +274,15 @@ async fn submit_handler(
         }
     }
 
-    // Derive ack_secret BEFORE storing (we're the recipient, so we can always derive it)
+    // Derive signed receipt BEFORE storing (we're the recipient, so we can always derive it)
     // This proves we received and can decrypt the message
-    let ack_secret = state.derive_ack_secret_for_envelope(&envelope);
+    let receipt = state.derive_receipt_for_envelope(&envelope);
 
     // Store and notify client
     // Handle race condition: if store fails, check if it's now a duplicate
     if let Err(e) = state.store_message(envelope.clone()) {
         // Check if the message was stored by a concurrent request (race condition)
-        // If so, treat as success but no ack_secret (duplicate)
+        // If so, treat as success but no receipt (duplicate)
         if is_duplicate_after_store_failure(&state, &message_id, &e) {
             debug!(
                 message_id = ?message_id,
@@ -263,6 +291,7 @@ async fn submit_handler(
             return Ok(Json(SubmitResponse {
                 status: "ok",
                 ack_secret: None, // No ack_secret for duplicates
+                signature: None,
             }));
         }
 
@@ -274,10 +303,17 @@ async fn submit_handler(
         return Err(ApiError::Internal("Failed to store message".to_string()));
     }
 
+    // Extract receipt fields (ack_secret + signature) if present
+    let (ack_secret, signature) = match receipt {
+        Some(r) => (Some(r.ack_secret), Some(r.signature)),
+        None => (None, None),
+    };
+
     info!(message_id = ?message_id, "Message from LAN peer stored successfully");
     Ok(Json(SubmitResponse {
         status: "ok",
         ack_secret,
+        signature,
     }))
 }
 
@@ -665,9 +701,9 @@ mod tests {
         assert_eq!(response2.status(), StatusCode::OK);
     }
 
-    /// Test: Embedded node returns valid `ack_secret` for properly encrypted messages
+    /// Test: Embedded node returns valid signed receipt for properly encrypted messages
     #[tokio::test]
-    async fn test_returns_ack_secret_for_encrypted_message() {
+    async fn test_returns_signed_receipt_for_encrypted_message() {
         use reme_encryption::derive_ack_hash;
 
         let config = PersistentStoreConfig::default();
@@ -690,6 +726,7 @@ mod tests {
         let sender = Identity::generate();
         let (envelope, expected_ack_secret) = create_encrypted_envelope(&sender, &recipient_pubkey);
         let ack_hash = envelope.ack_hash;
+        let message_id = envelope.message_id;
 
         let wire_payload = WirePayload::Message(envelope);
         let body = BASE64_STANDARD.encode(wire_payload.encode());
@@ -739,6 +776,29 @@ mod tests {
         assert_eq!(
             computed_ack_hash, ack_hash,
             "hash(ack_secret) should equal ack_hash"
+        );
+
+        // Should also have signature
+        assert!(
+            response_json.get("signature").is_some(),
+            "Response should contain signature"
+        );
+        let signature_b64 = response_json["signature"].as_str().unwrap();
+        let signature: [u8; 64] = BASE64_STANDARD
+            .decode(signature_b64)
+            .expect("Invalid signature base64")
+            .try_into()
+            .expect("Wrong signature length");
+
+        // Reconstruct signed message
+        let mut sign_data = Vec::with_capacity(32);
+        sign_data.extend_from_slice(message_id.as_bytes());
+        sign_data.extend_from_slice(&returned_ack_secret);
+
+        // Verify using recipient's public key
+        assert!(
+            recipient_pubkey.verify_xeddsa(&sign_data, &signature),
+            "Signature should verify with recipient's public key"
         );
     }
 
