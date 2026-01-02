@@ -134,8 +134,12 @@ impl HttpServerState {
     /// The receipt includes:
     /// - `ack_secret`: proves the node can decrypt the message
     /// - `signature`: XEdDSA signature over `"reme-receipt-v1:" || signer_pubkey || message_id || ack_secret`
-    fn derive_receipt_for_envelope(&self, envelope: &OuterEnvelope) -> Option<Receipt> {
+    ///
+    /// Crypto operations (ECDH and XEdDSA signing) are offloaded to a blocking thread pool
+    /// to avoid blocking the Tokio worker thread.
+    async fn derive_receipt_for_envelope(&self, envelope: &OuterEnvelope) -> Option<Receipt> {
         // Pre-validation: reject known low-order points before ECDH
+        // This check is cheap (no crypto) so we do it before spawn_blocking
         if is_low_order_point(&envelope.ephemeral_key) {
             debug!(
                 message_id = ?envelope.message_id,
@@ -144,40 +148,52 @@ impl HttpServerState {
             return None;
         }
 
-        let ephemeral_key = X25519PublicKey::from(envelope.ephemeral_key);
-        let shared_secret = self.identity.x25519_secret().diffie_hellman(&ephemeral_key);
+        // Capture owned values for spawn_blocking
+        let identity = self.identity.clone();
+        let ephemeral_key = envelope.ephemeral_key;
+        let message_id = envelope.message_id;
 
-        // Defense-in-depth: reject all-zero shared secrets (indicates small-order input)
-        // Use constant-time comparison to prevent timing side-channels
-        let bytes = shared_secret.as_bytes();
-        if bool::from(bytes.ct_eq(&[0u8; 32])) {
-            debug!(
-                message_id = ?envelope.message_id,
-                "Rejected all-zero shared secret in receipt derivation"
-            );
-            return None;
-        }
+        // Offload crypto-intensive operations (ECDH + signing) to thread pool
+        tokio::task::spawn_blocking(move || {
+            let ephemeral_public = X25519PublicKey::from(ephemeral_key);
+            let shared_secret = identity.x25519_secret().diffie_hellman(&ephemeral_public);
 
-        let ack_secret = derive_ack_secret(bytes, &envelope.message_id);
+            // Defense-in-depth: reject all-zero shared secrets (indicates small-order input)
+            // Use constant-time comparison to prevent timing side-channels
+            let bytes = shared_secret.as_bytes();
+            if bool::from(bytes.ct_eq(&[0u8; 32])) {
+                return None;
+            }
 
-        // Sign with domain separation: "reme-receipt-v1:" || signer_pubkey || message_id || ack_secret
-        // This prevents cross-protocol signature confusion and binds the signature to the signer
-        const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
-        let signer_pubkey = self.identity.public_id().to_bytes();
-        let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16 + 16);
-        sign_data.extend_from_slice(DOMAIN_SEP);
-        sign_data.extend_from_slice(&signer_pubkey);
-        sign_data.extend_from_slice(envelope.message_id.as_bytes());
-        sign_data.extend_from_slice(&ack_secret);
-        let signature = self.identity.sign_xeddsa(&sign_data);
+            let mut ack_secret = derive_ack_secret(bytes, &message_id);
 
-        // Zeroize sensitive intermediate data
-        sign_data.zeroize();
+            // Sign with domain separation: "reme-receipt-v1:" || signer_pubkey || message_id || ack_secret
+            // This prevents cross-protocol signature confusion and binds the signature to the signer
+            const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
+            let signer_pubkey = identity.public_id().to_bytes();
+            let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16 + 16);
+            sign_data.extend_from_slice(DOMAIN_SEP);
+            sign_data.extend_from_slice(&signer_pubkey);
+            sign_data.extend_from_slice(message_id.as_bytes());
+            sign_data.extend_from_slice(&ack_secret);
+            let signature = identity.sign_xeddsa(&sign_data);
 
-        Some(Receipt {
-            ack_secret: BASE64_STANDARD.encode(ack_secret),
-            signature: BASE64_STANDARD.encode(signature),
+            // Encode before zeroizing
+            let ack_secret_b64 = BASE64_STANDARD.encode(ack_secret);
+            let signature_b64 = BASE64_STANDARD.encode(signature);
+
+            // Zeroize sensitive intermediate data
+            sign_data.zeroize();
+            ack_secret.zeroize();
+
+            Some(Receipt {
+                ack_secret: ack_secret_b64,
+                signature: signature_b64,
+            })
         })
+        .await
+        .ok()
+        .flatten()
     }
 }
 
@@ -287,7 +303,7 @@ async fn submit_handler(
 
     // Derive signed receipt BEFORE storing (we're the recipient, so we can always derive it)
     // This proves we received and can decrypt the message
-    let receipt = state.derive_receipt_for_envelope(&envelope);
+    let receipt = state.derive_receipt_for_envelope(&envelope).await;
 
     // Store and notify client
     // Handle race condition: if store fails, check if it's now a duplicate
