@@ -503,9 +503,6 @@ async fn handle_message(
     let routing_key = envelope.routing_key;
     let message_id = envelope.message_id;
 
-    // Generate signed receipt (signature always, ack_secret only if we're the intended recipient)
-    let receipt = generate_receipt(state.identity.clone(), &envelope).await;
-
     // Clone envelope for MQTT publishing (enqueue takes ownership)
     let envelope_for_mqtt = envelope.clone();
 
@@ -554,6 +551,10 @@ async fn handle_message(
                 .into_response();
         }
     }
+
+    // Generate signed receipt AFTER duplicate check (avoid crypto work for duplicates)
+    // Signature always present when identity exists, ack_secret only if we're the intended recipient
+    let receipt = generate_receipt(state.identity.clone(), &envelope).await;
 
     // Enqueue
     match state.store.enqueue(routing_key, envelope) {
