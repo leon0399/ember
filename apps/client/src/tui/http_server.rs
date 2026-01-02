@@ -28,7 +28,7 @@ use axum::{
     Router,
 };
 use base64::prelude::*;
-use reme_encryption::derive_ack_secret;
+use reme_encryption::{build_receipt_sign_data, derive_ack_secret};
 use reme_identity::{is_low_order_point, Identity};
 use reme_message::{MessageID, OuterEnvelope, RoutingKey, WirePayload};
 use reme_node_core::{EmbeddedNodeHandle, NodeError};
@@ -150,9 +150,6 @@ impl HttpServerState {
 
         // Offload crypto-intensive operations (ECDH + signing) to thread pool
         tokio::task::spawn_blocking(move || {
-            // Domain separator for signature (prevents cross-protocol confusion)
-            const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
-
             // Try to derive ack_secret (may fail for low-order points or all-zero shared secrets)
             let ack_secret = if is_low_order_point(&ephemeral_key) {
                 None
@@ -173,10 +170,7 @@ impl HttpServerState {
             // Sign: "reme-receipt-v1:" || signer_pubkey || message_id
             // Note: signature does NOT include ack_secret (allows signing even when ECDH fails)
             let signer_pubkey = identity.public_id().to_bytes();
-            let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16);
-            sign_data.extend_from_slice(DOMAIN_SEP);
-            sign_data.extend_from_slice(&signer_pubkey);
-            sign_data.extend_from_slice(message_id.as_bytes());
+            let mut sign_data = build_receipt_sign_data(&signer_pubkey, &message_id);
             let signature = identity.sign_xeddsa(&sign_data);
 
             // Encode results
@@ -731,10 +725,7 @@ mod tests {
     /// Test: Embedded node returns valid signed receipt for properly encrypted messages
     #[tokio::test]
     async fn test_returns_signed_receipt_for_encrypted_message() {
-        use reme_encryption::derive_ack_hash;
-
-        // Domain separator for signature verification
-        const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
+        use reme_encryption::{derive_ack_hash, RECEIPT_DOMAIN_SEP};
 
         let config = PersistentStoreConfig::default();
         let store = PersistentMailboxStore::in_memory(config).unwrap();
@@ -822,8 +813,8 @@ mod tests {
 
         // Reconstruct signed message with domain separation
         // Format: "reme-receipt-v1:" || signer_pubkey || message_id (NO ack_secret)
-        let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16);
-        sign_data.extend_from_slice(DOMAIN_SEP);
+        let mut sign_data = Vec::with_capacity(RECEIPT_DOMAIN_SEP.len() + 32 + 16);
+        sign_data.extend_from_slice(RECEIPT_DOMAIN_SEP);
         sign_data.extend_from_slice(&recipient_pubkey.to_bytes());
         sign_data.extend_from_slice(message_id.as_bytes());
 
@@ -837,6 +828,8 @@ mod tests {
     /// Test: Low-order ephemeral key returns no `ack_secret` but still returns signature
     #[tokio::test]
     async fn test_low_order_ephemeral_key_returns_no_ack_secret_but_returns_signature() {
+        use reme_encryption::RECEIPT_DOMAIN_SEP;
+
         let config = PersistentStoreConfig::default();
         let store = PersistentMailboxStore::in_memory(config).unwrap();
         let (_node, handle, _event_rx) = EmbeddedNode::new(store);
@@ -897,9 +890,8 @@ mod tests {
             .expect("Wrong signature length");
 
         // Verify signature over domain-separated message (without ack_secret)
-        const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
-        let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16);
-        sign_data.extend_from_slice(DOMAIN_SEP);
+        let mut sign_data = Vec::with_capacity(RECEIPT_DOMAIN_SEP.len() + 32 + 16);
+        sign_data.extend_from_slice(RECEIPT_DOMAIN_SEP);
         sign_data.extend_from_slice(&identity_pubkey.to_bytes());
         sign_data.extend_from_slice(message_id.as_bytes());
 

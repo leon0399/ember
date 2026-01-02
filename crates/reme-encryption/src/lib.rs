@@ -328,6 +328,35 @@ pub fn derive_ack_hash(ack_secret: &[u8; 16]) -> [u8; 16] {
 }
 
 // ============================================
+// Receipt Signature Utilities
+// ============================================
+
+/// Domain separator for receipt signatures.
+///
+/// Used to prevent cross-protocol confusion attacks by ensuring receipt
+/// signatures cannot be misused in other contexts.
+pub const RECEIPT_DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
+
+/// Build the data to be signed for a receipt.
+///
+/// Format: `"reme-receipt-v1:" || signer_pubkey || message_id`
+///
+/// This function allocates a `Vec<u8>` with the exact required capacity.
+/// The caller is responsible for zeroizing the returned data after signing
+/// if it contains sensitive information in the surrounding context.
+///
+/// # Arguments
+/// * `signer_pubkey` - 32-byte public key of the signer
+/// * `message_id` - 16-byte message ID
+pub fn build_receipt_sign_data(signer_pubkey: &[u8; 32], message_id: &MessageID) -> Vec<u8> {
+    let mut sign_data = Vec::with_capacity(RECEIPT_DOMAIN_SEP.len() + 32 + 16);
+    sign_data.extend_from_slice(RECEIPT_DOMAIN_SEP);
+    sign_data.extend_from_slice(signer_pubkey);
+    sign_data.extend_from_slice(message_id.as_bytes());
+    sign_data
+}
+
+// ============================================
 // Encryption/Decryption Output Structs
 // ============================================
 

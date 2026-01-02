@@ -20,7 +20,7 @@ use axum::{
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
-use reme_encryption::derive_ack_secret;
+use reme_encryption::{build_receipt_sign_data, derive_ack_secret};
 use reme_identity::PublicID;
 use reme_message::{OuterEnvelope, RoutingKey, WirePayload};
 use reme_node_core::{MailboxStore, NodeError, PersistentMailboxStore};
@@ -260,9 +260,6 @@ async fn generate_receipt(
 
     // Offload crypto operations to thread pool
     tokio::task::spawn_blocking(move || {
-        // Domain separator for signature (prevents cross-protocol confusion)
-        const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
-
         // Try to derive ack_secret only if we're the intended recipient
         let ack_secret = if routing_key == identity.routing_key() {
             identity
@@ -275,10 +272,7 @@ async fn generate_receipt(
         // Sign: "reme-receipt-v1:" || signer_pubkey || message_id
         // Note: signature does NOT include ack_secret (allows signing even as relay)
         let signer_pubkey = identity.public_id().to_bytes();
-        let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16);
-        sign_data.extend_from_slice(DOMAIN_SEP);
-        sign_data.extend_from_slice(&signer_pubkey);
-        sign_data.extend_from_slice(message_id.as_bytes());
+        let mut sign_data = build_receipt_sign_data(&signer_pubkey, &message_id);
         let signature = identity.sign(&sign_data);
 
         // Encode results

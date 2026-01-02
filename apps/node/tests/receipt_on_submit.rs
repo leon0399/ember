@@ -6,7 +6,7 @@ use base64::prelude::*;
 use node::{
     api, node_identity::NodeIdentity, replication, PersistentMailboxStore, PersistentStoreConfig,
 };
-use reme_encryption::{derive_ack_hash, encrypt_to_mik};
+use reme_encryption::{derive_ack_hash, encrypt_to_mik, RECEIPT_DOMAIN_SEP};
 use reme_identity::Identity;
 use reme_message::{Content, InnerEnvelope, MessageID, OuterEnvelope, TextContent};
 use serde::Deserialize;
@@ -157,9 +157,6 @@ async fn submit_envelope(url: &str, envelope: OuterEnvelope) -> SubmitResponse {
 /// Test: Node is the intended recipient → returns valid `ack_secret`
 #[tokio::test]
 async fn test_recipient_returns_ack_secret() {
-    // Domain separator for signature verification
-    const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
-
     // Create node identity (this will be the recipient)
     let (node_identity, _dir) = create_temp_identity();
     let node_pubkey = *node_identity.public_id();
@@ -219,8 +216,8 @@ async fn test_recipient_returns_ack_secret() {
 
     // Reconstruct signed message with domain separation
     // Format: "reme-receipt-v1:" || signer_pubkey || message_id (NO ack_secret)
-    let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16);
-    sign_data.extend_from_slice(DOMAIN_SEP);
+    let mut sign_data = Vec::with_capacity(RECEIPT_DOMAIN_SEP.len() + 32 + 16);
+    sign_data.extend_from_slice(RECEIPT_DOMAIN_SEP);
     sign_data.extend_from_slice(&node_pubkey.to_bytes());
     sign_data.extend_from_slice(message_id.as_bytes());
 
@@ -236,9 +233,6 @@ async fn test_recipient_returns_ack_secret() {
 /// Test: Node is a relay (different `routing_key`) → returns signature but no `ack_secret`
 #[tokio::test]
 async fn test_relay_returns_signature_but_no_ack_secret() {
-    // Domain separator for signature verification
-    const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
-
     // Create node identity
     let (node_identity, _dir) = create_temp_identity();
     let node_pubkey = *node_identity.public_id();
@@ -277,8 +271,8 @@ async fn test_relay_returns_signature_but_no_ack_secret() {
         .expect("Wrong signature length");
 
     // Format: "reme-receipt-v1:" || signer_pubkey || message_id (NO ack_secret)
-    let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16);
-    sign_data.extend_from_slice(DOMAIN_SEP);
+    let mut sign_data = Vec::with_capacity(RECEIPT_DOMAIN_SEP.len() + 32 + 16);
+    sign_data.extend_from_slice(RECEIPT_DOMAIN_SEP);
     sign_data.extend_from_slice(&node_pubkey.to_bytes());
     sign_data.extend_from_slice(message_id.as_bytes());
 
@@ -362,9 +356,6 @@ async fn test_duplicate_returns_no_ack_secret() {
 /// Test: Malformed ephemeral key (low-order point) → returns signature but no `ack_secret`
 #[tokio::test]
 async fn test_low_order_ephemeral_key_returns_signature_but_no_ack_secret() {
-    // Domain separator for signature verification
-    const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
-
     // Create node identity (this will be the recipient)
     let (node_identity, _dir) = create_temp_identity();
     let node_pubkey = *node_identity.public_id();
@@ -412,8 +403,8 @@ async fn test_low_order_ephemeral_key_returns_signature_but_no_ack_secret() {
         .expect("Wrong signature length");
 
     // Format: "reme-receipt-v1:" || signer_pubkey || message_id (NO ack_secret)
-    let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16);
-    sign_data.extend_from_slice(DOMAIN_SEP);
+    let mut sign_data = Vec::with_capacity(RECEIPT_DOMAIN_SEP.len() + 32 + 16);
+    sign_data.extend_from_slice(RECEIPT_DOMAIN_SEP);
     sign_data.extend_from_slice(&node_pubkey.to_bytes());
     sign_data.extend_from_slice(message_id.as_bytes());
 
