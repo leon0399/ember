@@ -142,7 +142,9 @@ impl HttpServerState {
     ///
     /// Crypto operations (ECDH and `XEdDSA` signing) are offloaded to a blocking thread pool
     /// to avoid blocking the Tokio worker thread.
-    async fn generate_receipt(&self, envelope: &OuterEnvelope) -> Receipt {
+    ///
+    /// Returns `None` if the blocking task panics (graceful degradation).
+    async fn generate_receipt(&self, envelope: &OuterEnvelope) -> Option<Receipt> {
         // Capture owned values for spawn_blocking
         let identity = self.identity.clone();
         let ephemeral_key = envelope.ephemeral_key;
@@ -190,7 +192,7 @@ impl HttpServerState {
             }
         })
         .await
-        .expect("spawn_blocking panicked")
+        .ok()
     }
 }
 
@@ -303,6 +305,7 @@ async fn submit_handler(
 
     // Generate signed receipt BEFORE storing (signature always, ack_secret only if ECDH succeeds)
     // This proves we received the message
+    // Returns None if spawn_blocking panics (graceful degradation)
     let receipt = state.generate_receipt(&envelope).await;
 
     // Store and notify client
@@ -333,8 +336,8 @@ async fn submit_handler(
     info!(message_id = ?message_id, "Message from LAN peer stored successfully");
     Ok(Json(SubmitResponse {
         status: "ok",
-        ack_secret: receipt.ack_secret,
-        signature: Some(receipt.signature),
+        ack_secret: receipt.as_ref().and_then(|r| r.ack_secret.clone()),
+        signature: receipt.map(|r| r.signature),
     }))
 }
 
