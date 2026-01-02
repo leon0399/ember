@@ -314,10 +314,7 @@ async fn submit_handler(
     }
 
     // Extract receipt fields (ack_secret + signature) if present
-    let (ack_secret, signature) = match receipt {
-        Some(r) => (Some(r.ack_secret), Some(r.signature)),
-        None => (None, None),
-    };
+    let (ack_secret, signature) = receipt.map(|r| (r.ack_secret, r.signature)).unzip();
 
     info!(message_id = ?message_id, "Message from LAN peer stored successfully");
     Ok(Json(SubmitResponse {

@@ -577,10 +577,7 @@ async fn handle_message(
             }
 
             // Extract receipt fields (ack_secret + signature) if present
-            let (ack_secret, signature) = match receipt {
-                Some(r) => (Some(r.ack_secret), Some(r.signature)),
-                None => (None, None),
-            };
+            let (ack_secret, signature) = receipt.map(|r| (r.ack_secret, r.signature)).unzip();
 
             (
                 StatusCode::OK,
