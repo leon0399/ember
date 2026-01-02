@@ -181,7 +181,6 @@ impl<T: Transport> Client<T> {
         tiered_config: TieredDeliveryConfig,
     ) -> Self {
         // Wrap storage in Arc for shared access between Client and ClientOutbox
-        #[allow(clippy::arc_with_non_send_sync)] // Storage uses SQLite, intentionally not Sync
         let storage = Arc::new(storage);
 
         // Create outbox with shared storage reference
