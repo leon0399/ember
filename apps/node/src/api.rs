@@ -273,7 +273,7 @@ async fn try_derive_receipt(
         let shared_secret = identity.derive_shared_secret(&ephemeral_key)?;
 
         // Derive ack_secret from shared_secret and message_id
-        let ack_secret = derive_ack_secret(&shared_secret, &message_id);
+        let mut ack_secret = derive_ack_secret(&shared_secret, &message_id);
 
         // Sign with domain separation: "reme-receipt-v1:" || signer_pubkey || message_id || ack_secret
         // This prevents cross-protocol signature confusion and binds the signature to the signer
@@ -286,12 +286,17 @@ async fn try_derive_receipt(
         sign_data.extend_from_slice(&ack_secret);
         let signature = identity.sign(&sign_data);
 
+        // Encode before zeroizing
+        let ack_secret_b64 = BASE64_STANDARD.encode(ack_secret);
+        let signature_b64 = BASE64_STANDARD.encode(signature);
+
         // Zeroize sensitive intermediate data
         sign_data.zeroize();
+        ack_secret.zeroize();
 
         Some(Receipt {
-            ack_secret: BASE64_STANDARD.encode(ack_secret),
-            signature: BASE64_STANDARD.encode(signature),
+            ack_secret: ack_secret_b64,
+            signature: signature_b64,
         })
     })
     .await
