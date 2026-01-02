@@ -13,12 +13,12 @@
 //!
 //! # Receipt Signatures
 //!
-//! On successful message submission, the server returns a signed receipt:
+//! On first successful message submission, the server returns a signed receipt:
 //! - `signature`: `XEdDSA` signature over `"reme-receipt-v1:" || signer_pubkey || message_id`
 //! - `ack_secret`: Only present if ECDH derivation succeeds (proves decryption capability)
 //!
 //! The signature proves the node received the message, while `ack_secret` proves the node
-//! can decrypt it. Both are base64-encoded.
+//! can decrypt it. Both are base64-encoded. Duplicate submissions return neither field.
 
 use axum::{
     extract::State,
@@ -220,7 +220,7 @@ struct SubmitResponse {
     ack_secret: Option<String>,
     /// `XEdDSA` signature proving node received the message.
     /// Signed data: `"reme-receipt-v1:" || signer_pubkey || message_id`
-    /// Always present (embedded node always has identity).
+    /// Present on first successful submission. Not returned for duplicates.
     /// Base64-encoded 64-byte signature.
     #[serde(skip_serializing_if = "Option::is_none")]
     signature: Option<String>,
