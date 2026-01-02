@@ -348,7 +348,8 @@ impl Storage {
     /// List all contacts
     pub fn list_contacts(&self) -> Result<Vec<(i64, PublicID, Option<String>)>, StorageError> {
         let conn = self.conn.lock().expect("mutex poisoned");
-        let mut stmt = conn.prepare("SELECT id, public_id, name FROM contacts ORDER BY name, id")?;
+        let mut stmt =
+            conn.prepare("SELECT id, public_id, name FROM contacts ORDER BY name, id")?;
 
         let rows = stmt.query_map([], |row| {
             let id: i64 = row.get(0)?;
