@@ -192,7 +192,8 @@ pub struct SubmitResponse {
     /// Base64-encoded 16-byte secret.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ack_secret: Option<String>,
-    /// XEdDSA signature over (message_id || ack_secret) proving node identity.
+    /// XEdDSA signature proving node identity.
+    /// Signed data: `"reme-receipt-v1:" || signer_pubkey || message_id || ack_secret`
     /// Present only when ack_secret is present.
     /// Base64-encoded 64-byte signature.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -245,7 +246,7 @@ struct Receipt {
 ///
 /// The receipt includes:
 /// - `ack_secret`: proves the node can decrypt the message
-/// - `signature`: XEdDSA signature over (message_id || ack_secret) proving node identity
+/// - `signature`: XEdDSA signature over `"reme-receipt-v1:" || signer_pubkey || message_id || ack_secret`
 ///
 /// Returns `None` if this node is just a relay (`routing_key` doesn't match).
 ///

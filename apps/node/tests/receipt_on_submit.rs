@@ -206,7 +206,7 @@ async fn test_recipient_returns_ack_secret() {
         "Node should return signature when it returns ack_secret"
     );
 
-    // Verify signature over (message_id || ack_secret)
+    // Verify signature over domain-separated message
     let signature_b64 = response.signature.unwrap();
     let signature: [u8; 64] = BASE64_STANDARD
         .decode(&signature_b64)
