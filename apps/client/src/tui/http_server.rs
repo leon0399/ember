@@ -10,6 +10,15 @@
 //! - Rejects duplicate messages (idempotent operation)
 //! - Body size limited to 256 KiB
 //! - No relay support (deferred to future phase)
+//!
+//! # Receipt Signatures
+//!
+//! On successful message submission, the server returns a signed receipt:
+//! - `signature`: `XEdDSA` signature over `"reme-receipt-v1:" || signer_pubkey || message_id`
+//! - `ack_secret`: Only present if ECDH derivation succeeds (proves decryption capability)
+//!
+//! The signature proves the node received the message, while `ack_secret` proves the node
+//! can decrypt it. Both are base64-encoded.
 
 use axum::{
     extract::State,
