@@ -1829,6 +1829,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::cast_possible_truncation)] // Test code, ms since epoch fits in u64
     async fn test_sender_state_reset_detection() {
         // Scenario: Alice sends messages to Bob, then Alice loses state and sends
         // a new message with prev_self=None (but not flagged as detached).
@@ -1923,6 +1924,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::cast_possible_truncation)] // Test code, ms since epoch fits in u64
     async fn test_detached_message_not_detected_as_state_reset() {
         // Scenario: Alice sends a detached message (with FLAG_DETACHED set).
         // Bob should NOT detect this as a state reset.
@@ -1997,6 +1999,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::cast_possible_truncation)] // Test code, ms since epoch fits in u64
     async fn test_local_state_behind_detection() {
         // Scenario: Bob sends a message to Alice with observed_heads containing
         // content IDs that Alice doesn't recognize (e.g., Alice lost some state).

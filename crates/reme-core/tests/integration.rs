@@ -138,7 +138,7 @@ async fn test_e2e_encryption_mik_only() {
     let message_id = MessageID::new();
     let inner = InnerEnvelope {
         from: *alice.public_id(),
-        created_at_ms: 1234567890,
+        created_at_ms: 1_234_567_890,
         content: Content::Text(TextContent {
             body: "Hello Bob! This is Alice.".to_string(),
         }),
@@ -690,7 +690,7 @@ async fn test_forged_signature_rejected_at_client_level() {
     let message_id = MessageID::new();
     let inner = InnerEnvelope {
         from: *alice.public_id(), // Claims to be Alice
-        created_at_ms: 1234567890,
+        created_at_ms: 1_234_567_890,
         content: Content::Text(TextContent {
             body: "Fake message from Alice".to_string(),
         }),
@@ -1077,7 +1077,7 @@ async fn test_detached_message_skips_tombstone() {
     let message_id = MessageID::new();
     let inner = InnerEnvelope {
         from: *alice.public_id(),
-        created_at_ms: 1234567890,
+        created_at_ms: 1_234_567_890,
         content: Content::Text(TextContent {
             body: "Detached message".to_string(),
         }),
@@ -1163,7 +1163,7 @@ async fn test_tombstone_fetch_interleaving() {
         let message_id = MessageID::new();
         let inner = InnerEnvelope {
             from: *alice_identity.public_id(),
-            created_at_ms: 1234567890 + i,
+            created_at_ms: 1_234_567_890 + i,
             content: Content::Text(TextContent {
                 body: format!("Message {i}"),
             }),
@@ -1252,7 +1252,7 @@ async fn test_idempotent_tombstone() {
     let message_id = MessageID::new();
     let inner = InnerEnvelope {
         from: *alice_identity.public_id(),
-        created_at_ms: 1234567890,
+        created_at_ms: 1_234_567_890,
         content: Content::Text(TextContent {
             body: "Test message".to_string(),
         }),

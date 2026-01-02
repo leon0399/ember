@@ -199,6 +199,7 @@ impl NodeIdentity {
     }
 
     /// Get the underlying Identity.
+    #[allow(dead_code)] // API for future identity operations
     pub fn identity(&self) -> &Identity {
         &self.identity
     }

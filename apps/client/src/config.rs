@@ -427,6 +427,7 @@ pub struct HttpEndpoint {
     pub label: Option<String>,
 }
 
+#[allow(dead_code)] // Builder API for programmatic configuration
 impl HttpEndpoint {
     /// Create a new HTTP endpoint with just a URL (no pinning)
     pub fn new(url: impl Into<String>) -> Self {
@@ -552,6 +553,7 @@ pub struct MqttBroker {
     pub label: Option<String>,
 }
 
+#[allow(dead_code)] // Builder API for programmatic configuration
 impl MqttBroker {
     /// Create a new MQTT broker with just a URL
     pub fn new(url: impl Into<String>) -> Self {
@@ -1243,6 +1245,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // Comparing default constants, exact equality is valid
     fn test_delivery_config_defaults() {
         let config = DeliveryAppConfig::default();
         assert_eq!(config.quorum, QuorumStrategyConfig::Any);

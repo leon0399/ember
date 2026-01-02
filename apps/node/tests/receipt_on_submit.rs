@@ -93,6 +93,7 @@ async fn start_test_node(
 }
 
 /// Create a properly encrypted envelope destined for the given recipient
+#[allow(clippy::cast_possible_truncation)] // Test helper, ms since epoch fits in u64
 fn create_encrypted_envelope(
     sender: &Identity,
     recipient_pubkey: &reme_identity::PublicID,

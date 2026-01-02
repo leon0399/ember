@@ -1667,7 +1667,7 @@ mod tests {
         let envelope = OuterEnvelope {
             version: CURRENT_VERSION,
             routing_key,
-            timestamp_hours: 482253,
+            timestamp_hours: 482_253,
             ttl_hours: Some(24),
             message_id: MessageID::new(),
             ephemeral_key: [0u8; 32],
@@ -1721,7 +1721,7 @@ mod tests {
         let envelope = OuterEnvelope {
             version: CURRENT_VERSION,
             routing_key,
-            timestamp_hours: 482253,
+            timestamp_hours: 482_253,
             ttl_hours: Some(1),
             message_id: MessageID::new(),
             ephemeral_key: [0u8; 32],

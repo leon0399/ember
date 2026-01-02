@@ -13,7 +13,8 @@ pub enum Event {
     Tick,
     /// Key press event
     Key(KeyEvent),
-    /// Terminal resize
+    /// Terminal resize (width, height) - reserved for future adaptive layouts
+    #[allow(dead_code)]
     Resize(u16, u16),
 }
 

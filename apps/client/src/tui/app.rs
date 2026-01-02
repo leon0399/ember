@@ -279,6 +279,7 @@ impl AddUpstreamPopup<'_> {
 /// A conversation/contact entry
 #[derive(Debug, Clone)]
 pub struct Conversation {
+    #[allow(dead_code)] // Field for future UI features (editing, deleting contacts)
     pub id: i64,
     pub public_id: PublicID,
     pub name: String,

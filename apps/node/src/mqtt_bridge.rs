@@ -102,6 +102,7 @@ impl MqttBridge {
     /// Useful when the node wants to check if a message has been seen
     /// before storing it, preventing duplicates from HTTP that were
     /// already received via MQTT.
+    #[allow(dead_code)] // API for future deduplication integration
     pub fn seen_cache(&self) -> &Arc<SharedSeenCache> {
         self.transport.seen_cache()
     }
@@ -122,6 +123,7 @@ impl MqttBridge {
     }
 
     /// Get the topic prefix
+    #[allow(dead_code)] // API for future configuration inspection
     pub fn topic_prefix(&self) -> &str {
         &self.topic_prefix
     }
@@ -187,6 +189,7 @@ impl MqttBridge {
     ///
     /// Alternative to `run_subscriber()` for more control over message handling.
     /// Returns a channel that yields messages as they arrive from MQTT.
+    #[allow(dead_code)] // API for future async message processing
     pub async fn subscribe_channel(
         &self,
     ) -> Result<mpsc::UnboundedReceiver<OuterEnvelope>, MqttBridgeError> {
