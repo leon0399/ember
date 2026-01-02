@@ -186,6 +186,7 @@ impl MqttTransport {
     }
 
     /// Connect to a single broker.
+    #[allow(clippy::unused_async)] // Async for API consistency with other transports
     async fn connect_broker(spec: &MqttBrokerSpec) -> Result<ConnectedBroker, TransportError> {
         let parsed = Self::parse_mqtt_url(&spec.url)?;
 

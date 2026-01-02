@@ -30,7 +30,7 @@
 //! let entry_id = outbox.enqueue(&recipient, content_id, message_id, &envelope, &inner, None)?;
 //!
 //! // Record attempt result
-//! outbox.record_attempt(entry_id, "http:node1.example.com", AttemptResult::Sent)?;
+//! outbox.record_attempt(entry_id, "http:node1.example.com", &AttemptResult::Sent)?;
 //!
 //! // When peer message arrives, check for confirmations
 //! outbox.on_peer_message_received(&peer_id, &observed_heads, received_content_id)?;
@@ -211,11 +211,12 @@ impl<S: OutboxStore> ClientOutbox<S> {
     /// * `entry_id` - Outbox entry ID
     /// * `transport_id` - Transport identifier (e.g., "<http:node1.example.com>")
     /// * `result` - Result of the attempt
+    #[allow(clippy::cast_possible_truncation)] // Attempt counts and delays won't overflow
     pub fn record_attempt(
         &self,
         entry_id: OutboxEntryId,
         transport_id: &str,
-        result: AttemptResult,
+        result: &AttemptResult,
     ) -> Result<(), S::Error> {
         let now = now_ms();
         let attempt = TransportAttempt {
@@ -225,7 +226,7 @@ impl<S: OutboxStore> ClientOutbox<S> {
         };
 
         // Calculate next retry time
-        let next_retry_at_ms = match &result {
+        let next_retry_at_ms = match result {
             AttemptResult::Sent => {
                 // For successful sends, schedule retry after attempt timeout
                 // (in case we don't get DAG confirmation)
@@ -385,6 +386,7 @@ impl<S: OutboxStore> ClientOutbox<S> {
     ///
     /// # Returns
     /// The new tiered delivery phase after processing
+    #[allow(clippy::cast_possible_truncation)] // Duration ms and attempt counts fit in u64/u32
     pub fn record_tiered_delivery_result(
         &self,
         entry_id: OutboxEntryId,
@@ -523,6 +525,7 @@ static DEFAULT_RETRY_POLICY: TransportRetryPolicy = TransportRetryPolicy {
 /// # Panics
 /// Panics if system time is before Unix epoch, which indicates a serious
 /// system configuration error that would break all time-based operations.
+#[allow(clippy::cast_possible_truncation)] // Milliseconds since epoch fit in u64 for centuries
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -855,7 +858,7 @@ mod tests {
             .unwrap();
 
         outbox
-            .record_attempt(entry_id, "http:test", AttemptResult::Sent)
+            .record_attempt(entry_id, "http:test", &AttemptResult::Sent)
             .unwrap();
 
         let pending = outbox.get_by_id(entry_id).unwrap().unwrap();
@@ -884,7 +887,7 @@ mod tests {
             .record_attempt(
                 entry_id,
                 "http:test",
-                AttemptResult::Failed(AttemptError::network_transient("connection refused")),
+                &AttemptResult::Failed(AttemptError::network_transient("connection refused")),
             )
             .unwrap();
 
@@ -1003,7 +1006,7 @@ mod tests {
             .record_attempt(
                 entry_id,
                 "http:test",
-                AttemptResult::Failed(AttemptError::network_transient("timeout")),
+                &AttemptResult::Failed(AttemptError::network_transient("timeout")),
             )
             .unwrap();
 

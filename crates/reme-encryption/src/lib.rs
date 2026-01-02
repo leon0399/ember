@@ -387,7 +387,7 @@ mod tests {
 
         // Create inner envelope (signature added during encryption)
         let message_id = MessageID::new();
-        let inner = create_inner(&alice, "Hello Bob via MIK!", 1234567890);
+        let inner = create_inner(&alice, "Hello Bob via MIK!", 1_234_567_890);
 
         // Alice encrypts to Bob's MIK (signing happens inside encrypt_to_mik)
         let enc_output = encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private).unwrap();
@@ -442,7 +442,7 @@ mod tests {
 
         // Create inner envelope
         let message_id = MessageID::new();
-        let inner = create_inner(&alice, "Secret message for Bob", 1234567890);
+        let inner = create_inner(&alice, "Secret message for Bob", 1_234_567_890);
 
         // Alice encrypts to Bob's MIK
         let enc_output = encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private).unwrap();
@@ -471,10 +471,10 @@ mod tests {
 
         // Create two different messages
         let message_id1 = MessageID::new();
-        let inner1 = create_inner(&alice, "Message 1", 1234567890);
+        let inner1 = create_inner(&alice, "Message 1", 1_234_567_890);
 
         let message_id2 = MessageID::new();
-        let inner2 = create_inner(&alice, "Message 2", 1234567891);
+        let inner2 = create_inner(&alice, "Message 2", 1_234_567_891);
 
         // Encrypt both
         let enc1 = encrypt_to_mik(&inner1, &bob_public, &message_id1, &alice_private).unwrap();
@@ -502,7 +502,7 @@ mod tests {
         let message_id = MessageID::new();
         let inner = InnerEnvelope {
             from: *alice.public_id(), // Claims to be Alice
-            created_at_ms: 1234567890,
+            created_at_ms: 1_234_567_890,
             content: Content::Text(TextContent {
                 body: "Fake message from Alice".to_string(),
             }),
@@ -545,7 +545,7 @@ mod tests {
         let message_id = MessageID::new();
         let wrong_message_id = MessageID::new();
 
-        let inner = create_inner(&alice, "Test message", 1234567890);
+        let inner = create_inner(&alice, "Test message", 1_234_567_890);
 
         // Encrypt with correct message_id
         let enc_output = encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private).unwrap();
@@ -574,7 +574,7 @@ mod tests {
         let alice = Identity::generate();
         let alice_private = alice.to_bytes();
         let message_id = MessageID::new();
-        let inner = create_inner(&alice, "Test message", 1234567890);
+        let inner = create_inner(&alice, "Test message", 1_234_567_890);
 
         // Test zero point (order 1)
         let zero_mik = PublicID::from_bytes_unchecked(&[0u8; 32]);
@@ -642,7 +642,7 @@ mod tests {
         // Create a large message (~10KB)
         let large_body = "X".repeat(10 * 1024);
         let message_id = MessageID::new();
-        let inner = create_inner(&alice, &large_body, 1234567890);
+        let inner = create_inner(&alice, &large_body, 1_234_567_890);
 
         // Encrypt
         let enc_output = encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private)
@@ -693,8 +693,8 @@ mod tests {
 
         // Same message content and message_id, but different senders
         let message_id = MessageID::new();
-        let inner_alice = create_inner(&alice, "Hello Bob!", 1234567890);
-        let inner_charlie = create_inner(&charlie, "Hello Bob!", 1234567890);
+        let inner_alice = create_inner(&alice, "Hello Bob!", 1_234_567_890);
+        let inner_charlie = create_inner(&charlie, "Hello Bob!", 1_234_567_890);
 
         // Encrypt both
         let enc_alice =
@@ -748,8 +748,8 @@ mod tests {
         let message_id1 = MessageID::new();
         let message_id2 = MessageID::new();
 
-        let inner1 = create_inner(&alice, "Same content", 1234567890);
-        let inner2 = create_inner(&alice, "Same content", 1234567890);
+        let inner1 = create_inner(&alice, "Same content", 1_234_567_890);
+        let inner2 = create_inner(&alice, "Same content", 1_234_567_890);
 
         let enc1 = encrypt_to_mik(&inner1, &bob_public, &message_id1, &alice_private).unwrap();
         let enc2 = encrypt_to_mik(&inner2, &bob_public, &message_id2, &alice_private).unwrap();
@@ -778,7 +778,7 @@ mod tests {
         let alice_private = alice.to_bytes();
 
         let message_id = MessageID::new();
-        let inner = create_inner(&alice, "", 1234567890);
+        let inner = create_inner(&alice, "", 1_234_567_890);
 
         // Encrypt empty message
         let enc_output = encrypt_to_mik(&inner, &bob_public, &message_id, &alice_private)

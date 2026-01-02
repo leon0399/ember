@@ -290,9 +290,7 @@ impl EmbeddedNodeHandle {
         let message_id = tombstone.message_id;
 
         // Get the stored ack_hash for this message
-        let ack_hash = if let Some(hash) = self.store.get_ack_hash(&message_id)? {
-            hash
-        } else {
+        let Some(ack_hash) = self.store.get_ack_hash(&message_id)? else {
             debug!(
                 ?message_id,
                 "AckTombstone for unknown message (already deleted?)"
@@ -329,7 +327,7 @@ mod tests {
         OuterEnvelope {
             version: CURRENT_VERSION,
             routing_key,
-            timestamp_hours: 482253,
+            timestamp_hours: 482_253,
             ttl_hours: Some(24),
             message_id: MessageID::new(),
             ephemeral_key: [0u8; 32],
@@ -390,7 +388,7 @@ mod tests {
             NodeEvent::MessageReceived(env) => {
                 assert_eq!(env.message_id, msg_id);
             }
-            _ => panic!("Expected MessageReceived event"),
+            NodeEvent::Error(_) => panic!("Expected MessageReceived event"),
         }
 
         // Shutdown

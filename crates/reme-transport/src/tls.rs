@@ -197,8 +197,8 @@ impl PinningVerifier {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
 
         // Use platform verifier with webpki roots
-        let root_store =
-            rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let root_store: rustls::RootCertStore =
+            webpki_roots::TLS_SERVER_ROOTS.iter().cloned().collect();
         let inner = rustls::client::WebPkiServerVerifier::builder_with_provider(
             Arc::new(root_store),
             provider,

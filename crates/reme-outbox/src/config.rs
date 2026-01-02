@@ -14,6 +14,7 @@ const fn default_max_delay() -> Duration {
 }
 
 /// 7 days in milliseconds - default message TTL
+#[allow(clippy::unnecessary_wraps)] // Required for derivative Default macro
 const fn default_ttl_ms() -> Option<u64> {
     Some(7 * 24 * 60 * 60 * 1000)
 }
@@ -153,7 +154,12 @@ impl TransportRetryPolicy {
     }
 
     /// Calculate the delay for the nth retry attempt.
-    #[allow(clippy::cast_possible_wrap)] // attempt count will never exceed i32::MAX
+    #[allow(
+        clippy::cast_possible_wrap,      // attempt count won't exceed i32::MAX
+        clippy::cast_precision_loss,     // delay calculation doesn't need full precision
+        clippy::cast_possible_truncation, // delay capped at max_delay
+        clippy::cast_sign_loss           // delay_ms is always positive
+    )]
     pub fn delay_for_attempt(&self, attempt: u32) -> Duration {
         if attempt == 0 {
             return Duration::ZERO;

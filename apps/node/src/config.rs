@@ -439,16 +439,19 @@ pub fn default_identity_path() -> Option<PathBuf> {
 
 /// Safely convert i64 to u32, clamping negative values to 0.
 /// Prevents negative config values from wrapping to huge u32 values.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Intentional clamped conversion
 fn i64_to_u32_clamped(v: i64) -> u32 {
     v.max(0) as u32
 }
 
 /// Safely convert i64 to u64, clamping negative values to 0.
+#[allow(clippy::cast_sign_loss)] // max(0) ensures non-negative
 fn i64_to_u64_clamped(v: i64) -> u64 {
     v.max(0) as u64
 }
 
 /// Safely convert i64 to usize, clamping negative values to 0.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Intentional clamped conversion
 fn i64_to_usize_clamped(v: i64) -> usize {
     v.max(0) as usize
 }
@@ -460,7 +463,7 @@ fn i64_to_usize_clamped(v: i64) -> usize {
 /// 2. Environment variables (`REME_NODE`_*)
 /// 3. Config file
 /// 4. Built-in defaults
-#[allow(clippy::cast_possible_wrap)] // Config values (usize/u64) are always in i64 range
+#[allow(clippy::cast_possible_wrap, clippy::too_many_lines)] // Config loading requires many steps
 pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     let cli = CliArgs::parse();
 
@@ -752,7 +755,7 @@ mod tests {
         let config = NodeConfig::default();
         assert_eq!(config.bind_addr, "0.0.0.0:23003");
         assert_eq!(config.max_messages, 1000);
-        assert_eq!(config.default_ttl, 604800); // 7 days
+        assert_eq!(config.default_ttl, 604_800); // 7 days
         assert_eq!(config.log_level, "info");
         assert!(!config.node_id.is_empty());
         assert!(config.peers.is_empty());

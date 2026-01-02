@@ -142,7 +142,7 @@ mod tests {
                 assert_eq!(restored.message_id, tombstone.message_id);
                 assert_eq!(restored.ack_secret, tombstone.ack_secret);
             }
-            _ => panic!("Expected AckTombstone"),
+            WirePayload::Message(_) => panic!("Expected AckTombstone"),
         }
     }
 }

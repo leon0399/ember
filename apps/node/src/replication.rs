@@ -37,6 +37,7 @@ pub struct ReplicationClient {
 
 impl ReplicationClient {
     /// Create a new replication client
+    #[allow(dead_code)] // API for future replication without signing
     pub fn new(node_id: String, peer_urls: Vec<String>) -> Self {
         Self {
             client: Client::new(),

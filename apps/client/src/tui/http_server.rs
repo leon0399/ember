@@ -396,6 +396,7 @@ pub async fn run_server(listener: TcpListener, app: Router) -> Result<(), HttpSe
 /// * `node_handle` - Handle to the embedded node for storing received messages
 /// * `our_routing_key` - Our routing key; messages for other recipients are rejected
 /// * `identity` - Client identity for deriving `ack_secret` (proves we can decrypt)
+#[allow(dead_code)] // Convenience API for future use
 pub async fn start_server(
     bind_addr: &str,
     node_handle: EmbeddedNodeHandle,
@@ -423,7 +424,7 @@ mod tests {
         OuterEnvelope {
             version: CURRENT_VERSION,
             routing_key,
-            timestamp_hours: 482253,
+            timestamp_hours: 482_253,
             ttl_hours: Some(24),
             message_id: MessageID::new(),
             ephemeral_key: [0u8; 32], // Low-order point - ack_secret will be None
@@ -433,6 +434,7 @@ mod tests {
     }
 
     /// Create a properly encrypted envelope that can derive `ack_secret`
+    #[allow(clippy::cast_possible_truncation)] // Test helper, ms since epoch fits in u64
     fn create_encrypted_envelope(
         sender: &Identity,
         recipient_pubkey: &reme_identity::PublicID,

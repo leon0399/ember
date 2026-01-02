@@ -225,6 +225,7 @@ impl<T: Transport> Client<T> {
     ///
     /// Returns the `content_ids` of messages we've received from the peer.
     /// In 1:1 chat, this is typically just the peer's latest message.
+    #[allow(clippy::unused_self)] // Method for consistency with other dag accessors
     fn get_observed_heads(&self, dag: &ConversationDag) -> Vec<ContentId> {
         dag.observed_heads()
     }
@@ -370,6 +371,7 @@ impl<T: Transport> Client<T> {
     ///
     /// After calling this, use the returned `PreparedMessage` with either
     /// legacy single-target delivery or tiered delivery.
+    #[allow(clippy::needless_pass_by_value)] // Content is cloned into envelope, ref wouldn't save alloc
     fn prepare_message(
         &self,
         to: &PublicID,
@@ -492,7 +494,7 @@ impl<T: Transport> Client<T> {
 
         // Record the attempt (regardless of success/failure)
         self.outbox
-            .record_attempt(prepared.entry_id, &transport_id, attempt_result.clone())
+            .record_attempt(prepared.entry_id, &transport_id, &attempt_result)
             .map_err(ClientError::Outbox)?;
 
         // Log result
@@ -529,6 +531,7 @@ impl<T: Transport> Client<T> {
     ///
     /// The recipient binding is verified both explicitly (routing key check) and
     /// cryptographically (sealed box ECDH binds to recipient).
+    #[allow(clippy::too_many_lines, clippy::cast_possible_truncation)] // Message processing has many steps
     pub async fn process_message(
         &self,
         outer: &OuterEnvelope,
@@ -862,6 +865,7 @@ impl<T: Transport> Client<T> {
     /// Format: `"{type}:{identifier}"` based on transport configuration.
     /// Currently defaults to "<http:default>" - will be enhanced when
     /// multi-transport support is added.
+    #[allow(clippy::unused_self)] // Will use self when multi-transport is implemented
     fn transport_id(&self) -> String {
         // TODO: Extract transport identifier from transport instance
         // For now, use a default identifier
@@ -905,7 +909,7 @@ impl<T: Transport> Client<T> {
 
         // Record the attempt
         self.outbox
-            .record_attempt(entry_id, &transport_id, result.clone())
+            .record_attempt(entry_id, &transport_id, &result)
             .map_err(ClientError::Outbox)?;
 
         Ok(result)
@@ -949,6 +953,7 @@ impl<T: Transport> Client<T> {
     }
 
     /// Get delivery state for a message.
+    #[allow(clippy::cast_possible_truncation)] // Milliseconds since epoch fit in u64
     pub fn get_delivery_state(
         &self,
         entry_id: OutboxEntryId,
@@ -972,6 +977,7 @@ impl<T: Transport> Client<T> {
     ///
     /// # Returns
     /// Tuple of (`messages_retried`, `messages_expired`)
+    #[allow(clippy::cast_possible_truncation)] // Milliseconds since epoch fit in u64
     pub async fn outbox_tick(&self) -> Result<(usize, u64), ClientError> {
         // Check for expired messages first
         let expired = self
@@ -1007,11 +1013,8 @@ impl<T: Transport> Client<T> {
                         }
                     }
                 }
-                DeliveryState::InFlight => {
-                    // Already in flight, skip
-                }
-                DeliveryState::Confirmed | DeliveryState::Expired => {
-                    // Already done, skip
+                DeliveryState::InFlight | DeliveryState::Confirmed | DeliveryState::Expired => {
+                    // Skip: already in flight or completed
                 }
             }
         }
@@ -1070,6 +1073,7 @@ fn transport_error_to_attempt_error(e: &TransportError) -> AttemptError {
 /// # Panics
 /// Panics if system time is before Unix epoch, which indicates a serious
 /// system configuration error that would break all time-based operations.
+#[allow(clippy::cast_possible_truncation)] // Milliseconds since epoch fit in u64 for centuries
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1223,6 +1227,7 @@ impl Client<TransportCoordinator> {
     ///
     /// # Returns
     /// Number of messages refreshed.
+    #[allow(clippy::cast_possible_truncation)] // Interval ms fits in u64
     pub async fn process_maintenance(&self) -> Result<usize, ClientError> {
         let maintenance_interval_ms = self.tiered_config.maintenance_interval.as_millis() as u64;
         let due = self
@@ -1254,6 +1259,7 @@ impl Client<TransportCoordinator> {
     ///
     /// For urgent retries, this uses selective Internet tier targeting:
     /// only retry failed targets, skip already-successful ones.
+    #[allow(clippy::cast_possible_truncation)] // Success counts and targets fit in u32
     async fn attempt_tiered_delivery(
         &self,
         pending: &PendingMessage,
@@ -1375,6 +1381,7 @@ impl Client<TransportCoordinator> {
     /// Attempt maintenance refresh for a distributed message.
     ///
     /// Refreshes ALL Quorum tier targets to ensure copies still exist.
+    #[allow(clippy::cast_possible_truncation)] // Target counts fit in u32
     async fn attempt_maintenance_refresh(
         &self,
         pending: &PendingMessage,
@@ -1821,6 +1828,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::cast_possible_truncation)] // Test code, ms since epoch fits in u64
     async fn test_sender_state_reset_detection() {
         // Scenario: Alice sends messages to Bob, then Alice loses state and sends
         // a new message with prev_self=None (but not flagged as detached).
@@ -1915,6 +1923,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::cast_possible_truncation)] // Test code, ms since epoch fits in u64
     async fn test_detached_message_not_detected_as_state_reset() {
         // Scenario: Alice sends a detached message (with FLAG_DETACHED set).
         // Bob should NOT detect this as a state reset.
@@ -1989,6 +1998,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::cast_possible_truncation)] // Test code, ms since epoch fits in u64
     async fn test_local_state_behind_detection() {
         // Scenario: Bob sends a message to Alice with observed_heads containing
         // content IDs that Alice doesn't recognize (e.g., Alice lost some state).

@@ -388,6 +388,7 @@ fn render_my_id_popup(frame: &mut Frame, app: &App) {
 }
 
 /// Render the add upstream popup
+#[allow(clippy::too_many_lines)] // UI rendering function, refactoring would fragment layout logic
 fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
     // Fixed height: border(2) + margin(2) + instructions(1) + type(3) + tier(3) + url(3) + error(1) + hints(1) = 16
     let area = popup_area_fixed(frame.area(), 60, 16);
@@ -552,6 +553,7 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
 }
 
 /// Render the view upstreams popup
+#[allow(clippy::too_many_lines)] // UI rendering function, refactoring would fragment layout logic
 fn render_upstreams_popup(frame: &mut Frame, app: &App) {
     use reme_transport::HealthState;
 
@@ -559,6 +561,7 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
     let targets = app.registry.list_all_targets();
 
     // Calculate height based on number of upstreams (clamp to 1-12 rows)
+    #[allow(clippy::cast_possible_truncation)] // List clamped to max 12 items
     let list_height = (targets.len() as u16).clamp(1, 12);
     // Total: border(2) + margin(2) + list + legend(2) + hints(1) + padding(1) = 8 + list_height
     let total_height = 8 + list_height;
