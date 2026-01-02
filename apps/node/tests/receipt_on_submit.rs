@@ -20,6 +20,7 @@ use tokio::net::TcpListener;
 struct SubmitResponse {
     status: String,
     ack_secret: Option<String>,
+    signature: Option<String>,
 }
 
 /// Create an identity and save it to a temp file
@@ -167,6 +168,7 @@ async fn test_recipient_returns_ack_secret() {
     let sender = Identity::generate();
     let (envelope, expected_ack_secret) = create_encrypted_envelope(&sender, &node_pubkey);
     let ack_hash = envelope.ack_hash;
+    let message_id = envelope.message_id;
 
     // Submit to node
     let response = submit_envelope(&url, envelope).await;
@@ -198,7 +200,32 @@ async fn test_recipient_returns_ack_secret() {
         "hash(ack_secret) should equal ack_hash"
     );
 
-    println!("Node correctly returned ack_secret as intended recipient");
+    // Should also have signature
+    assert!(
+        response.signature.is_some(),
+        "Node should return signature when it returns ack_secret"
+    );
+
+    // Verify signature over (message_id || ack_secret)
+    let signature_b64 = response.signature.unwrap();
+    let signature: [u8; 64] = BASE64_STANDARD
+        .decode(&signature_b64)
+        .expect("Invalid signature base64")
+        .try_into()
+        .expect("Wrong signature length");
+
+    // Reconstruct signed message
+    let mut sign_data = Vec::with_capacity(32);
+    sign_data.extend_from_slice(message_id.as_bytes());
+    sign_data.extend_from_slice(&returned_ack_secret);
+
+    // Verify using node's public key
+    assert!(
+        node_pubkey.verify_xeddsa(&sign_data, &signature),
+        "Signature should verify with node's public key"
+    );
+
+    println!("Node correctly returned signed receipt as intended recipient");
 }
 
 /// Test: Node is a relay (different `routing_key`) → returns null

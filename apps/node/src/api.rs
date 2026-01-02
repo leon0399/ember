@@ -192,6 +192,11 @@ pub struct SubmitResponse {
     /// Base64-encoded 16-byte secret.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ack_secret: Option<String>,
+    /// XEdDSA signature over (message_id || ack_secret) proving node identity.
+    /// Present only when ack_secret is present.
+    /// Base64-encoded 64-byte signature.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -219,21 +224,33 @@ pub struct ErrorResponse {
 }
 
 // ============================================
-// Ack Secret Derivation
+// Receipt Derivation (ack_secret + signature)
 // ============================================
 
-/// Try to derive `ack_secret` if this node is the intended recipient.
+/// Receipt proving node received and can decrypt a message.
+struct Receipt {
+    /// Base64-encoded 16-byte ack_secret
+    ack_secret: String,
+    /// Base64-encoded 64-byte XEdDSA signature over (message_id || ack_secret)
+    signature: String,
+}
+
+/// Try to derive a signed receipt if this node is the intended recipient.
 ///
-/// Returns `Some(base64-encoded ack_secret)` if:
+/// Returns `Some(Receipt)` if:
 /// - Node has an identity configured
 /// - The message's `routing_key` matches this node's `routing_key`
 /// - ECDH shared secret derivation succeeds
 ///
+/// The receipt includes:
+/// - `ack_secret`: proves the node can decrypt the message
+/// - `signature`: XEdDSA signature over (message_id || ack_secret) proving node identity
+///
 /// Returns `None` if this node is just a relay (`routing_key` doesn't match).
-fn try_derive_ack_secret(
+fn try_derive_receipt(
     identity: Option<&NodeIdentity>,
     envelope: &OuterEnvelope,
-) -> Option<String> {
+) -> Option<Receipt> {
     let identity = identity?;
 
     // Check if we're the intended recipient
@@ -247,8 +264,16 @@ fn try_derive_ack_secret(
     // Derive ack_secret from shared_secret and message_id
     let ack_secret = derive_ack_secret(&shared_secret, &envelope.message_id);
 
-    // Return base64-encoded
-    Some(BASE64_STANDARD.encode(ack_secret))
+    // Sign (message_id || ack_secret) to prove node identity
+    let mut sign_data = Vec::with_capacity(16 + 16);
+    sign_data.extend_from_slice(envelope.message_id.as_bytes());
+    sign_data.extend_from_slice(&ack_secret);
+    let signature = identity.sign(&sign_data);
+
+    Some(Receipt {
+        ack_secret: BASE64_STANDARD.encode(ack_secret),
+        signature: BASE64_STANDARD.encode(signature),
+    })
 }
 
 // ============================================
@@ -401,6 +426,7 @@ async fn submit_payload(
                         Json(SubmitResponse {
                             status: "ok",
                             ack_secret: None,
+                            signature: None,
                         }),
                     )
                         .into_response()
@@ -413,6 +439,7 @@ async fn submit_payload(
                         Json(SubmitResponse {
                             status: "ok",
                             ack_secret: None,
+                            signature: None,
                         }),
                     )
                         .into_response()
@@ -448,6 +475,7 @@ async fn handle_message(
             Json(SubmitResponse {
                 status: "ok",
                 ack_secret: None,
+                signature: None,
             }),
         )
             .into_response();
@@ -456,8 +484,8 @@ async fn handle_message(
     let routing_key = envelope.routing_key;
     let message_id = envelope.message_id;
 
-    // Try to derive ack_secret if we're the intended recipient (before envelope is moved)
-    let ack_secret = try_derive_ack_secret(state.identity.as_deref(), &envelope);
+    // Try to derive signed receipt if we're the intended recipient (before envelope is moved)
+    let receipt = try_derive_receipt(state.identity.as_deref(), &envelope);
 
     // Clone envelope for MQTT publishing (enqueue takes ownership)
     let envelope_for_mqtt = envelope.clone();
@@ -490,6 +518,7 @@ async fn handle_message(
                 Json(SubmitResponse {
                     status: "ok",
                     ack_secret: None,
+                    signature: None,
                 }),
             )
                 .into_response();
@@ -525,11 +554,18 @@ async fn handle_message(
                 });
             }
 
+            // Extract receipt fields (ack_secret + signature) if present
+            let (ack_secret, signature) = match receipt {
+                Some(r) => (Some(r.ack_secret), Some(r.signature)),
+                None => (None, None),
+            };
+
             (
                 StatusCode::OK,
                 Json(SubmitResponse {
                     status: "ok",
                     ack_secret,
+                    signature,
                 }),
             )
                 .into_response()
