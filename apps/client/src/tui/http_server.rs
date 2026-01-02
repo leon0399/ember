@@ -31,6 +31,7 @@ use tokio::net::TcpListener;
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing::{debug, error, info, warn};
 use x25519_dalek::PublicKey as X25519PublicKey;
+use zeroize::Zeroize;
 
 /// Error types for HTTP server operations.
 #[derive(Debug, thiserror::Error)]
@@ -159,11 +160,19 @@ impl HttpServerState {
 
         let ack_secret = derive_ack_secret(bytes, &envelope.message_id);
 
-        // Sign (message_id || ack_secret) to prove node identity
-        let mut sign_data = Vec::with_capacity(16 + 16);
+        // Sign with domain separation: "reme-receipt-v1:" || signer_pubkey || message_id || ack_secret
+        // This prevents cross-protocol signature confusion and binds the signature to the signer
+        const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
+        let signer_pubkey = self.identity.public_id().to_bytes();
+        let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16 + 16);
+        sign_data.extend_from_slice(DOMAIN_SEP);
+        sign_data.extend_from_slice(&signer_pubkey);
         sign_data.extend_from_slice(envelope.message_id.as_bytes());
         sign_data.extend_from_slice(&ack_secret);
         let signature = self.identity.sign_xeddsa(&sign_data);
+
+        // Zeroize sensitive intermediate data
+        sign_data.zeroize();
 
         Some(Receipt {
             ack_secret: BASE64_STANDARD.encode(ack_secret),
@@ -176,7 +185,8 @@ impl HttpServerState {
 struct Receipt {
     /// Base64-encoded 16-byte ack_secret
     ack_secret: String,
-    /// Base64-encoded 64-byte XEdDSA signature over (message_id || ack_secret)
+    /// Base64-encoded 64-byte XEdDSA signature over:
+    /// "reme-receipt-v1:" || signer_pubkey || message_id || ack_secret
     signature: String,
 }
 
@@ -790,8 +800,12 @@ mod tests {
             .try_into()
             .expect("Wrong signature length");
 
-        // Reconstruct signed message
-        let mut sign_data = Vec::with_capacity(32);
+        // Reconstruct signed message with domain separation
+        // Format: "reme-receipt-v1:" || signer_pubkey || message_id || ack_secret
+        const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
+        let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16 + 16);
+        sign_data.extend_from_slice(DOMAIN_SEP);
+        sign_data.extend_from_slice(&recipient_pubkey.to_bytes());
         sign_data.extend_from_slice(message_id.as_bytes());
         sign_data.extend_from_slice(&returned_ack_secret);
 

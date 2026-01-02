@@ -214,8 +214,12 @@ async fn test_recipient_returns_ack_secret() {
         .try_into()
         .expect("Wrong signature length");
 
-    // Reconstruct signed message
-    let mut sign_data = Vec::with_capacity(32);
+    // Reconstruct signed message with domain separation
+    // Format: "reme-receipt-v1:" || signer_pubkey || message_id || ack_secret
+    const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
+    let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16 + 16);
+    sign_data.extend_from_slice(DOMAIN_SEP);
+    sign_data.extend_from_slice(&node_pubkey.to_bytes());
     sign_data.extend_from_slice(message_id.as_bytes());
     sign_data.extend_from_slice(&returned_ack_secret);
 
@@ -245,14 +249,18 @@ async fn test_relay_returns_no_ack_secret() {
     // Submit to node (node is acting as relay)
     let response = submit_envelope(&url, envelope).await;
 
-    // Should NOT have ack_secret (node is not the recipient)
+    // Should NOT have ack_secret or signature (node is not the recipient)
     assert_eq!(response.status, "ok");
     assert!(
         response.ack_secret.is_none(),
         "Node should NOT return ack_secret when it's just a relay"
     );
+    assert!(
+        response.signature.is_none(),
+        "Node should NOT return signature when it's just a relay"
+    );
 
-    println!("Node correctly returned no ack_secret as relay");
+    println!("Node correctly returned no receipt as relay");
 }
 
 /// Test: Node without identity → returns null
@@ -269,14 +277,18 @@ async fn test_no_identity_returns_no_ack_secret() {
     // Submit to node
     let response = submit_envelope(&url, envelope).await;
 
-    // Should NOT have ack_secret (node has no identity)
+    // Should NOT have ack_secret or signature (node has no identity)
     assert_eq!(response.status, "ok");
     assert!(
         response.ack_secret.is_none(),
         "Node without identity should NOT return ack_secret"
     );
+    assert!(
+        response.signature.is_none(),
+        "Node without identity should NOT return signature"
+    );
 
-    println!("Node without identity correctly returned no ack_secret");
+    println!("Node without identity correctly returned no receipt");
 }
 
 /// Test: Duplicate message submission also returns no `ack_secret` (idempotent)
@@ -293,23 +305,31 @@ async fn test_duplicate_returns_no_ack_secret() {
     let sender = Identity::generate();
     let (envelope, _) = create_encrypted_envelope(&sender, &node_pubkey);
 
-    // First submission - should have ack_secret
+    // First submission - should have ack_secret and signature
     let response1 = submit_envelope(&url, envelope.clone()).await;
     assert_eq!(response1.status, "ok");
     assert!(
         response1.ack_secret.is_some(),
         "First submit should return ack_secret"
     );
+    assert!(
+        response1.signature.is_some(),
+        "First submit should return signature"
+    );
 
-    // Second submission (duplicate) - should NOT have ack_secret
+    // Second submission (duplicate) - should NOT have ack_secret or signature
     let response2 = submit_envelope(&url, envelope).await;
     assert_eq!(response2.status, "ok");
     assert!(
         response2.ack_secret.is_none(),
         "Duplicate submit should NOT return ack_secret"
     );
+    assert!(
+        response2.signature.is_none(),
+        "Duplicate submit should NOT return signature"
+    );
 
-    println!("Duplicate submission correctly returned no ack_secret");
+    println!("Duplicate submission correctly returned no receipt");
 }
 
 /// Test: Malformed ephemeral key (low-order point) → returns no `ack_secret`
@@ -338,13 +358,17 @@ async fn test_low_order_ephemeral_key_returns_no_ack_secret() {
     // Submit to node
     let response = submit_envelope(&url, envelope).await;
 
-    // Should accept the message (node stores it) but NOT return ack_secret
+    // Should accept the message (node stores it) but NOT return ack_secret or signature
     // (ECDH with low-order point would produce weak/predictable shared secret)
     assert_eq!(response.status, "ok");
     assert!(
         response.ack_secret.is_none(),
         "Low-order ephemeral key should NOT produce ack_secret"
     );
+    assert!(
+        response.signature.is_none(),
+        "Low-order ephemeral key should NOT produce signature"
+    );
 
-    println!("Low-order ephemeral key correctly returned no ack_secret");
+    println!("Low-order ephemeral key correctly returned no receipt");
 }

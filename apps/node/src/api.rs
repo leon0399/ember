@@ -231,7 +231,8 @@ pub struct ErrorResponse {
 struct Receipt {
     /// Base64-encoded 16-byte ack_secret
     ack_secret: String,
-    /// Base64-encoded 64-byte XEdDSA signature over (message_id || ack_secret)
+    /// Base64-encoded 64-byte XEdDSA signature over:
+    /// "reme-receipt-v1:" || signer_pubkey || message_id || ack_secret
     signature: String,
 }
 
@@ -264,11 +265,19 @@ fn try_derive_receipt(
     // Derive ack_secret from shared_secret and message_id
     let ack_secret = derive_ack_secret(&shared_secret, &envelope.message_id);
 
-    // Sign (message_id || ack_secret) to prove node identity
-    let mut sign_data = Vec::with_capacity(16 + 16);
+    // Sign with domain separation: "reme-receipt-v1:" || signer_pubkey || message_id || ack_secret
+    // This prevents cross-protocol signature confusion and binds the signature to the signer
+    const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
+    let signer_pubkey = identity.public_id().to_bytes();
+    let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16 + 16);
+    sign_data.extend_from_slice(DOMAIN_SEP);
+    sign_data.extend_from_slice(&signer_pubkey);
     sign_data.extend_from_slice(envelope.message_id.as_bytes());
     sign_data.extend_from_slice(&ack_secret);
     let signature = identity.sign(&sign_data);
+
+    // Zeroize sensitive intermediate data
+    sign_data.zeroize();
 
     Some(Receipt {
         ack_secret: BASE64_STANDARD.encode(ack_secret),
