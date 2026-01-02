@@ -125,29 +125,15 @@ impl HttpServerState {
         &self.our_routing_key
     }
 
-    /// Derive a signed receipt for an envelope (embedded node is always the recipient).
-    ///
-    /// Returns `None` if:
-    /// - The ephemeral key is a known low-order point (security check)
-    /// - The ECDH result is all-zero (defense-in-depth)
+    /// Generate a signed receipt for an envelope.
     ///
     /// The receipt includes:
-    /// - `ack_secret`: proves the node can decrypt the message
-    /// - `signature`: `XEdDSA` signature over `"reme-receipt-v1:" || signer_pubkey || message_id || ack_secret`
+    /// - `signature`: Always present - `XEdDSA` signature over `"reme-receipt-v1:" || signer_pubkey || message_id`
+    /// - `ack_secret`: Only if ECDH derivation succeeds (not a low-order point, not all-zero result)
     ///
     /// Crypto operations (ECDH and `XEdDSA` signing) are offloaded to a blocking thread pool
     /// to avoid blocking the Tokio worker thread.
-    async fn derive_receipt_for_envelope(&self, envelope: &OuterEnvelope) -> Option<Receipt> {
-        // Pre-validation: reject known low-order points before ECDH
-        // This check is cheap (no crypto) so we do it before spawn_blocking
-        if is_low_order_point(&envelope.ephemeral_key) {
-            debug!(
-                message_id = ?envelope.message_id,
-                "Rejected low-order ephemeral key in receipt derivation"
-            );
-            return None;
-        }
-
+    async fn generate_receipt(&self, envelope: &OuterEnvelope) -> Receipt {
         // Capture owned values for spawn_blocking
         let identity = self.identity.clone();
         let ephemeral_key = envelope.ephemeral_key;
@@ -158,53 +144,59 @@ impl HttpServerState {
             // Domain separator for signature (prevents cross-protocol confusion)
             const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
 
-            let ephemeral_public = X25519PublicKey::from(ephemeral_key);
-            let shared_secret = identity.x25519_secret().diffie_hellman(&ephemeral_public);
+            // Try to derive ack_secret (may fail for low-order points or all-zero shared secrets)
+            let ack_secret = if is_low_order_point(&ephemeral_key) {
+                None
+            } else {
+                let ephemeral_public = X25519PublicKey::from(ephemeral_key);
+                let shared_secret = identity.x25519_secret().diffie_hellman(&ephemeral_public);
 
-            // Defense-in-depth: reject all-zero shared secrets (indicates small-order input)
-            // Use constant-time comparison to prevent timing side-channels
-            let bytes = shared_secret.as_bytes();
-            if bool::from(bytes.ct_eq(&[0u8; 32])) {
-                return None;
-            }
+                // Defense-in-depth: reject all-zero shared secrets (indicates small-order input)
+                // Use constant-time comparison to prevent timing side-channels
+                let bytes = shared_secret.as_bytes();
+                if bool::from(bytes.ct_eq(&[0u8; 32])) {
+                    None
+                } else {
+                    Some(derive_ack_secret(bytes, &message_id))
+                }
+            };
 
-            let mut ack_secret = derive_ack_secret(bytes, &message_id);
-
-            // Sign with domain separation: "reme-receipt-v1:" || signer_pubkey || message_id || ack_secret
-            // This binds the signature to the signer's public key
+            // Sign: "reme-receipt-v1:" || signer_pubkey || message_id
+            // Note: signature does NOT include ack_secret (allows signing even when ECDH fails)
             let signer_pubkey = identity.public_id().to_bytes();
-            let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16 + 16);
+            let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16);
             sign_data.extend_from_slice(DOMAIN_SEP);
             sign_data.extend_from_slice(&signer_pubkey);
             sign_data.extend_from_slice(message_id.as_bytes());
-            sign_data.extend_from_slice(&ack_secret);
             let signature = identity.sign_xeddsa(&sign_data);
 
-            // Encode before zeroizing
-            let ack_secret_b64 = BASE64_STANDARD.encode(ack_secret);
+            // Encode results
             let signature_b64 = BASE64_STANDARD.encode(signature);
+            let ack_secret_b64 = ack_secret.map(|mut s| {
+                let encoded = BASE64_STANDARD.encode(s);
+                s.zeroize();
+                encoded
+            });
 
             // Zeroize sensitive intermediate data
             sign_data.zeroize();
-            ack_secret.zeroize();
 
-            Some(Receipt {
+            Receipt {
                 ack_secret: ack_secret_b64,
                 signature: signature_b64,
-            })
+            }
         })
         .await
-        .ok()
-        .flatten()
+        .expect("spawn_blocking panicked")
     }
 }
 
-/// Receipt proving node received and can decrypt a message.
+/// Receipt proving node received a message.
 struct Receipt {
-    /// Base64-encoded 16-byte `ack_secret`
-    ack_secret: String,
+    /// Base64-encoded 16-byte `ack_secret` (only if ECDH derivation succeeds)
+    ack_secret: Option<String>,
     /// Base64-encoded 64-byte `XEdDSA` signature over:
-    /// `"reme-receipt-v1:" || signer_pubkey || message_id || ack_secret`
+    /// `"reme-receipt-v1:" || signer_pubkey || message_id`
     signature: String,
 }
 
@@ -212,11 +204,14 @@ struct Receipt {
 #[derive(Serialize)]
 struct SubmitResponse {
     status: &'static str,
+    /// Ack secret proving the node can decrypt this message.
+    /// Present only if ECDH derivation succeeds.
+    /// Base64-encoded 16-byte secret.
     #[serde(skip_serializing_if = "Option::is_none")]
     ack_secret: Option<String>,
-    /// `XEdDSA` signature proving node identity.
-    /// Signed data: `"reme-receipt-v1:" || signer_pubkey || message_id || ack_secret`
-    /// Present only when `ack_secret` is present.
+    /// `XEdDSA` signature proving node received the message.
+    /// Signed data: `"reme-receipt-v1:" || signer_pubkey || message_id`
+    /// Always present (embedded node always has identity).
     /// Base64-encoded 64-byte signature.
     #[serde(skip_serializing_if = "Option::is_none")]
     signature: Option<String>,
@@ -303,9 +298,9 @@ async fn submit_handler(
         }
     }
 
-    // Derive signed receipt BEFORE storing (we're the recipient, so we can always derive it)
-    // This proves we received and can decrypt the message
-    let receipt = state.derive_receipt_for_envelope(&envelope).await;
+    // Generate signed receipt BEFORE storing (signature always, ack_secret only if ECDH succeeds)
+    // This proves we received the message
+    let receipt = state.generate_receipt(&envelope).await;
 
     // Store and notify client
     // Handle race condition: if store fails, check if it's now a duplicate
@@ -332,14 +327,11 @@ async fn submit_handler(
         return Err(ApiError::Internal("Failed to store message".to_string()));
     }
 
-    // Extract receipt fields (ack_secret + signature) if present
-    let (ack_secret, signature) = receipt.map(|r| (r.ack_secret, r.signature)).unzip();
-
     info!(message_id = ?message_id, "Message from LAN peer stored successfully");
     Ok(Json(SubmitResponse {
         status: "ok",
-        ack_secret,
-        signature,
+        ack_secret: receipt.ack_secret,
+        signature: Some(receipt.signature),
     }))
 }
 
@@ -820,12 +812,11 @@ mod tests {
             .expect("Wrong signature length");
 
         // Reconstruct signed message with domain separation
-        // Format: "reme-receipt-v1:" || signer_pubkey || message_id || ack_secret
-        let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16 + 16);
+        // Format: "reme-receipt-v1:" || signer_pubkey || message_id (NO ack_secret)
+        let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16);
         sign_data.extend_from_slice(DOMAIN_SEP);
         sign_data.extend_from_slice(&recipient_pubkey.to_bytes());
         sign_data.extend_from_slice(message_id.as_bytes());
-        sign_data.extend_from_slice(&returned_ack_secret);
 
         // Verify using recipient's public key
         assert!(
@@ -834,14 +825,15 @@ mod tests {
         );
     }
 
-    /// Test: Low-order ephemeral key returns no `ack_secret` (security check)
+    /// Test: Low-order ephemeral key returns no `ack_secret` but still returns signature
     #[tokio::test]
-    async fn test_low_order_ephemeral_key_returns_no_ack_secret() {
+    async fn test_low_order_ephemeral_key_returns_no_ack_secret_but_returns_signature() {
         let config = PersistentStoreConfig::default();
         let store = PersistentMailboxStore::in_memory(config).unwrap();
         let (_node, handle, _event_rx) = EmbeddedNode::new(store);
 
         let identity = Identity::generate();
+        let identity_pubkey = *identity.public_id();
         let our_routing_key = identity.public_id().routing_key();
         let state = Arc::new(HttpServerState::new(
             handle,
@@ -852,6 +844,7 @@ mod tests {
 
         // Create envelope with low-order ephemeral key (zeroed = low-order point)
         let envelope = create_test_envelope(our_routing_key); // Uses [0u8; 32] ephemeral key
+        let message_id = envelope.message_id;
         let wire_payload = WirePayload::Message(envelope);
         let body = BASE64_STANDARD.encode(wire_payload.encode());
 
@@ -880,6 +873,30 @@ mod tests {
         assert!(
             response_json.get("ack_secret").is_none() || response_json["ack_secret"].is_null(),
             "Low-order ephemeral key should NOT produce ack_secret"
+        );
+
+        // Should still have signature (signature is always returned)
+        assert!(
+            response_json.get("signature").is_some(),
+            "Should still return signature even without ack_secret"
+        );
+        let signature_b64 = response_json["signature"].as_str().unwrap();
+        let signature: [u8; 64] = BASE64_STANDARD
+            .decode(signature_b64)
+            .expect("Invalid signature base64")
+            .try_into()
+            .expect("Wrong signature length");
+
+        // Verify signature over domain-separated message (without ack_secret)
+        const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
+        let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16);
+        sign_data.extend_from_slice(DOMAIN_SEP);
+        sign_data.extend_from_slice(&identity_pubkey.to_bytes());
+        sign_data.extend_from_slice(message_id.as_bytes());
+
+        assert!(
+            identity_pubkey.verify_xeddsa(&sign_data, &signature),
+            "Signature should verify with node's public key"
         );
     }
 

@@ -206,7 +206,7 @@ async fn test_recipient_returns_ack_secret() {
     // Should also have signature
     assert!(
         response.signature.is_some(),
-        "Node should return signature when it returns ack_secret"
+        "Node should return signature when it's the recipient"
     );
 
     // Verify signature over domain-separated message
@@ -218,12 +218,11 @@ async fn test_recipient_returns_ack_secret() {
         .expect("Wrong signature length");
 
     // Reconstruct signed message with domain separation
-    // Format: "reme-receipt-v1:" || signer_pubkey || message_id || ack_secret
-    let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16 + 16);
+    // Format: "reme-receipt-v1:" || signer_pubkey || message_id (NO ack_secret)
+    let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16);
     sign_data.extend_from_slice(DOMAIN_SEP);
     sign_data.extend_from_slice(&node_pubkey.to_bytes());
     sign_data.extend_from_slice(message_id.as_bytes());
-    sign_data.extend_from_slice(&returned_ack_secret);
 
     // Verify using node's public key
     assert!(
@@ -234,11 +233,15 @@ async fn test_recipient_returns_ack_secret() {
     println!("Node correctly returned signed receipt as intended recipient");
 }
 
-/// Test: Node is a relay (different `routing_key`) → returns null
+/// Test: Node is a relay (different `routing_key`) → returns signature but no `ack_secret`
 #[tokio::test]
-async fn test_relay_returns_no_ack_secret() {
+async fn test_relay_returns_signature_but_no_ack_secret() {
+    // Domain separator for signature verification
+    const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
+
     // Create node identity
     let (node_identity, _dir) = create_temp_identity();
+    let node_pubkey = *node_identity.public_id();
 
     // Start node with this identity
     let (url, _handle) = start_test_node(Some(Arc::new(node_identity))).await;
@@ -247,22 +250,44 @@ async fn test_relay_returns_no_ack_secret() {
     let sender = Identity::generate();
     let different_recipient = Identity::generate();
     let (envelope, _) = create_encrypted_envelope(&sender, different_recipient.public_id());
+    let message_id = envelope.message_id;
 
     // Submit to node (node is acting as relay)
     let response = submit_envelope(&url, envelope).await;
 
-    // Should NOT have ack_secret or signature (node is not the recipient)
+    // Should NOT have ack_secret (node cannot decrypt - different routing key)
     assert_eq!(response.status, "ok");
     assert!(
         response.ack_secret.is_none(),
         "Node should NOT return ack_secret when it's just a relay"
     );
+
+    // Should still have signature (proves node received the message)
     assert!(
-        response.signature.is_none(),
-        "Node should NOT return signature when it's just a relay"
+        response.signature.is_some(),
+        "Node should return signature even as relay"
     );
 
-    println!("Node correctly returned no receipt as relay");
+    // Verify signature
+    let signature_b64 = response.signature.unwrap();
+    let signature: [u8; 64] = BASE64_STANDARD
+        .decode(&signature_b64)
+        .expect("Invalid signature base64")
+        .try_into()
+        .expect("Wrong signature length");
+
+    // Format: "reme-receipt-v1:" || signer_pubkey || message_id (NO ack_secret)
+    let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16);
+    sign_data.extend_from_slice(DOMAIN_SEP);
+    sign_data.extend_from_slice(&node_pubkey.to_bytes());
+    sign_data.extend_from_slice(message_id.as_bytes());
+
+    assert!(
+        node_pubkey.verify_xeddsa(&sign_data, &signature),
+        "Signature should verify with node's public key"
+    );
+
+    println!("Node correctly returned signature-only receipt as relay");
 }
 
 /// Test: Node without identity → returns null
@@ -334,9 +359,12 @@ async fn test_duplicate_returns_no_ack_secret() {
     println!("Duplicate submission correctly returned no receipt");
 }
 
-/// Test: Malformed ephemeral key (low-order point) → returns no `ack_secret`
+/// Test: Malformed ephemeral key (low-order point) → returns signature but no `ack_secret`
 #[tokio::test]
-async fn test_low_order_ephemeral_key_returns_no_ack_secret() {
+async fn test_low_order_ephemeral_key_returns_signature_but_no_ack_secret() {
+    // Domain separator for signature verification
+    const DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
+
     // Create node identity (this will be the recipient)
     let (node_identity, _dir) = create_temp_identity();
     let node_pubkey = *node_identity.public_id();
@@ -356,21 +384,43 @@ async fn test_low_order_ephemeral_key_returns_no_ack_secret() {
         vec![1, 2, 3, 4], // dummy ciphertext
     );
     envelope.message_id = MessageID::new();
+    let message_id = envelope.message_id;
 
     // Submit to node
     let response = submit_envelope(&url, envelope).await;
 
-    // Should accept the message (node stores it) but NOT return ack_secret or signature
+    // Should accept the message (node stores it) but NOT return ack_secret
     // (ECDH with low-order point would produce weak/predictable shared secret)
     assert_eq!(response.status, "ok");
     assert!(
         response.ack_secret.is_none(),
         "Low-order ephemeral key should NOT produce ack_secret"
     );
+
+    // Should still return signature (signature doesn't depend on ack_secret)
     assert!(
-        response.signature.is_none(),
-        "Low-order ephemeral key should NOT produce signature"
+        response.signature.is_some(),
+        "Should still return signature even with low-order ephemeral key"
     );
 
-    println!("Low-order ephemeral key correctly returned no receipt");
+    // Verify signature
+    let signature_b64 = response.signature.unwrap();
+    let signature: [u8; 64] = BASE64_STANDARD
+        .decode(&signature_b64)
+        .expect("Invalid signature base64")
+        .try_into()
+        .expect("Wrong signature length");
+
+    // Format: "reme-receipt-v1:" || signer_pubkey || message_id (NO ack_secret)
+    let mut sign_data = Vec::with_capacity(DOMAIN_SEP.len() + 32 + 16);
+    sign_data.extend_from_slice(DOMAIN_SEP);
+    sign_data.extend_from_slice(&node_pubkey.to_bytes());
+    sign_data.extend_from_slice(message_id.as_bytes());
+
+    assert!(
+        node_pubkey.verify_xeddsa(&sign_data, &signature),
+        "Signature should verify with node's public key"
+    );
+
+    println!("Low-order ephemeral key correctly returned signature-only receipt");
 }
