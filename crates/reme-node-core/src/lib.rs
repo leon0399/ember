@@ -49,8 +49,10 @@ pub mod embedded;
 pub mod error;
 pub mod mailbox_store;
 pub mod request;
+pub mod time;
 
 pub use embedded::*;
 pub use error::*;
 pub use mailbox_store::*;
 pub use request::*;
+pub use time::*;

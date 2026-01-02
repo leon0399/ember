@@ -460,6 +460,7 @@ fn i64_to_usize_clamped(v: i64) -> usize {
 /// 2. Environment variables (`REME_NODE`_*)
 /// 3. Config file
 /// 4. Built-in defaults
+#[allow(clippy::cast_possible_wrap)] // Config values (usize/u64) are always in i64 range
 pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     let cli = CliArgs::parse();
 

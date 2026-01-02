@@ -153,6 +153,7 @@ impl TransportRetryPolicy {
     }
 
     /// Calculate the delay for the nth retry attempt.
+    #[allow(clippy::cast_possible_wrap)] // attempt count will never exceed i32::MAX
     pub fn delay_for_attempt(&self, attempt: u32) -> Duration {
         if attempt == 0 {
             return Duration::ZERO;

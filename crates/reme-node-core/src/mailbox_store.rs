@@ -19,10 +19,10 @@ use reme_message::{MessageID, OuterEnvelope, RoutingKey};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, trace, warn};
 
 use crate::error::NodeError;
+use crate::time::{now_secs, timestamp_to_i64};
 
 /// 7 days in seconds - default message TTL
 const fn default_ttl_secs() -> u64 {
@@ -219,14 +219,6 @@ impl PersistentMailboxStore {
         Ok(())
     }
 
-    /// Get current Unix timestamp in seconds
-    fn now_secs() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-    }
-
     /// Serialize an `OuterEnvelope` to bytes
     fn serialize_envelope(envelope: &OuterEnvelope) -> Result<Vec<u8>, NodeError> {
         let bincode_config = config::standard();
@@ -244,7 +236,7 @@ impl PersistentMailboxStore {
 
     /// Get all message IDs for a routing key (for sync protocol)
     pub fn get_message_ids(&self, routing_key: &RoutingKey) -> Result<Vec<MessageID>, NodeError> {
-        let now = Self::now_secs();
+        let now = now_secs();
 
         let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
 
@@ -253,7 +245,7 @@ impl PersistentMailboxStore {
              WHERE routing_key = ? AND expires_at > ?",
         )?;
 
-        let rows = stmt.query_map(params![&routing_key[..], now as i64], |row| {
+        let rows = stmt.query_map(params![&routing_key[..], timestamp_to_i64(now)], |row| {
             let bytes: Vec<u8> = row.get(0)?;
             Ok(bytes)
         })?;
@@ -277,7 +269,7 @@ impl PersistentMailboxStore {
 
     /// Get a specific message by ID (for sync protocol)
     pub fn get_message(&self, message_id: &MessageID) -> Result<Option<OuterEnvelope>, NodeError> {
-        let now = Self::now_secs();
+        let now = now_secs();
         let message_id_bytes = message_id.as_bytes();
 
         let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
@@ -286,7 +278,7 @@ impl PersistentMailboxStore {
             .query_row(
                 "SELECT envelope_data FROM mailbox_messages
                  WHERE message_id = ? AND expires_at > ?",
-                params![&message_id_bytes[..], now as i64],
+                params![&message_id_bytes[..], timestamp_to_i64(now)],
                 |row| row.get(0),
             )
             .optional()?;
@@ -324,25 +316,25 @@ impl PersistentMailboxStore {
 
     /// Get store statistics
     pub fn stats(&self) -> Result<PersistentStoreStats, NodeError> {
-        let now = Self::now_secs();
+        let now = now_secs();
 
         let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
 
         let total_messages: i64 = conn.query_row(
             "SELECT COUNT(*) FROM mailbox_messages WHERE expires_at > ?",
-            params![now as i64],
+            params![timestamp_to_i64(now)],
             |row| row.get(0),
         )?;
 
         let mailbox_count: i64 = conn.query_row(
             "SELECT COUNT(DISTINCT routing_key) FROM mailbox_messages WHERE expires_at > ?",
-            params![now as i64],
+            params![timestamp_to_i64(now)],
             |row| row.get(0),
         )?;
 
         let expired_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM mailbox_messages WHERE expires_at <= ?",
-            params![now as i64],
+            params![timestamp_to_i64(now)],
             |row| row.get(0),
         )?;
 
@@ -364,7 +356,7 @@ impl PersistentMailboxStore {
 
 impl MailboxStore for PersistentMailboxStore {
     fn enqueue(&self, routing_key: RoutingKey, envelope: OuterEnvelope) -> Result<(), NodeError> {
-        let now = Self::now_secs();
+        let now = now_secs();
 
         // Calculate expiration
         let ttl_secs = envelope
@@ -383,7 +375,7 @@ impl MailboxStore for PersistentMailboxStore {
         // First, clean up expired messages for this routing key (self-healing)
         tx.execute(
             "DELETE FROM mailbox_messages WHERE routing_key = ? AND expires_at <= ?",
-            params![&routing_key[..], now as i64],
+            params![&routing_key[..], timestamp_to_i64(now)],
         )?;
 
         // Check mailbox capacity
@@ -411,8 +403,8 @@ impl MailboxStore for PersistentMailboxStore {
                 &routing_key[..],
                 &message_id_bytes[..],
                 &envelope_data,
-                expires_at as i64,
-                now as i64
+                timestamp_to_i64(expires_at),
+                timestamp_to_i64(now)
             ],
         )?;
 
@@ -429,7 +421,7 @@ impl MailboxStore for PersistentMailboxStore {
     }
 
     fn fetch(&self, routing_key: &RoutingKey) -> Result<Vec<OuterEnvelope>, NodeError> {
-        let now = Self::now_secs();
+        let now = now_secs();
 
         let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
 
@@ -440,7 +432,7 @@ impl MailboxStore for PersistentMailboxStore {
              ORDER BY created_at ASC",
         )?;
 
-        let rows = stmt.query_map(params![&routing_key[..], now as i64], |row| {
+        let rows = stmt.query_map(params![&routing_key[..], timestamp_to_i64(now)], |row| {
             let id: i64 = row.get(0)?;
             let data: Vec<u8> = row.get(1)?;
             Ok((id, data))
@@ -493,7 +485,7 @@ impl MailboxStore for PersistentMailboxStore {
         routing_key: &RoutingKey,
         message_id: &MessageID,
     ) -> Result<bool, NodeError> {
-        let now = Self::now_secs();
+        let now = now_secs();
         let message_id_bytes = message_id.as_bytes();
 
         let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
@@ -502,7 +494,11 @@ impl MailboxStore for PersistentMailboxStore {
             .query_row(
                 "SELECT 1 FROM mailbox_messages
                  WHERE routing_key = ? AND message_id = ? AND expires_at > ?",
-                params![&routing_key[..], &message_id_bytes[..], now as i64],
+                params![
+                    &routing_key[..],
+                    &message_id_bytes[..],
+                    timestamp_to_i64(now)
+                ],
                 |_| Ok(true),
             )
             .optional()?
@@ -522,13 +518,13 @@ impl MailboxStore for PersistentMailboxStore {
     }
 
     fn cleanup_expired(&self) -> Result<usize, NodeError> {
-        let now = Self::now_secs();
+        let now = now_secs();
 
         let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
 
         let deleted = conn.execute(
             "DELETE FROM mailbox_messages WHERE expires_at <= ?",
-            params![now as i64],
+            params![timestamp_to_i64(now)],
         )?;
 
         if deleted > 0 {

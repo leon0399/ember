@@ -108,3 +108,7 @@ must_use_candidate = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 similar_names = "allow"
+return_self_not_must_use = "allow"  # Builder pattern methods
+implicit_hasher = "allow"           # HashMap generalization rarely needed
+# False positive from derivative crate macro (generates internal lifetimes)
+elidable_lifetime_names = "allow"
