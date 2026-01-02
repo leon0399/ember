@@ -305,8 +305,13 @@ async fn submit_handler(
 
     // Generate signed receipt BEFORE storing (signature always, ack_secret only if ECDH succeeds)
     // This proves we received the message
-    // Returns None if spawn_blocking panics (graceful degradation)
-    let receipt = state.generate_receipt(&envelope).await;
+    let Some(receipt) = state.generate_receipt(&envelope).await else {
+        error!(
+            message_id = ?message_id,
+            "Failed to generate receipt, crypto task may have panicked"
+        );
+        return Err(ApiError::Internal("Failed to generate receipt".to_string()));
+    };
 
     // Store and notify client
     // Handle race condition: if store fails, check if it's now a duplicate
@@ -336,8 +341,8 @@ async fn submit_handler(
     info!(message_id = ?message_id, "Message from LAN peer stored successfully");
     Ok(Json(SubmitResponse {
         status: "ok",
-        ack_secret: receipt.as_ref().and_then(|r| r.ack_secret.clone()),
-        signature: receipt.map(|r| r.signature),
+        ack_secret: receipt.ack_secret,
+        signature: Some(receipt.signature),
     }))
 }
 
