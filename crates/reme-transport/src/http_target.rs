@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
+use reme_identity::PublicID;
 use reme_message::{OuterEnvelope, RoutingKey, SignedAckTombstone, WirePayload};
 use reqwest::Client;
 use serde::Deserialize;
@@ -84,6 +85,29 @@ impl HttpTargetConfig {
     pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
         self.base.connect_timeout = timeout;
         self
+    }
+
+    /// Set the node's public identity for receipt verification.
+    ///
+    /// When set, receipts from this target can be verified using this public key.
+    /// The `routing_key()` derived from this is also used to filter targets
+    /// during Direct tier delivery.
+    pub fn with_node_pubkey(mut self, pubkey: PublicID) -> Self {
+        self.base.node_pubkey = Some(pubkey);
+        self
+    }
+
+    /// Set an optional node public identity.
+    pub fn with_node_pubkey_opt(mut self, pubkey: Option<PublicID>) -> Self {
+        self.base.node_pubkey = pubkey;
+        self
+    }
+
+    /// Check if this target can serve messages for the given routing key.
+    ///
+    /// Delegates to the base `TargetConfig::can_serve()` method.
+    pub fn can_serve(&self, routing_key: &RoutingKey) -> bool {
+        self.base.can_serve(routing_key)
     }
 }
 
