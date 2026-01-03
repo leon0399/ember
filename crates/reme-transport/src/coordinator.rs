@@ -321,7 +321,7 @@ impl TransportCoordinator {
                 for target in ephemeral {
                     if target.is_available() {
                         match TransportTarget::submit_message(&*target, envelope.clone()).await {
-                            Ok(()) => return Ok(()),
+                            Ok(_receipt) => return Ok(()),
                             Err(e) => {
                                 debug!(
                                     target = %target.id(),
@@ -526,9 +526,9 @@ impl TransportCoordinator {
         // Poll futures until we get a success or all have completed
         while let Some((target_id, result, latency)) = futures.next().await {
             match result {
-                Ok(Ok(())) => {
+                Ok(Ok(_raw_receipt)) => {
                     // Success! Record and return immediately
-                    // TODO: Parse receipt from response and pass to success()
+                    // TODO: Verify receipt and convert to ReceiptStatus
                     tier_result.push(TargetResult::success_no_receipt(
                         target_id,
                         DeliveryTier::Direct,
@@ -674,22 +674,21 @@ impl TransportCoordinator {
         let http_results = join_all(http_futures).await;
 
         // Convert HTTP results
-        // TODO: Parse receipt from response and pass to success()
+        // TODO: Verify receipt and convert to ReceiptStatus
         for (target_id, result, latency) in http_results {
             match result {
-                Ok(()) => {
+                Ok(_raw_receipt) => {
                     tier_result.push(TargetResult::success_no_receipt(target_id, tier, latency));
                 }
                 Err(e) => tier_result.push(TargetResult::failed(target_id, tier, e)),
             }
         }
 
-        // Convert MQTT results
-        // TODO: Parse receipt from response and pass to success()
+        // Convert MQTT results (MQTT doesn't return receipts)
         #[cfg(feature = "mqtt")]
         for (target_id, result, latency) in mqtt_results {
             match result {
-                Ok(()) => {
+                Ok(_raw_receipt) => {
                     tier_result.push(TargetResult::success_no_receipt(target_id, tier, latency));
                 }
                 Err(e) => tier_result.push(TargetResult::failed(target_id, tier, e)),

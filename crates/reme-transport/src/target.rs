@@ -17,6 +17,50 @@ use strum::{Display, EnumIter};
 use crate::url_auth::sanitize_url_for_logging;
 use crate::TransportError;
 
+// =============================================================================
+// Raw Receipt (unverified receipt data from transport)
+// =============================================================================
+
+/// Raw receipt data from a node (not yet verified).
+///
+/// This struct holds the raw bytes returned by a node after message submission.
+/// Verification happens at the coordinator level using the configured `node_pubkey`.
+///
+/// For transports that don't support receipts (e.g., MQTT), this will be empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RawReceipt {
+    /// Raw `ack_secret` bytes (16 bytes if present).
+    /// Present only if the node is the intended recipient.
+    pub ack_secret: Option<[u8; 16]>,
+
+    /// Raw `XEdDSA` signature bytes (64 bytes if present).
+    /// Present when the node has an identity configured.
+    pub signature: Option<[u8; 64]>,
+}
+
+impl RawReceipt {
+    /// Check if any receipt data was returned.
+    pub fn has_data(&self) -> bool {
+        self.ack_secret.is_some() || self.signature.is_some()
+    }
+
+    /// Create a receipt with only a signature (no `ack_secret`).
+    pub fn signature_only(signature: [u8; 64]) -> Self {
+        Self {
+            ack_secret: None,
+            signature: Some(signature),
+        }
+    }
+
+    /// Create a full receipt with both `ack_secret` and signature.
+    pub fn full(ack_secret: [u8; 16], signature: [u8; 64]) -> Self {
+        Self {
+            ack_secret: Some(ack_secret),
+            signature: Some(signature),
+        }
+    }
+}
+
 /// Unique identifier for a transport target.
 ///
 /// Format: `{type}:{sanitized_url}` e.g., `http:https://node.example.com:23003`
@@ -486,7 +530,10 @@ pub trait TransportTarget: Send + Sync {
     }
 
     /// Submit a message to this specific target.
-    async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError>;
+    ///
+    /// Returns the raw receipt data from the target (if any).
+    /// For transports that don't support receipts (e.g., MQTT), returns an empty `RawReceipt`.
+    async fn submit_message(&self, envelope: OuterEnvelope) -> Result<RawReceipt, TransportError>;
 
     /// Submit an ack tombstone to this specific target (Tombstone V2).
     async fn submit_ack_tombstone(

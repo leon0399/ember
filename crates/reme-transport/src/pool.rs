@@ -254,8 +254,11 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
                     .await
             }
             PoolStrategy::RoundRobin | PoolStrategy::FastestFirst => {
-                // Single target selected
-                targets[0].submit_message(envelope.clone()).await
+                // Single target selected - discard receipt
+                targets[0]
+                    .submit_message(envelope.clone())
+                    .await
+                    .map(|_| ())
             }
         };
 
@@ -302,7 +305,7 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
 
         for (i, result) in results.into_iter().enumerate() {
             match result {
-                Ok(()) => {
+                Ok(_receipt) => {
                     success_count += 1;
                 }
                 Err(e) => {
@@ -335,7 +338,7 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
         envelope: OuterEnvelope,
     ) -> Result<(), TransportError> {
         if targets.len() == 1 {
-            return targets[0].submit_message(envelope).await;
+            return targets[0].submit_message(envelope).await.map(|_| ());
         }
 
         // Create futures for all targets
@@ -356,7 +359,7 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
             let (result, _index, rest) = futures::future::select_all(remaining).await;
 
             match result {
-                Ok(()) => {
+                Ok(_receipt) => {
                     // Success - cancel remaining futures and return
                     drop(rest);
                     return Ok(());
@@ -383,7 +386,7 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
 
         for target in targets {
             match target.submit_message(envelope.clone()).await {
-                Ok(()) => {
+                Ok(_receipt) => {
                     debug!("Message sent via {}", target.id());
                     return Ok(());
                 }

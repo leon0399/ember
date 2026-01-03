@@ -11,7 +11,7 @@ use reme_node_core::{EmbeddedNodeHandle, NodeError};
 use tracing::debug;
 
 use crate::target::{
-    HealthState, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget,
+    HealthState, RawReceipt, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget,
 };
 use crate::TransportError;
 
@@ -148,7 +148,7 @@ impl TransportTarget for EmbeddedTarget {
         self.handle.is_running() && self.health.is_available()
     }
 
-    async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
+    async fn submit_message(&self, envelope: OuterEnvelope) -> Result<RawReceipt, TransportError> {
         let start = Instant::now();
 
         let result = self
@@ -172,7 +172,9 @@ impl TransportTarget for EmbeddedTarget {
             }
         }
 
-        result
+        // TODO: Extract receipt from embedded node response
+        // For now, return empty receipt
+        result.map(|()| RawReceipt::default())
     }
 
     async fn submit_ack_tombstone(
@@ -228,10 +230,16 @@ impl TransportTarget for EmbeddedTarget {
 ///
 /// This allows `EmbeddedTarget` to be used alongside `HttpTransport` and `MqttTransport`
 /// in the composite transport for multi-transport message delivery.
+///
+/// Note: Receipt data is discarded in this wrapper; use `TransportTarget`
+/// directly if receipt verification is needed.
 #[async_trait]
 impl crate::Transport for EmbeddedTarget {
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
-        <Self as TransportTarget>::submit_message(self, envelope).await
+        // Discard receipt data - use TransportTarget directly for receipt verification
+        <Self as TransportTarget>::submit_message(self, envelope)
+            .await
+            .map(|_receipt| ())
     }
 
     async fn submit_ack_tombstone(
