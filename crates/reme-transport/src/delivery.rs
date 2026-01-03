@@ -7,11 +7,109 @@
 
 use std::time::Duration;
 
+use reme_identity::PublicID;
+
 use derivative::Derivative;
 use strum::{Display, EnumIter};
 
 use crate::target::TargetId;
 use crate::TransportError;
+
+// =============================================================================
+// Receipt verification types
+// =============================================================================
+
+/// Status of `XEdDSA` signature verification for a node receipt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignatureStatus {
+    /// No signature was returned by the node.
+    Missing,
+
+    /// Signature was returned but the node's public key is not configured.
+    /// Contains the raw signature bytes for deferred verification.
+    Unverifiable(Vec<u8>),
+
+    /// Signature verification failed (invalid signature).
+    Invalid,
+
+    /// Signature was verified successfully against the configured node public key.
+    Verified(PublicID),
+}
+
+impl SignatureStatus {
+    /// Check if the signature was successfully verified.
+    pub fn is_verified(&self) -> bool {
+        matches!(self, SignatureStatus::Verified(_))
+    }
+
+    /// Check if verification was attempted but failed.
+    pub fn is_invalid(&self) -> bool {
+        matches!(self, SignatureStatus::Invalid)
+    }
+
+    /// Check if the signature is present but cannot be verified (no configured pubkey).
+    pub fn is_unverifiable(&self) -> bool {
+        matches!(self, SignatureStatus::Unverifiable(_))
+    }
+}
+
+/// Status of receipt verification for a delivery attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReceiptStatus {
+    /// No receipt was returned by the node.
+    Missing,
+
+    /// Receipt was returned but has no `ack_secret` (node is not the recipient).
+    SignatureOnly {
+        /// Status of the `XEdDSA` signature.
+        signature: SignatureStatus,
+    },
+
+    /// Receipt was returned with both `ack_secret` and signature.
+    /// The node claims to be the recipient.
+    Full {
+        /// The `ack_secret` from the receipt (16 bytes).
+        ack_secret: [u8; 16],
+        /// Status of the `XEdDSA` signature.
+        signature: SignatureStatus,
+    },
+}
+
+impl ReceiptStatus {
+    /// Check if any receipt was returned.
+    pub fn has_receipt(&self) -> bool {
+        !matches!(self, ReceiptStatus::Missing)
+    }
+
+    /// Check if this is a full receipt (with `ack_secret`).
+    pub fn has_ack_secret(&self) -> bool {
+        matches!(self, ReceiptStatus::Full { .. })
+    }
+
+    /// Get the `ack_secret` if present.
+    pub fn ack_secret(&self) -> Option<&[u8; 16]> {
+        match self {
+            ReceiptStatus::Full { ack_secret, .. } => Some(ack_secret),
+            _ => None,
+        }
+    }
+
+    /// Get the signature status if a receipt was returned.
+    pub fn signature_status(&self) -> Option<&SignatureStatus> {
+        match self {
+            ReceiptStatus::Missing => None,
+            ReceiptStatus::SignatureOnly { signature } | ReceiptStatus::Full { signature, .. } => {
+                Some(signature)
+            }
+        }
+    }
+
+    /// Check if the receipt signature was verified.
+    pub fn is_signature_verified(&self) -> bool {
+        self.signature_status()
+            .is_some_and(SignatureStatus::is_verified)
+    }
+}
 
 // =============================================================================
 // Default value helpers for TieredDeliveryConfig
@@ -264,17 +362,31 @@ pub struct TargetResult {
 
     /// Latency of the attempt (if completed).
     pub latency: Option<Duration>,
+
+    /// Receipt verification status (if success).
+    pub receipt: ReceiptStatus,
 }
 
 impl TargetResult {
-    /// Create a success result.
-    pub fn success(target_id: TargetId, tier: DeliveryTier, latency: Duration) -> Self {
+    /// Create a success result with receipt status.
+    pub fn success(
+        target_id: TargetId,
+        tier: DeliveryTier,
+        latency: Duration,
+        receipt: ReceiptStatus,
+    ) -> Self {
         Self {
             target_id,
             tier,
             outcome: TargetOutcome::Success,
             latency: Some(latency),
+            receipt,
         }
+    }
+
+    /// Create a success result without receipt (legacy/transitional).
+    pub fn success_no_receipt(target_id: TargetId, tier: DeliveryTier, latency: Duration) -> Self {
+        Self::success(target_id, tier, latency, ReceiptStatus::Missing)
     }
 
     /// Create a failure result.
@@ -284,6 +396,7 @@ impl TargetResult {
             tier,
             outcome: TargetOutcome::Failed(error),
             latency: None,
+            receipt: ReceiptStatus::Missing,
         }
     }
 
@@ -294,6 +407,7 @@ impl TargetResult {
             tier,
             outcome: TargetOutcome::Skipped,
             latency: None,
+            receipt: ReceiptStatus::Missing,
         }
     }
 
@@ -304,7 +418,18 @@ impl TargetResult {
             tier,
             outcome: TargetOutcome::Timeout,
             latency: None,
+            receipt: ReceiptStatus::Missing,
         }
+    }
+
+    /// Check if this result has a verified signature.
+    pub fn has_verified_signature(&self) -> bool {
+        self.receipt.is_signature_verified()
+    }
+
+    /// Check if this result has an `ack_secret` (direct delivery indicator).
+    pub fn has_ack_secret(&self) -> bool {
+        self.receipt.has_ack_secret()
     }
 }
 
@@ -598,7 +723,7 @@ mod tests {
         let target2 = TargetId::http("https://node2.example.com");
         let target3 = TargetId::http("https://node3.example.com");
 
-        tier.push(TargetResult::success(
+        tier.push(TargetResult::success_no_receipt(
             target1.clone(),
             DeliveryTier::Quorum,
             Duration::from_millis(100),
@@ -608,7 +733,7 @@ mod tests {
             DeliveryTier::Quorum,
             TransportError::Timeout,
         ));
-        tier.push(TargetResult::success(
+        tier.push(TargetResult::success_no_receipt(
             target3.clone(),
             DeliveryTier::Quorum,
             Duration::from_millis(150),
@@ -693,5 +818,84 @@ mod tests {
 
         assert!(config.is_excluded(&excluded));
         assert!(!config.is_excluded(&TargetId::http("https://other.example.com")));
+    }
+
+    #[test]
+    fn test_signature_status() {
+        // Missing
+        let missing = SignatureStatus::Missing;
+        assert!(!missing.is_verified());
+        assert!(!missing.is_invalid());
+        assert!(!missing.is_unverifiable());
+
+        // Unverifiable
+        let unverifiable = SignatureStatus::Unverifiable(vec![1, 2, 3]);
+        assert!(!unverifiable.is_verified());
+        assert!(!unverifiable.is_invalid());
+        assert!(unverifiable.is_unverifiable());
+
+        // Invalid
+        let invalid = SignatureStatus::Invalid;
+        assert!(!invalid.is_verified());
+        assert!(invalid.is_invalid());
+        assert!(!invalid.is_unverifiable());
+
+        // Verified (need a PublicID for this)
+        // Skipped as it requires actual key generation
+    }
+
+    #[test]
+    fn test_receipt_status() {
+        // Missing
+        let missing = ReceiptStatus::Missing;
+        assert!(!missing.has_receipt());
+        assert!(!missing.has_ack_secret());
+        assert!(missing.ack_secret().is_none());
+        assert!(missing.signature_status().is_none());
+        assert!(!missing.is_signature_verified());
+
+        // SignatureOnly
+        let sig_only = ReceiptStatus::SignatureOnly {
+            signature: SignatureStatus::Missing,
+        };
+        assert!(sig_only.has_receipt());
+        assert!(!sig_only.has_ack_secret());
+        assert!(sig_only.ack_secret().is_none());
+        assert!(sig_only.signature_status().is_some());
+
+        // Full
+        let ack = [0u8; 16];
+        let full = ReceiptStatus::Full {
+            ack_secret: ack,
+            signature: SignatureStatus::Missing,
+        };
+        assert!(full.has_receipt());
+        assert!(full.has_ack_secret());
+        assert_eq!(full.ack_secret(), Some(&ack));
+        assert!(full.signature_status().is_some());
+    }
+
+    #[test]
+    fn test_target_result_with_receipt() {
+        let target = TargetId::http("https://node.example.com");
+
+        // Success without receipt
+        let no_receipt =
+            TargetResult::success_no_receipt(target.clone(), DeliveryTier::Quorum, Duration::ZERO);
+        assert!(!no_receipt.has_verified_signature());
+        assert!(!no_receipt.has_ack_secret());
+
+        // Success with full receipt
+        let full = TargetResult::success(
+            target.clone(),
+            DeliveryTier::Direct,
+            Duration::ZERO,
+            ReceiptStatus::Full {
+                ack_secret: [0u8; 16],
+                signature: SignatureStatus::Unverifiable(vec![1, 2, 3]),
+            },
+        );
+        assert!(!full.has_verified_signature()); // Unverifiable != Verified
+        assert!(full.has_ack_secret());
     }
 }

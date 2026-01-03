@@ -528,7 +528,8 @@ impl TransportCoordinator {
             match result {
                 Ok(Ok(())) => {
                     // Success! Record and return immediately
-                    tier_result.push(TargetResult::success(
+                    // TODO: Parse receipt from response and pass to success()
+                    tier_result.push(TargetResult::success_no_receipt(
                         target_id,
                         DeliveryTier::Direct,
                         latency,
@@ -673,18 +674,24 @@ impl TransportCoordinator {
         let http_results = join_all(http_futures).await;
 
         // Convert HTTP results
+        // TODO: Parse receipt from response and pass to success()
         for (target_id, result, latency) in http_results {
             match result {
-                Ok(()) => tier_result.push(TargetResult::success(target_id, tier, latency)),
+                Ok(()) => {
+                    tier_result.push(TargetResult::success_no_receipt(target_id, tier, latency));
+                }
                 Err(e) => tier_result.push(TargetResult::failed(target_id, tier, e)),
             }
         }
 
         // Convert MQTT results
+        // TODO: Parse receipt from response and pass to success()
         #[cfg(feature = "mqtt")]
         for (target_id, result, latency) in mqtt_results {
             match result {
-                Ok(()) => tier_result.push(TargetResult::success(target_id, tier, latency)),
+                Ok(()) => {
+                    tier_result.push(TargetResult::success_no_receipt(target_id, tier, latency));
+                }
                 Err(e) => tier_result.push(TargetResult::failed(target_id, tier, e)),
             }
         }
