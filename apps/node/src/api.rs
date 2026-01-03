@@ -20,7 +20,7 @@ use axum::{
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
-use reme_encryption::derive_ack_secret;
+use reme_encryption::{build_receipt_sign_data, derive_ack_secret};
 use reme_identity::PublicID;
 use reme_message::{OuterEnvelope, RoutingKey, WirePayload};
 use reme_node_core::{MailboxStore, NodeError, PersistentMailboxStore};
@@ -192,6 +192,12 @@ pub struct SubmitResponse {
     /// Base64-encoded 16-byte secret.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ack_secret: Option<String>,
+    /// `XEdDSA` signature proving node received the message.
+    /// Signed data: `"reme-receipt-v1:" || signer_pubkey || message_id`
+    /// Always present when node has an identity configured.
+    /// Base64-encoded 64-byte signature.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -219,36 +225,74 @@ pub struct ErrorResponse {
 }
 
 // ============================================
-// Ack Secret Derivation
+// Receipt Generation (signature + optional ack_secret)
 // ============================================
 
-/// Try to derive `ack_secret` if this node is the intended recipient.
+/// Receipt proving node received a message.
+struct Receipt {
+    /// Base64-encoded 16-byte `ack_secret` (only if node is intended recipient)
+    ack_secret: Option<String>,
+    /// Base64-encoded 64-byte `XEdDSA` signature over:
+    /// `"reme-receipt-v1:" || signer_pubkey || message_id`
+    signature: String,
+}
+
+/// Generate a signed receipt for a message.
 ///
-/// Returns `Some(base64-encoded ack_secret)` if:
-/// - Node has an identity configured
-/// - The message's `routing_key` matches this node's `routing_key`
-/// - ECDH shared secret derivation succeeds
+/// Returns `Some(Receipt)` if node has an identity configured.
 ///
-/// Returns `None` if this node is just a relay (`routing_key` doesn't match).
-fn try_derive_ack_secret(
-    identity: Option<&NodeIdentity>,
+/// The receipt includes:
+/// - `signature`: Always present - `XEdDSA` signature over `"reme-receipt-v1:" || signer_pubkey || message_id`
+/// - `ack_secret`: Only if this node is the intended recipient and can decrypt
+///
+/// Crypto operations (`XEdDSA` signing, optional ECDH) are offloaded to a blocking thread pool
+/// to avoid blocking the Tokio worker thread.
+async fn generate_receipt(
+    identity: Option<Arc<NodeIdentity>>,
     envelope: &OuterEnvelope,
-) -> Option<String> {
+) -> Option<Receipt> {
     let identity = identity?;
 
-    // Check if we're the intended recipient
-    if envelope.routing_key != identity.routing_key() {
-        return None;
-    }
+    // Capture owned values for spawn_blocking
+    let routing_key = envelope.routing_key;
+    let ephemeral_key = envelope.ephemeral_key;
+    let message_id = envelope.message_id;
 
-    // Derive shared secret via ECDH
-    let shared_secret = identity.derive_shared_secret(&envelope.ephemeral_key)?;
+    // Offload crypto operations to thread pool
+    tokio::task::spawn_blocking(move || {
+        // Try to derive ack_secret only if we're the intended recipient
+        let ack_secret = if routing_key == identity.routing_key() {
+            identity
+                .derive_shared_secret(&ephemeral_key)
+                .map(|shared| derive_ack_secret(&shared, &message_id))
+        } else {
+            None
+        };
 
-    // Derive ack_secret from shared_secret and message_id
-    let ack_secret = derive_ack_secret(&shared_secret, &envelope.message_id);
+        // Sign: "reme-receipt-v1:" || signer_pubkey || message_id
+        // Note: signature does NOT include ack_secret (allows signing even as relay)
+        let signer_pubkey = identity.public_id().to_bytes();
+        let mut sign_data = build_receipt_sign_data(&signer_pubkey, &message_id);
+        let signature = identity.sign(&sign_data);
 
-    // Return base64-encoded
-    Some(BASE64_STANDARD.encode(ack_secret))
+        // Encode results
+        let signature_b64 = BASE64_STANDARD.encode(signature);
+        let ack_secret_b64 = ack_secret.map(|mut s| {
+            let encoded = BASE64_STANDARD.encode(s);
+            s.zeroize();
+            encoded
+        });
+
+        // Zeroize sensitive intermediate data
+        sign_data.zeroize();
+
+        Receipt {
+            ack_secret: ack_secret_b64,
+            signature: signature_b64,
+        }
+    })
+    .await
+    .ok()
 }
 
 // ============================================
@@ -401,6 +445,7 @@ async fn submit_payload(
                         Json(SubmitResponse {
                             status: "ok",
                             ack_secret: None,
+                            signature: None,
                         }),
                     )
                         .into_response()
@@ -413,6 +458,7 @@ async fn submit_payload(
                         Json(SubmitResponse {
                             status: "ok",
                             ack_secret: None,
+                            signature: None,
                         }),
                     )
                         .into_response()
@@ -448,6 +494,7 @@ async fn handle_message(
             Json(SubmitResponse {
                 status: "ok",
                 ack_secret: None,
+                signature: None,
             }),
         )
             .into_response();
@@ -455,9 +502,6 @@ async fn handle_message(
 
     let routing_key = envelope.routing_key;
     let message_id = envelope.message_id;
-
-    // Try to derive ack_secret if we're the intended recipient (before envelope is moved)
-    let ack_secret = try_derive_ack_secret(state.identity.as_deref(), &envelope);
 
     // Clone envelope for MQTT publishing (enqueue takes ownership)
     let envelope_for_mqtt = envelope.clone();
@@ -490,6 +534,7 @@ async fn handle_message(
                 Json(SubmitResponse {
                     status: "ok",
                     ack_secret: None,
+                    signature: None,
                 }),
             )
                 .into_response();
@@ -506,6 +551,10 @@ async fn handle_message(
                 .into_response();
         }
     }
+
+    // Generate signed receipt AFTER duplicate check (avoid crypto work for duplicates)
+    // Signature always present when identity exists, ack_secret only if we're the intended recipient
+    let receipt = generate_receipt(state.identity.clone(), &envelope).await;
 
     // Enqueue
     match state.store.enqueue(routing_key, envelope) {
@@ -525,11 +574,18 @@ async fn handle_message(
                 });
             }
 
+            // Extract receipt fields (signature always present when identity exists, ack_secret only if recipient)
+            let (ack_secret, signature) = match receipt {
+                Some(r) => (r.ack_secret, Some(r.signature)),
+                None => (None, None),
+            };
+
             (
                 StatusCode::OK,
                 Json(SubmitResponse {
                     status: "ok",
                     ack_secret,
+                    signature,
                 }),
             )
                 .into_response()
