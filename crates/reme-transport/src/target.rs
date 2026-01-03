@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use derive_more::Display as DeriveDisplay;
-use reme_message::{OuterEnvelope, SignedAckTombstone};
+use reme_identity::PublicID;
+use reme_message::{OuterEnvelope, RoutingKey, SignedAckTombstone};
 use strum::{Display, EnumIter};
 
 use crate::url_auth::sanitize_url_for_logging;
@@ -317,6 +318,13 @@ pub struct TargetConfig {
 
     /// Priority for routing (higher = preferred).
     pub priority: u8,
+
+    /// Node's public identity (for receipt verification).
+    ///
+    /// When set, receipts from this target can be verified using this public key.
+    /// The `routing_key()` derived from this can also be used to filter targets
+    /// during Direct tier delivery (only include targets that can serve the recipient).
+    pub node_pubkey: Option<PublicID>,
 }
 
 impl TargetConfig {
@@ -331,6 +339,7 @@ impl TargetConfig {
             circuit_breaker_threshold: kind.default_circuit_breaker_threshold(),
             circuit_breaker_recovery: kind.default_circuit_breaker_recovery(),
             priority: kind.default_priority(),
+            node_pubkey: None,
         }
     }
 
@@ -384,6 +393,33 @@ impl TargetConfig {
     pub fn with_circuit_breaker_recovery(mut self, recovery: Duration) -> Self {
         self.circuit_breaker_recovery = recovery;
         self
+    }
+
+    /// Set the node's public identity for receipt verification.
+    pub fn with_node_pubkey(mut self, pubkey: PublicID) -> Self {
+        self.node_pubkey = Some(pubkey);
+        self
+    }
+
+    /// Set an optional node public identity.
+    pub fn with_node_pubkey_opt(mut self, pubkey: Option<PublicID>) -> Self {
+        self.node_pubkey = pubkey;
+        self
+    }
+
+    /// Check if this target can serve messages for the given routing key.
+    ///
+    /// Returns `true` if:
+    /// - No `node_pubkey` is configured (optimistically include unknown targets)
+    /// - The `node_pubkey`'s routing key matches the given routing key
+    ///
+    /// This is used to filter Direct tier targets to only those that can
+    /// actually deliver to the intended recipient.
+    pub fn can_serve(&self, routing_key: &RoutingKey) -> bool {
+        match &self.node_pubkey {
+            Some(pk) => pk.routing_key() == *routing_key,
+            None => true, // Unknown = optimistically include
+        }
     }
 }
 
@@ -574,5 +610,43 @@ mod tests {
         assert_eq!(config.priority, 150);
         assert_eq!(config.request_timeout, Duration::from_secs(60));
         assert_eq!(config.kind, TargetKind::Stable);
+    }
+
+    #[test]
+    fn test_target_config_can_serve_without_pubkey() {
+        // No node_pubkey = optimistically include (unknown target)
+        let config = TargetConfig::stable(TargetId::http("https://example.com"));
+        let routing_key = [0u8; 16].into();
+
+        assert!(config.can_serve(&routing_key));
+    }
+
+    #[test]
+    fn test_target_config_can_serve_with_matching_pubkey() {
+        use reme_identity::Identity;
+
+        let identity = Identity::generate();
+        let pubkey = *identity.public_id();
+        let routing_key = pubkey.routing_key();
+
+        let config =
+            TargetConfig::stable(TargetId::http("https://example.com")).with_node_pubkey(pubkey);
+
+        assert!(config.can_serve(&routing_key));
+    }
+
+    #[test]
+    fn test_target_config_can_serve_with_non_matching_pubkey() {
+        use reme_identity::Identity;
+
+        let identity = Identity::generate();
+        let pubkey = *identity.public_id();
+        let different_routing_key = [0u8; 16].into(); // Different from identity's routing key
+
+        let config =
+            TargetConfig::stable(TargetId::http("https://example.com")).with_node_pubkey(pubkey);
+
+        // Should NOT be able to serve a different routing key
+        assert!(!config.can_serve(&different_routing_key));
     }
 }
