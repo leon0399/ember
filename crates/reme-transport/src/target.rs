@@ -59,6 +59,61 @@ impl RawReceipt {
             signature: Some(signature),
         }
     }
+
+    /// Verify this receipt and convert to a `ReceiptStatus`.
+    ///
+    /// # Arguments
+    /// * `message_id` - The message ID that was submitted
+    /// * `node_pubkey` - The expected node public key for signature verification
+    ///
+    /// # Returns
+    /// - `ReceiptStatus::Missing` if no receipt data present
+    /// - `ReceiptStatus::SignatureOnly` if only signature present (no `ack_secret`)
+    /// - `ReceiptStatus::Full` if both `ack_secret` and signature present
+    ///
+    /// The `SignatureStatus` within will be:
+    /// - `Missing` if no signature was returned
+    /// - `Unverifiable` if signature present but no `node_pubkey` configured
+    /// - `Invalid` if signature verification failed
+    /// - `Verified(pubkey)` if signature verified successfully
+    pub fn verify(
+        self,
+        message_id: &reme_message::MessageID,
+        node_pubkey: Option<&PublicID>,
+    ) -> crate::delivery::ReceiptStatus {
+        use crate::delivery::{ReceiptStatus, SignatureStatus};
+
+        // No receipt data at all
+        if !self.has_data() {
+            return ReceiptStatus::Missing;
+        }
+
+        // Determine signature status
+        let signature_status = match self.signature {
+            None => SignatureStatus::Missing,
+            Some(sig) => match node_pubkey {
+                None => SignatureStatus::Unverifiable(sig),
+                Some(pk) => {
+                    if reme_encryption::verify_receipt_signature(&pk.to_bytes(), message_id, &sig) {
+                        SignatureStatus::Verified(*pk)
+                    } else {
+                        SignatureStatus::Invalid
+                    }
+                }
+            },
+        };
+
+        // Build receipt status based on presence of ack_secret
+        match self.ack_secret {
+            Some(ack_secret) => ReceiptStatus::Full {
+                ack_secret,
+                signature: signature_status,
+            },
+            None => ReceiptStatus::SignatureOnly {
+                signature: signature_status,
+            },
+        }
+    }
 }
 
 /// Unique identifier for a transport target.

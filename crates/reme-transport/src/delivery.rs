@@ -26,8 +26,8 @@ pub enum SignatureStatus {
     Missing,
 
     /// Signature was returned but the node's public key is not configured.
-    /// Contains the raw signature bytes for deferred verification.
-    Unverifiable(Vec<u8>),
+    /// Contains the raw 64-byte `XEdDSA` signature for deferred verification.
+    Unverifiable([u8; 64]),
 
     /// Signature verification failed (invalid signature).
     Invalid,
@@ -37,6 +37,11 @@ pub enum SignatureStatus {
 }
 
 impl SignatureStatus {
+    /// Check if no signature was returned by the node.
+    pub fn is_missing(&self) -> bool {
+        matches!(self, SignatureStatus::Missing)
+    }
+
     /// Check if the signature was successfully verified.
     pub fn is_verified(&self) -> bool {
         matches!(self, SignatureStatus::Verified(_))
@@ -824,24 +829,33 @@ mod tests {
     fn test_signature_status() {
         // Missing
         let missing = SignatureStatus::Missing;
+        assert!(missing.is_missing());
         assert!(!missing.is_verified());
         assert!(!missing.is_invalid());
         assert!(!missing.is_unverifiable());
 
-        // Unverifiable
-        let unverifiable = SignatureStatus::Unverifiable(vec![1, 2, 3]);
+        // Unverifiable (64-byte signature)
+        let unverifiable = SignatureStatus::Unverifiable([0u8; 64]);
+        assert!(!unverifiable.is_missing());
         assert!(!unverifiable.is_verified());
         assert!(!unverifiable.is_invalid());
         assert!(unverifiable.is_unverifiable());
 
         // Invalid
         let invalid = SignatureStatus::Invalid;
+        assert!(!invalid.is_missing());
         assert!(!invalid.is_verified());
         assert!(invalid.is_invalid());
         assert!(!invalid.is_unverifiable());
 
-        // Verified (need a PublicID for this)
-        // Skipped as it requires actual key generation
+        // Verified - create a test PublicID
+        let test_bytes = [42u8; 32];
+        let pubkey = PublicID::from_bytes_unchecked(&test_bytes);
+        let verified = SignatureStatus::Verified(pubkey);
+        assert!(!verified.is_missing());
+        assert!(verified.is_verified());
+        assert!(!verified.is_invalid());
+        assert!(!verified.is_unverifiable());
     }
 
     #[test]
@@ -892,10 +906,25 @@ mod tests {
             Duration::ZERO,
             ReceiptStatus::Full {
                 ack_secret: [0u8; 16],
-                signature: SignatureStatus::Unverifiable(vec![1, 2, 3]),
+                signature: SignatureStatus::Unverifiable([0u8; 64]),
             },
         );
         assert!(!full.has_verified_signature()); // Unverifiable != Verified
         assert!(full.has_ack_secret());
+
+        // Success with verified signature
+        let test_bytes = [42u8; 32];
+        let pubkey = PublicID::from_bytes_unchecked(&test_bytes);
+        let verified = TargetResult::success(
+            target,
+            DeliveryTier::Direct,
+            Duration::from_millis(50),
+            ReceiptStatus::Full {
+                ack_secret: [1u8; 16],
+                signature: SignatureStatus::Verified(pubkey),
+            },
+        );
+        assert!(verified.has_verified_signature());
+        assert!(verified.has_ack_secret());
     }
 }
