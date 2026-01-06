@@ -8,7 +8,60 @@ The current routing key design (`BLAKE3(PublicID)[0..16]`) provides **confidenti
 
 **Key Finding**: The routing key is functionally equivalent to a permanent pseudonymous address. While it hides the cryptographic identity from mailbox nodes, it enables full linkability of all messages to/from a user.
 
-**Recommendation**: For a privacy-focused messenger, consider implementing per-contact or per-mailbox routing keys as a medium-term improvement, with optional stealth addresses or PIR for high-threat-model users.
+**Recommendation**: For a privacy-focused messenger, consider implementing per-contact routing keys or multiple receive addresses as a medium-term improvement. Per-mailbox routing keys are **not feasible** due to the federated architecture.
+
+---
+
+## Architectural Constraints
+
+Before evaluating alternatives, it's critical to understand REME's federated architecture:
+
+### Federation Model
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  SENDER                                                         │
+│  ├─ Broadcasts message to multiple nodes (Tier 2 Quorum)        │
+│  └─ Same routing_key used for ALL nodes                         │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+            ┌─────────────────┼─────────────────┐
+            ▼                 ▼                 ▼
+     ┌──────────┐      ┌──────────┐      ┌──────────┐
+     │  Node A  │      │  Node B  │      │  Node C  │
+     │ (stores) │      │ (stores) │      │ (stores) │
+     └──────────┘      └──────────┘      └──────────┘
+            │                 │                 │
+            └─────────────────┼─────────────────┘
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  RECIPIENT                                                      │
+│  ├─ Polls ANY/ALL nodes with same routing_key                   │
+│  └─ Gets message even if some nodes fail                        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Hard Requirements
+
+| Requirement | Reason |
+|-------------|--------|
+| **Global routing key** | Same key must work on all nodes for broadcast/replication |
+| **Recipient-derivable** | Recipient computes their key to poll nodes |
+| **Sender-knowable** | Sender must derive recipient's key from contact info |
+| **Node-independent** | Nodes are optional, ephemeral, may fail at any time |
+| **No node coordination** | Nodes don't share state about routing keys |
+
+### Why Per-Mailbox Routing Keys Are Infeasible
+
+Per-mailbox keys (`BLAKE3(PublicID || node_id)`) break federation:
+
+1. **Broadcast fails**: Sender would need different routing_key per node
+2. **Recipient polling complexity**: Must poll each node with different key
+3. **Node discovery**: Sender must know ALL recipient's preferred nodes
+4. **Node failure**: If a node dies, messages sent there are lost (can't find them on other nodes)
+5. **Defeats resilience**: The whole point of federation is "store anywhere, fetch from anywhere"
+
+**Conclusion**: Any viable routing key scheme must produce a **globally consistent** routing key that works across all nodes.
 
 ---
 
@@ -132,32 +185,9 @@ def deanonymize(routing_key, rainbow_table):
 
 ## Alternative Routing Key Designs
 
-### Option 1: Per-Mailbox Routing Keys
+Given the architectural constraints (global routing key required for federation), we evaluate only schemes that maintain cross-node consistency.
 
-**Concept**: Derive different routing keys for each mailbox node.
-
-```rust
-pub fn routing_key_for_node(&self, node_id: &[u8; 32]) -> RoutingKey {
-    let mut hasher = blake3::Hasher::new_derive_key("reme-routing-v2");
-    hasher.update(&self.to_bytes());
-    hasher.update(node_id);
-    let hash = hasher.finalize();
-    let mut bytes = [0u8; 16];
-    bytes.copy_from_slice(&hash.as_bytes()[0..16]);
-    RoutingKey(bytes)
-}
-```
-
-| Pros | Cons |
-|------|------|
-| Different routing_key per node | Same routing_key within a node |
-| Prevents cross-node correlation | Doesn't help single-node adversary |
-| Simple implementation | Requires node_id in sender's contact info |
-| Backward compatible wire format | Increases contact metadata size |
-
-**Anonymity improvement**: Medium. Prevents passive cross-node correlation but doesn't protect against individual malicious nodes.
-
-### Option 2: Per-Contact Routing Keys
+### Option 1: Per-Contact Routing Keys
 
 **Concept**: Each contact pair shares a unique routing key derived from both identities.
 
@@ -184,6 +214,43 @@ pub fn routing_key_for_contact(&self, contact: &PublicID) -> RoutingKey {
 | Simple cryptographic implementation | Increases complexity of contact management |
 
 **Anonymity improvement**: Medium-High. Adversary can't correlate across contacts but can still observe conversation patterns.
+
+**Federation compatible**: ✅ Yes - routing key is globally consistent (derived from both PublicIDs).
+
+### Option 2: Multiple Receive Addresses (Alias System)
+
+**Concept**: User generates multiple routing keys and shares different ones with different contacts or contexts.
+
+```rust
+impl Identity {
+    /// Generate a derived routing key for a specific alias/context
+    pub fn routing_key_for_alias(&self, alias: &str) -> RoutingKey {
+        let mut hasher = blake3::Hasher::new_derive_key("reme-alias-routing-v1");
+        hasher.update(&self.to_bytes());
+        hasher.update(alias.as_bytes());
+        let hash = hasher.finalize();
+        RoutingKey(hash.as_bytes()[0..16].try_into().unwrap())
+    }
+
+    /// Get all routing keys this identity should poll
+    pub fn all_routing_keys(&self, aliases: &[&str]) -> Vec<RoutingKey> {
+        let mut keys = vec![self.routing_key()]; // Primary
+        keys.extend(aliases.iter().map(|a| self.routing_key_for_alias(a)));
+        keys
+    }
+}
+```
+
+| Pros | Cons |
+|------|------|
+| User controls compartmentalization | User must manage alias distribution |
+| Compatible with current wire format | Recipient polls multiple keys (N queries) |
+| Limits blast radius of single key exposure | Doesn't hide individual alias patterns |
+| Simple to implement | Doesn't scale well (polling overhead) |
+
+**Anonymity improvement**: Medium. User-controlled compartmentalization. Work contacts use one key, personal contacts another.
+
+**Federation compatible**: ✅ Yes - each alias produces globally consistent routing key.
 
 ### Option 3: Stealth Addresses (Ephemeral Receive Keys)
 
@@ -233,6 +300,11 @@ pub fn check_stealth_message(&self, ephemeral_pub: &[u8; 32], routing_key: &Rout
 - Probabilistic filters (Bloom filters of potential routing keys)
 - Private Information Retrieval (PIR)
 
+**Federation challenge**: ⚠️ Partial - Recipient must scan ALL messages on ALL nodes. In a federated system with many nodes, this becomes O(nodes × messages) ECDH operations. Possible mitigations:
+- Nodes could provide Bloom filter summaries of routing keys
+- Recipient could delegate scanning to a trusted "notification server" with view key
+- Batch scanning with parallelization
+
 ### Option 4: Private Information Retrieval (PIR)
 
 **Concept**: Recipient queries mailbox without revealing which routing key they want.
@@ -251,6 +323,8 @@ PIR protocol allows fetching M_i without server learning i
 **Anonymity improvement**: Very High. Mailbox learns nothing about which messages are accessed.
 
 **Practical concern**: PIR is computationally expensive. Single-server PIR has O(n) server computation per query. Multi-server PIR requires non-colluding servers.
+
+**Federation compatible**: ✅ Yes - PIR protects the query, not the routing key itself. Works with any routing key scheme.
 
 ### Option 5: Mix Networks / Onion Routing
 
@@ -272,18 +346,22 @@ No single node knows both sender and recipient.
 
 **Anonymity improvement**: Very High. Provides sender/receiver unlinkability against passive global adversary.
 
+**Federation compatible**: ✅ Yes - Mix networks operate at transport layer. Messages still use standard routing keys at final hop.
+
+**Note**: Mix networks address sender anonymity (hiding who sent a message), which is orthogonal to receiver linkability (the routing key problem). A comprehensive solution would combine mix networks with per-contact routing keys.
+
 ---
 
 ## Comparison Matrix
 
-| Design | Unlinkability | Rainbow Table Resistance | Scalability | Implementation Complexity | Wire Format Change |
-|--------|---------------|--------------------------|-------------|---------------------------|-------------------|
-| Current (static) | None | None | High | N/A | N/A |
-| Per-mailbox | Per-node | Low | High | Low | None |
-| Per-contact | Per-contact | Medium | High | Medium | None |
-| Stealth addresses | Per-message | High | Medium | Medium | +32 bytes |
-| PIR | Full | High | Low | High | None |
-| Mix network | Full | High | Medium | Very High | Significant |
+| Design | Unlinkability | Rainbow Table Resistance | Scalability | Complexity | Federation Compatible |
+|--------|---------------|--------------------------|-------------|------------|----------------------|
+| Current (static) | None | None | High | N/A | ✅ Yes |
+| Per-contact | Per-contact | Medium | High | Medium | ✅ Yes |
+| Multiple aliases | Per-alias | Low | Medium | Low | ✅ Yes |
+| Stealth addresses | Per-message | High | Low | Medium | ⚠️ Partial |
+| PIR | Full | High | Low | High | ✅ Yes |
+| Mix network | Full (sender) | N/A | Medium | Very High | ✅ Yes |
 
 ---
 
@@ -298,30 +376,34 @@ No single node knows both sender and recipient.
 
 ### Medium-term Improvements
 
-1. **Per-mailbox routing keys** (Option 1)
-   - Low implementation effort
-   - Breaks cross-node correlation
-   - Backward compatible with current wire format
-   - Can be opt-in feature
-
-2. **Per-contact routing keys** (Option 2)
+1. **Per-contact routing keys** (Option 1) - **Recommended**
    - Medium implementation effort
-   - Significantly improves privacy within a mailbox
-   - Requires contact exchange protocol update
+   - Significantly improves privacy (each conversation isolated)
+   - Federation compatible (derived from both PublicIDs)
+   - Breaks cross-contact correlation
+   - Requires contact exchange protocol to share routing key derivation
+
+2. **Multiple receive addresses / aliases** (Option 2)
+   - Low implementation effort
+   - User-controlled compartmentalization (work vs personal)
+   - Increases polling overhead (N queries for N aliases)
+   - Good for users who want simple compartmentalization
 
 ### Long-term / High-Security Mode
 
 For users with high threat models (journalists, activists, etc.):
 
-1. **Optional stealth addresses** (Option 3)
+1. **Stealth addresses with view keys** (Option 3)
    - Implement as opt-in "high privacy mode"
    - Accept scalability trade-off for unlinkability
-   - Consider view keys to reduce scanning cost
+   - Use view keys + notification server to reduce scanning cost
+   - Consider Bloom filter summaries from nodes
 
 2. **Mix network integration** (Option 5)
    - Integrate with existing mix networks (Nym, I2P)
    - Use as transport layer for Tier 1/2 delivery
-   - Provides strong anonymity without reinventing the wheel
+   - Combine with per-contact keys for comprehensive protection
+   - Provides sender anonymity without reinventing the wheel
 
 ---
 
@@ -329,16 +411,30 @@ For users with high threat models (journalists, activists, etc.):
 
 ### Backward Compatibility
 
-The `OuterEnvelope` already contains `routing_key` as a 16-byte field. Options 1-3 can reuse this field without wire format changes.
+The `OuterEnvelope` already contains `routing_key` as a 16-byte field. Per-contact keys and aliases can reuse this field without wire format changes.
 
 For stealth addresses, the `ephemeral_key` field could potentially be repurposed, but this would conflict with the encryption ephemeral key. A separate stealth ephemeral key would require wire format versioning.
 
 ### Key Considerations for Any Change
 
-1. **Contact exchange protocol**: How do contacts learn each other's routing keys for new schemes?
+1. **Contact exchange protocol**: How do contacts learn each other's routing keys?
+   - Per-contact: Both parties can derive the same key from their PublicIDs
+   - Aliases: Recipient must explicitly share alias routing key with sender
+
 2. **Multi-device**: How do multiple devices share routing key state?
-3. **Key rotation**: How are routing keys rotated without losing messages?
-4. **Mailbox notification**: How do mailboxes learn about new routing keys for a user?
+   - Per-contact: Derived from identity - all devices compute same key
+   - Aliases: Alias list must be synced across devices
+
+3. **Polling overhead**: How many routing keys must recipient poll?
+   - Current: 1 key
+   - Per-contact: N keys for N contacts (but can be batched)
+   - Aliases: M keys for M aliases
+   - Stealth: Scan ALL messages (very expensive)
+
+4. **Migration path**: How to transition from current scheme?
+   - Support both old and new routing key derivation during transition
+   - Old clients use `BLAKE3(PublicID)`, new clients use per-contact
+   - Recipient polls both keys during migration period
 
 ---
 
@@ -346,12 +442,20 @@ For stealth addresses, the `ephemeral_key` field could potentially be repurposed
 
 The current routing key design prioritizes simplicity and efficiency over anonymity. This is a reasonable trade-off for a proof-of-concept messenger, but should be addressed before production use if privacy is a goal.
 
+The federated architecture constrains our options: any routing key scheme must be globally consistent across all nodes to enable "broadcast anywhere, fetch from anywhere" resilience. This rules out per-node solutions but leaves viable options:
+
+| Priority | Approach | Effort | Privacy Gain |
+|----------|----------|--------|--------------|
+| 1 | Per-contact routing keys | Medium | High |
+| 2 | Multiple aliases | Low | Medium |
+| 3 | Stealth addresses | High | Very High |
+
 **Immediate action items:**
 1. Document current privacy limitations in user-facing materials
-2. Design per-mailbox routing key derivation for next version
-3. Research integration points for mix network transports
+2. Design per-contact routing key derivation for next version
+3. Prototype alias system for user compartmentalization
 
 **Future research:**
-- Evaluate PIR protocols for practical deployment
-- Prototype stealth addresses with view key optimization
-- Survey existing mix network integration options (Nym, Katzenpost)
+- Evaluate stealth addresses with Bloom filter optimization
+- Survey mix network integration options (Nym, Katzenpost)
+- Research PIR for high-security mode
