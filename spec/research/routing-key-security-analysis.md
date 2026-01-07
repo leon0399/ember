@@ -219,38 +219,57 @@ pub fn routing_key_for_contact(&self, contact: &PublicID) -> RoutingKey {
 
 ### Option 2: Multiple Receive Addresses (Alias System)
 
-**Concept**: User generates multiple routing keys and shares different ones with different contacts or contexts.
+**Concept**: User generates multiple routing keys deterministically from their private key. Each alias is an index (0, 1, 2, ...) that produces a unique routing key. The recipient shares specific alias routing keys with contacts.
 
 ```rust
 impl Identity {
-    /// Generate a derived routing key for a specific alias/context
-    pub fn routing_key_for_alias(&self, alias: &str) -> RoutingKey {
+    /// Generate a derived routing key for alias index (deterministic from private key)
+    ///
+    /// Derived from private key so:
+    /// - All devices with same identity compute same aliases (no sync needed)
+    /// - Cannot be enumerated from PublicID (rainbow table resistant)
+    pub fn routing_key_for_alias(&self, index: u32) -> RoutingKey {
         let mut hasher = blake3::Hasher::new_derive_key("reme-alias-routing-v1");
-        hasher.update(&self.to_bytes());
-        hasher.update(alias.as_bytes());
+        hasher.update(&self.x25519_secret.to_bytes()); // Private key!
+        hasher.update(&index.to_le_bytes());
         let hash = hasher.finalize();
         RoutingKey(hash.as_bytes()[0..16].try_into().unwrap())
     }
 
-    /// Get all routing keys this identity should poll
-    pub fn all_routing_keys(&self, aliases: &[&str]) -> Vec<RoutingKey> {
-        let mut keys = vec![self.routing_key()]; // Primary
-        keys.extend(aliases.iter().map(|a| self.routing_key_for_alias(a)));
-        keys
+    /// Get routing keys for first N aliases (for polling)
+    pub fn alias_routing_keys(&self, count: u32) -> Vec<RoutingKey> {
+        (0..count).map(|i| self.routing_key_for_alias(i)).collect()
     }
 }
+
+// Usage:
+// - Recipient: "Here's my work address" → shares routing_key_for_alias(0)
+// - Recipient: "Here's my personal address" → shares routing_key_for_alias(1)
+// - Sender: Uses the shared routing key directly (16 bytes in contact info)
+// - Recipient: Polls aliases 0..N on all nodes
 ```
+
+**Key properties:**
+
+| Property | Benefit |
+|----------|---------|
+| Derived from private key | Cannot enumerate from PublicID (rainbow table resistant) |
+| Deterministic by index | All devices compute same aliases (no sync needed) |
+| Unlimited aliases | Generate as many as needed |
+| Pre-shared routing key | Sender doesn't need to know derivation scheme |
 
 | Pros | Cons |
 |------|------|
-| User controls compartmentalization | User must manage alias distribution |
-| Compatible with current wire format | Recipient polls multiple keys (N queries) |
-| Limits blast radius of single key exposure | Doesn't hide individual alias patterns |
-| Simple to implement | Doesn't scale well (polling overhead) |
+| No alias sync across devices | Recipient polls N keys (but can batch) |
+| Rainbow table resistant | Contact must store 16-byte routing key |
+| User controls compartmentalization | Doesn't hide individual alias patterns |
+| Simple derivation | Revoking alias requires contact update |
 
-**Anonymity improvement**: Medium. User-controlled compartmentalization. Work contacts use one key, personal contacts another.
+**Anonymity improvement**: Medium-High. Compartmentalization + rainbow table resistance.
 
 **Federation compatible**: ✅ Yes - each alias produces globally consistent routing key.
+
+**Multi-device**: ✅ Solved - derived from private key, not user-defined strings.
 
 ### Option 3: Stealth Addresses (Ephemeral Receive Keys)
 
@@ -358,7 +377,7 @@ No single node knows both sender and recipient.
 |--------|---------------|--------------------------|-------------|------------|----------------------|
 | Current (static) | None | None | High | N/A | ✅ Yes |
 | Per-contact | Per-contact | Medium | High | Medium | ✅ Yes |
-| Multiple aliases | Per-alias | Low | Medium | Low | ✅ Yes |
+| Aliases (from privkey) | Per-alias | High | Medium | Low | ✅ Yes |
 | Stealth addresses | Per-message | High | Low | Medium | ⚠️ Partial |
 | PIR | Full | High | Low | High | ✅ Yes |
 | Mix network | Full (sender) | N/A | Medium | Very High | ✅ Yes |
@@ -423,7 +442,7 @@ For stealth addresses, the `ephemeral_key` field could potentially be repurposed
 
 2. **Multi-device**: How do multiple devices share routing key state?
    - Per-contact: Derived from identity - all devices compute same key
-   - Aliases: Alias list must be synced across devices
+   - Aliases: Derived from private key by index - all devices compute same keys (no sync!)
 
 3. **Polling overhead**: How many routing keys must recipient poll?
    - Current: 1 key
