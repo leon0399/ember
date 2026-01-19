@@ -488,11 +488,14 @@ impl TransportCoordinator {
         let mut tier_result = TierResult::new(DeliveryTier::Direct);
         let message_id = envelope.message_id;
 
-        // Collect all ephemeral targets from HTTP pool
+        // Collect all ephemeral targets from HTTP pool that can serve this routing key
         let mut targets: Vec<Arc<HttpTarget>> = Vec::new();
         if let Some(ref pool) = self.http_pool {
             for target in pool.targets_by_kind(TargetKind::Ephemeral) {
-                if !config.is_excluded(target.id()) && target.is_available() {
+                if !config.is_excluded(target.id())
+                    && target.is_available()
+                    && target.config().can_serve(&envelope.routing_key)
+                {
                     targets.push(target);
                 }
             }
@@ -651,12 +654,14 @@ impl TransportCoordinator {
             .collect();
 
         // Build futures for MQTT targets (with timeout)
-        // Note: MQTT doesn't support receipts, so node_pubkey is always None
+        // Note: MQTT doesn't currently return receipts, but we pass node_pubkey
+        // for consistency and future-proofing
         #[cfg(feature = "mqtt")]
         let mqtt_futures: Vec<_> = mqtt_targets
             .into_iter()
             .map(|target| {
                 let target_id = target.id().clone();
+                let node_pubkey = target.config().node_pubkey;
                 let env = envelope.clone();
                 async move {
                     let start = Instant::now();
@@ -667,8 +672,6 @@ impl TransportCoordinator {
                         Ok(inner) => inner,
                         Err(_) => Err(TransportError::Timeout),
                     };
-                    // MQTT doesn't support receipts, use None for node_pubkey
-                    let node_pubkey: Option<reme_identity::PublicID> = None;
                     (target_id, node_pubkey, mapped, latency)
                 }
             })

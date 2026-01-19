@@ -348,11 +348,12 @@ pub const RECEIPT_DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
 /// # Arguments
 /// * `signer_pubkey` - 32-byte public key of the signer
 /// * `message_id` - 16-byte message ID
-pub fn build_receipt_sign_data(signer_pubkey: &[u8; 32], message_id: &MessageID) -> Vec<u8> {
-    let mut sign_data = Vec::with_capacity(RECEIPT_DOMAIN_SEP.len() + 32 + 16);
-    sign_data.extend_from_slice(RECEIPT_DOMAIN_SEP);
-    sign_data.extend_from_slice(signer_pubkey);
-    sign_data.extend_from_slice(message_id.as_bytes());
+pub fn build_receipt_sign_data(signer_pubkey: &[u8; 32], message_id: &MessageID) -> [u8; 64] {
+    // Layout: "reme-receipt-v1:" (16) || pubkey (32) || message_id (16) = 64 bytes
+    let mut sign_data = [0u8; 64];
+    sign_data[..16].copy_from_slice(RECEIPT_DOMAIN_SEP);
+    sign_data[16..48].copy_from_slice(signer_pubkey);
+    sign_data[48..].copy_from_slice(message_id.as_bytes());
     sign_data
 }
 

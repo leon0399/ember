@@ -142,27 +142,23 @@ impl SubmitResponse {
     fn into_raw_receipt(self) -> RawReceipt {
         let ack_secret = self.ack_secret.and_then(|s| {
             BASE64_STANDARD.decode(&s).ok().and_then(|bytes| {
-                if bytes.len() == 16 {
-                    let mut arr = [0u8; 16];
-                    arr.copy_from_slice(&bytes);
-                    Some(arr)
-                } else {
-                    warn!("Invalid ack_secret length: {} (expected 16)", bytes.len());
-                    None
-                }
+                bytes
+                    .try_into()
+                    .map_err(|e: Vec<u8>| {
+                        warn!("Invalid ack_secret length: {} (expected 16)", e.len());
+                    })
+                    .ok()
             })
         });
 
         let signature = self.signature.and_then(|s| {
             BASE64_STANDARD.decode(&s).ok().and_then(|bytes| {
-                if bytes.len() == 64 {
-                    let mut arr = [0u8; 64];
-                    arr.copy_from_slice(&bytes);
-                    Some(arr)
-                } else {
-                    warn!("Invalid signature length: {} (expected 64)", bytes.len());
-                    None
-                }
+                bytes
+                    .try_into()
+                    .map_err(|e: Vec<u8>| {
+                        warn!("Invalid signature length: {} (expected 64)", e.len());
+                    })
+                    .ok()
             })
         });
 
