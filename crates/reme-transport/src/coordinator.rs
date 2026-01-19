@@ -321,7 +321,7 @@ impl TransportCoordinator {
                 for target in ephemeral {
                     if target.is_available() {
                         match TransportTarget::submit_message(&*target, envelope.clone()).await {
-                            Ok(()) => return Ok(()),
+                            Ok(_receipt) => return Ok(()),
                             Err(e) => {
                                 debug!(
                                     target = %target.id(),
@@ -486,12 +486,16 @@ impl TransportCoordinator {
         use tokio::time::timeout;
 
         let mut tier_result = TierResult::new(DeliveryTier::Direct);
+        let message_id = envelope.message_id;
 
-        // Collect all ephemeral targets from HTTP pool
+        // Collect all ephemeral targets from HTTP pool that can serve this routing key
         let mut targets: Vec<Arc<HttpTarget>> = Vec::new();
         if let Some(ref pool) = self.http_pool {
             for target in pool.targets_by_kind(TargetKind::Ephemeral) {
-                if !config.is_excluded(target.id()) && target.is_available() {
+                if !config.is_excluded(target.id())
+                    && target.is_available()
+                    && target.config().can_serve(&envelope.routing_key)
+                {
                     targets.push(target);
                 }
             }
@@ -508,6 +512,7 @@ impl TransportCoordinator {
 
         for target in targets {
             let target_id = target.id().clone();
+            let node_pubkey = target.config().node_pubkey;
             let envelope_clone = envelope.clone();
             let target_clone = target.clone();
 
@@ -519,19 +524,21 @@ impl TransportCoordinator {
                 )
                 .await;
                 let latency = start.elapsed();
-                (target_id, result, latency)
+                (target_id, node_pubkey, result, latency)
             });
         }
 
         // Poll futures until we get a success or all have completed
-        while let Some((target_id, result, latency)) = futures.next().await {
+        while let Some((target_id, node_pubkey, result, latency)) = futures.next().await {
             match result {
-                Ok(Ok(())) => {
-                    // Success! Record and return immediately
+                Ok(Ok(raw_receipt)) => {
+                    // Success! Verify receipt and return immediately
+                    let receipt_status = raw_receipt.verify(&message_id, node_pubkey.as_ref());
                     tier_result.push(TargetResult::success(
                         target_id,
                         DeliveryTier::Direct,
                         latency,
+                        receipt_status,
                     ));
                     return tier_result;
                 }
@@ -576,6 +583,7 @@ impl TransportCoordinator {
     /// Submit envelope to Quorum tier targets (HTTP stable + MQTT) in parallel.
     ///
     /// If `filter_ids` is Some, only targets with matching IDs are attempted.
+    #[allow(clippy::too_many_lines)]
     async fn submit_to_quorum_targets(
         &self,
         envelope: &OuterEnvelope,
@@ -588,6 +596,7 @@ impl TransportCoordinator {
         let mut tier_result = TierResult::new(DeliveryTier::Quorum);
         let tier = DeliveryTier::Quorum;
         let tier_timeout = config.quorum_tier_timeout;
+        let message_id = envelope.message_id;
 
         // Collect HTTP stable targets
         let http_targets: Vec<Arc<HttpTarget>> = self
@@ -627,6 +636,7 @@ impl TransportCoordinator {
             .into_iter()
             .map(|target| {
                 let target_id = target.id().clone();
+                let node_pubkey = target.config().node_pubkey;
                 let env = envelope.clone();
                 async move {
                     let start = Instant::now();
@@ -638,17 +648,20 @@ impl TransportCoordinator {
                         Ok(inner) => inner,
                         Err(_) => Err(TransportError::Timeout),
                     };
-                    (target_id, mapped, latency)
+                    (target_id, node_pubkey, mapped, latency)
                 }
             })
             .collect();
 
         // Build futures for MQTT targets (with timeout)
+        // Note: MQTT doesn't currently return receipts, but we pass node_pubkey
+        // for consistency and future-proofing
         #[cfg(feature = "mqtt")]
         let mqtt_futures: Vec<_> = mqtt_targets
             .into_iter()
             .map(|target| {
                 let target_id = target.id().clone();
+                let node_pubkey = target.config().node_pubkey;
                 let env = envelope.clone();
                 async move {
                     let start = Instant::now();
@@ -659,7 +672,7 @@ impl TransportCoordinator {
                         Ok(inner) => inner,
                         Err(_) => Err(TransportError::Timeout),
                     };
-                    (target_id, mapped, latency)
+                    (target_id, node_pubkey, mapped, latency)
                 }
             })
             .collect();
@@ -672,19 +685,35 @@ impl TransportCoordinator {
         #[cfg(not(feature = "mqtt"))]
         let http_results = join_all(http_futures).await;
 
-        // Convert HTTP results
-        for (target_id, result, latency) in http_results {
+        // Convert HTTP results with receipt verification
+        for (target_id, node_pubkey, result, latency) in http_results {
             match result {
-                Ok(()) => tier_result.push(TargetResult::success(target_id, tier, latency)),
+                Ok(raw_receipt) => {
+                    let receipt_status = raw_receipt.verify(&message_id, node_pubkey.as_ref());
+                    tier_result.push(TargetResult::success(
+                        target_id,
+                        tier,
+                        latency,
+                        receipt_status,
+                    ));
+                }
                 Err(e) => tier_result.push(TargetResult::failed(target_id, tier, e)),
             }
         }
 
-        // Convert MQTT results
+        // Convert MQTT results (MQTT doesn't return receipts)
         #[cfg(feature = "mqtt")]
-        for (target_id, result, latency) in mqtt_results {
+        for (target_id, node_pubkey, result, latency) in mqtt_results {
             match result {
-                Ok(()) => tier_result.push(TargetResult::success(target_id, tier, latency)),
+                Ok(raw_receipt) => {
+                    let receipt_status = raw_receipt.verify(&message_id, node_pubkey.as_ref());
+                    tier_result.push(TargetResult::success(
+                        target_id,
+                        tier,
+                        latency,
+                        receipt_status,
+                    ));
+                }
                 Err(e) => tier_result.push(TargetResult::failed(target_id, tier, e)),
             }
         }

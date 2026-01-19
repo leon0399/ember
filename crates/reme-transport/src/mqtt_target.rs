@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
 use crate::target::{
-    HealthState, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget,
+    HealthState, RawReceipt, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget,
 };
 use crate::url_auth::sanitize_url_for_logging;
 use crate::TransportError;
@@ -253,7 +253,7 @@ impl TransportTarget for MqttTarget {
         self.health.is_available()
     }
 
-    async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
+    async fn submit_message(&self, envelope: OuterEnvelope) -> Result<RawReceipt, TransportError> {
         let start = Instant::now();
 
         let topic = self.topic_for_routing_key(&envelope.routing_key);
@@ -277,7 +277,8 @@ impl TransportTarget for MqttTarget {
             }
         }
 
-        result
+        // MQTT doesn't return receipt data - return empty receipt
+        result.map(|()| RawReceipt::default())
     }
 
     async fn submit_ack_tombstone(

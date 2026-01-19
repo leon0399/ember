@@ -7,6 +7,8 @@ edition = "2021"
 workspace = true
 
 [dependencies]
+reme-encryption = { workspace = true }
+reme-identity = { workspace = true }
 reme-message = { workspace = true }
 reme-node-core = { workspace = true, optional = true }
 

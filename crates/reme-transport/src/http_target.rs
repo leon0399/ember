@@ -9,13 +9,15 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
+use reme_identity::PublicID;
 use reme_message::{OuterEnvelope, RoutingKey, SignedAckTombstone, WirePayload};
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
 use crate::target::{
-    HealthData, HealthState, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget,
+    HealthData, HealthState, RawReceipt, TargetConfig, TargetHealth, TargetId, TargetKind,
+    TransportTarget,
 };
 use crate::tls::{CertPin, PinningVerifier};
 use crate::url_auth::parse_url_with_auth;
@@ -85,6 +87,29 @@ impl HttpTargetConfig {
         self.base.connect_timeout = timeout;
         self
     }
+
+    /// Set the node's public identity for receipt verification.
+    ///
+    /// When set, receipts from this target can be verified using this public key.
+    /// The `routing_key()` derived from this is also used to filter targets
+    /// during Direct tier delivery.
+    pub fn with_node_pubkey(mut self, pubkey: PublicID) -> Self {
+        self.base.node_pubkey = Some(pubkey);
+        self
+    }
+
+    /// Set an optional node public identity.
+    pub fn with_node_pubkey_opt(mut self, pubkey: Option<PublicID>) -> Self {
+        self.base.node_pubkey = pubkey;
+        self
+    }
+
+    /// Check if this target can serve messages for the given routing key.
+    ///
+    /// Delegates to the base `TargetConfig::can_serve()` method.
+    pub fn can_serve(&self, routing_key: &RoutingKey) -> bool {
+        self.base.can_serve(routing_key)
+    }
 }
 
 /// A single HTTP endpoint transport target.
@@ -104,6 +129,44 @@ pub struct HttpTarget {
 struct SubmitResponse {
     #[allow(dead_code)]
     status: String,
+
+    /// Base64-encoded 16-byte `ack_secret` (optional).
+    ack_secret: Option<String>,
+
+    /// Base64-encoded 64-byte `XEdDSA` signature (optional).
+    signature: Option<String>,
+}
+
+impl SubmitResponse {
+    /// Parse the response into a `RawReceipt`.
+    fn into_raw_receipt(self) -> RawReceipt {
+        let ack_secret = self.ack_secret.and_then(|s| {
+            BASE64_STANDARD.decode(&s).ok().and_then(|bytes| {
+                bytes
+                    .try_into()
+                    .map_err(|e: Vec<u8>| {
+                        warn!("Invalid ack_secret length: {} (expected 16)", e.len());
+                    })
+                    .ok()
+            })
+        });
+
+        let signature = self.signature.and_then(|s| {
+            BASE64_STANDARD.decode(&s).ok().and_then(|bytes| {
+                bytes
+                    .try_into()
+                    .map_err(|e: Vec<u8>| {
+                        warn!("Invalid signature length: {} (expected 64)", e.len());
+                    })
+                    .ok()
+            })
+        });
+
+        RawReceipt {
+            ack_secret,
+            signature,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,7 +206,9 @@ impl HttpTarget {
     }
 
     /// Submit a wire payload to this target.
-    async fn submit_payload(&self, payload_b64: &str) -> Result<(), TransportError> {
+    ///
+    /// Returns the raw receipt data from the node (if any).
+    async fn submit_payload(&self, payload_b64: &str) -> Result<RawReceipt, TransportError> {
         // Parse URL and extract credentials if present
         let parsed = parse_url_with_auth(&self.config.url)
             .map_err(|e| TransportError::Network(format!("Invalid URL: {e}")))?;
@@ -184,12 +249,12 @@ impl HttpTarget {
             )));
         }
 
-        let _result: SubmitResponse = response
+        let result: SubmitResponse = response
             .json()
             .await
             .map_err(|e| TransportError::Serialization(e.to_string()))?;
 
-        Ok(())
+        Ok(result.into_raw_receipt())
     }
 
     /// Get a display label for logging.
@@ -328,7 +393,7 @@ impl TransportTarget for HttpTarget {
         self.health.to_health_data()
     }
 
-    async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
+    async fn submit_message(&self, envelope: OuterEnvelope) -> Result<RawReceipt, TransportError> {
         let start = Instant::now();
 
         // Encode as WirePayload
@@ -339,9 +404,14 @@ impl TransportTarget for HttpTarget {
         let result = self.submit_payload(&payload_b64).await;
 
         match &result {
-            Ok(()) => {
+            Ok(receipt) => {
                 self.record_success(start.elapsed());
-                debug!("Message submitted to {}", self.display_label());
+                debug!(
+                    "Message submitted to {} (receipt: ack={}, sig={})",
+                    self.display_label(),
+                    receipt.ack_secret.is_some(),
+                    receipt.signature.is_some()
+                );
             }
             Err(e) => {
                 self.record_failure(e);
@@ -370,7 +440,7 @@ impl TransportTarget for HttpTarget {
         let result = self.submit_payload(&payload_b64).await;
 
         match &result {
-            Ok(()) => {
+            Ok(_receipt) => {
                 self.record_success(start.elapsed());
                 debug!("AckTombstone submitted to {}", self.display_label());
             }
@@ -384,7 +454,8 @@ impl TransportTarget for HttpTarget {
             }
         }
 
-        result
+        // Discard receipt - tombstones don't need receipt verification
+        result.map(|_| ())
     }
 
     fn record_success(&self, latency: Duration) {
@@ -400,10 +471,16 @@ impl TransportTarget for HttpTarget {
 ///
 /// This allows `HttpTarget` to be used directly in the composite transport
 /// for direct peer messaging, not just via `TransportPool`.
+///
+/// Note: Receipt data is discarded in this wrapper; use `TransportTarget`
+/// directly if receipt verification is needed.
 #[async_trait]
 impl crate::Transport for HttpTarget {
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
-        <Self as TransportTarget>::submit_message(self, envelope).await
+        // Discard receipt data - use TransportTarget directly for receipt verification
+        <Self as TransportTarget>::submit_message(self, envelope)
+            .await
+            .map(|_receipt| ())
     }
 
     async fn submit_ack_tombstone(

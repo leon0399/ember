@@ -348,12 +348,55 @@ pub const RECEIPT_DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
 /// # Arguments
 /// * `signer_pubkey` - 32-byte public key of the signer
 /// * `message_id` - 16-byte message ID
-pub fn build_receipt_sign_data(signer_pubkey: &[u8; 32], message_id: &MessageID) -> Vec<u8> {
-    let mut sign_data = Vec::with_capacity(RECEIPT_DOMAIN_SEP.len() + 32 + 16);
-    sign_data.extend_from_slice(RECEIPT_DOMAIN_SEP);
-    sign_data.extend_from_slice(signer_pubkey);
-    sign_data.extend_from_slice(message_id.as_bytes());
+pub fn build_receipt_sign_data(signer_pubkey: &[u8; 32], message_id: &MessageID) -> [u8; 64] {
+    // Layout: "reme-receipt-v1:" (16) || pubkey (32) || message_id (16) = 64 bytes
+    let mut sign_data = [0u8; 64];
+    sign_data[..16].copy_from_slice(RECEIPT_DOMAIN_SEP);
+    sign_data[16..48].copy_from_slice(signer_pubkey);
+    sign_data[48..].copy_from_slice(message_id.as_bytes());
     sign_data
+}
+
+/// Generate an `XEdDSA` receipt signature.
+///
+/// Creates a signature over the receipt data format:
+/// `"reme-receipt-v1:" || signer_pubkey || message_id`
+///
+/// # Arguments
+/// * `signer_private` - 32-byte X25519 private key of the signer
+/// * `signer_pubkey` - 32-byte X25519 public key of the signer
+/// * `message_id` - 16-byte message ID being acknowledged
+///
+/// # Returns
+/// A 64-byte `XEdDSA` signature.
+pub fn generate_receipt_signature(
+    signer_private: &[u8; 32],
+    signer_pubkey: &[u8; 32],
+    message_id: &MessageID,
+) -> [u8; 64] {
+    let sign_data = build_receipt_sign_data(signer_pubkey, message_id);
+    xeddsa_sign(signer_private, &sign_data)
+}
+
+/// Verify an `XEdDSA` receipt signature.
+///
+/// Verifies that the signature was created by the claimed signer over the
+/// receipt data format: `"reme-receipt-v1:" || signer_pubkey || message_id`
+///
+/// # Arguments
+/// * `signer_pubkey` - 32-byte X25519 public key of the expected signer
+/// * `message_id` - 16-byte message ID that was acknowledged
+/// * `signature` - 64-byte `XEdDSA` signature to verify
+///
+/// # Returns
+/// `true` if the signature is valid, `false` otherwise.
+pub fn verify_receipt_signature(
+    signer_pubkey: &[u8; 32],
+    message_id: &MessageID,
+    signature: &[u8; 64],
+) -> bool {
+    let sign_data = build_receipt_sign_data(signer_pubkey, message_id);
+    xeddsa_verify(signer_pubkey, &sign_data, signature)
 }
 
 // ============================================
@@ -859,6 +902,96 @@ mod tests {
         assert!(
             !is_zero_shared_secret(&max_secret),
             "All-max secret should not be detected as zero"
+        );
+    }
+
+    #[test]
+    fn test_receipt_signature_roundtrip() {
+        use super::{generate_receipt_signature, verify_receipt_signature};
+
+        // Create a node identity
+        let node = Identity::generate();
+        let node_private = node.to_bytes();
+        let node_public = node.public_id().to_bytes();
+
+        // Create a message ID
+        let message_id = MessageID::new();
+
+        // Generate receipt signature
+        let signature = generate_receipt_signature(&node_private, &node_public, &message_id);
+
+        // Verify the signature
+        assert!(
+            verify_receipt_signature(&node_public, &message_id, &signature),
+            "Valid receipt signature should verify"
+        );
+    }
+
+    #[test]
+    fn test_receipt_signature_wrong_signer() {
+        use super::{generate_receipt_signature, verify_receipt_signature};
+
+        // Create two node identities
+        let node1 = Identity::generate();
+        let node2 = Identity::generate();
+
+        let node1_private = node1.to_bytes();
+        let node1_public = node1.public_id().to_bytes();
+        let node2_public = node2.public_id().to_bytes();
+
+        let message_id = MessageID::new();
+
+        // Generate receipt signature with node1
+        let signature = generate_receipt_signature(&node1_private, &node1_public, &message_id);
+
+        // Verify with node2's public key should fail
+        assert!(
+            !verify_receipt_signature(&node2_public, &message_id, &signature),
+            "Receipt signature should not verify with wrong public key"
+        );
+    }
+
+    #[test]
+    fn test_receipt_signature_wrong_message_id() {
+        use super::{generate_receipt_signature, verify_receipt_signature};
+
+        let node = Identity::generate();
+        let node_private = node.to_bytes();
+        let node_public = node.public_id().to_bytes();
+
+        let message_id1 = MessageID::new();
+        let message_id2 = MessageID::new();
+
+        // Generate receipt signature for message_id1
+        let signature = generate_receipt_signature(&node_private, &node_public, &message_id1);
+
+        // Verify with message_id2 should fail
+        assert!(
+            !verify_receipt_signature(&node_public, &message_id2, &signature),
+            "Receipt signature should not verify with wrong message ID"
+        );
+    }
+
+    #[test]
+    fn test_receipt_signature_tampered() {
+        use super::{generate_receipt_signature, verify_receipt_signature};
+
+        let node = Identity::generate();
+        let node_private = node.to_bytes();
+        let node_public = node.public_id().to_bytes();
+
+        let message_id = MessageID::new();
+
+        // Generate receipt signature
+        let mut signature = generate_receipt_signature(&node_private, &node_public, &message_id);
+
+        // Tamper with the signature
+        signature[0] ^= 0xFF;
+
+        // Verify should fail
+        assert!(
+            !verify_receipt_signature(&node_public, &message_id, &signature),
+            "Tampered receipt signature should not verify"
         );
     }
 }

@@ -10,11 +10,111 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use derive_more::Display as DeriveDisplay;
-use reme_message::{OuterEnvelope, SignedAckTombstone};
+use reme_identity::PublicID;
+use reme_message::{OuterEnvelope, RoutingKey, SignedAckTombstone};
 use strum::{Display, EnumIter};
 
 use crate::url_auth::sanitize_url_for_logging;
 use crate::TransportError;
+
+// =============================================================================
+// Raw Receipt (unverified receipt data from transport)
+// =============================================================================
+
+/// Raw receipt data from a node (not yet verified).
+///
+/// This struct holds the raw bytes returned by a node after message submission.
+/// Verification happens at the coordinator level using the configured `node_pubkey`.
+///
+/// For transports that don't support receipts (e.g., MQTT), this will be empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RawReceipt {
+    /// Raw `ack_secret` bytes (16 bytes if present).
+    /// Present only if the node is the intended recipient.
+    pub ack_secret: Option<[u8; 16]>,
+
+    /// Raw `XEdDSA` signature bytes (64 bytes if present).
+    /// Present when the node has an identity configured.
+    pub signature: Option<[u8; 64]>,
+}
+
+impl RawReceipt {
+    /// Check if any receipt data was returned.
+    pub fn has_data(&self) -> bool {
+        self.ack_secret.is_some() || self.signature.is_some()
+    }
+
+    /// Create a receipt with only a signature (no `ack_secret`).
+    pub fn signature_only(signature: [u8; 64]) -> Self {
+        Self {
+            ack_secret: None,
+            signature: Some(signature),
+        }
+    }
+
+    /// Create a full receipt with both `ack_secret` and signature.
+    pub fn full(ack_secret: [u8; 16], signature: [u8; 64]) -> Self {
+        Self {
+            ack_secret: Some(ack_secret),
+            signature: Some(signature),
+        }
+    }
+
+    /// Verify this receipt and convert to a `ReceiptStatus`.
+    ///
+    /// # Arguments
+    /// * `message_id` - The message ID that was submitted
+    /// * `node_pubkey` - The expected node public key for signature verification
+    ///
+    /// # Returns
+    /// - `ReceiptStatus::Missing` if no receipt data present
+    /// - `ReceiptStatus::SignatureOnly` if only signature present (no `ack_secret`)
+    /// - `ReceiptStatus::Full` if both `ack_secret` and signature present
+    ///
+    /// The `SignatureStatus` within will be:
+    /// - `Missing` if no signature was returned
+    /// - `Unverifiable` if signature present but no `node_pubkey` configured
+    /// - `Invalid` if signature verification failed
+    /// - `Verified(pubkey)` if signature verified successfully
+    pub fn verify(
+        self,
+        message_id: &reme_message::MessageID,
+        node_pubkey: Option<&PublicID>,
+    ) -> crate::delivery::ReceiptStatus {
+        use crate::delivery::{ReceiptStatus, SignatureStatus};
+
+        // No receipt data at all
+        if !self.has_data() {
+            return ReceiptStatus::Missing;
+        }
+
+        // Determine signature status
+        let signature_status = match self.signature {
+            None => SignatureStatus::Missing,
+            Some(sig) => match node_pubkey {
+                None => SignatureStatus::Unverifiable(sig),
+                Some(pk) => {
+                    if reme_encryption::verify_receipt_signature(&pk.to_bytes(), message_id, &sig) {
+                        SignatureStatus::Verified(*pk)
+                    } else {
+                        SignatureStatus::Invalid
+                    }
+                }
+            },
+        };
+
+        // Build receipt status based on presence of ack_secret
+        match self.ack_secret {
+            Some(ack_secret) => ReceiptStatus::Full {
+                ack_secret,
+                signature: signature_status,
+            },
+            None => ReceiptStatus::SignatureOnly {
+                signature: signature_status,
+            },
+        }
+    }
+}
 
 /// Unique identifier for a transport target.
 ///
@@ -317,6 +417,13 @@ pub struct TargetConfig {
 
     /// Priority for routing (higher = preferred).
     pub priority: u8,
+
+    /// Node's public identity (for receipt verification).
+    ///
+    /// When set, receipts from this target can be verified using this public key.
+    /// The `routing_key()` derived from this can also be used to filter targets
+    /// during Direct tier delivery (only include targets that can serve the recipient).
+    pub node_pubkey: Option<PublicID>,
 }
 
 impl TargetConfig {
@@ -331,6 +438,7 @@ impl TargetConfig {
             circuit_breaker_threshold: kind.default_circuit_breaker_threshold(),
             circuit_breaker_recovery: kind.default_circuit_breaker_recovery(),
             priority: kind.default_priority(),
+            node_pubkey: None,
         }
     }
 
@@ -384,6 +492,33 @@ impl TargetConfig {
     pub fn with_circuit_breaker_recovery(mut self, recovery: Duration) -> Self {
         self.circuit_breaker_recovery = recovery;
         self
+    }
+
+    /// Set the node's public identity for receipt verification.
+    pub fn with_node_pubkey(mut self, pubkey: PublicID) -> Self {
+        self.node_pubkey = Some(pubkey);
+        self
+    }
+
+    /// Set an optional node public identity.
+    pub fn with_node_pubkey_opt(mut self, pubkey: Option<PublicID>) -> Self {
+        self.node_pubkey = pubkey;
+        self
+    }
+
+    /// Check if this target can serve messages for the given routing key.
+    ///
+    /// Returns `true` if:
+    /// - No `node_pubkey` is configured (optimistically include unknown targets)
+    /// - The `node_pubkey`'s routing key matches the given routing key
+    ///
+    /// This is used to filter Direct tier targets to only those that can
+    /// actually deliver to the intended recipient.
+    pub fn can_serve(&self, routing_key: &RoutingKey) -> bool {
+        match &self.node_pubkey {
+            Some(pk) => pk.routing_key() == *routing_key,
+            None => true, // Unknown = optimistically include
+        }
     }
 }
 
@@ -450,7 +585,10 @@ pub trait TransportTarget: Send + Sync {
     }
 
     /// Submit a message to this specific target.
-    async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError>;
+    ///
+    /// Returns the raw receipt data from the target (if any).
+    /// For transports that don't support receipts (e.g., MQTT), returns an empty `RawReceipt`.
+    async fn submit_message(&self, envelope: OuterEnvelope) -> Result<RawReceipt, TransportError>;
 
     /// Submit an ack tombstone to this specific target (Tombstone V2).
     async fn submit_ack_tombstone(
@@ -574,5 +712,43 @@ mod tests {
         assert_eq!(config.priority, 150);
         assert_eq!(config.request_timeout, Duration::from_secs(60));
         assert_eq!(config.kind, TargetKind::Stable);
+    }
+
+    #[test]
+    fn test_target_config_can_serve_without_pubkey() {
+        // No node_pubkey = optimistically include (unknown target)
+        let config = TargetConfig::stable(TargetId::http("https://example.com"));
+        let routing_key = [0u8; 16].into();
+
+        assert!(config.can_serve(&routing_key));
+    }
+
+    #[test]
+    fn test_target_config_can_serve_with_matching_pubkey() {
+        use reme_identity::Identity;
+
+        let identity = Identity::generate();
+        let pubkey = *identity.public_id();
+        let routing_key = pubkey.routing_key();
+
+        let config =
+            TargetConfig::stable(TargetId::http("https://example.com")).with_node_pubkey(pubkey);
+
+        assert!(config.can_serve(&routing_key));
+    }
+
+    #[test]
+    fn test_target_config_can_serve_with_non_matching_pubkey() {
+        use reme_identity::Identity;
+
+        let identity = Identity::generate();
+        let pubkey = *identity.public_id();
+        let different_routing_key = [0u8; 16].into(); // Different from identity's routing key
+
+        let config =
+            TargetConfig::stable(TargetId::http("https://example.com")).with_node_pubkey(pubkey);
+
+        // Should NOT be able to serve a different routing key
+        assert!(!config.can_serve(&different_routing_key));
     }
 }

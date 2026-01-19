@@ -2566,6 +2566,7 @@ dependencies = [
  "hex",
  "percent-encoding",
  "reme-encryption",
+ "reme-identity",
  "reme-message",
  "reme-node-core",
  "reqwest",
