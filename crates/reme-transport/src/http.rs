@@ -14,14 +14,11 @@ use serde::Deserialize;
 use tracing::{debug, info, warn};
 use url::Url;
 
+use reme_encryption::build_identity_sign_data;
+
 use crate::tls::{CertPin, PinningVerifier};
 use crate::url_auth::parse_url_with_auth;
 use crate::{Transport, TransportError};
-
-/// Domain separator for identity challenge-response signatures.
-///
-/// This MUST match the server implementation in `apps/node/src/api.rs`.
-const IDENTITY_SIGN_DOMAIN: &[u8] = b"reme-identity-v1:";
 
 /// Response from the identity endpoint.
 ///
@@ -249,11 +246,8 @@ impl HttpTransport {
                 TransportError::Serialization("node_pubkey must be exactly 32 bytes".to_string())
             })?;
 
-        // Build sign data: domain || challenge || node_pubkey
-        let mut sign_data = Vec::with_capacity(IDENTITY_SIGN_DOMAIN.len() + 32 + 32);
-        sign_data.extend_from_slice(IDENTITY_SIGN_DOMAIN);
-        sign_data.extend_from_slice(&challenge);
-        sign_data.extend_from_slice(&node_pubkey_bytes);
+        // Build sign data using shared helper
+        let sign_data = build_identity_sign_data(&challenge, &node_pubkey_bytes);
 
         // Create PublicID from node_pubkey (validates against low-order points)
         let node_pubkey = PublicID::try_from_bytes(&node_pubkey_bytes)

@@ -28,7 +28,7 @@ use axum::{
     Router,
 };
 use base64::prelude::*;
-use reme_encryption::{build_receipt_sign_data, derive_ack_secret};
+use reme_encryption::{build_identity_sign_data, build_receipt_sign_data, derive_ack_secret};
 use reme_identity::{is_low_order_point, Identity};
 use reme_message::{MessageID, OuterEnvelope, RoutingKey, WirePayload};
 use reme_node_core::{EmbeddedNodeHandle, NodeError};
@@ -41,13 +41,6 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tracing::{debug, error, info, warn};
 use x25519_dalek::PublicKey as X25519PublicKey;
 use zeroize::Zeroize;
-
-/// Domain separator for identity challenge-response signatures.
-///
-/// The signed data is: `IDENTITY_SIGN_DOMAIN || challenge || node_pubkey`
-/// This prevents signature replay across different protocol contexts.
-/// MUST match the main node's domain separator exactly.
-const IDENTITY_SIGN_DOMAIN: &[u8] = b"reme-identity-v1:";
 
 /// Error types for HTTP server operations.
 #[derive(Debug, thiserror::Error)]
@@ -457,16 +450,10 @@ async fn get_identity(
     let routing_key = state.our_routing_key;
 
     // Offload crypto operations (XEdDSA signing) to thread pool
+    let challenge: [u8; 32] = challenge.try_into().expect("validated above");
     let result = tokio::task::spawn_blocking(move || {
         let node_pubkey = identity.public_id().to_bytes();
-
-        // Build sign data: domain || challenge || node_pubkey
-        let mut sign_data = Vec::with_capacity(IDENTITY_SIGN_DOMAIN.len() + 32 + 32);
-        sign_data.extend_from_slice(IDENTITY_SIGN_DOMAIN);
-        sign_data.extend_from_slice(&challenge);
-        sign_data.extend_from_slice(&node_pubkey);
-
-        // Sign with XEdDSA
+        let sign_data = build_identity_sign_data(&challenge, &node_pubkey);
         let signature = identity.sign_xeddsa(&sign_data);
 
         IdentityResponse {
@@ -1130,7 +1117,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/api/v1/identity?challenge={}", challenge_b64))
+                    .uri(format!("/api/v1/identity?challenge={challenge_b64}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1169,11 +1156,8 @@ mod tests {
             .try_into()
             .expect("Wrong signature length");
 
-        // Reconstruct signed data: IDENTITY_SIGN_DOMAIN || challenge || node_pubkey
-        let mut sign_data = Vec::with_capacity(IDENTITY_SIGN_DOMAIN.len() + 32 + 32);
-        sign_data.extend_from_slice(IDENTITY_SIGN_DOMAIN);
-        sign_data.extend_from_slice(&challenge);
-        sign_data.extend_from_slice(&node_pubkey);
+        // Reconstruct signed data using helper
+        let sign_data = build_identity_sign_data(&challenge, &node_pubkey);
 
         assert!(
             identity_pubkey.verify_xeddsa(&sign_data, &signature),
@@ -1208,7 +1192,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/api/v1/identity?challenge={}", challenge_b64))
+                    .uri(format!("/api/v1/identity?challenge={challenge_b64}"))
                     .body(Body::empty())
                     .unwrap(),
             )

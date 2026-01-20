@@ -20,7 +20,7 @@ use axum::{
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
-use reme_encryption::{build_receipt_sign_data, derive_ack_secret};
+use reme_encryption::{build_identity_sign_data, build_receipt_sign_data, derive_ack_secret};
 use reme_identity::PublicID;
 use reme_message::{OuterEnvelope, RoutingKey, WirePayload};
 use reme_node_core::{MailboxStore, NodeError, PersistentMailboxStore};
@@ -54,12 +54,6 @@ pub struct AppState {
 /// Prevents memory exhaustion from oversized payloads.
 /// Typical `OuterEnvelope` is ~2 KiB; 256 KiB provides ample headroom.
 const MAX_BODY_SIZE: usize = 256 * 1024;
-
-/// Domain separator for identity challenge-response signatures.
-///
-/// The signed data is: `IDENTITY_SIGN_DOMAIN || challenge || node_pubkey`
-/// This prevents signature replay across different protocol contexts.
-const IDENTITY_SIGN_DOMAIN: &[u8] = b"reme-identity-v1:";
 
 /// Create the API router
 ///
@@ -790,17 +784,11 @@ async fn get_identity(
     let identity = identity.clone();
 
     // Offload crypto operations (XEdDSA signing) to thread pool
+    let challenge: [u8; 32] = challenge.try_into().expect("validated above");
     let result = tokio::task::spawn_blocking(move || {
         let node_pubkey = identity.public_id().to_bytes();
         let routing_key = identity.routing_key();
-
-        // Build sign data: domain || challenge || node_pubkey
-        let mut sign_data = Vec::with_capacity(IDENTITY_SIGN_DOMAIN.len() + 32 + 32);
-        sign_data.extend_from_slice(IDENTITY_SIGN_DOMAIN);
-        sign_data.extend_from_slice(&challenge);
-        sign_data.extend_from_slice(&node_pubkey);
-
-        // Sign with XEdDSA
+        let sign_data = build_identity_sign_data(&challenge, &node_pubkey);
         let signature = identity.sign(&sign_data);
 
         IdentityResponse {

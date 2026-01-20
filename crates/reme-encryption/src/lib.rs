@@ -328,7 +328,7 @@ pub fn derive_ack_hash(ack_secret: &[u8; 16]) -> [u8; 16] {
 }
 
 // ============================================
-// Receipt Signature Utilities
+// Signature Utilities
 // ============================================
 
 /// Domain separator for receipt signatures.
@@ -336,6 +336,12 @@ pub fn derive_ack_hash(ack_secret: &[u8; 16]) -> [u8; 16] {
 /// Used to prevent cross-protocol confusion attacks by ensuring receipt
 /// signatures cannot be misused in other contexts.
 pub const RECEIPT_DOMAIN_SEP: &[u8] = b"reme-receipt-v1:";
+
+/// Domain separator for identity challenge-response signatures.
+///
+/// The signed data is: `IDENTITY_SIGN_DOMAIN || challenge || node_pubkey`
+/// This prevents signature replay across different protocol contexts.
+pub const IDENTITY_SIGN_DOMAIN: &[u8] = b"reme-identity-v1:";
 
 /// Build the data to be signed for a receipt.
 ///
@@ -354,6 +360,25 @@ pub fn build_receipt_sign_data(signer_pubkey: &[u8; 32], message_id: &MessageID)
     sign_data[..16].copy_from_slice(RECEIPT_DOMAIN_SEP);
     sign_data[16..48].copy_from_slice(signer_pubkey);
     sign_data[48..].copy_from_slice(message_id.as_bytes());
+    sign_data
+}
+
+/// Build the data to be signed for identity verification.
+///
+/// Format: `"reme-identity-v1:" || challenge || node_pubkey`
+///
+/// Used by both nodes (to sign) and clients (to verify) in the identity
+/// challenge-response protocol.
+///
+/// # Arguments
+/// * `challenge` - 32-byte random challenge from the verifier
+/// * `node_pubkey` - 32-byte X25519 public key of the node
+pub fn build_identity_sign_data(challenge: &[u8; 32], node_pubkey: &[u8; 32]) -> [u8; 81] {
+    // Layout: "reme-identity-v1:" (17) || challenge (32) || node_pubkey (32) = 81 bytes
+    let mut sign_data = [0u8; 81];
+    sign_data[..17].copy_from_slice(IDENTITY_SIGN_DOMAIN);
+    sign_data[17..49].copy_from_slice(challenge);
+    sign_data[49..].copy_from_slice(node_pubkey);
     sign_data
 }
 
