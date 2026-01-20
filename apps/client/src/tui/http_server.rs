@@ -419,7 +419,7 @@ async fn health_handler() -> impl IntoResponse {
 /// Returns `IdentityResponse` with:
 /// - `node_pubkey`: Base64-encoded X25519 public key
 /// - `routing_keys`: Array containing our routing key (hex-encoded)
-/// - `signature`: Base64-encoded XEdDSA signature over `IDENTITY_SIGN_DOMAIN || challenge || node_pubkey`
+/// - `signature`: Base64-encoded `XEdDSA` signature over `IDENTITY_SIGN_DOMAIN || challenge || node_pubkey`
 ///
 /// ## Errors
 ///
