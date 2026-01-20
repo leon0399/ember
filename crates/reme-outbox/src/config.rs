@@ -51,7 +51,7 @@ pub struct RetryTriggerConfig {
 
     /// Retry when a transport becomes available.
     ///
-    /// When a transport (`LoRa`, BLE, P2P) becomes available,
+    /// When a transport (`BestEffort` tier: `LoRa`, BLE, mesh) becomes available,
     /// retry pending messages that can use that transport.
     #[derivative(Default(value = "true"))]
     pub on_transport_available: bool,
@@ -141,10 +141,10 @@ impl TransportRetryPolicy {
         }
     }
 
-    /// Create a policy for direct P2P transports.
+    /// Create a policy for Direct tier transports.
     ///
     /// Fast retry when peer is directly reachable.
-    pub fn p2p() -> Self {
+    pub fn direct() -> Self {
         Self {
             initial_delay: Duration::from_secs(2),
             max_delay: Duration::from_secs(60),

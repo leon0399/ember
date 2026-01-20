@@ -116,7 +116,7 @@ pub struct ReceivedMessage {
 ///
 /// When using `Client<TransportCoordinator>`, additional methods are available
 /// for tiered delivery with quorum semantics:
-/// - `send_text_tiered()` - Send through P2P → Internet → Radio tiers
+/// - `send_text_tiered()` - Send through Direct → Quorum → `BestEffort` tiers
 /// - `process_urgent_retries()` - Background task for urgent phase retries
 /// - `process_maintenance()` - Background task for maintenance refreshes
 pub struct Client<T: Transport> {
@@ -1088,15 +1088,15 @@ fn now_ms() -> u64 {
 /// Specialized implementation for tiered delivery with quorum semantics.
 ///
 /// These methods are only available when using `TransportCoordinator` as the
-/// transport, enabling multi-tier delivery (P2P → Internet → Radio) with
+/// transport, enabling multi-tier delivery (Direct → Quorum → `BestEffort`) with
 /// configurable quorum requirements.
 impl Client<TransportCoordinator> {
     /// Send a text message using tiered delivery with quorum semantics.
     ///
     /// This method attempts delivery through multiple tiers:
-    /// 1. **P2P (Ephemeral)**: Race all ephemeral targets, exit on any success
-    /// 2. **Internet (Stable)**: Broadcast to all stable targets, require quorum
-    /// 3. **Radio**: Best effort delivery (future)
+    /// 1. **Direct (Ephemeral)**: Race all ephemeral targets, exit on any success
+    /// 2. **Quorum (Stable)**: Broadcast to all stable targets, require quorum
+    /// 3. `BestEffort`: Best effort delivery (future)
     ///
     /// The message is tracked in the outbox with the tiered delivery state machine:
     /// - **Urgent phase**: Aggressive retry until quorum reached
@@ -1163,7 +1163,7 @@ impl Client<TransportCoordinator> {
                 if confidence.is_direct() {
                     info!(
                         message_id = ?prepared.entry_id,
-                        "Message delivered directly via P2P"
+                        "Message delivered directly (Direct tier)"
                     );
                 } else {
                     debug!(
@@ -1185,7 +1185,7 @@ impl Client<TransportCoordinator> {
     ///
     /// This background task should be called periodically to retry messages
     /// that haven't yet reached quorum. Uses the full delivery pipeline:
-    /// P2P first (recipient may be online now), then Internet tier.
+    /// Direct first (recipient may be online now), then Quorum tier.
     ///
     /// # Returns
     /// Number of messages retried and their new phases.
@@ -1222,8 +1222,8 @@ impl Client<TransportCoordinator> {
     /// that have reached quorum but haven't been acknowledged. Ensures copies
     /// still exist on target nodes (they may have crashed).
     ///
-    /// Uses the full delivery pipeline: P2P first (recipient may be online now),
-    /// then refresh ALL Internet tier targets.
+    /// Uses the full delivery pipeline: Direct first (recipient may be online now),
+    /// then refresh ALL Quorum tier targets.
     ///
     /// # Returns
     /// Number of messages refreshed.
@@ -1257,7 +1257,7 @@ impl Client<TransportCoordinator> {
 
     /// Attempt tiered delivery for a pending message.
     ///
-    /// For urgent retries, this uses selective Internet tier targeting:
+    /// For urgent retries, this uses selective Quorum tier targeting:
     /// only retry failed targets, skip already-successful ones.
     #[allow(clippy::cast_possible_truncation)] // Success counts and targets fit in u32
     async fn attempt_tiered_delivery(

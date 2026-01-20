@@ -4,3 +4,6 @@
 *.tmp
 *.db
 *.key
+
+# Internal documentation
+/spec/
