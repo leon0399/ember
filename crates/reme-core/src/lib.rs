@@ -1065,6 +1065,10 @@ fn transport_error_to_attempt_error(e: &TransportError) -> AttemptError {
             message: "request timed out".to_string(),
             is_transient: true,
         },
+        TransportError::SignatureVerificationFailed => AttemptError::Rejected {
+            message: "signature verification failed".to_string(),
+            is_transient: false,
+        },
     }
 }
 
@@ -1096,7 +1100,7 @@ impl Client<TransportCoordinator> {
     /// This method attempts delivery through multiple tiers:
     /// 1. **Direct (Ephemeral)**: Race all ephemeral targets, exit on any success
     /// 2. **Quorum (Stable)**: Broadcast to all stable targets, require quorum
-    /// 3. `BestEffort`: Best effort delivery (future)
+    /// 3. **`BestEffort`**: Best effort delivery (future)
     ///
     /// The message is tracked in the outbox with the tiered delivery state machine:
     /// - **Urgent phase**: Aggressive retry until quorum reached
