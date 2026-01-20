@@ -198,13 +198,13 @@ pub enum DeliveryState {
 pub enum TieredDeliveryPhase {
     /// Phase 1: Quorum not yet reached, aggressive retries.
     ///
-    /// Full pipeline retry: P2P → Internet → Radio.
-    /// Skip already-successful Internet targets.
+    /// Full pipeline retry: Direct → Quorum → `BestEffort`.
+    /// Skip already-successful Quorum targets.
     Urgent,
 
     /// Phase 2: Distributed (quorum OR direct delivery), periodic maintenance.
     ///
-    /// Full pipeline refresh: P2P → Internet (refresh ALL targets).
+    /// Full pipeline refresh: Direct → Quorum (refresh ALL targets).
     /// Recipient may come online for direct delivery.
     Distributed {
         /// How confident are we in delivery?
