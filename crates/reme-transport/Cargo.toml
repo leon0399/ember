@@ -32,14 +32,19 @@ futures = { workspace = true }
 
 # MQTT implementation
 rumqttc = { version = "0.24", features = ["use-rustls"], optional = true }
-hex = { version = "0.4", optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
+
+# Hex encoding (for routing keys)
+hex = "0.4"
 
 # TLS + Certificate Pinning
 rustls = { workspace = true, features = ["ring"] }
 sha2 = { workspace = true }
 webpki-roots = "1"
 x509-parser = "0.17"
+
+# Challenge generation
+rand = { workspace = true }
 
 # Optional: for server implementation
 axum = { workspace = true, optional = true }
@@ -49,9 +54,11 @@ tower = { workspace = true, optional = true }
 default = ["http-client"]
 http-client = []
 http-server = ["axum", "tower"]
-mqtt = ["rumqttc", "hex", "uuid"]
+mqtt = ["rumqttc", "uuid"]
 embedded = ["reme-node-core"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 reme-encryption = { workspace = true }
+axum = { workspace = true }
+rand = { workspace = true }

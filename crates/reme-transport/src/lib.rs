@@ -35,7 +35,7 @@ pub use delivery::{
     DeliveryConfidence, DeliveryResult, DeliveryTier, QuorumStrategy, QuorumStrategyError,
     TargetOutcome, TargetResult, TierResult, TieredDeliveryConfig,
 };
-pub use http::NodeSpec;
+pub use http::{NodeSpec, VerifiedIdentity};
 pub use http_target::{HttpTarget, HttpTargetConfig};
 pub use pool::{PoolConfig, PoolStrategy, TransportPool};
 pub use query::{HealthSummary, TargetSnapshot, TransportQuery};
@@ -96,6 +96,9 @@ pub enum TransportError {
 
     #[error("Request timed out")]
     Timeout,
+
+    #[error("Signature verification failed")]
+    SignatureVerificationFailed,
 }
 
 impl TransportError {
