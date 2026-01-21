@@ -1,0 +1,31 @@
+{
+  "enabledPlugins": {
+    "security-scanning@claude-code-workflows": true,
+    "systems-programming@claude-code-workflows": true
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cargo fmt --quiet",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cargo clippy --quiet --all-targets 2>&1",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}

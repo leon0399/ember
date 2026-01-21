@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "deepwiki": {
+      "type": "http",
+      "url": "https://mcp.deepwiki.com/mcp"
+    },
+    "context7": {
+      "command": "pnpx",
+      "args": ["@upstash/context7-mcp@latest"]
+    },
+    "repomix": {
+      "command": "pnpx",
+      "args": ["repomix@latest", "--mcp"]
+    },
+    "zen": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/BeehiveInnovations/zen-mcp-server.git",
+        "zen-mcp-server"
+      ]
+    },
+    "grep": {
+      "type": "http",
+      "url": "https://mcp.grep.app"
+    }
+  }
+}

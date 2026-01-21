@@ -7,19 +7,19 @@
 
 ## Vision
 
-Build an outage-resilient, end-to-end encrypted messaging system that works when traditional infrastructure fails. Reme prioritizes resilience over convenience, enabling communication during network failures, infrastructure attacks, or censorship.
+Build an outage-resilient, end-to-end encrypted messaging system that works when traditional infrastructure fails. Reme prioritizes resilience over convenience so people can communicate during network failures, infrastructure attacks, or censorship.
 
-## Guiding Principles
+## Guiding principles
 
-1. **Client-Side Resilience First**: Messages never disappear silently
-2. **DTN Tolerance**: No session state, independent message processing
-3. **Transport Agnostic**: Same encrypted payload across HTTP, BLE, mesh
-4. **Cryptographic Soundness**: Conservative primitives, defense in depth
-5. **Privacy by Design**: No IP leakage to DHTs, minimal metadata exposure
+1. **Client-side resilience first**: Messages never disappear silently
+2. **DTN tolerance**: No session state, independent message processing
+3. **Transport agnostic**: Same encrypted payload across HTTP, BLE, mesh
+4. **Cryptographic soundness**: Conservative primitives, defense in depth
+5. **Privacy by design**: No IP leakage to DHTs, minimal metadata exposure
 
 ---
 
-## Release Timeline
+## Release timeline
 
 ```
 v0.3 (Current) → v0.4        → [Postcard] → v0.5        → v0.6        → v0.7        → v0.8        → v1.0
@@ -29,9 +29,9 @@ Delivery         Discovery      (internal)     Export         Relay          Pro
 
 ---
 
-## Current Status (v0.3)
+## Current status (v0.3)
 
-### Core Foundation
+### Core foundation
 
 | Component            | Status     |
 |----------------------|------------|
@@ -48,15 +48,15 @@ Delivery         Discovery      (internal)     Export         Relay          Pro
 | **Embedded Relay**   | ✅ Complete |
 | **Receipt Signing**  | ✅ Complete |
 
-**Test Coverage:** 385 tests across workspace, all passing.
+**Test coverage:** 385 tests across workspace, all passing.
 
 ---
 
-## v0.4: LAN Discovery
+## v0.4: LAN discovery
 
-**Theme:** Automatic peer discovery and verified P2P messaging on local networks
+Automatic peer discovery and verified P2P messaging on local networks.
 
-### mDNS/Bonjour Discovery
+### mDNS/Bonjour discovery
 
 **Problem:** Manual peer configuration is tedious for LAN scenarios.
 
@@ -73,9 +73,9 @@ Delivery         Discovery      (internal)     Export         Relay          Pro
 - [ ] Automatic transport registration
 - [ ] UI indication of discovered peers
 
-### Node Identity Verification
+### Node identity verification
 
-**Problem:** mDNS discovers peers by IP, but we can't verify identity without pre-shared keys. DHCP reassignment could route messages to wrong device.
+**Problem:** mDNS discovers peers by IP, but we can't verify identity without pre-shared keys. DHCP reassignment could route messages to the wrong device.
 
 **Solution:**
 - Identity endpoint (`GET /api/v1/identity?challenge=<base64>`)
@@ -90,23 +90,23 @@ Delivery         Discovery      (internal)     Export         Relay          Pro
 - [ ] Refresh triggers (periodic, failure, network change)
 - [ ] Configuration options for refresh interval
 
-**Success Criteria:**
+**Success criteria:**
 - Two clients on same LAN discover each other within 5 seconds
 - Direct messages succeed without manual configuration
 - Identity verification prevents messages to wrong device after DHCP change
-- Graceful handling of network changes
+- Handles network changes without crashing
 
 ---
 
-## Internal: Postcard Migration (Pre-v0.5)
+## Internal: Postcard migration (Pre-v0.5)
 
-**Theme:** Simplify serialization code and prepare for stable wire format
+Simplify serialization code and prepare for stable wire format.
 
 ### Migrate from Bincode to Postcard
 
 **Problem:** Current bincode encoding requires manual `impl Encode/Decode` blocks, is Rust-specific, and has limited schema evolution capabilities. This creates maintenance burden and will complicate future cross-platform clients.
 
-**Why Now (before v0.5):**
+**Why now (before v0.5):**
 - Sneakernet archive format should use the final encoding approach
 - BLE/LoRa transports will build on this foundation
 - Cleaner codebase for constrained transport development
@@ -130,22 +130,22 @@ Delivery         Discovery      (internal)     Export         Relay          Pro
 - [ ] Update CLAUDE.md and WHITEPAPER.md references
 - [ ] Verify message sizes remain within LoRa MTU budget
 
-**Success Criteria:**
+**Success criteria:**
 - All 385+ tests pass
 - Wire format size delta < 5%
 - No manual serialization impl blocks remaining
 
-**Future:** Postcard learnings inform v1.0 Protobuf design for cross-language schema with full backward/forward compatibility.
+**Future:** Postcard learnings will help with v1.0 Protobuf design for cross-language schema with full backward/forward compatibility.
 
 ---
 
-## v0.5: Sneakernet Export
+## v0.5: Sneakernet export
 
-**Theme:** Air-gapped messaging via file transfer
+Air-gapped messaging via file transfer.
 
-### Message Archive Export/Import
+### Message archive export/import
 
-**Problem:** Sometimes there's no network at all—not even BLE range. Need a way to physically transport encrypted messages between air-gapped systems.
+**Problem:** Sometimes there's no network at all, not even BLE range. Need a way to physically transport encrypted messages between air-gapped systems.
 
 **Solution:**
 - Export pending outbox messages to encrypted archive file
@@ -161,24 +161,23 @@ Delivery         Discovery      (internal)     Export         Relay          Pro
 - [ ] QR code scanning (camera or image file)
 - [ ] TUI integration for export/import flows
 
-**Success Criteria:**
+**Success criteria:**
 - Round-trip export→USB→import works correctly
 - QR codes work for messages up to ~500 bytes
 - Archive format documented for interoperability
 - No data loss or corruption in transfer
 
-**Why This Matters:**
-> "Send encrypted messages across an air gap—USB drive, printed QR code, or carrier pigeon."
+**What this enables:**
 
-The simplest possible offline transport, and foundation for all others.
+Send encrypted messages across an air gap: USB drive, printed QR code, or carrier pigeon. The simplest possible offline transport, and foundation for all others.
 
 ---
 
-## v0.6: LAN Relay
+## v0.6: LAN relay
 
-**Theme:** Route messages through LAN peers during partial Internet outages
+Route messages through LAN peers during partial Internet outages.
 
-### Peer Relay Mode
+### Peer relay mode
 
 **Problem:** During partial outages, some LAN peers have Internet access and others don't. Peers without Internet should be able to relay through peers with Internet.
 
@@ -195,24 +194,25 @@ The simplest possible offline transport, and foundation for all others.
 - [ ] Store-and-forward for offline external recipients
 - [ ] Relay status in TUI (showing relay path)
 
-**Success Criteria:**
+**Success criteria:**
 - Alice (no Internet) sends to Charlie (external) via Bob (has Internet)
 - Message delivered when Bob reconnects to Internet
 - Relay path visible in delivery status
 - Works transparently with existing outbox retry logic
 
-**Why This Matters:**
-> "Your message reaches the outside world through any peer that has connectivity—even if you don't."
+**What this enables:**
 
-**Architecture Note:** This implementation is HTTP-to-HTTP only. Future transports (BLE, LoRa) will reuse the relay queue and egress logic, with transport-specific ingress. Build concrete first, extract abstraction later.
+Your message reaches the outside world through any peer that has connectivity, even if you don't.
+
+**Architecture note:** This implementation is HTTP-to-HTTP only. Future transports (BLE, LoRa) will reuse the relay queue and egress logic, with transport-specific ingress. Build concrete first, extract abstraction later.
 
 ---
 
-## v0.7: BLE Proximity
+## v0.7: BLE proximity
 
-**Theme:** Zero-infrastructure messaging for maximum resilience and privacy
+Direct device-to-device messaging with no infrastructure.
 
-### BLE Proximity Exchange
+### BLE proximity exchange
 
 **Problem:** Internet-based transports fail during infrastructure outages or censorship. Need a transport that works with zero infrastructure and doesn't leak metadata to third parties.
 
@@ -231,7 +231,7 @@ The simplest possible offline transport, and foundation for all others.
 - [ ] Background scanning/advertising
 - [ ] Power-efficient operation
 
-### BLE Relay Ingress
+### BLE relay ingress
 
 **Problem:** A phone with BLE + Internet should relay messages received via BLE to Quorum, just like LAN peers relay HTTP messages.
 
@@ -245,15 +245,15 @@ The simplest possible offline transport, and foundation for all others.
 - [ ] Relay capability advertisement in BLE service data
 - [ ] Unified relay queue (shared with HTTP ingress from v0.6)
 
-**Success Criteria:**
+**Success criteria:**
 - Alice (BLE only) → Bob's phone (BLE + Internet) → Quorum → Charlie
 - Same relay status/tracking as LAN relay
 
-### Transport-Layer Chunking
+### Transport-layer chunking
 
 **Problem:** BLE MTU (20-512 bytes) may be smaller than OuterEnvelope (~200+ bytes). Need to split messages for constrained transports without re-encryption.
 
-**Key Insight:** Chunking happens at the transport layer, not application layer. Relay nodes can split/reassemble encrypted blobs without having decryption keys.
+Chunking happens at the transport layer, not application layer. Relay nodes can split/reassemble encrypted blobs without having decryption keys.
 
 **Solution:**
 ```
@@ -278,7 +278,7 @@ The simplest possible offline transport, and foundation for all others.
 - [ ] Reassembly buffer with timeout and LRU eviction
 - [ ] Chunk deduplication
 
-**Success Criteria:**
+**Success criteria:**
 - Message exchange succeeds without Internet
 - <30 second exchange time for nearby peers
 - Works on Linux/macOS/Windows/Android
@@ -286,11 +286,11 @@ The simplest possible offline transport, and foundation for all others.
 
 ---
 
-## v0.8: LoRa Mesh
+## v0.8: LoRa mesh
 
-**Theme:** Kilometers-range messaging without Internet infrastructure
+Kilometers-range messaging without Internet.
 
-### LoRa/Meshtastic Integration
+### LoRa/Meshtastic integration
 
 **Problem:** BLE requires physical proximity (~10m). For disaster response, remote areas, or censorship resistance, we need communication over kilometers without any Internet infrastructure.
 
@@ -309,7 +309,7 @@ The simplest possible offline transport, and foundation for all others.
 - [ ] Power-efficient transmission scheduling
 - [ ] Integration with existing transport coordinator
 
-### LoRa Relay Ingress
+### LoRa relay ingress
 
 **Problem:** A Meshtastic node with Internet (Starlink, home WiFi) should relay messages received over LoRa to Quorum.
 
@@ -318,9 +318,9 @@ The simplest possible offline transport, and foundation for all others.
 - Same relay egress as v0.6 (HTTP to Quorum)
 - Works on dedicated relay nodes (Raspberry Pi + Meshtastic) or phones with Meshtastic app
 
-**Third-Party Relay Nodes:**
+**Third-party relay nodes:**
 - Any Meshtastic user running reme relay software can contribute relay capacity
-- No trust required - they only see encrypted bytes
+- No trust required; they only see encrypted bytes
 - Incentive: reciprocal relay services, community resilience
 
 **Deliverables:**
@@ -328,15 +328,15 @@ The simplest possible offline transport, and foundation for all others.
 - [ ] Headless relay mode (no TUI, minimal resources)
 - [ ] Relay statistics/monitoring endpoint
 
-**Success Criteria:**
+**Success criteria:**
 - Stranger's Meshtastic node relays your message to Quorum
 - Works without any prior relationship or key exchange
 
-### The "Starlink Relay" Scenario
+### The "Starlink Relay" scenario
 
 **Problem:** You're off-grid across the city during a power outage. Your home has Starlink + a stationary LoRa node. Messages arrive for you via Internet, but you have no Internet access.
 
-**Solution:** Home relay node fetches messages from Quorum, then re-broadcasts them over LoRa—without decrypting them.
+**Solution:** Home relay node fetches messages from Quorum, then re-broadcasts them over LoRa without decrypting them.
 
 ```
                     ┌─────────────────────────────────────────────────────────┐
@@ -365,53 +365,54 @@ Internet ──────────►│  │  Starlink   │────�
 4. Broadcasts chunks over LoRa mesh
 5. Your off-grid device receives chunks, reassembles, decrypts
 
-**Why This Matters:**
-> "Message someone kilometers away without Internet, cell towers, or any infrastructure—just radio waves."
-> 
-> "Your home relay bridges Internet and radio—you receive messages off-grid without anyone decrypting them."
+**What this enables:**
 
-This is the defining capability that separates reme from conventional messengers.
+Message someone kilometers away without Internet, cell towers, or any infrastructure. Just radio waves.
 
-**Community Relay Network:**
-The same scenario works with **any** Internet-connected Meshtastic node running reme relay software—not just your own. A neighbor's node, a community relay on a hilltop, or a stranger's device can all bridge your messages to the Internet. Zero trust required (E2E encryption), zero coordination required (just run the relay daemon).
+Your home relay bridges Internet and radio so you receive messages off-grid without anyone decrypting them.
 
-**Success Criteria:**
+This is what separates reme from conventional messengers.
+
+**Community relay network:**
+The same scenario works with **any** Internet-connected Meshtastic node running reme relay software, not just your own. A neighbor's node, a community relay on a hilltop, or a stranger's device can all bridge your messages to the Internet. Zero trust required (E2E encryption), zero coordination required (just run the relay daemon).
+
+**Success criteria:**
 - Message delivery over 5+ km with line-of-sight
 - Multi-hop mesh routing through intermediate nodes
 - Starlink relay scenario works (HTTP→LoRa bridge without decryption)
 - Third-party relay nodes work without prior trust/coordination
-- Graceful degradation when nodes unavailable
+- Handles unavailable nodes without blocking
 - Works with off-the-shelf Meshtastic hardware (T-Beam, Heltec, etc.)
 
 ---
 
-## v1.0: Forward Secrecy (Breaking Release)
+## v1.0: Forward secrecy (breaking release)
 
-**Theme:** Production-ready with session-based forward secrecy and stable wire format
+Production-ready with session-based forward secrecy and stable wire format.
 
-> **Breaking Changes:** v1.0 is the last planned breaking release. Wire format migrates from Postcard to Protobuf for cross-language compatibility and long-term schema evolution. All pre-1.0 clients will be incompatible.
+> **Breaking changes:** v1.0 is the last planned breaking release. Wire format migrates from Postcard to Protobuf for cross-language compatibility and long-term schema evolution. All pre-1.0 clients will be incompatible.
 
-### Wire Format: Protobuf Migration
+### Wire format: Protobuf migration
 
 **Why Protobuf for v1.0:**
 - Cross-language code generation (mobile apps, web clients)
 - Field numbers enable backward/forward compatible schema evolution
 - Unknown field preservation (old clients pass through new fields)
-- Industry standard with extensive tooling
-- `.proto` files serve as the canonical protocol specification
+- Industry standard with good tooling
+- `.proto` files are the canonical protocol specification
 
 **Postcard → Protobuf learnings:**
 - Size budgets validated on constrained transports (LoRa, BLE)
 - Field ordering and optionality patterns established
 - Schema evolution needs identified from v0.x development
 
-### Protocol: Async Noise XX Handshake
+### Protocol: Async Noise XX handshake
 
 Implements DTN-safe forward secrecy without prekey servers.
 
 ### Features
 
-#### 1. Encrypted Sender in OuterEnvelope
+#### 1. Encrypted sender in OuterEnvelope
 
 **Problem:** Recipient can't identify sender when session keys lost.
 
@@ -420,7 +421,7 @@ Implements DTN-safe forward secrecy without prekey servers.
 - Always decryptable by recipient MIK
 - Enables key-loss recovery
 
-#### 2. Sign-All-Bytes
+#### 2. Sign-all-bytes
 
 **Problem:** Static field signatures break on version upgrades.
 
@@ -428,7 +429,7 @@ Implements DTN-safe forward secrecy without prekey servers.
 - Sign all serialized InnerEnvelope bytes
 - Forward/backward compatible
 
-#### 3. Noise XX Handshake
+#### 3. Noise XX handshake
 
 **Problem:** MIK-only lacks forward secrecy.
 
@@ -438,7 +439,7 @@ Implements DTN-safe forward secrecy without prekey servers.
 - Epoch-based replay protection
 - MIK fallback when session unavailable
 
-#### 4. DAG-Integrated Key Lifecycle
+#### 4. DAG-integrated key lifecycle
 
 **Problem:** When to delete old session keys?
 
@@ -447,7 +448,7 @@ Implements DTN-safe forward secrecy without prekey servers.
 - Conservative retention during gaps
 - Bounded memory (max 10 retained keys)
 
-#### 5. Key Loss Recovery
+#### 5. Key loss recovery
 
 **Problem:** Recipient loses session keys.
 
@@ -458,33 +459,33 @@ Implements DTN-safe forward secrecy without prekey servers.
 
 ---
 
-## Future Considerations (Post-v1.0)
+## Future considerations (post-v1.0)
 
-### Group Messaging
+### Group messaging
 - Sender Keys protocol (O(1) encryption)
 - Multi-sender DAG with per-member gap detection
 - Admin operations (add/remove/promote)
 
-### Additional Transports
+### Additional transports
 - Satellite uplinks
 - Ham radio digital modes
 
-### Advanced Privacy
+### Better privacy
 - Fixed-size message padding
 - Cover traffic
 - Routing key rotation
 
-### State Synchronization
+### State synchronization
 - Merkle accumulator sync
 - Cross-device state merge
 
-### Security Enhancements
+### Security improvements
 - Post-quantum cryptography (Kyber)
 - Hardware security module support
 
 ---
 
-## Rejected Approaches
+## Rejected approaches
 
 ### Iroh/QUIC P2P via DHT
 
@@ -501,14 +502,14 @@ Implements DTN-safe forward secrecy without prekey servers.
 
 ---
 
-## Success Metrics
+## Success metrics
 
 ### v0.4
 - <5s peer discovery on LAN
 - Zero configuration for LAN messaging
 - Identity verification prevents wrong-device delivery
 
-### Postcard Migration
+### Postcard migration
 - All tests pass with new serialization
 - Wire format size delta < 5%
 - No manual serialization impl blocks
@@ -540,21 +541,21 @@ Implements DTN-safe forward secrecy without prekey servers.
 
 ---
 
-## Development Process
+## Development process
 
-### Testing Requirements
+### Testing requirements
 
-1. **Unit Tests**: Core logic in isolation
-2. **Integration Tests**: Multi-transport, multi-node scenarios
-3. **Property Tests**: Invariants (no message loss, no duplicates)
-4. **Security Review**: Crypto changes require peer review
+1. **Unit tests**: Core logic in isolation
+2. **Integration tests**: Multi-transport, multi-node scenarios
+3. **Property tests**: Invariants (no message loss, no duplicates)
+4. **Security review**: Crypto changes require peer review
 
-### Quality Gates
+### Quality gates
 
 | Gate              | Requirement                                   |
 |-------------------|-----------------------------------------------|
-| **Code Review**   | All PRs require review                        |
-| **CI Passing**    | Tests, clippy, rustfmt                        |
+| **Code review**   | All PRs require review                        |
+| **CI passing**    | Tests, clippy, rustfmt                        |
 | **Documentation** | Updated CLAUDE.md, WHITEPAPER.md, inline docs |
 | **Changelog**     | User-facing changes documented                |
 

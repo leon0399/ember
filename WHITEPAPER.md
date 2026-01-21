@@ -9,9 +9,9 @@
 
 ## Abstract
 
-Resilient Messenger (reme) is an outage-resilient, end-to-end encrypted messaging system designed for environments where network connectivity is intermittent, constrained, or adversarial. Unlike traditional messengers that depend on always-on Internet connectivity, reme employs a hybrid transport architecture capable of utilizing HTTP mailboxes, LoRa mesh networks, BLE proximity exchange, and other constrained transports.
+Resilient Messenger (reme) is an outage-resilient, end-to-end encrypted messaging system for environments where network connectivity is intermittent, constrained, or adversarial. Unlike traditional messengers that depend on always-on Internet connectivity, reme uses a hybrid transport architecture: HTTP mailboxes, LoRa mesh networks, BLE proximity exchange, and other constrained transports.
 
-The protocol achieves strong cryptographic guarantees through XEdDSA signatures, X25519 key exchange, and ChaCha20-Poly1305 authenticated encryption, while maintaining a minimal wire format suitable for bandwidth-constrained channels. A Merkle DAG-based message ordering system provides causal consistency detection without requiring centralized coordination, enabling gap detection and state recovery across disconnected operation periods.
+The protocol uses XEdDSA signatures, X25519 key exchange, and ChaCha20-Poly1305 authenticated encryption, while keeping a minimal wire format suitable for bandwidth-constrained channels. A Merkle DAG message ordering system tracks causal ordering without centralized coordination, allowing gap detection and state recovery across disconnected operation periods.
 
 This paper presents the complete protocol specification, threat model, cryptographic rationale, and comparison with existing secure messaging systems including Signal, Session, Matrix, and Briar.
 
@@ -38,32 +38,32 @@ This paper presents the complete protocol specification, threat model, cryptogra
 
 ## 1. Introduction
 
-Modern secure messaging systems have achieved remarkable success in protecting message content through end-to-end encryption. However, they remain fundamentally dependent on reliable Internet connectivity and centralized infrastructure. This dependency creates critical vulnerabilities:
+Modern secure messaging systems protect message content well through end-to-end encryption. But they depend on reliable Internet connectivity and centralized infrastructure. This dependency creates real vulnerabilities:
 
-- **Natural disasters** often destroy or overwhelm communication infrastructure precisely when coordination is most needed
-- **Authoritarian regimes** can block access to messaging services at will
+- **Natural disasters** often destroy or overwhelm communication infrastructure when coordination matters most
+- **Authoritarian regimes** can block messaging services at will
 - **Remote areas** lack reliable connectivity for conventional messaging
 - **Infrastructure attacks** can disable communications for entire regions
 
-Resilient Messenger addresses these challenges through a fundamentally different approach: designing for intermittent, constrained, and potentially adversarial network conditions from the ground up, rather than treating them as edge cases.
+Reme takes a different approach: designing for intermittent, constrained, and potentially adversarial network conditions from the start, rather than treating them as edge cases.
 
-### 1.1 Key Innovations
+### 1.1 What's different
 
-1. **Stateless Encryption Model**: Each message is independently decryptable using ephemeral key exchange, eliminating the need for session state synchronization across devices or transport failures.
+1. **Stateless encryption**: Each message is independently decryptable using ephemeral key exchange. No session state synchronization needed across devices or transport failures.
 
-2. **Merkle DAG Message Ordering**: Content-addressed message identifiers form a directed acyclic graph that enables causality detection and gap identification without centralized servers.
+2. **Merkle DAG message ordering**: Content-addressed message identifiers form a directed acyclic graph for causality detection and gap identification without centralized servers.
 
-3. **Transport-Agnostic Design**: The same encrypted message can traverse HTTP, LoRa, BLE, or any future transport, with bandwidth-appropriate metadata for constrained channels.
+3. **Transport-agnostic design**: The same encrypted message can traverse HTTP, LoRa, BLE, or any future transport, with bandwidth-appropriate metadata for constrained channels.
 
-4. **Cryptographic Tombstones**: Signed acknowledgments enable cache management and delivery confirmation while preserving sender-receiver privacy from relay nodes.
+4. **Cryptographic tombstones**: Signed acknowledgments allow cache management and delivery confirmation while hiding sender-receiver relationships from relay nodes.
 
 ---
 
 ## 2. Problem Statement
 
-### 2.1 Limitations of Existing Systems
+### 2.1 Limitations of existing systems
 
-Traditional secure messengers exhibit several architectural limitations that reme addresses:
+Traditional secure messengers have architectural limitations that reme addresses:
 
 | System  | Limitation                                                   | reme Solution                                             |
 |---------|--------------------------------------------------------------|-----------------------------------------------------------|
@@ -72,54 +72,54 @@ Traditional secure messengers exhibit several architectural limitations that rem
 | Matrix  | Federation complexity, metadata leakage                      | Simple store-forward, coarse timestamps                   |
 | Briar   | Tor dependency, no offline operation                         | Multi-transport, DTN-compatible design                    |
 
-### 2.2 Threat Model
+### 2.2 Threat model
 
-reme is designed to resist the following adversaries:
+reme is designed to resist these adversaries:
 
-**Network-Level Adversaries:**
+**Network-level adversaries:**
 - Passive observers attempting traffic analysis
 - Active attackers injecting or modifying messages
 - Infrastructure operators attempting message suppression
 
-**Endpoint Adversaries:**
+**Endpoint adversaries:**
 - Compromised relay nodes
 - Malicious senders attempting impersonation
 - Attackers attempting replay or reordering
 
-**Key Compromise:**
+**Key compromise:**
 - Loss of device does not compromise past messages
 - Future security after key compromise (with session ratcheting in v2)
 
-### 2.3 Security Goals
+### 2.3 Security goals
 
 1. **Confidentiality**: Only intended recipients can read message content
 2. **Authenticity**: Recipients can verify sender identity
 3. **Integrity**: Any modification to messages is detectable
-4. **Forward Secrecy**: Compromise of long-term keys does not expose past messages
-5. **Metadata Minimization**: Relay nodes learn minimal information about communication patterns
+4. **Forward secrecy**: Compromise of long-term keys does not expose past messages
+5. **Metadata minimization**: Relay nodes learn minimal information about communication patterns
 6. **Repudiation**: Third parties cannot cryptographically prove who sent a message (deniability)
 
 ---
 
 ## 3. Design Goals and Constraints
 
-### 3.1 Primary Goals
+### 3.1 Primary goals
 
-1. **Outage Resilience**: Continue functioning during network partitions, infrastructure failures, or deliberate blocking
-2. **Transport Flexibility**: Support multiple transport mechanisms with graceful degradation
-3. **Minimal State**: Reduce synchronization requirements between devices and across transport failures
-4. **Bandwidth Efficiency**: Enable operation on severely constrained channels (LoRa: ~200 bytes/message)
-5. **Cryptographic Soundness**: Use well-analyzed primitives with conservative security margins
+1. **Outage resilience**: Continue functioning during network partitions, infrastructure failures, or deliberate blocking
+2. **Transport flexibility**: Support multiple transport mechanisms with graceful degradation
+3. **Minimal state**: Reduce synchronization requirements between devices and across transport failures
+4. **Bandwidth efficiency**: Operate on severely constrained channels (LoRa: ~200 bytes/message)
+5. **Cryptographic soundness**: Use well-analyzed primitives with conservative security margins
 
-### 3.2 Design Constraints
+### 3.2 Design constraints
 
-**Wire Format Constraints:**
+**Wire format constraints:**
 - Outer envelope: ~102 bytes minimum overhead
 - Inner envelope: Scales with content (~62 bytes minimum for empty text)
 - LoRa MTU: ~200 bytes (requires fragmentation for larger messages)
 - Total encrypted text message: ~180-220 bytes typical
 
-**Operational Constraints:**
+**Operational constraints:**
 - No mandatory central servers (mailboxes are optional relays)
 - No phone numbers or external identifiers required
 - Single persistent identity across all transports
@@ -129,7 +129,7 @@ reme is designed to resist the following adversaries:
 
 ## 4. System Architecture
 
-### 4.1 Crate Structure
+### 4.1 Crate structure
 
 ```
 crates/
@@ -147,7 +147,7 @@ apps/
 └── client/          # TUI client with embedded relay capability
 ```
 
-### 4.2 Message Flow
+### 4.2 Message flow
 
 ```
 ┌──────────┐     ┌──────────────┐     ┌──────────┐
@@ -163,31 +163,31 @@ apps/
      │                  │  (acknowledges)   │
 ```
 
-**Send Path:**
+**Send path:**
 1. Client creates `InnerEnvelope` with content and DAG references
 2. Signs with sender's XEdDSA key
 3. Encrypts to recipient's MIK (Master Identity Key) using ephemeral ECDH
 4. Wraps in `OuterEnvelope` with routing metadata
 5. Submits to transport (HTTP mailbox, LoRa, etc.)
 
-**Receive Path:**
+**Receive path:**
 1. Client fetches messages by routing key
 2. Decrypts using MIK private key
 3. Verifies sender signature
 4. Processes DAG references for gap detection
 5. Sends tombstone to acknowledge receipt
 
-### 4.3 Addressing Model
+### 4.3 Addressing model
 
-**PublicID (32 bytes):** X25519 public key serving as the user's address and encryption target.
+**PublicID (32 bytes):** The user's X25519 public key, used as both address and encryption target.
 
-**RoutingKey (16 bytes):** First 16 bytes of BLAKE3 hash of PublicID. Used for mailbox addressing without revealing full identity.
+**RoutingKey (16 bytes):** First 16 bytes of BLAKE3 hash of PublicID. Used for mailbox addressing without revealing the full identity.
 
 ```
 routing_key = BLAKE3(public_id)[0:16]
 ```
 
-This provides:
+This gives us:
 - **Privacy**: Routing key cannot be reversed to PublicID
 - **Collision resistance**: 128-bit space is sufficient for addressing
 - **Efficiency**: Compact lookup keys for relay storage
@@ -196,9 +196,9 @@ This provides:
 
 ## 5. Identity and Key Management
 
-### 5.1 Single-Key Identity
+### 5.1 Single-key identity
 
-reme uses a single X25519 key for both encryption and signatures (via XEdDSA), achieving:
+reme uses a single X25519 key for both encryption and signatures (via XEdDSA). This means:
 
 - **32-byte addresses**: Compact, human-verifiable identities
 - **Simplified backup**: Single secret key backs up entire identity
@@ -211,9 +211,9 @@ pub struct Identity {
 }
 ```
 
-### 5.2 XEdDSA Signatures
+### 5.2 XEdDSA signatures
 
-XEdDSA (eXtended EdDSA) enables signing with X25519 keys through the birational map between Montgomery (Curve25519) and Twisted Edwards (Ed25519) forms:
+XEdDSA (eXtended EdDSA) allows signing with X25519 keys through the birational map between Montgomery (Curve25519) and Twisted Edwards (Ed25519) forms:
 
 ```
 Ed25519_pubkey = birational_map(X25519_pubkey, sign_bit=0)
@@ -224,7 +224,7 @@ Properties:
 - Ed25519-compatible verification
 - 64-byte signatures
 
-### 5.3 Low-Order Point Validation
+### 5.3 Low-order point validation
 
 All public keys are validated against small-order points that would produce predictable shared secrets:
 
@@ -240,13 +240,13 @@ fn is_low_order_point(key: &[u8; 32]) -> bool {
 }
 ```
 
-This provides defense-in-depth against invalid key attacks per RFC 7748 recommendations.
+Defense-in-depth against invalid key attacks per RFC 7748 recommendations.
 
 ---
 
 ## 6. Cryptographic Design
 
-### 6.1 Encryption Model: MIK-Only (v0.2)
+### 6.1 Encryption model: MIK-only (v0.2)
 
 The current version uses stateless encryption where each message includes its own key exchange material:
 
@@ -276,12 +276,12 @@ The current version uses stateless encryption where each message includes its ow
 4. plaintext = ChaCha20Poly1305_Decrypt(enc_key, nonce, ciphertext, AAD=message_id)
 ```
 
-### 6.2 Triple Binding
+### 6.2 Triple binding
 
-Each message cryptographically binds three elements together:
+Each message cryptographically binds three elements:
 
-1. **Nonce Derivation**: `nonce = f(message_id, recipient_pk)` - binds message to recipient
-2. **AAD Verification**: `message_id` as additional authenticated data - binds ciphertext to message
+1. **Nonce derivation**: `nonce = f(message_id, recipient_pk)` - binds message to recipient
+2. **AAD verification**: `message_id` as additional authenticated data - binds ciphertext to message
 3. **Signature**: `sign(from || timestamp || content || DAG_fields || message_id)` - binds sender to content
 
 This prevents:
@@ -289,7 +289,7 @@ This prevents:
 - Message ID manipulation (AAD binding)
 - Sender impersonation (signature binding)
 
-### 6.3 Key Derivation
+### 6.3 Key derivation
 
 All key derivation uses BLAKE3 in KDF mode with context strings:
 
@@ -309,7 +309,7 @@ fn derive_key_from_shared(
 
 Including both public keys prevents key confusion attacks where an attacker might claim a ciphertext was intended for a different recipient.
 
-### 6.4 Future: Async Noise Handshake (v1.0)
+### 6.4 Future: Async Noise handshake (v1.0)
 
 Version 1.0 will add the **Async DTN-Safe Noise XX Handshake** for forward secrecy and post-compromise security:
 
@@ -369,7 +369,7 @@ pub struct InnerEnvelope {
 }
 ```
 
-### 7.3 Content Types
+### 7.3 Content types
 
 ```rust
 pub enum Content {
@@ -387,7 +387,7 @@ pub struct ReceiptContent {
 }
 ```
 
-### 7.4 Wire Type Discrimination
+### 7.4 Wire type discrimination
 
 Messages and tombstones share the transport with a 1-byte discriminator:
 
@@ -396,7 +396,7 @@ Messages and tombstones share the transport with a 1-byte discriminator:
 0x01: Tombstone (TombstoneEnvelope)
 ```
 
-### 7.5 Timestamp Design
+### 7.5 Timestamp design
 
 reme uses a dual-timestamp model for privacy:
 
@@ -412,7 +412,7 @@ Hour granularity on the outer envelope:
 
 ## 8. DAG-Based Message Ordering
 
-### 8.1 Content-Addressed Identifiers
+### 8.1 Content-addressed identifiers
 
 Each message has a content-addressed ID computed from immutable fields:
 
@@ -432,7 +432,7 @@ pub fn content_id(&self) -> ContentId {
 - BLAKE3 truncation is safe (XOF design)
 - DAG fields excluded so resends maintain same content_id
 
-### 8.2 DAG Structure
+### 8.2 DAG structure
 
 Messages form a directed acyclic graph through references:
 
@@ -459,9 +459,9 @@ Messages form a directed acyclic graph through references:
 - `epoch`: Conversation epoch (increments on history clear)
 - `flags`: Message flags (e.g., `FLAG_DETACHED` for constrained transports)
 
-### 8.3 Gap Detection
+### 8.3 Gap detection
 
-**Receiver Gap Detector** tracks incoming message ancestry:
+**Receiver gap detector** tracks incoming message ancestry:
 
 ```rust
 pub fn on_receive(
@@ -483,7 +483,7 @@ pub fn on_receive(
 }
 ```
 
-**Sender Gap Detector** tracks what peer has seen:
+**Sender gap detector** tracks what peer has seen:
 
 ```rust
 pub fn find_missing(&self, peer_observed: &[ContentId]) -> Vec<ContentId> {
@@ -491,7 +491,7 @@ pub fn find_missing(&self, peer_observed: &[ContentId]) -> Vec<ContentId> {
 }
 ```
 
-### 8.4 Multi-Head Support
+### 8.4 Multi-head support
 
 The DAG supports multiple heads (fork scenarios):
 
@@ -505,15 +505,15 @@ pub struct SenderGapDetector {
 }
 ```
 
-### 8.5 State Reset Detection
+### 8.5 State reset detection
 
 Three anomaly conditions are detected:
 
-1. **Sender State Reset**: Peer sends `prev_self=None` without `FLAG_DETACHED` when we have history
-2. **Local State Behind**: Peer's `observed_heads` contains IDs we don't recognize
-3. **Epoch Mismatch**: Peer advanced epoch (intentional history clear)
+1. **Sender state reset**: Peer sends `prev_self=None` without `FLAG_DETACHED` when we have history
+2. **Local state behind**: Peer's `observed_heads` contains IDs we don't recognize
+3. **Epoch mismatch**: Peer advanced epoch (intentional history clear)
 
-### 8.6 Detached Messages
+### 8.6 Detached messages
 
 For constrained transports (LoRa, BLE), messages can be sent without DAG linkage:
 
@@ -537,9 +537,9 @@ Detached messages:
 
 ### 9.1 Purpose
 
-Tombstones serve dual purposes:
+Tombstones have two purposes:
 
-1. **Network layer**: Enable cache clearing and prevent duplicate delivery
+1. **Network layer**: Cache clearing and duplicate delivery prevention
 2. **Application layer**: Optional delivery/read receipts
 
 ### 9.2 TombstoneEnvelope
@@ -558,18 +558,18 @@ pub struct TombstoneEnvelope {
 }
 ```
 
-### 9.3 Security Properties
+### 9.3 Security properties
 
 **Signed by recipient**: Only the legitimate recipient can create valid tombstones
 
 **Replay prevention**:
 - `timestamp_hours` limits validity window (10 days max)
-- `sequence` enables ordering detection
+- `sequence` allows ordering detection
 - `device_id` isolates sequences per device
 
 **Verifiable by relays**: Any node can verify tombstone authenticity without decrypting messages
 
-### 9.4 Encrypted Receipt (Optional)
+### 9.4 Encrypted receipt (optional)
 
 Detailed receipts encrypted for sender:
 
@@ -587,7 +587,7 @@ Encrypted using ephemeral X25519 + ChaCha20-Poly1305 to sender's public key.
 
 ## 10. Transport Layer
 
-### 10.1 Transport Trait
+### 10.1 Transport trait
 
 ```rust
 #[async_trait]
@@ -597,7 +597,7 @@ pub trait Transport: Send + Sync {
 }
 ```
 
-### 10.2 HTTP Transport
+### 10.2 HTTP transport
 
 Primary transport for reliable connectivity:
 
@@ -605,7 +605,7 @@ Primary transport for reliable connectivity:
 - **Endpoint**: `GET /api/v1/messages/:routing_key` (fetch)
 - **Endpoint**: `POST /api/v1/tombstones` (acknowledge)
 
-### 10.3 Future Transports
+### 10.3 Future transports
 
 **LoRa/Meshtastic:**
 - MTU: ~200 bytes
@@ -613,7 +613,7 @@ Primary transport for reliable connectivity:
 - Uses detached messages to minimize overhead
 - Store-and-forward through mesh network
 
-**BLE Proximity:**
+**BLE proximity:**
 - Direct device-to-device exchange
 - Background scanning for contacts
 - Useful for censorship-resistant scenarios
@@ -622,7 +622,7 @@ Primary transport for reliable connectivity:
 - QR code or file-based message transfer
 - Complete offline operation
 
-### 10.4 Mailbox Node
+### 10.4 Mailbox node
 
 Simple store-and-forward relay:
 
@@ -638,11 +638,11 @@ Nodes learn only:
 - Coarse timestamps (hour granularity)
 - When tombstones clear messages
 
-### 10.5 Node Identity Verification (v0.4)
+### 10.5 Node identity verification (v0.4)
 
 For dynamically discovered peers (mDNS), identity verification ensures messages reach the intended recipient.
 
-**Challenge-Response Protocol:**
+**Challenge-response protocol:**
 ```
 Client                              Node
    |                                  |
@@ -657,14 +657,14 @@ Client                              Node
    |  Check routing_key in list       |
 ```
 
-**Two Operating Modes:**
+**Two operating modes:**
 
 | Mode | Use Case | Identity Required |
 |------|----------|-------------------|
 | **Direct** | Peer IS the recipient | Yes - verify `routing_key` matches |
 | **Relay** | Peer forwards to external recipient | No - E2E encrypted payload |
 
-**Background Refresh:**
+**Background refresh:**
 - Periodic identity refresh (5 min default) detects DHCP reassignment
 - Refresh on delivery failure or network change
 - Stale identities removed from Direct tier automatically
@@ -677,7 +677,7 @@ Client                              Node
 
 **Message content**: Protected by ChaCha20-Poly1305 authenticated encryption with per-message ephemeral keys.
 
-**Metadata**: Coarse timestamps, routing keys (not full identities), and message sizes visible to relays.
+**Metadata**: Coarse timestamps, routing keys (not full identities), and message sizes are visible to relays.
 
 ### 11.2 Authenticity
 
@@ -687,19 +687,19 @@ Client                              Node
 
 **Recipient binding**: ECDH ensures only intended recipient can decrypt.
 
-### 11.3 Forward Secrecy
+### 11.3 Forward secrecy
 
 **MIK-only (v0.3)**: Limited forward secrecy - compromise of MIK reveals all messages encrypted to it.
 
 **Async Noise (v1.0)**: Will provide per-session forward secrecy through Noise XX handshake with DAG-integrated key lifecycle. Keys deleted after DAG acknowledgment.
 
-### 11.4 Replay Protection
+### 11.4 Replay protection
 
 **Messages**: UUID message_id provides uniqueness.
 
 **Tombstones**: Timestamp + sequence + device_id prevents replay.
 
-### 11.5 Denial of Service
+### 11.5 Denial of service
 
 **Message flooding**: Rate limiting at relay nodes.
 
@@ -707,7 +707,7 @@ Client                              Node
 
 **Invalid key attacks**: Low-order point validation.
 
-### 11.6 Side Channels
+### 11.6 Side channels
 
 **Timing**: Hour-granularity outer timestamps limit timing analysis.
 
@@ -758,32 +758,32 @@ Client                              Node
 
 ## 13. Future Directions
 
-### 13.1 Version 1.0: Async Noise Handshake
+### 13.1 Version 1.0: Async Noise handshake
 
 - Noise XX session establishment (no prekey servers)
 - Encrypted sender field for key-loss recovery
 - DAG-integrated key lifecycle (delete after ACK)
 - Per-session forward secrecy
 
-### 13.2 Group Messaging
+### 13.2 Group messaging
 
 - Sender Keys for efficient group encryption
 - Group membership DAG
 - Admin operations (add/remove/promote)
 
-### 13.3 Alternative Transports
+### 13.3 Alternative transports
 
 - Satellite uplinks
 - Ham radio digital modes
 
-### 13.4 Enhanced Privacy
+### 13.4 Privacy improvements
 
 - Fixed-size message padding
 - Cover traffic
 - Routing key rotation
 - Mixnet integration
 
-### 13.5 State Recovery
+### 13.5 State recovery
 
 - Merkle accumulator sync
 - Selective message resync
@@ -793,22 +793,17 @@ Client                              Node
 
 ## 14. Conclusion
 
-Resilient Messenger represents a fundamental rethinking of secure messaging for adversarial network conditions. By combining:
+Reme is a different approach to secure messaging for adversarial network conditions. It combines stateless encryption (each message is independently processable), Merkle DAG ordering (decentralized causality), transport-agnostic design (constrained channels work), and cryptographic tombstones (verifiable acknowledgments).
 
-- **Stateless encryption** enabling independent message processing
-- **Merkle DAG ordering** providing decentralized causality
-- **Transport-agnostic design** supporting constrained channels
-- **Cryptographic tombstones** enabling verifiable acknowledgments
+The current MIK-only implementation provides a solid foundation, with a clear upgrade path to Async Noise XX handshake for forward secrecy. The modular Rust implementation can be embedded in command-line tools, mobile apps, and embedded devices.
 
-The protocol achieves strong security guarantees while maintaining the flexibility needed for operation during infrastructure failures, network partitions, or deliberate blocking.
-
-The current MIK-only implementation provides a solid foundation for deployment, with clear upgrade paths to Async Noise XX handshake for enhanced forward secrecy. The modular Rust implementation enables embedding in diverse applications from command-line tools to mobile apps to embedded devices.
+The tradeoff is explicit: reme prioritizes resilience and DTN tolerance over the per-message forward secrecy that Double Ratchet provides. For users who need messaging when infrastructure fails, this tradeoff makes sense.
 
 ---
 
 ## Appendices
 
-### A. Cryptographic Primitive Summary
+### A. Cryptographic primitive summary
 
 | Primitive    | Algorithm         | Parameters                             |
 |--------------|-------------------|----------------------------------------|
@@ -820,7 +815,7 @@ The current MIK-only implementation provides a solid foundation for deployment, 
 | Message ID   | UUID v4           | 128-bit random                         |
 | Content ID   | BLAKE3 truncated  | 64-bit (8 bytes)                       |
 
-### B. Wire Format Sizes
+### B. Wire format sizes
 
 | Component              | Size                         |
 |------------------------|------------------------------|
@@ -847,58 +842,58 @@ The current MIK-only implementation provides a solid foundation for deployment, 
 
 *This document describes Resilient Messenger version 0.3 (Tiered Delivery). The protocol is under active development; specifications may change.*
 
-## Appendix D. Current Implementation Status (v0.3)
+## Appendix D. Current implementation status (v0.3)
 
-### Completed Features
+### Completed features
 
-**Core Cryptography & Protocol (v0.2):**
-- ✅ X25519/XEdDSA identity system
-- ✅ MIK-based stateless encryption
-- ✅ ChaCha20-Poly1305 AEAD with per-message ephemeral keys
-- ✅ BLAKE3 key derivation with domain separation
-- ✅ XEdDSA signatures for message authentication
-- ✅ Low-order point validation
-- ✅ Tombstone V2 (ack_secret-based authorization)
-- ✅ Merkle DAG message ordering with gap detection
+**Core cryptography & protocol (v0.2):**
+- X25519/XEdDSA identity system
+- MIK-based stateless encryption
+- ChaCha20-Poly1305 AEAD with per-message ephemeral keys
+- BLAKE3 key derivation with domain separation
+- XEdDSA signatures for message authentication
+- Low-order point validation
+- Tombstone V2 (ack_secret-based authorization)
+- Merkle DAG message ordering with gap detection
 
-**Transport & Delivery (v0.3):**
-- ✅ HTTP transport with TLS/certificate pinning
-- ✅ MQTT transport (pub/sub)
-- ✅ TransportCoordinator for multi-transport routing
-- ✅ Tiered delivery (Direct/Quorum/BestEffort)
-- ✅ Three-phase delivery state machine (Urgent/Distributed/Confirmed)
-- ✅ Configurable quorum strategies (Any/Count/Fraction/All)
-- ✅ Per-transport retry policies with exponential backoff
-- ✅ Embedded HTTP server for LAN P2P messaging
-- ✅ Node-to-node authentication with XEdDSA signatures
+**Transport & delivery (v0.3):**
+- HTTP transport with TLS/certificate pinning
+- MQTT transport (pub/sub)
+- TransportCoordinator for multi-transport routing
+- Tiered delivery (Direct/Quorum/BestEffort)
+- Three-phase delivery state machine (Urgent/Distributed/Confirmed)
+- Configurable quorum strategies (Any/Count/Fraction/All)
+- Per-transport retry policies with exponential backoff
+- Embedded HTTP server for LAN P2P messaging
+- Node-to-node authentication with XEdDSA signatures
 
-**Storage & State:**
-- ✅ SQLite persistence for messages and contacts
-- ✅ Outbox with delivery state tracking
-- ✅ Receiver gap detector (orphan tracking)
-- ✅ Sender gap detector (epoch-based)
-- ✅ DAG-based implicit acknowledgments
+**Storage & state:**
+- SQLite persistence for messages and contacts
+- Outbox with delivery state tracking
+- Receiver gap detector (orphan tracking)
+- Sender gap detector (epoch-based)
+- DAG-based implicit acknowledgments
 
-**Security & Hardening:**
-- ✅ HTTP Basic Auth for node access
-- ✅ Rate limiting (per-IP and per-routing-key)
-- ✅ Body size limits (256 KiB max)
-- ✅ Memory zeroization for credentials
-- ✅ Constant-time comparisons for auth
+**Security & hardening:**
+- HTTP Basic Auth for node access
+- Rate limiting (per-IP and per-routing-key)
+- Body size limits (256 KiB max)
+- Memory zeroization for credentials
+- Constant-time comparisons for auth
 
 **Applications:**
-- ✅ TUI client with ratatui
-- ✅ Mailbox node server
-- ✅ Client-as-relay capability (embedded node)
+- TUI client with ratatui
+- Mailbox node server
+- Client-as-relay capability (embedded node)
 
-### In Progress
+### In progress
 
-**Current Development (v0.4):**
-- 🔄 mDNS/Bonjour LAN discovery
-- 🔄 Node identity endpoint (challenge-response verification)
-- 🔄 Background identity refresh for Direct tier targets
+**Current development (v0.4):**
+- mDNS/Bonjour LAN discovery
+- Node identity endpoint (challenge-response verification)
+- Background identity refresh for Direct tier targets
 
-### Planned Features (See ROADMAP.md)
+### Planned features (see ROADMAP.md)
 
 **v0.5:**
 - Sneakernet export/import (archive files, QR codes)
@@ -917,7 +912,7 @@ The current MIK-only implementation provides a solid foundation for deployment, 
 - Multi-hop store-and-forward routing
 - Kilometers-range messaging without Internet
 
-**v1.0 (Breaking Release):**
+**v1.0 (breaking release):**
 - Protobuf wire format for cross-language compatibility
 - Async Noise XX handshake for forward secrecy
 - DAG-integrated key lifecycle
@@ -925,4 +920,4 @@ The current MIK-only implementation provides a solid foundation for deployment, 
 **Post-v1.0:**
 - Group messaging (Sender Keys)
 - Cross-device state synchronization
-- Enhanced privacy features (padding, cover traffic)
+- Privacy improvements (padding, cover traffic)
