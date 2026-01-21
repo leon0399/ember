@@ -384,10 +384,50 @@ impl App<'_> {
                     }
                     None => None,
                 };
+
+                // Parse node_pubkey from base64 string to PublicID
+                let node_pubkey = match &n.node_pubkey {
+                    Some(pubkey_str) => {
+                        use base64::prelude::*;
+
+                        // Decode base64
+                        let bytes = BASE64_STANDARD.decode(pubkey_str).map_err(|e| {
+                            format!(
+                                "Invalid node_pubkey for {}: base64 decode failed: {}. \
+                                    Expected base64-encoded 32-byte X25519 public key.",
+                                n.url, e
+                            )
+                        })?;
+
+                        // Validate length (must be exactly 32 bytes)
+                        let bytes: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
+                            format!(
+                                "Invalid node_pubkey for {}: expected 32 bytes, got {}. \
+                                X25519 public keys are always 32 bytes.",
+                                n.url,
+                                v.len()
+                            )
+                        })?;
+
+                        // Validate as PublicID (checks for low-order points)
+                        let pubkey = PublicID::try_from_bytes(&bytes).map_err(|e| {
+                            format!(
+                                "Invalid node_pubkey for {}: {}. \
+                                This is not a valid X25519 public key. \
+                                Remove the node_pubkey field or fix it.",
+                                n.url, e
+                            )
+                        })?;
+
+                        Some(pubkey)
+                    }
+                    None => None,
+                };
+
                 Ok(NodeSpec {
                     url: n.url.clone(),
                     cert_pin,
-                    node_pubkey: None,
+                    node_pubkey,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
