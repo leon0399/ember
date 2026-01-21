@@ -96,6 +96,9 @@ pub enum TransportError {
 
     #[error("Request timed out")]
     Timeout,
+
+    #[error("Signature verification failed")]
+    SignatureVerificationFailed,
 }
 
 impl TransportError {

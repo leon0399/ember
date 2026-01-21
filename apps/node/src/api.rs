@@ -11,7 +11,7 @@ use crate::replication::ReplicationClient;
 use crate::signed_headers::{SignatureError, SignatureVerifier, HEADER_NODE_SIGNATURE};
 use axum::{
     body::Bytes,
-    extract::{DefaultBodyLimit, Path, Request, State},
+    extract::{DefaultBodyLimit, Path, Query, Request, State},
     http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
     response::IntoResponse,
@@ -20,10 +20,11 @@ use axum::{
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
-use reme_encryption::{build_receipt_sign_data, derive_ack_secret};
+use reme_encryption::{build_identity_sign_data, build_receipt_sign_data, derive_ack_secret};
 use reme_identity::PublicID;
 use reme_message::{OuterEnvelope, RoutingKey, WirePayload};
 use reme_node_core::{MailboxStore, NodeError, PersistentMailboxStore};
+use serde::Deserialize;
 use serde::Serialize;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
@@ -85,6 +86,7 @@ pub fn router(state: Arc<AppState>, rate_limiters: Option<&RateLimiters>) -> Rou
         .merge(fetch_route)
         .route("/api/v1/health", get(health_check))
         .route("/api/v1/stats", get(get_stats))
+        .route("/api/v1/identity", get(get_identity))
         .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -222,6 +224,23 @@ pub struct StatsResponse {
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
     pub error: String,
+}
+
+/// Response for the identity endpoint.
+///
+/// Used by clients to verify node identity via challenge-response.
+/// Returns only the signature for privacy - clients verify against known contacts.
+#[derive(Debug, Serialize)]
+pub struct IdentityResponse {
+    /// Base64-encoded 64-byte `XEdDSA` signature over: `IDENTITY_SIGN_DOMAIN || challenge || node_pubkey`
+    pub signature: String,
+}
+
+/// Query parameters for the identity endpoint.
+#[derive(Debug, Deserialize)]
+pub struct IdentityQuery {
+    /// Base64-encoded 32-byte random challenge
+    pub challenge: String,
 }
 
 // ============================================
@@ -694,5 +713,101 @@ async fn get_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             }),
         )
             .into_response(),
+    }
+}
+
+/// Identity endpoint for challenge-response verification.
+///
+/// Allows clients (especially mDNS-discovered peers) to verify that a node
+/// controls the claimed identity by signing a client-provided challenge.
+///
+/// ## Request
+///
+/// `GET /api/v1/identity?challenge=<base64>`
+///
+/// The challenge must be exactly 32 bytes when decoded from base64.
+///
+/// ## Response
+///
+/// Returns `IdentityResponse` with:
+/// - `signature`: Base64-encoded 64-byte `XEdDSA` signature over `"reme-identity-v1:" || challenge || node_pubkey`
+///
+/// The node's public key is NOT returned for privacy (prevents identity enumeration).
+/// Clients verify the signature against known contacts' public keys.
+///
+/// ## Errors
+///
+/// - `400 Bad Request`: Invalid or missing challenge (must be exactly 32 bytes)
+/// - `401 Unauthorized`: Node has no identity configured
+async fn get_identity(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<IdentityQuery>,
+) -> impl IntoResponse {
+    // Check if identity is configured
+    let Some(identity) = &state.identity else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "Node identity not configured".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    // Decode and validate challenge
+    let Ok(challenge) = BASE64_STANDARD.decode(&query.challenge) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Invalid base64 encoding for challenge".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    if challenge.len() != 32 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "Challenge must be exactly 32 bytes, got {}",
+                    challenge.len()
+                ),
+            }),
+        )
+            .into_response();
+    }
+
+    // Clone identity Arc for use in spawn_blocking
+    let identity = identity.clone();
+
+    // Offload crypto operations (XEdDSA signing) to thread pool
+    let challenge: [u8; 32] = challenge.try_into().expect("validated above");
+    let result = tokio::task::spawn_blocking(move || {
+        // Sign: "reme-identity-v1:" || challenge || node_pubkey
+        // Note: node_pubkey is still included in signed data for cryptographic binding,
+        // but not returned in response (privacy: prevents identity enumeration)
+        let node_pubkey = identity.public_id().to_bytes();
+        let sign_data = build_identity_sign_data(&challenge, &node_pubkey);
+        let signature = identity.sign(&sign_data);
+
+        IdentityResponse {
+            signature: BASE64_STANDARD.encode(signature),
+        }
+    })
+    .await;
+
+    match result {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(e) => {
+            error!("Identity signing task failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Internal error during identity verification".to_string(),
+                }),
+            )
+                .into_response()
+        }
     }
 }

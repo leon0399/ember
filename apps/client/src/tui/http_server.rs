@@ -21,18 +21,18 @@
 //! can decrypt it. Both are base64-encoded. Duplicate submissions return neither field.
 
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Json, Response},
     routing::post,
     Router,
 };
 use base64::prelude::*;
-use reme_encryption::{build_receipt_sign_data, derive_ack_secret};
+use reme_encryption::{build_identity_sign_data, build_receipt_sign_data, derive_ack_secret};
 use reme_identity::{is_low_order_point, Identity};
 use reme_message::{MessageID, OuterEnvelope, RoutingKey, WirePayload};
 use reme_node_core::{EmbeddedNodeHandle, NodeError};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
@@ -235,6 +235,23 @@ struct HealthResponse {
     version: &'static str,
 }
 
+/// Response for the identity endpoint.
+///
+/// Privacy-preserving: returns only the signature, not the node's identity.
+/// Clients verify the signature against known contacts' public keys.
+#[derive(Debug, Serialize)]
+struct IdentityResponse {
+    /// Base64-encoded 64-byte `XEdDSA` signature over: `IDENTITY_SIGN_DOMAIN || challenge || node_pubkey`
+    signature: String,
+}
+
+/// Query parameters for the identity endpoint.
+#[derive(Debug, Deserialize)]
+struct IdentityQuery {
+    /// Base64-encoded 32-byte random challenge
+    challenge: String,
+}
+
 /// POST /api/v1/submit - Accept messages from LAN peers
 async fn submit_handler(
     State(state): State<Arc<HttpServerState>>,
@@ -379,10 +396,92 @@ async fn health_handler() -> impl IntoResponse {
     })
 }
 
+/// GET /api/v1/identity - Challenge-response identity verification
+///
+/// Allows mDNS-discovered peers to verify this node's identity before sending messages.
+///
+/// ## Query Parameters
+///
+/// - `challenge`: Base64-encoded 32-byte random challenge
+///
+/// ## Response
+///
+/// Returns `IdentityResponse` with:
+/// - `signature`: Base64-encoded 64-byte `XEdDSA` signature over `"reme-identity-v1:" || challenge || node_pubkey`
+///
+/// The node's public key is NOT returned for privacy (prevents identity enumeration).
+/// Clients verify the signature against known contacts' public keys.
+///
+/// ## Errors
+///
+/// - `400 Bad Request`: Invalid or missing challenge (must be exactly 32 bytes)
+async fn get_identity(
+    State(state): State<Arc<HttpServerState>>,
+    Query(query): Query<IdentityQuery>,
+) -> impl IntoResponse {
+    // Decode and validate challenge
+    let Ok(challenge) = BASE64_STANDARD.decode(&query.challenge) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Invalid base64 encoding for challenge".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    if challenge.len() != 32 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "Challenge must be exactly 32 bytes, got {}",
+                    challenge.len()
+                ),
+            }),
+        )
+            .into_response();
+    }
+
+    // Clone identity Arc for use in spawn_blocking
+    let identity = state.identity.clone();
+
+    // Offload crypto operations (XEdDSA signing) to thread pool
+    let challenge: [u8; 32] = challenge.try_into().expect("validated above");
+    let result = tokio::task::spawn_blocking(move || {
+        // Sign: "reme-identity-v1:" || challenge || node_pubkey
+        // Note: node_pubkey is still included in signed data for cryptographic binding,
+        // but not returned in response (privacy: prevents identity enumeration)
+        let node_pubkey = identity.public_id().to_bytes();
+        let sign_data = build_identity_sign_data(&challenge, &node_pubkey);
+        let signature = identity.sign_xeddsa(&sign_data);
+
+        IdentityResponse {
+            signature: BASE64_STANDARD.encode(signature),
+        }
+    })
+    .await;
+
+    match result {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(e) => {
+            error!("Identity signing task failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Internal error during identity verification".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
 /// Build the Axum router.
 pub fn build_router(state: Arc<HttpServerState>) -> Router {
     Router::new()
         .route("/api/v1/submit", post(submit_handler))
+        .route("/api/v1/identity", axum::routing::get(get_identity))
         .route("/health", axum::routing::get(health_handler))
         .layer(RequestBodyLimitLayer::new(256 * 1024)) // 256 KiB max
         .with_state(state)
@@ -980,6 +1079,175 @@ mod tests {
         assert!(
             response_json2.get("ack_secret").is_none() || response_json2["ack_secret"].is_null(),
             "Duplicate submit should NOT return ack_secret"
+        );
+    }
+
+    // ============================================
+    // Identity Endpoint Tests
+    // ============================================
+
+    /// Test: Valid challenge returns valid response with verifiable signature
+    #[tokio::test]
+    async fn test_identity_valid_challenge() {
+        let config = PersistentStoreConfig::default();
+        let store = PersistentMailboxStore::in_memory(config).unwrap();
+        let (_node, handle, _event_rx) = EmbeddedNode::new(store);
+
+        let identity = Identity::generate();
+        let identity_pubkey = *identity.public_id();
+        let our_routing_key = identity.public_id().routing_key();
+        let state = Arc::new(HttpServerState::new(
+            handle,
+            our_routing_key,
+            Arc::new(identity),
+        ));
+        let app = build_router(state);
+
+        // Use a fixed 32-byte challenge for test reproducibility
+        let challenge: [u8; 32] = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
+            0x1d, 0x1e, 0x1f, 0x20,
+        ];
+        let challenge_b64 = BASE64_STANDARD.encode(challenge);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/v1/identity?challenge={challenge_b64}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Parse response body
+        let body_bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let response_json: serde_json::Value =
+            serde_json::from_slice(&body_bytes).expect("Invalid JSON response");
+
+        // Response should only contain signature (privacy-preserving)
+        assert!(
+            response_json.get("node_pubkey").is_none(),
+            "Response should not contain node_pubkey"
+        );
+        assert!(
+            response_json.get("routing_keys").is_none(),
+            "Response should not contain routing_keys"
+        );
+
+        // Verify signature using the known public key
+        let signature_b64 = response_json["signature"].as_str().unwrap();
+        let signature: [u8; 64] = BASE64_STANDARD
+            .decode(signature_b64)
+            .expect("Invalid signature base64")
+            .try_into()
+            .expect("Wrong signature length");
+
+        // Reconstruct signed data using helper and known pubkey
+        let node_pubkey = identity_pubkey.to_bytes();
+        let sign_data = build_identity_sign_data(&challenge, &node_pubkey);
+
+        assert!(
+            identity_pubkey.verify_xeddsa(&sign_data, &signature),
+            "Signature should verify with node's public key"
+        );
+    }
+
+    /// Test: Invalid challenge length returns 400
+    #[tokio::test]
+    async fn test_identity_invalid_challenge_length() {
+        let config = PersistentStoreConfig::default();
+        let store = PersistentMailboxStore::in_memory(config).unwrap();
+        let (_node, handle, _event_rx) = EmbeddedNode::new(store);
+
+        let identity = Identity::generate();
+        let our_routing_key = identity.public_id().routing_key();
+        let state = Arc::new(HttpServerState::new(
+            handle,
+            our_routing_key,
+            Arc::new(identity),
+        ));
+        let app = build_router(state);
+
+        // Send a 16-byte challenge (should be 32)
+        let short_challenge: [u8; 16] = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10,
+        ];
+        let challenge_b64 = BASE64_STANDARD.encode(short_challenge);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/v1/identity?challenge={challenge_b64}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        // Verify error message mentions 32 bytes
+        let body_bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let response_json: serde_json::Value =
+            serde_json::from_slice(&body_bytes).expect("Invalid JSON response");
+        let error_msg = response_json["error"].as_str().unwrap();
+        assert!(
+            error_msg.contains("32 bytes"),
+            "Error should mention 32 bytes: {error_msg}"
+        );
+    }
+
+    /// Test: Invalid base64 returns 400
+    #[tokio::test]
+    async fn test_identity_invalid_base64() {
+        let config = PersistentStoreConfig::default();
+        let store = PersistentMailboxStore::in_memory(config).unwrap();
+        let (_node, handle, _event_rx) = EmbeddedNode::new(store);
+
+        let identity = Identity::generate();
+        let our_routing_key = identity.public_id().routing_key();
+        let state = Arc::new(HttpServerState::new(
+            handle,
+            our_routing_key,
+            Arc::new(identity),
+        ));
+        let app = build_router(state);
+
+        // Send invalid base64
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/v1/identity?challenge=not-valid-base64!!!")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        // Verify error message mentions base64
+        let body_bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let response_json: serde_json::Value =
+            serde_json::from_slice(&body_bytes).expect("Invalid JSON response");
+        let error_msg = response_json["error"].as_str().unwrap();
+        assert!(
+            error_msg.to_lowercase().contains("base64"),
+            "Error should mention base64: {error_msg}"
         );
     }
 

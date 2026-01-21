@@ -5,15 +5,30 @@ use async_trait::async_trait;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
 use futures::future::join_all;
+use percent_encoding::{percent_encode, NON_ALPHANUMERIC};
+use rand::Rng;
+use reme_identity::PublicID;
 use reme_message::{MessageID, OuterEnvelope, RoutingKey, SignedAckTombstone, WirePayload};
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, info, warn};
 use url::Url;
 
+use reme_encryption::build_identity_sign_data;
+
 use crate::tls::{CertPin, PinningVerifier};
 use crate::url_auth::parse_url_with_auth;
 use crate::{Transport, TransportError};
+
+/// Response from the identity endpoint.
+///
+/// Privacy-preserving: returns only the signature, not the node's identity.
+/// Clients verify the signature against known contacts' public keys.
+#[derive(Debug, Deserialize)]
+struct IdentityResponse {
+    /// Base64-encoded 64-byte `XEdDSA` signature
+    signature: String,
+}
 
 /// Node configuration for `HttpTransport`.
 #[derive(Debug, Clone)]
@@ -141,6 +156,107 @@ impl HttpTransport {
     /// Get the configured node URLs
     pub fn node_urls(&self) -> &[String] {
         &self.base_urls
+    }
+
+    /// Verify node identity via challenge-response.
+    ///
+    /// Generates a random challenge, requests a signature, and verifies it against
+    /// a list of candidate public keys. This is privacy-preserving: the node never
+    /// reveals its identity, preventing enumeration attacks.
+    ///
+    /// # Arguments
+    ///
+    /// * `base_url` - The base URL of the node (e.g., `http://localhost:3000`)
+    /// * `candidates` - Known contacts' public keys to try verification against
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(Some(pubkey))` if a candidate's signature is valid (Direct tier use)
+    /// - `Ok(None)` if no candidates match (can use as relay - Quorum tier)
+    ///
+    /// # Errors
+    ///
+    /// - `TransportError::Network` - Connection failed
+    /// - `TransportError::ServerError` - Server returned error
+    /// - `TransportError::Serialization` - Response parsing failed
+    pub async fn verify_identity(
+        &self,
+        base_url: &str,
+        candidates: &[PublicID],
+    ) -> Result<Option<PublicID>, TransportError> {
+        // Generate 32-byte random challenge
+        let challenge: [u8; 32] = rand::rng().random();
+        let challenge_b64 = BASE64_STANDARD.encode(challenge);
+
+        // Parse URL and extract credentials if present
+        let parsed = parse_url_with_auth(base_url)
+            .map_err(|e| TransportError::Network(format!("Invalid URL: {e}")))?;
+
+        // URL-encode the base64 challenge since + and / are special in URLs.
+        // Standard base64 uses +, /, and = which need encoding in query parameters.
+        let challenge_encoded = percent_encode(challenge_b64.as_bytes(), NON_ALPHANUMERIC);
+
+        let url = format!(
+            "{}/api/v1/identity?challenge={}",
+            parsed.url.trim_end_matches('/'),
+            challenge_encoded
+        );
+
+        let mut request = self.client.get(&url);
+
+        // Add Basic Auth if credentials were embedded in URL
+        if let Some((username, password)) = parsed.auth {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| TransportError::Network(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(TransportError::AuthenticationFailed);
+            }
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "unknown error".to_string());
+            return Err(TransportError::ServerError(format!(
+                "HTTP {status}: {body}"
+            )));
+        }
+
+        let identity_response: IdentityResponse = response
+            .json()
+            .await
+            .map_err(|e| TransportError::Serialization(format!("JSON parse error: {e}")))?;
+
+        // Decode signature once (shared across all candidate checks)
+        let signature: [u8; 64] = BASE64_STANDARD
+            .decode(&identity_response.signature)
+            .map_err(|e| TransportError::Serialization(format!("Invalid signature base64: {e}")))?
+            .try_into()
+            .map_err(|_| {
+                TransportError::Serialization("signature must be exactly 64 bytes".to_string())
+            })?;
+
+        // Try each candidate until one verifies
+        for candidate in candidates {
+            let sign_data = build_identity_sign_data(&challenge, &candidate.to_bytes());
+            if candidate.verify_xeddsa(&sign_data, &signature) {
+                debug!("Verified identity for {}", candidate);
+                return Ok(Some(*candidate));
+            }
+        }
+
+        // No match - can use as relay (Quorum tier)
+        debug!(
+            "No candidate matched for {} (relay mode)",
+            sanitize_url_for_log(base_url)
+        );
+        Ok(None)
     }
 
     /// Submit wire payload to a single node
@@ -483,6 +599,27 @@ fn build_pinning_client(pins: HashMap<String, CertPin>) -> Result<Client, Transp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{routing::get, Json, Router};
+    use serde::Serialize;
+    use tokio::net::TcpListener;
+
+    /// Start a minimal mock server for testing.
+    async fn start_mock_server(app: Router) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind");
+        let addr = listener.local_addr().expect("Failed to get local addr");
+        let url = format!("http://{addr}");
+
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("Server failed");
+        });
+
+        // Small delay for server startup
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+        (url, handle)
+    }
 
     #[test]
     fn test_http_transport_single_node() {
@@ -579,6 +716,273 @@ mod tests {
                 assert!(msg.contains("At least one node"));
             }
             _ => panic!("Expected TlsConfig error"),
+        }
+    }
+
+    /// Test verify_identity with a valid server response - candidate matches.
+    #[tokio::test]
+    async fn test_verify_identity_valid() {
+        use axum::extract::Query;
+        use base64::prelude::*;
+        use reme_identity::Identity;
+
+        // Create a node identity for the mock server
+        let node_identity = Identity::generate();
+        let node_pubkey = *node_identity.public_id();
+
+        // Clone for the closure
+        let node_identity_clone = node_identity.to_bytes();
+
+        #[derive(Deserialize)]
+        struct IdentityQuery {
+            challenge: String,
+        }
+
+        #[derive(Serialize)]
+        struct MockIdentityResponse {
+            signature: String,
+        }
+
+        let app = Router::new().route(
+            "/api/v1/identity",
+            get(move |Query(query): Query<IdentityQuery>| {
+                let identity = Identity::from_bytes(&node_identity_clone);
+                let pubkey_bytes = identity.public_id().to_bytes();
+
+                // Decode and validate challenge
+                let challenge: [u8; 32] = BASE64_STANDARD
+                    .decode(&query.challenge)
+                    .expect("Invalid challenge base64")
+                    .try_into()
+                    .expect("Challenge must be 32 bytes");
+
+                let sign_data = build_identity_sign_data(&challenge, &pubkey_bytes);
+                let signature = identity.sign_xeddsa(&sign_data);
+
+                async move {
+                    Json(MockIdentityResponse {
+                        signature: BASE64_STANDARD.encode(signature),
+                    })
+                }
+            }),
+        );
+
+        let (url, _handle) = start_mock_server(app).await;
+
+        let transport = HttpTransport::new(&url);
+        let result = transport.verify_identity(&url, &[node_pubkey]).await;
+
+        assert!(
+            result.is_ok(),
+            "verify_identity should succeed: {:?}",
+            result.err()
+        );
+        assert_eq!(
+            result.unwrap(),
+            Some(node_pubkey),
+            "Should return the matched pubkey"
+        );
+    }
+
+    /// Test verify_identity returns None when no candidates match (relay case).
+    #[tokio::test]
+    async fn test_verify_identity_no_match() {
+        use axum::extract::Query;
+        use base64::prelude::*;
+        use reme_identity::Identity;
+
+        // Create a node identity (the one we expect)
+        let expected_identity = Identity::generate();
+        let expected_pubkey = *expected_identity.public_id();
+
+        // Create a DIFFERENT identity that actually signs (the actual node)
+        let actual_node = Identity::generate();
+        let actual_node_bytes = actual_node.to_bytes();
+
+        #[derive(Deserialize)]
+        struct IdentityQuery {
+            challenge: String,
+        }
+
+        #[derive(Serialize)]
+        struct MockIdentityResponse {
+            signature: String,
+        }
+
+        let app = Router::new().route(
+            "/api/v1/identity",
+            get(move |Query(query): Query<IdentityQuery>| {
+                let node_identity = Identity::from_bytes(&actual_node_bytes);
+                let node_pubkey_bytes = node_identity.public_id().to_bytes();
+
+                // Decode and validate challenge
+                let challenge: [u8; 32] = BASE64_STANDARD
+                    .decode(&query.challenge)
+                    .expect("Invalid challenge base64")
+                    .try_into()
+                    .expect("Challenge must be 32 bytes");
+
+                // Sign with node's actual key (different from expected)
+                let sign_data = build_identity_sign_data(&challenge, &node_pubkey_bytes);
+                let signature = node_identity.sign_xeddsa(&sign_data);
+
+                async move {
+                    Json(MockIdentityResponse {
+                        signature: BASE64_STANDARD.encode(signature),
+                    })
+                }
+            }),
+        );
+
+        let (url, _handle) = start_mock_server(app).await;
+
+        let transport = HttpTransport::new(&url);
+        // We pass expected_pubkey as candidate, but server is a different node
+        let result = transport.verify_identity(&url, &[expected_pubkey]).await;
+
+        assert!(
+            result.is_ok(),
+            "verify_identity should succeed (relay case): {:?}",
+            result.err()
+        );
+        assert_eq!(
+            result.unwrap(),
+            None,
+            "Should return None when no candidates match (relay use case)"
+        );
+    }
+
+    /// Test verify_identity with multiple candidates - second one matches.
+    #[tokio::test]
+    async fn test_verify_identity_multiple_candidates() {
+        use axum::extract::Query;
+        use base64::prelude::*;
+        use reme_identity::Identity;
+
+        // Create multiple identities
+        let first_identity = Identity::generate();
+        let first_pubkey = *first_identity.public_id();
+
+        let second_identity = Identity::generate();
+        let second_pubkey = *second_identity.public_id();
+
+        // Node uses second_identity
+        let node_identity_bytes = second_identity.to_bytes();
+
+        #[derive(Deserialize)]
+        struct IdentityQuery {
+            challenge: String,
+        }
+
+        #[derive(Serialize)]
+        struct MockIdentityResponse {
+            signature: String,
+        }
+
+        let app = Router::new().route(
+            "/api/v1/identity",
+            get(move |Query(query): Query<IdentityQuery>| {
+                let identity = Identity::from_bytes(&node_identity_bytes);
+                let pubkey_bytes = identity.public_id().to_bytes();
+
+                let challenge: [u8; 32] = BASE64_STANDARD
+                    .decode(&query.challenge)
+                    .expect("Invalid challenge base64")
+                    .try_into()
+                    .expect("Challenge must be 32 bytes");
+
+                let sign_data = build_identity_sign_data(&challenge, &pubkey_bytes);
+                let signature = identity.sign_xeddsa(&sign_data);
+
+                async move {
+                    Json(MockIdentityResponse {
+                        signature: BASE64_STANDARD.encode(signature),
+                    })
+                }
+            }),
+        );
+
+        let (url, _handle) = start_mock_server(app).await;
+
+        let transport = HttpTransport::new(&url);
+        // Pass both candidates - second one should match
+        let result = transport
+            .verify_identity(&url, &[first_pubkey, second_pubkey])
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "verify_identity should succeed: {:?}",
+            result.err()
+        );
+        assert_eq!(
+            result.unwrap(),
+            Some(second_pubkey),
+            "Should return the second pubkey that matched"
+        );
+    }
+
+    /// Test verify_identity handles malformed response gracefully.
+    #[tokio::test]
+    async fn test_verify_identity_malformed_response() {
+        use axum::response::IntoResponse;
+        use reme_identity::Identity;
+
+        let expected_pubkey = *Identity::generate().public_id();
+
+        let app = Router::new().route(
+            "/api/v1/identity",
+            get(|| async { (axum::http::StatusCode::OK, "not json").into_response() }),
+        );
+
+        let (url, _handle) = start_mock_server(app).await;
+
+        let transport = HttpTransport::new(&url);
+        let result = transport.verify_identity(&url, &[expected_pubkey]).await;
+
+        assert!(
+            result.is_err(),
+            "verify_identity should fail with malformed response"
+        );
+        match result {
+            Err(TransportError::Serialization(_)) => {}
+            Err(e) => panic!("Expected Serialization error, got: {:?}", e),
+            Ok(_) => panic!("Expected error, got success"),
+        }
+    }
+
+    /// Test verify_identity handles server error.
+    #[tokio::test]
+    async fn test_verify_identity_server_error() {
+        use axum::response::IntoResponse;
+        use reme_identity::Identity;
+
+        let expected_pubkey = *Identity::generate().public_id();
+
+        let app = Router::new().route(
+            "/api/v1/identity",
+            get(|| async {
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal error",
+                )
+                    .into_response()
+            }),
+        );
+
+        let (url, _handle) = start_mock_server(app).await;
+
+        let transport = HttpTransport::new(&url);
+        let result = transport.verify_identity(&url, &[expected_pubkey]).await;
+
+        assert!(
+            result.is_err(),
+            "verify_identity should fail with server error"
+        );
+        match result {
+            Err(TransportError::ServerError(_)) => {}
+            Err(e) => panic!("Expected ServerError, got: {:?}", e),
+            Ok(_) => panic!("Expected error, got success"),
         }
     }
 }
