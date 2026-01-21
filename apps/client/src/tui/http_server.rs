@@ -237,14 +237,11 @@ struct HealthResponse {
 
 /// Response for the identity endpoint.
 ///
-/// Used by clients to verify node identity via challenge-response.
+/// Privacy-preserving: returns only the signature, not the node's identity.
+/// Clients verify the signature against known contacts' public keys.
 #[derive(Debug, Serialize)]
 struct IdentityResponse {
-    /// Base64-encoded X25519 public key (32 bytes)
-    node_pubkey: String,
-    /// Hex-encoded routing keys this node serves (array for future multi-identity)
-    routing_keys: Vec<String>,
-    /// Base64-encoded `XEdDSA` signature over: `IDENTITY_SIGN_DOMAIN || challenge || node_pubkey`
+    /// Base64-encoded 64-byte `XEdDSA` signature over: `IDENTITY_SIGN_DOMAIN || challenge || node_pubkey`
     signature: String,
 }
 
@@ -410,9 +407,10 @@ async fn health_handler() -> impl IntoResponse {
 /// ## Response
 ///
 /// Returns `IdentityResponse` with:
-/// - `node_pubkey`: Base64-encoded X25519 public key
-/// - `routing_keys`: Array containing our routing key (hex-encoded)
-/// - `signature`: Base64-encoded `XEdDSA` signature over `IDENTITY_SIGN_DOMAIN || challenge || node_pubkey`
+/// - `signature`: Base64-encoded 64-byte `XEdDSA` signature over `"reme-identity-v1:" || challenge || node_pubkey`
+///
+/// The node's public key is NOT returned for privacy (prevents identity enumeration).
+/// Clients verify the signature against known contacts' public keys.
 ///
 /// ## Errors
 ///
@@ -447,18 +445,18 @@ async fn get_identity(
 
     // Clone identity Arc for use in spawn_blocking
     let identity = state.identity.clone();
-    let routing_key = state.our_routing_key;
 
     // Offload crypto operations (XEdDSA signing) to thread pool
     let challenge: [u8; 32] = challenge.try_into().expect("validated above");
     let result = tokio::task::spawn_blocking(move || {
+        // Sign: "reme-identity-v1:" || challenge || node_pubkey
+        // Note: node_pubkey is still included in signed data for cryptographic binding,
+        // but not returned in response (privacy: prevents identity enumeration)
         let node_pubkey = identity.public_id().to_bytes();
         let sign_data = build_identity_sign_data(&challenge, &node_pubkey);
         let signature = identity.sign_xeddsa(&sign_data);
 
         IdentityResponse {
-            node_pubkey: BASE64_STANDARD.encode(node_pubkey),
-            routing_keys: vec![hex::encode(routing_key.as_bytes())],
             signature: BASE64_STANDARD.encode(signature),
         }
     })
@@ -1133,22 +1131,17 @@ mod tests {
         let response_json: serde_json::Value =
             serde_json::from_slice(&body_bytes).expect("Invalid JSON response");
 
-        // Verify node_pubkey matches
-        let node_pubkey_b64 = response_json["node_pubkey"].as_str().unwrap();
-        let node_pubkey: [u8; 32] = BASE64_STANDARD
-            .decode(node_pubkey_b64)
-            .expect("Invalid base64")
-            .try_into()
-            .expect("Wrong length");
-        assert_eq!(node_pubkey, identity_pubkey.to_bytes());
+        // Response should only contain signature (privacy-preserving)
+        assert!(
+            response_json.get("node_pubkey").is_none(),
+            "Response should not contain node_pubkey"
+        );
+        assert!(
+            response_json.get("routing_keys").is_none(),
+            "Response should not contain routing_keys"
+        );
 
-        // Verify routing_keys contains our routing key
-        let routing_keys = response_json["routing_keys"].as_array().unwrap();
-        assert_eq!(routing_keys.len(), 1);
-        let routing_key_hex = routing_keys[0].as_str().unwrap();
-        assert_eq!(routing_key_hex, hex::encode(our_routing_key.as_bytes()));
-
-        // Verify signature
+        // Verify signature using the known public key
         let signature_b64 = response_json["signature"].as_str().unwrap();
         let signature: [u8; 64] = BASE64_STANDARD
             .decode(signature_b64)
@@ -1156,7 +1149,8 @@ mod tests {
             .try_into()
             .expect("Wrong signature length");
 
-        // Reconstruct signed data using helper
+        // Reconstruct signed data using helper and known pubkey
+        let node_pubkey = identity_pubkey.to_bytes();
         let sign_data = build_identity_sign_data(&challenge, &node_pubkey);
 
         assert!(

@@ -229,13 +229,10 @@ pub struct ErrorResponse {
 /// Response for the identity endpoint.
 ///
 /// Used by clients to verify node identity via challenge-response.
+/// Returns only the signature for privacy - clients verify against known contacts.
 #[derive(Debug, Serialize)]
 pub struct IdentityResponse {
-    /// Base64-encoded X25519 public key (32 bytes)
-    pub node_pubkey: String,
-    /// Hex-encoded routing keys this node serves (array for future multi-identity)
-    pub routing_keys: Vec<String>,
-    /// Base64-encoded `XEdDSA` signature over: `IDENTITY_SIGN_DOMAIN || challenge || node_pubkey`
+    /// Base64-encoded 64-byte `XEdDSA` signature over: `IDENTITY_SIGN_DOMAIN || challenge || node_pubkey`
     pub signature: String,
 }
 
@@ -733,9 +730,10 @@ async fn get_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 /// ## Response
 ///
 /// Returns `IdentityResponse` with:
-/// - `node_pubkey`: Base64-encoded X25519 public key
-/// - `routing_keys`: Hex-encoded routing keys this node serves
-/// - `signature`: `XEdDSA` signature over `"reme-identity-v1:" || challenge || node_pubkey`
+/// - `signature`: Base64-encoded 64-byte `XEdDSA` signature over `"reme-identity-v1:" || challenge || node_pubkey`
+///
+/// The node's public key is NOT returned for privacy (prevents identity enumeration).
+/// Clients verify the signature against known contacts' public keys.
 ///
 /// ## Errors
 ///
@@ -786,14 +784,14 @@ async fn get_identity(
     // Offload crypto operations (XEdDSA signing) to thread pool
     let challenge: [u8; 32] = challenge.try_into().expect("validated above");
     let result = tokio::task::spawn_blocking(move || {
+        // Sign: "reme-identity-v1:" || challenge || node_pubkey
+        // Note: node_pubkey is still included in signed data for cryptographic binding,
+        // but not returned in response (privacy: prevents identity enumeration)
         let node_pubkey = identity.public_id().to_bytes();
-        let routing_key = identity.routing_key();
         let sign_data = build_identity_sign_data(&challenge, &node_pubkey);
         let signature = identity.sign(&sign_data);
 
         IdentityResponse {
-            node_pubkey: BASE64_STANDARD.encode(node_pubkey),
-            routing_keys: vec![hex::encode(routing_key.as_bytes())],
             signature: BASE64_STANDARD.encode(signature),
         }
     })

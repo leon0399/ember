@@ -16,8 +16,6 @@ use tokio::net::TcpListener;
 /// Response from /api/v1/identity
 #[derive(Debug, Deserialize)]
 struct IdentityResponse {
-    node_pubkey: String,
-    routing_keys: Vec<String>,
     signature: String,
 }
 
@@ -103,7 +101,6 @@ async fn test_valid_challenge_returns_valid_response() {
     // Create node identity
     let (node_identity, _dir) = create_temp_identity();
     let node_pubkey = *node_identity.public_id();
-    let expected_routing_key = hex::encode(node_identity.routing_key().as_bytes());
 
     // Start node with identity
     let (url, _handle) = start_test_node(Some(Arc::new(node_identity))).await;
@@ -126,31 +123,15 @@ async fn test_valid_challenge_returns_valid_response() {
     let identity_response: IdentityResponse =
         response.json().await.expect("Failed to parse response");
 
-    // Verify node_pubkey matches
-    let returned_pubkey = BASE64_STANDARD
-        .decode(&identity_response.node_pubkey)
-        .expect("Invalid base64 node_pubkey");
-    assert_eq!(
-        returned_pubkey.as_slice(),
-        node_pubkey.to_bytes().as_slice(),
-        "node_pubkey should match"
-    );
-
-    // Verify routing_keys contains the expected key
-    assert_eq!(identity_response.routing_keys.len(), 1);
-    assert_eq!(
-        identity_response.routing_keys[0], expected_routing_key,
-        "routing_key should match"
-    );
-
-    // Verify signature
+    // Verify signature using the known public key
+    // (In production, clients verify against their contacts' known keys)
     let signature: [u8; 64] = BASE64_STANDARD
         .decode(&identity_response.signature)
         .expect("Invalid base64 signature")
         .try_into()
         .expect("Wrong signature length");
 
-    // Reconstruct signed data using shared helper
+    // Reconstruct signed data using shared helper and known pubkey
     let sign_data = build_identity_sign_data(&challenge, &node_pubkey.to_bytes());
 
     assert!(
@@ -328,7 +309,7 @@ async fn test_signature_is_challenge_specific() {
         "Different challenges should produce different signatures"
     );
 
-    // But both should verify with correct challenge
+    // Verify both signatures using the known public key
     let node_pubkey_bytes = node_pubkey.to_bytes();
     let sign_data1 = build_identity_sign_data(&challenge1, &node_pubkey_bytes);
     let sign_data2 = build_identity_sign_data(&challenge2, &node_pubkey_bytes);
