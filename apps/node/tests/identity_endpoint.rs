@@ -120,13 +120,30 @@ async fn test_valid_challenge_returns_valid_response() {
 
     assert!(response.status().is_success(), "Request should succeed");
 
-    let identity_response: IdentityResponse =
-        response.json().await.expect("Failed to parse response");
+    // PRIVACY CHECK: Parse raw JSON to verify no identity-revealing fields
+    let raw_json: serde_json::Value = response.json().await.expect("Failed to parse response");
+
+    assert!(
+        raw_json.get("node_pubkey").is_none(),
+        "Response should NOT contain node_pubkey (privacy)"
+    );
+    assert!(
+        raw_json.get("routing_keys").is_none(),
+        "Response should NOT contain routing_keys (privacy)"
+    );
+    assert!(
+        raw_json.get("signature").is_some(),
+        "Response should contain signature"
+    );
 
     // Verify signature using the known public key
     // (In production, clients verify against their contacts' known keys)
     let signature: [u8; 64] = BASE64_STANDARD
-        .decode(&identity_response.signature)
+        .decode(
+            raw_json["signature"]
+                .as_str()
+                .expect("signature should be string"),
+        )
         .expect("Invalid base64 signature")
         .try_into()
         .expect("Wrong signature length");
