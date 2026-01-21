@@ -573,6 +573,9 @@ impl TransportPool<HttpTarget> {
             if let Some(pin) = node.cert_pin {
                 config = config.with_cert_pin(pin);
             }
+            if let Some(pubkey) = node.node_pubkey {
+                config = config.with_node_pubkey(pubkey);
+            }
 
             // Log security warnings (sanitize URL to prevent credential exposure)
             let safe_url = sanitize_url_for_logging(&node.url);
