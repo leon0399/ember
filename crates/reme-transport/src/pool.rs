@@ -554,8 +554,8 @@ impl TransportPool<HttpTarget> {
     /// # Example
     /// ```ignore
     /// let nodes = vec![
-    ///     NodeSpec { url: "https://node1.example.com".into(), cert_pin: Some(pin) },
-    ///     NodeSpec { url: "https://node2.example.com".into(), cert_pin: None },
+    ///     NodeSpec { url: "https://node1.example.com".into(), cert_pin: Some(pin), node_pubkey: None },
+    ///     NodeSpec { url: "https://node2.example.com".into(), cert_pin: None, node_pubkey: None },
     /// ];
     /// let pool = TransportPool::from_node_specs(nodes)?;
     /// ```

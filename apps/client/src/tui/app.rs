@@ -387,6 +387,7 @@ impl App<'_> {
                 Ok(NodeSpec {
                     url: n.url.clone(),
                     cert_pin,
+                    node_pubkey: None,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;

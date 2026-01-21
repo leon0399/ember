@@ -37,6 +37,8 @@ pub struct NodeSpec {
     pub url: String,
     /// Optional certificate pin for TLS verification
     pub cert_pin: Option<CertPin>,
+    /// Optional node public identity for verification
+    pub node_pubkey: Option<PublicID>,
 }
 
 /// HTTP transport client for communicating with mailbox nodes (MIK-only, no prekeys)
@@ -102,8 +104,8 @@ impl HttpTransport {
     /// # Example
     /// ```ignore
     /// let nodes = vec![
-    ///     NodeSpec { url: "https://node1.example.com".into(), cert_pin: Some(pin) },
-    ///     NodeSpec { url: "https://node2.example.com".into(), cert_pin: None },
+    ///     NodeSpec { url: "https://node1.example.com".into(), cert_pin: Some(pin), node_pubkey: None },
+    ///     NodeSpec { url: "https://node2.example.com".into(), cert_pin: None, node_pubkey: None },
     /// ];
     /// let transport = HttpTransport::with_nodes_config(nodes)?;
     /// ```
@@ -685,10 +687,12 @@ mod tests {
             NodeSpec {
                 url: "https://node1.example.com".to_string(),
                 cert_pin: None,
+                node_pubkey: None,
             },
             NodeSpec {
                 url: "https://node2.example.com".to_string(),
                 cert_pin: None,
+                node_pubkey: None,
             },
         ];
         let transport = HttpTransport::with_nodes_config(nodes).unwrap();
@@ -702,6 +706,7 @@ mod tests {
         let nodes = vec![NodeSpec {
             url: "https://example.com".to_string(),
             cert_pin: Some(pin),
+            node_pubkey: None,
         }];
         let transport = HttpTransport::with_nodes_config(nodes).unwrap();
         assert_eq!(transport.node_urls().len(), 1);
