@@ -161,29 +161,29 @@ impl HttpTransport {
     /// Verify node identity via challenge-response.
     ///
     /// Generates a random challenge, requests a signature, and verifies it against
-    /// the expected public key. This is privacy-preserving: the node never reveals
-    /// its identity, preventing enumeration attacks.
+    /// a list of candidate public keys. This is privacy-preserving: the node never
+    /// reveals its identity, preventing enumeration attacks.
     ///
     /// # Arguments
     ///
     /// * `base_url` - The base URL of the node (e.g., `http://localhost:3000`)
-    /// * `expected_pubkey` - The expected node public key (from known contacts)
+    /// * `candidates` - Known contacts' public keys to try verification against
     ///
     /// # Returns
     ///
-    /// `Ok(())` if the signature is valid for the expected public key.
+    /// - `Ok(Some(pubkey))` if a candidate's signature is valid (Direct tier use)
+    /// - `Ok(None)` if no candidates match (can use as relay - Quorum tier)
     ///
     /// # Errors
     ///
     /// - `TransportError::Network` - Connection failed
     /// - `TransportError::ServerError` - Server returned error
     /// - `TransportError::Serialization` - Response parsing failed
-    /// - `TransportError::SignatureVerificationFailed` - Signature invalid for expected key
     pub async fn verify_identity(
         &self,
         base_url: &str,
-        expected_pubkey: &PublicID,
-    ) -> Result<(), TransportError> {
+        candidates: &[PublicID],
+    ) -> Result<Option<PublicID>, TransportError> {
         // Generate 32-byte random challenge
         let challenge: [u8; 32] = rand::rng().random();
         let challenge_b64 = BASE64_STANDARD.encode(challenge);
@@ -233,11 +233,7 @@ impl HttpTransport {
             .await
             .map_err(|e| TransportError::Serialization(format!("JSON parse error: {e}")))?;
 
-        // Build sign data using shared helper and expected pubkey
-        let expected_pubkey_bytes = expected_pubkey.to_bytes();
-        let sign_data = build_identity_sign_data(&challenge, &expected_pubkey_bytes);
-
-        // Decode and verify signature against expected pubkey
+        // Decode signature once (shared across all candidate checks)
         let signature: [u8; 64] = BASE64_STANDARD
             .decode(&identity_response.signature)
             .map_err(|e| TransportError::Serialization(format!("Invalid signature base64: {e}")))?
@@ -246,13 +242,21 @@ impl HttpTransport {
                 TransportError::Serialization("signature must be exactly 64 bytes".to_string())
             })?;
 
-        if !expected_pubkey.verify_xeddsa(&sign_data, &signature) {
-            return Err(TransportError::SignatureVerificationFailed);
+        // Try each candidate until one verifies
+        for candidate in candidates {
+            let sign_data = build_identity_sign_data(&challenge, &candidate.to_bytes());
+            if candidate.verify_xeddsa(&sign_data, &signature) {
+                debug!("Verified identity for {}", candidate);
+                return Ok(Some(*candidate));
+            }
         }
 
-        debug!("Verified identity for {}", expected_pubkey);
-
-        Ok(())
+        // No match - can use as relay (Quorum tier)
+        debug!(
+            "No candidate matched for {} (relay mode)",
+            sanitize_url_for_log(base_url)
+        );
+        Ok(None)
     }
 
     /// Submit wire payload to a single node
@@ -715,9 +719,9 @@ mod tests {
         }
     }
 
-    /// Test verify_identity with a valid server response.
+    /// Test verify_identity with a valid server response - candidate matches.
     #[tokio::test]
-    async fn test_verify_identity_valid_response() {
+    async fn test_verify_identity_valid() {
         use axum::extract::Query;
         use base64::prelude::*;
         use reme_identity::Identity;
@@ -766,18 +770,23 @@ mod tests {
         let (url, _handle) = start_mock_server(app).await;
 
         let transport = HttpTransport::new(&url);
-        let result = transport.verify_identity(&url, &node_pubkey).await;
+        let result = transport.verify_identity(&url, &[node_pubkey]).await;
 
         assert!(
             result.is_ok(),
             "verify_identity should succeed: {:?}",
             result.err()
         );
+        assert_eq!(
+            result.unwrap(),
+            Some(node_pubkey),
+            "Should return the matched pubkey"
+        );
     }
 
-    /// Test verify_identity rejects invalid signatures.
+    /// Test verify_identity returns None when no candidates match (relay case).
     #[tokio::test]
-    async fn test_verify_identity_invalid_signature_rejected() {
+    async fn test_verify_identity_no_match() {
         use axum::extract::Query;
         use base64::prelude::*;
         use reme_identity::Identity;
@@ -786,9 +795,9 @@ mod tests {
         let expected_identity = Identity::generate();
         let expected_pubkey = *expected_identity.public_id();
 
-        // Create a DIFFERENT identity that actually signs (wrong signer)
-        let wrong_signer = Identity::generate();
-        let wrong_signer_bytes = wrong_signer.to_bytes();
+        // Create a DIFFERENT identity that actually signs (the actual node)
+        let actual_node = Identity::generate();
+        let actual_node_bytes = actual_node.to_bytes();
 
         #[derive(Deserialize)]
         struct IdentityQuery {
@@ -803,8 +812,8 @@ mod tests {
         let app = Router::new().route(
             "/api/v1/identity",
             get(move |Query(query): Query<IdentityQuery>| {
-                let wrong_identity = Identity::from_bytes(&wrong_signer_bytes);
-                let wrong_pubkey_bytes = wrong_identity.public_id().to_bytes();
+                let node_identity = Identity::from_bytes(&actual_node_bytes);
+                let node_pubkey_bytes = node_identity.public_id().to_bytes();
 
                 // Decode and validate challenge
                 let challenge: [u8; 32] = BASE64_STANDARD
@@ -813,9 +822,9 @@ mod tests {
                     .try_into()
                     .expect("Challenge must be 32 bytes");
 
-                // Sign with WRONG key - this should be detected
-                let sign_data = build_identity_sign_data(&challenge, &wrong_pubkey_bytes);
-                let signature = wrong_identity.sign_xeddsa(&sign_data);
+                // Sign with node's actual key (different from expected)
+                let sign_data = build_identity_sign_data(&challenge, &node_pubkey_bytes);
+                let signature = node_identity.sign_xeddsa(&sign_data);
 
                 async move {
                     Json(MockIdentityResponse {
@@ -828,18 +837,89 @@ mod tests {
         let (url, _handle) = start_mock_server(app).await;
 
         let transport = HttpTransport::new(&url);
-        // We pass the expected pubkey, but server signed with wrong key
-        let result = transport.verify_identity(&url, &expected_pubkey).await;
+        // We pass expected_pubkey as candidate, but server is a different node
+        let result = transport.verify_identity(&url, &[expected_pubkey]).await;
 
         assert!(
-            result.is_err(),
-            "verify_identity should fail with invalid signature"
+            result.is_ok(),
+            "verify_identity should succeed (relay case): {:?}",
+            result.err()
         );
-        match result {
-            Err(TransportError::SignatureVerificationFailed) => {}
-            Err(e) => panic!("Expected SignatureVerificationFailed, got: {:?}", e),
-            Ok(_) => panic!("Expected error, got success"),
+        assert_eq!(
+            result.unwrap(),
+            None,
+            "Should return None when no candidates match (relay use case)"
+        );
+    }
+
+    /// Test verify_identity with multiple candidates - second one matches.
+    #[tokio::test]
+    async fn test_verify_identity_multiple_candidates() {
+        use axum::extract::Query;
+        use base64::prelude::*;
+        use reme_identity::Identity;
+
+        // Create multiple identities
+        let first_identity = Identity::generate();
+        let first_pubkey = *first_identity.public_id();
+
+        let second_identity = Identity::generate();
+        let second_pubkey = *second_identity.public_id();
+
+        // Node uses second_identity
+        let node_identity_bytes = second_identity.to_bytes();
+
+        #[derive(Deserialize)]
+        struct IdentityQuery {
+            challenge: String,
         }
+
+        #[derive(Serialize)]
+        struct MockIdentityResponse {
+            signature: String,
+        }
+
+        let app = Router::new().route(
+            "/api/v1/identity",
+            get(move |Query(query): Query<IdentityQuery>| {
+                let identity = Identity::from_bytes(&node_identity_bytes);
+                let pubkey_bytes = identity.public_id().to_bytes();
+
+                let challenge: [u8; 32] = BASE64_STANDARD
+                    .decode(&query.challenge)
+                    .expect("Invalid challenge base64")
+                    .try_into()
+                    .expect("Challenge must be 32 bytes");
+
+                let sign_data = build_identity_sign_data(&challenge, &pubkey_bytes);
+                let signature = identity.sign_xeddsa(&sign_data);
+
+                async move {
+                    Json(MockIdentityResponse {
+                        signature: BASE64_STANDARD.encode(signature),
+                    })
+                }
+            }),
+        );
+
+        let (url, _handle) = start_mock_server(app).await;
+
+        let transport = HttpTransport::new(&url);
+        // Pass both candidates - second one should match
+        let result = transport
+            .verify_identity(&url, &[first_pubkey, second_pubkey])
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "verify_identity should succeed: {:?}",
+            result.err()
+        );
+        assert_eq!(
+            result.unwrap(),
+            Some(second_pubkey),
+            "Should return the second pubkey that matched"
+        );
     }
 
     /// Test verify_identity handles malformed response gracefully.
@@ -858,7 +938,7 @@ mod tests {
         let (url, _handle) = start_mock_server(app).await;
 
         let transport = HttpTransport::new(&url);
-        let result = transport.verify_identity(&url, &expected_pubkey).await;
+        let result = transport.verify_identity(&url, &[expected_pubkey]).await;
 
         assert!(
             result.is_err(),
@@ -893,7 +973,7 @@ mod tests {
         let (url, _handle) = start_mock_server(app).await;
 
         let transport = HttpTransport::new(&url);
-        let result = transport.verify_identity(&url, &expected_pubkey).await;
+        let result = transport.verify_identity(&url, &[expected_pubkey]).await;
 
         assert!(
             result.is_err(),
