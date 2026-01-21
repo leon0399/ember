@@ -22,14 +22,23 @@
 //! `%APPDATA%\reme\config.toml` (Windows)
 //!
 //! ```toml
-//! # HTTP endpoint configuration with optional certificate pinning
+//! # HTTP endpoint configuration with optional security features
 //! [[http]]
 //! url = "https://node1.example.com:23003"
-//! cert_pin = "spki//sha256/AAAA..."  # Optional
 //!
+//! # Optional: TLS certificate pinning (prevents MITM at TLS layer)
+//! cert_pin = "spki//sha256/AAAA..."
+//!
+//! # Optional: Node identity for receipt verification (prevents node impersonation)
+//! # Format: Base64-encoded 32-byte X25519 public key
+//! # Get this from the node operator or via identity endpoint
+//! node_pubkey = "BASE64_ENCODED_PUBLIC_KEY"
+//!
+//! # Without cert_pin or node_pubkey, connection is less secure:
+//! # - TLS verified against system CAs (vulnerable to rogue CAs)
+//! # - Receipt signatures not verified (vulnerable to node impersonation)
 //! [[http]]
-//! url = "https://node2.example.com:23003"
-//! # No pin - will connect but warn
+//! url = "https://untrusted-node.example.com:23003"
 //!
 //! # MQTT broker configuration (optional)
 //! # Note: MQTT uses system root certificates (no certificate pinning support)
@@ -1018,17 +1027,20 @@ pub fn default_config_toml() -> String {
 #   1. Environment variables: REME_HTTP='[{{"url":"...", "cert_pin":"..."}}]'
 #   2. CLI arguments: --http-url <url> --http-cert-pin <pin>
 
-# HTTP endpoint configuration with optional certificate pinning
-# For TLS with pinning:
+# HTTP endpoint configuration with optional security features
+#
+# Example with full security (TLS pinning + receipt verification):
 # [[http]]
 # url = "https://node1.example.com:23003"
-# cert_pin = "spki//sha256/AAAA..."  # SPKI hash
+# cert_pin = "spki//sha256/AAAA..."           # Optional: TLS certificate pinning
+# node_pubkey = "BASE64_ENCODED_PUBLIC_KEY"  # Optional: Receipt signature verification
 #
+# Example with only TLS pinning:
 # [[http]]
 # url = "https://node2.example.com:23003"
-# cert_pin = "cert//sha256/BBBB..."  # Certificate hash
+# cert_pin = "cert//sha256/BBBB..."           # Certificate hash
 #
-# Without pinning (will warn):
+# Without security features (will warn):
 [[http]]
 url = "{url}"
 
