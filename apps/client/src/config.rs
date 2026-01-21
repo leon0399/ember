@@ -501,6 +501,46 @@ impl HttpEndpoint {
         self.node_pubkey = Some(pubkey.into());
         self
     }
+
+    /// Parse and validate node_pubkey from base64 string.
+    ///
+    /// Returns `Ok(PublicID)` on success, or `Err(String)` with user-facing error message.
+    pub fn parse_node_pubkey(
+        pubkey_str: &str,
+        url: &str,
+    ) -> Result<reme_identity::PublicID, String> {
+        use base64::prelude::*;
+        use reme_identity::PublicID;
+
+        // Decode base64
+        let bytes = BASE64_STANDARD.decode(pubkey_str).map_err(|e| {
+            format!(
+                "Invalid node_pubkey for {}: base64 decode failed: {}. \
+                Expected base64-encoded 32-byte X25519 public key.",
+                url, e
+            )
+        })?;
+
+        // Validate length (must be exactly 32 bytes)
+        let bytes: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
+            format!(
+                "Invalid node_pubkey for {}: expected 32 bytes, got {}. \
+                X25519 public keys are always 32 bytes.",
+                url,
+                v.len()
+            )
+        })?;
+
+        // Validate as PublicID (checks for low-order points)
+        PublicID::try_from_bytes(&bytes).map_err(|e| {
+            format!(
+                "Invalid node_pubkey for {}: {}. \
+                This is not a valid X25519 public key. \
+                Remove the node_pubkey field or fix it.",
+                url, e
+            )
+        })
+    }
 }
 
 // =============================================================================
@@ -1490,5 +1530,102 @@ mod tests {
         assert_eq!(config.direct_peers[0].name, Some("Alice".to_string()));
         assert!(config.direct_peers[1].public_id.is_none());
         assert!(config.direct_peers[1].name.is_none());
+    }
+
+    // Helper function to generate a valid base64-encoded 32-byte public key
+    // Uses a non-low-order point (just not all zeros or any known weak points)
+    fn valid_base64_pubkey() -> String {
+        use base64::prelude::*;
+        // A valid random-looking 32-byte key (not a low-order point)
+        let bytes = [
+            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+            0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x12, 0x34, 0x56, 0x78,
+            0x9a, 0xbc, 0xde, 0xf0,
+        ];
+        BASE64_STANDARD.encode(bytes)
+    }
+
+    // Helper function to get a base64-encoded low-order point for testing rejection
+    fn low_order_base64_pubkey() -> String {
+        use base64::prelude::*;
+        // Use the all-zeros point (order 4) from LOW_ORDER_POINTS
+        let bytes = [0u8; 32];
+        BASE64_STANDARD.encode(bytes)
+    }
+
+    mod node_pubkey_parsing {
+        use super::*;
+        use base64::prelude::*;
+        use reme_identity::PublicID;
+
+        /// Helper to test node_pubkey parsing
+        fn parse_node_pubkey(pubkey_str: &str, url: &str) -> Result<PublicID, String> {
+            HttpEndpoint::parse_node_pubkey(pubkey_str, url)
+        }
+
+        #[test]
+        fn test_valid_node_pubkey() {
+            let pubkey_str = valid_base64_pubkey();
+            let result = parse_node_pubkey(&pubkey_str, "https://example.com:23003");
+            assert!(result.is_ok(), "Valid node_pubkey should succeed");
+        }
+
+        #[test]
+        fn test_node_pubkey_invalid_base64() {
+            let pubkey_str = "NOT_VALID_BASE64!!!";
+            let result = parse_node_pubkey(pubkey_str, "https://example.com:23003");
+            assert!(result.is_err(), "Invalid base64 should fail");
+            let error_msg = result.unwrap_err();
+            assert!(
+                error_msg.contains("base64 decode failed"),
+                "Error should mention base64 decoding failure, got: {error_msg}"
+            );
+        }
+
+        #[test]
+        fn test_node_pubkey_wrong_length() {
+            // Create a base64 string of 16 bytes instead of 32
+            let short_bytes = vec![0x42u8; 16];
+            let short_base64 = BASE64_STANDARD.encode(short_bytes);
+
+            let result = parse_node_pubkey(&short_base64, "https://example.com:23003");
+            assert!(result.is_err(), "Wrong length should fail");
+            let error_msg = result.unwrap_err();
+            assert!(
+                error_msg.contains("expected 32 bytes"),
+                "Error should mention expected 32 bytes, got: {error_msg}"
+            );
+        }
+
+        #[test]
+        fn test_node_pubkey_low_order_point() {
+            let pubkey_str = low_order_base64_pubkey();
+            let result = parse_node_pubkey(&pubkey_str, "https://example.com:23003");
+            assert!(result.is_err(), "Low-order point should fail");
+            let error_msg = result.unwrap_err();
+            assert!(
+                error_msg.contains("Invalid public key"),
+                "Error should mention invalid public key, got: {error_msg}"
+            );
+        }
+
+        #[test]
+        fn test_node_pubkey_none_is_valid_config() {
+            // Test that HttpEndpoint can be constructed without node_pubkey
+            let endpoint = HttpEndpoint {
+                url: "https://example.com:23003".into(),
+                cert_pin: None,
+                node_pubkey: None,
+                kind: TargetKindConfig::default(),
+                priority: None,
+                label: None,
+            };
+
+            // This should compile and node_pubkey should be None
+            assert!(
+                endpoint.node_pubkey.is_none(),
+                "node_pubkey=None should be a valid configuration (degraded security)"
+            );
+        }
     }
 }
