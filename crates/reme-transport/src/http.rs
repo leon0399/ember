@@ -788,17 +788,14 @@ mod tests {
                 let pubkey_bytes = identity.public_id().to_bytes();
                 let routing_key_hex = hex::encode(identity.public_id().routing_key().as_bytes());
 
-                // Decode challenge
-                let challenge = BASE64_STANDARD
+                // Decode and validate challenge
+                let challenge: [u8; 32] = BASE64_STANDARD
                     .decode(&query.challenge)
-                    .expect("Invalid challenge base64");
+                    .expect("Invalid challenge base64")
+                    .try_into()
+                    .expect("Challenge must be 32 bytes");
 
-                // Build sign data: domain || challenge || node_pubkey
-                let mut sign_data = Vec::with_capacity(17 + 32 + 32);
-                sign_data.extend_from_slice(b"reme-identity-v1:");
-                sign_data.extend_from_slice(&challenge);
-                sign_data.extend_from_slice(&pubkey_bytes);
-
+                let sign_data = build_identity_sign_data(&challenge, &pubkey_bytes);
                 let signature = identity.sign_xeddsa(&sign_data);
 
                 async move {
@@ -861,16 +858,15 @@ mod tests {
             get(move |Query(query): Query<IdentityQuery>| {
                 let wrong_identity = Identity::from_bytes(&wrong_signer_bytes);
 
-                // Decode challenge
-                let challenge = BASE64_STANDARD
+                // Decode and validate challenge
+                let challenge: [u8; 32] = BASE64_STANDARD
                     .decode(&query.challenge)
-                    .expect("Invalid challenge base64");
+                    .expect("Invalid challenge base64")
+                    .try_into()
+                    .expect("Challenge must be 32 bytes");
 
                 // Build sign data with correct pubkey but sign with wrong key
-                let mut sign_data = Vec::with_capacity(17 + 32 + 32);
-                sign_data.extend_from_slice(b"reme-identity-v1:");
-                sign_data.extend_from_slice(&challenge);
-                sign_data.extend_from_slice(&node_pubkey_bytes);
+                let sign_data = build_identity_sign_data(&challenge, &node_pubkey_bytes);
 
                 // Sign with WRONG key - this should be detected
                 let signature = wrong_identity.sign_xeddsa(&sign_data);

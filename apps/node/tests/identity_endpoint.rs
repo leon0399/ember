@@ -6,14 +6,12 @@ use base64::prelude::*;
 use node::{
     api, node_identity::NodeIdentity, replication, PersistentMailboxStore, PersistentStoreConfig,
 };
+use reme_encryption::build_identity_sign_data;
 use reme_identity::Identity;
 use serde::Deserialize;
 use std::sync::Arc;
 use tempfile::tempdir;
 use tokio::net::TcpListener;
-
-/// Domain separator for identity signatures (must match api.rs).
-const IDENTITY_SIGN_DOMAIN: &[u8] = b"reme-identity-v1:";
 
 /// Response from /api/v1/identity
 #[derive(Debug, Deserialize)]
@@ -152,18 +150,13 @@ async fn test_valid_challenge_returns_valid_response() {
         .try_into()
         .expect("Wrong signature length");
 
-    // Reconstruct signed data: domain || challenge || node_pubkey
-    let mut sign_data = Vec::with_capacity(IDENTITY_SIGN_DOMAIN.len() + 32 + 32);
-    sign_data.extend_from_slice(IDENTITY_SIGN_DOMAIN);
-    sign_data.extend_from_slice(&challenge);
-    sign_data.extend_from_slice(&node_pubkey.to_bytes());
+    // Reconstruct signed data using shared helper
+    let sign_data = build_identity_sign_data(&challenge, &node_pubkey.to_bytes());
 
     assert!(
         node_pubkey.verify_xeddsa(&sign_data, &signature),
         "Signature should verify with node's public key"
     );
-
-    println!("Identity endpoint correctly returned verifiable response");
 }
 
 /// Test: No identity configured returns 401 Unauthorized.
@@ -196,8 +189,6 @@ async fn test_no_identity_returns_401() {
         error.error.contains("identity"),
         "Error message should mention identity"
     );
-
-    println!("Node without identity correctly returned 401");
 }
 
 /// Test: Invalid challenge (not 32 bytes) returns 400 Bad Request.
@@ -250,8 +241,6 @@ async fn test_invalid_challenge_length_returns_400() {
         400,
         "Should return 400 Bad Request for long challenge"
     );
-
-    println!("Invalid challenge lengths correctly returned 400");
 }
 
 /// Test: Invalid base64 challenge returns 400 Bad Request.
@@ -283,8 +272,6 @@ async fn test_invalid_base64_challenge_returns_400() {
         error.error.contains("base64") || error.error.contains("Invalid"),
         "Error message should mention base64 or invalid encoding"
     );
-
-    println!("Invalid base64 challenge correctly returned 400");
 }
 
 /// Test: Signature is specific to the challenge (different challenges produce different signatures).
@@ -342,15 +329,9 @@ async fn test_signature_is_challenge_specific() {
     );
 
     // But both should verify with correct challenge
-    let mut sign_data1 = Vec::with_capacity(IDENTITY_SIGN_DOMAIN.len() + 32 + 32);
-    sign_data1.extend_from_slice(IDENTITY_SIGN_DOMAIN);
-    sign_data1.extend_from_slice(&challenge1);
-    sign_data1.extend_from_slice(&node_pubkey.to_bytes());
-
-    let mut sign_data2 = Vec::with_capacity(IDENTITY_SIGN_DOMAIN.len() + 32 + 32);
-    sign_data2.extend_from_slice(IDENTITY_SIGN_DOMAIN);
-    sign_data2.extend_from_slice(&challenge2);
-    sign_data2.extend_from_slice(&node_pubkey.to_bytes());
+    let node_pubkey_bytes = node_pubkey.to_bytes();
+    let sign_data1 = build_identity_sign_data(&challenge1, &node_pubkey_bytes);
+    let sign_data2 = build_identity_sign_data(&challenge2, &node_pubkey_bytes);
 
     assert!(
         node_pubkey.verify_xeddsa(&sign_data1, &signature1),
@@ -370,6 +351,4 @@ async fn test_signature_is_challenge_specific() {
         !node_pubkey.verify_xeddsa(&sign_data2, &signature1),
         "Signature 1 should NOT verify with challenge 2 data"
     );
-
-    println!("Signatures are correctly challenge-specific (replay-resistant)");
 }
