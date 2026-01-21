@@ -370,26 +370,27 @@ impl App<'_> {
             .http
             .iter()
             .map(|n| {
-                let cert_pin = match &n.cert_pin {
-                    Some(pin_str) => {
-                        // Fail explicitly if a configured pin is invalid - don't silently disable security
-                        let pin = CertPin::parse(pin_str).map_err(|e| {
+                // Fail explicitly if a configured pin is invalid - don't silently disable security
+                let cert_pin = n
+                    .cert_pin
+                    .as_ref()
+                    .map(|pin_str| {
+                        CertPin::parse(pin_str).map_err(|e| {
                             format!(
                                 "Invalid certificate pin for node {}: {}. \
                                 Fix the pin or remove it to disable pinning for this node.",
                                 n.url, e
                             )
-                        })?;
-                        Some(pin)
-                    }
-                    None => None,
-                };
+                        })
+                    })
+                    .transpose()?;
 
                 // Parse node_pubkey from base64 string to PublicID
-                let node_pubkey = match &n.node_pubkey {
-                    Some(pubkey_str) => Some(HttpEndpoint::parse_node_pubkey(pubkey_str, &n.url)?),
-                    None => None,
-                };
+                let node_pubkey = n
+                    .node_pubkey
+                    .as_ref()
+                    .map(|pubkey_str| HttpEndpoint::parse_node_pubkey(pubkey_str, &n.url))
+                    .transpose()?;
 
                 Ok(NodeSpec {
                     url: n.url.clone(),
