@@ -425,6 +425,22 @@ pub struct HttpEndpoint {
     /// Optional human-readable label for this endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Node's public identity for receipt verification.
+    ///
+    /// Format: Base64-encoded 32-byte X25519 public key.
+    ///
+    /// When configured:
+    /// - Startup validates the public key (fails loudly on invalid key)
+    /// - Runtime verifies receipt signatures from this node
+    /// - Detects MITM attacks or node impersonation
+    ///
+    /// When absent:
+    /// - No receipt verification (degraded security)
+    /// - Node can still be used but signatures not checked
+    ///
+    /// Example: `node_pubkey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_pubkey: Option<String>,
 }
 
 #[allow(dead_code)] // Builder API for programmatic configuration
@@ -437,6 +453,7 @@ impl HttpEndpoint {
             kind: TargetKindConfig::default(),
             priority: None,
             label: None,
+            node_pubkey: None,
         }
     }
 
@@ -448,6 +465,7 @@ impl HttpEndpoint {
             kind: TargetKindConfig::default(),
             priority: None,
             label: None,
+            node_pubkey: None,
         }
     }
 
@@ -466,6 +484,12 @@ impl HttpEndpoint {
     /// Set the label.
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
+        self
+    }
+
+    /// Set the node public key.
+    pub fn with_node_pubkey(mut self, pubkey: impl Into<String>) -> Self {
+        self.node_pubkey = Some(pubkey.into());
         self
     }
 }
@@ -818,6 +842,7 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
                 kind: TargetKindConfig::default(),
                 priority: None,
                 label: None,
+                node_pubkey: None,
             })
             .collect()
     } else if let Some(env_http) = parse_http_from_env() {
