@@ -15,6 +15,7 @@ reme-node-core = { workspace = true }
 reme-storage = { workspace = true }
 reme-outbox = { workspace = true }
 reme-core = { workspace = true }
+reme-config = { workspace = true, features = ["http", "mqtt"] }
 
 thiserror = { workspace = true }
 tracing = { workspace = true }

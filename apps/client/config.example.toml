@@ -1,0 +1,43 @@
+# Resilient Messenger Client Configuration
+# Default location: ~/.config/reme/config.toml
+
+# HTTP Mailbox Peers
+[[peers.http]]
+url = "https://mailbox1.example.com:23003"
+cert_pin = "spki//sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+tier = "quorum"
+priority = 100
+label = "Primary Mailbox"
+
+[[peers.http]]
+url = "https://mailbox2.example.com:23003"
+cert_pin = "spki//sha256/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
+tier = "quorum"
+priority = 90
+label = "Backup Mailbox"
+
+# MQTT Broker Peers (optional)
+[[peers.mqtt]]
+url = "mqtts://broker.example.com:8883"
+client_id = "my-device-id"
+tier = "quorum"
+priority = 100
+
+# Application settings
+data_dir = "~/.local/share/reme"
+log_level = "info"
+
+# Embedded node (for LAN P2P)
+[embedded_node]
+enabled = true
+http_bind = "127.0.0.1:23003"
+
+# Outbox settings (message retry)
+[outbox]
+tick_interval_secs = 30
+ttl_days = 7
+
+# Delivery settings
+[delivery]
+quorum_strategy = "any"  # any | count | fraction | all
+quorum_count = 1
