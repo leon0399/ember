@@ -304,6 +304,7 @@ async fn test_two_client_messaging() {
 #[tokio::test]
 async fn test_multi_node_replication() {
     use node::{api, replication, PersistentMailboxStore, PersistentStoreConfig};
+    use reme_config::{ConfiguredTier, HttpPeerConfig, ParsedHttpPeer};
 
     // Start two nodes
     let listener1 = TcpListener::bind("127.0.0.1:0")
@@ -329,9 +330,24 @@ async fn test_multi_node_replication() {
 
     // Create node 1 with node 2 as peer
     let store1 = Arc::new(PersistentMailboxStore::open(":memory:", config.clone()).unwrap());
+    let peer2_config = HttpPeerConfig {
+        common: reme_config::PeerCommon {
+            tier: ConfiguredTier::Quorum,
+            priority: 100,
+            label: Some("node-2".to_string()),
+        },
+        url: url2.clone(),
+        username: None,
+        password: None,
+        cert_pin: None,
+        node_pubkey: None,
+    };
+    let peer2_parsed: ParsedHttpPeer = peer2_config
+        .try_into()
+        .expect("Failed to parse peer config");
     let replication1 = Arc::new(replication::ReplicationClient::new(
         "node-1".to_string(),
-        vec![url2.clone()],
+        vec![peer2_parsed],
     ));
     let state1 = Arc::new(api::AppState {
         store: store1,
@@ -347,9 +363,24 @@ async fn test_multi_node_replication() {
 
     // Create node 2 with node 1 as peer
     let store2 = Arc::new(PersistentMailboxStore::open(":memory:", config).unwrap());
+    let peer1_config = HttpPeerConfig {
+        common: reme_config::PeerCommon {
+            tier: ConfiguredTier::Quorum,
+            priority: 100,
+            label: Some("node-1".to_string()),
+        },
+        url: url1.clone(),
+        username: None,
+        password: None,
+        cert_pin: None,
+        node_pubkey: None,
+    };
+    let peer1_parsed: ParsedHttpPeer = peer1_config
+        .try_into()
+        .expect("Failed to parse peer config");
     let replication2 = Arc::new(replication::ReplicationClient::new(
         "node-2".to_string(),
-        vec![url1.clone()],
+        vec![peer1_parsed],
     ));
     let state2 = Arc::new(api::AppState {
         store: store2,

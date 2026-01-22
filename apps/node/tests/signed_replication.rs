@@ -5,6 +5,7 @@
 use node::{
     api, node_identity::NodeIdentity, replication, PersistentMailboxStore, PersistentStoreConfig,
 };
+use reme_config::{ConfiguredTier, HttpPeerConfig, ParsedHttpPeer, PeerCommon};
 use reme_identity::Identity;
 use reme_message::OuterEnvelope;
 use reme_transport::http_target::HttpTarget;
@@ -48,9 +49,30 @@ async fn start_test_node(
         .as_ref()
         .map_or_else(|| "test-node".to_string(), |i| i.node_id().to_string());
 
+    // Convert peer URLs to ParsedHttpPeer configs
+    let parsed_peers: Vec<ParsedHttpPeer> = peer_urls
+        .into_iter()
+        .enumerate()
+        .map(|(i, url)| {
+            ParsedHttpPeer::try_from(HttpPeerConfig {
+                common: PeerCommon {
+                    label: Some(format!("Test Peer {}", i + 1)),
+                    tier: ConfiguredTier::Quorum,
+                    priority: 100,
+                },
+                url,
+                cert_pin: None,
+                node_pubkey: None,
+                username: None,
+                password: None,
+            })
+            .expect("Failed to parse peer URL")
+        })
+        .collect();
+
     let replication = Arc::new(replication::ReplicationClient::with_identity(
         node_id,
-        peer_urls,
+        parsed_peers,
         identity.clone(),
     ));
 
