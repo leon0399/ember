@@ -706,77 +706,71 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
     let data_dir = expand_tilde(&data_dir_str);
 
     // Build outbox config with priority: CLI > config file > defaults
-    let outbox_defaults = OutboxAppConfig::default();
     let outbox = OutboxAppConfig {
         tick_interval_secs: cli
             .outbox_tick_interval
             .or(raw.outbox.tick_interval_secs)
-            .unwrap_or(outbox_defaults.tick_interval_secs),
+            .unwrap_or_else(default_outbox_tick_interval),
         ttl_days: cli
             .outbox_ttl_days
             .or(raw.outbox.ttl_days)
-            .unwrap_or(outbox_defaults.ttl_days),
+            .unwrap_or_else(default_outbox_ttl_days),
         attempt_timeout_secs: cli
             .outbox_attempt_timeout
             .or(raw.outbox.attempt_timeout_secs)
-            .unwrap_or(outbox_defaults.attempt_timeout_secs),
+            .unwrap_or_else(default_outbox_attempt_timeout),
         retry_initial_delay_secs: cli
             .outbox_retry_initial_delay
             .or(raw.outbox.retry_initial_delay_secs)
-            .unwrap_or(outbox_defaults.retry_initial_delay_secs),
+            .unwrap_or_else(default_outbox_retry_initial_delay),
         retry_max_delay_secs: cli
             .outbox_retry_max_delay
             .or(raw.outbox.retry_max_delay_secs)
-            .unwrap_or(outbox_defaults.retry_max_delay_secs),
+            .unwrap_or_else(default_outbox_retry_max_delay),
     };
 
-    // Build delivery config from config file > defaults
-    // (No CLI arguments for delivery config - use config file or env vars)
-    let delivery_defaults = DeliveryAppConfig::default();
+    // Build delivery config from config file > defaults (no CLI args for delivery)
     let delivery = DeliveryAppConfig {
-        quorum: raw.delivery.quorum.unwrap_or(delivery_defaults.quorum),
+        quorum: raw.delivery.quorum.unwrap_or_default(),
         urgent_initial_delay_secs: raw
             .delivery
             .urgent_initial_delay_secs
-            .unwrap_or(delivery_defaults.urgent_initial_delay_secs),
+            .unwrap_or_else(default_urgent_initial_delay),
         urgent_max_delay_secs: raw
             .delivery
             .urgent_max_delay_secs
-            .unwrap_or(delivery_defaults.urgent_max_delay_secs),
+            .unwrap_or_else(default_urgent_max_delay),
         urgent_backoff_multiplier: raw
             .delivery
             .urgent_backoff_multiplier
-            .unwrap_or(delivery_defaults.urgent_backoff_multiplier),
+            .unwrap_or_else(default_urgent_backoff_multiplier),
         maintenance_interval_hours: raw
             .delivery
             .maintenance_interval_hours
-            .unwrap_or(delivery_defaults.maintenance_interval_hours),
+            .unwrap_or_else(default_maintenance_interval_hours),
         maintenance_enabled: raw
             .delivery
             .maintenance_enabled
-            .unwrap_or(delivery_defaults.maintenance_enabled),
+            .unwrap_or_else(default_maintenance_enabled),
         direct_tier_timeout_ms: raw
             .delivery
             .direct_tier_timeout_ms
-            .unwrap_or(delivery_defaults.direct_tier_timeout_ms),
+            .unwrap_or_else(default_direct_tier_timeout_ms),
         quorum_tier_timeout_secs: raw
             .delivery
             .quorum_tier_timeout_secs
-            .unwrap_or(delivery_defaults.quorum_tier_timeout_secs),
+            .unwrap_or_else(default_quorum_tier_timeout_secs),
     };
 
     // Resolve embedded node config with priority: CLI > config file > defaults
     let embedded_node_file = raw.embedded_node.unwrap_or_default();
     let embedded_node = EmbeddedNodeConfig {
         // CLI flags take priority: --embedded-node enables, --no-embedded-node disables
-        enabled: if cli.embedded_node {
-            true
-        } else if cli.no_embedded_node {
-            false
-        } else {
-            embedded_node_file.enabled
+        enabled: match (cli.embedded_node, cli.no_embedded_node) {
+            (true, _) => true,
+            (_, true) => false,
+            _ => embedded_node_file.enabled,
         },
-        // CLI --embedded-http-bind overrides config file
         http_bind: cli.embedded_http_bind.or(embedded_node_file.http_bind),
         max_messages: embedded_node_file.max_messages,
         default_ttl_secs: embedded_node_file.default_ttl_secs,
