@@ -426,6 +426,11 @@ impl App<'_> {
                 // Set node pubkey if present
                 config = config.with_node_pubkey_opt(parsed_peer.node_pubkey);
 
+                // Set HTTP Basic Auth if configured
+                if let Some((username, password)) = &parsed_peer.auth {
+                    config = config.with_auth(username, password);
+                }
+
                 // Create target and add to pool
                 let target = HttpTarget::new(config)?;
                 pool.add_target(target);

@@ -34,6 +34,11 @@ pub struct HttpTargetConfig {
 
     /// Optional certificate pin for TLS verification.
     pub cert_pin: Option<CertPin>,
+
+    /// Explicit HTTP Basic Auth credentials (username, password).
+    ///
+    /// Takes precedence over URL-embedded credentials.
+    pub auth: Option<(String, String)>,
 }
 
 impl HttpTargetConfig {
@@ -45,6 +50,7 @@ impl HttpTargetConfig {
             base: TargetConfig::new(id, kind),
             url,
             cert_pin: None,
+            auth: None,
         }
     }
 
@@ -61,6 +67,14 @@ impl HttpTargetConfig {
     /// Set the certificate pin for TLS verification.
     pub fn with_cert_pin(mut self, pin: CertPin) -> Self {
         self.cert_pin = Some(pin);
+        self
+    }
+
+    /// Set explicit HTTP Basic Auth credentials.
+    ///
+    /// Takes precedence over URL-embedded credentials.
+    pub fn with_auth(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
+        self.auth = Some((username.into(), password.into()));
         self
     }
 
@@ -123,6 +137,10 @@ pub struct HttpTarget {
     config: HttpTargetConfig,
     client: Client,
     health: TargetHealth,
+    /// Sanitized URL (credentials removed, parsed once in constructor).
+    sanitized_url: String,
+    /// URL-embedded auth credentials (parsed once in constructor).
+    url_auth: Option<(String, String)>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -182,6 +200,10 @@ impl HttpTarget {
     /// - Request timeout from config
     /// - Connect timeout from config
     pub fn new(config: HttpTargetConfig) -> Result<Self, TransportError> {
+        // Parse URL once to extract credentials and sanitized URL
+        let parsed = parse_url_with_auth(&config.url)
+            .map_err(|e| TransportError::Network(format!("Invalid URL: {e}")))?;
+
         let client = build_target_client(&config)?;
         let health = TargetHealth::new(
             config.base.circuit_breaker_threshold,
@@ -192,6 +214,8 @@ impl HttpTarget {
             config,
             client,
             health,
+            sanitized_url: parsed.url,
+            url_auth: parsed.auth,
         })
     }
 
@@ -209,11 +233,7 @@ impl HttpTarget {
     ///
     /// Returns the raw receipt data from the node (if any).
     async fn submit_payload(&self, payload_b64: &str) -> Result<RawReceipt, TransportError> {
-        // Parse URL and extract credentials if present
-        let parsed = parse_url_with_auth(&self.config.url)
-            .map_err(|e| TransportError::Network(format!("Invalid URL: {e}")))?;
-
-        let url = format!("{}/api/v1/submit", parsed.url.trim_end_matches('/'));
+        let url = format!("{}/api/v1/submit", self.sanitized_url.trim_end_matches('/'));
 
         let mut request = self
             .client
@@ -222,8 +242,10 @@ impl HttpTarget {
             .timeout(self.config.base.request_timeout)
             .body(payload_b64.to_string());
 
-        // Add Basic Auth if credentials were embedded in URL
-        if let Some((username, password)) = parsed.auth {
+        // Priority 1: Explicit auth from config
+        // Priority 2: URL-embedded auth (legacy/backward compat)
+        let auth = self.config.auth.as_ref().or(self.url_auth.as_ref());
+        if let Some((username, password)) = auth {
             request = request.basic_auth(username, Some(password));
         }
 
@@ -304,13 +326,9 @@ impl HttpTarget {
         &self,
         routing_key_b64: &str,
     ) -> Result<Vec<OuterEnvelope>, TransportError> {
-        // Parse URL and extract credentials if present
-        let parsed = parse_url_with_auth(&self.config.url)
-            .map_err(|e| TransportError::Network(format!("Invalid URL: {e}")))?;
-
         let url = format!(
             "{}/api/v1/fetch/{}",
-            parsed.url.trim_end_matches('/'),
+            self.sanitized_url.trim_end_matches('/'),
             routing_key_b64
         );
 
@@ -319,8 +337,10 @@ impl HttpTarget {
             .get(&url)
             .timeout(self.config.base.request_timeout);
 
-        // Add Basic Auth if credentials were embedded in URL
-        if let Some((username, password)) = parsed.auth {
+        // Priority 1: Explicit auth from config
+        // Priority 2: URL-embedded auth (legacy/backward compat)
+        let auth = self.config.auth.as_ref().or(self.url_auth.as_ref());
+        if let Some((username, password)) = auth {
             request = request.basic_auth(username, Some(password));
         }
 
