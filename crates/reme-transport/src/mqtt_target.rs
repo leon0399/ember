@@ -18,7 +18,7 @@ use tracing::{debug, trace, warn};
 use crate::target::{
     HealthState, RawReceipt, TargetConfig, TargetHealth, TargetId, TargetKind, TransportTarget,
 };
-use crate::url_auth::sanitize_url_for_logging;
+use crate::url_auth::{parse_url_with_auth, sanitize_url_for_logging};
 use crate::TransportError;
 
 /// Default topic prefix for REME messages.
@@ -38,6 +38,11 @@ pub struct MqttTargetConfig {
 
     /// Topic prefix (default: "reme/v1").
     pub topic_prefix: String,
+
+    /// Authentication credentials (username, password).
+    ///
+    /// Takes precedence over URL-embedded credentials.
+    pub auth: Option<(String, String)>,
 }
 
 impl MqttTargetConfig {
@@ -50,6 +55,7 @@ impl MqttTargetConfig {
             url,
             client_id: None,
             topic_prefix: DEFAULT_TOPIC_PREFIX.to_string(),
+            auth: None,
         }
     }
 
@@ -62,6 +68,14 @@ impl MqttTargetConfig {
     /// Set the topic prefix.
     pub fn with_topic_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.topic_prefix = prefix.into();
+        self
+    }
+
+    /// Set authentication credentials.
+    ///
+    /// Takes precedence over URL-embedded credentials.
+    pub fn with_auth(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
+        self.auth = Some((username.into(), password.into()));
         self
     }
 
@@ -102,6 +116,9 @@ impl MqttTarget {
     pub async fn connect(config: MqttTargetConfig) -> Result<Self, TransportError> {
         let parsed = parse_mqtt_url(&config.url)?;
 
+        // Parse URL-embedded credentials
+        let url_auth = parse_mqtt_url_auth(&config.url)?;
+
         // Generate client ID if not specified
         let client_id = config
             .client_id
@@ -115,6 +132,12 @@ impl MqttTarget {
         // Configure TLS if using mqtts://
         if parsed.use_tls {
             options.set_transport(MqttTransportType::tls_with_default_config());
+        }
+
+        // Apply auth with precedence: explicit config > URL-embedded
+        let auth = config.auth.as_ref().or(url_auth.as_ref());
+        if let Some((username, password)) = auth {
+            options.set_credentials(username, password);
         }
 
         // Create client
@@ -328,6 +351,15 @@ struct ParsedMqttUrl {
     use_tls: bool,
 }
 
+/// Parse MQTT URL to extract embedded credentials.
+///
+/// Uses the same URL parsing logic as HTTP for consistency.
+pub(crate) fn parse_mqtt_url_auth(url: &str) -> Result<Option<(String, String)>, TransportError> {
+    let parsed = parse_url_with_auth(url)
+        .map_err(|e| TransportError::Network(format!("Invalid MQTT URL: {e}")))?;
+    Ok(parsed.auth)
+}
+
 /// Parse an MQTT URL into host, port, and TLS flag.
 fn parse_mqtt_url(url: &str) -> Result<ParsedMqttUrl, TransportError> {
     let use_tls = url.starts_with("mqtts://");
@@ -447,5 +479,29 @@ mod tests {
     #[test]
     fn test_parse_mqtt_url_invalid() {
         assert!(parse_mqtt_url("https://broker.example.com").is_err());
+    }
+
+    #[test]
+    fn test_mqtt_target_config_with_auth() {
+        let config = MqttTargetConfig::new("mqtts://broker:8883").with_auth("user", "pass");
+        assert_eq!(config.auth, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_parse_mqtt_url_with_credentials() {
+        let result = parse_mqtt_url_auth("mqtt://user:pass@broker:1883").unwrap();
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_parse_mqtt_url_no_credentials() {
+        let result = parse_mqtt_url_auth("mqtt://broker:1883").unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_mqtt_url_credentials_with_special_chars() {
+        let result = parse_mqtt_url_auth("mqtt://user:p%40ss@broker:1883").unwrap();
+        assert_eq!(result, Some(("user".to_string(), "p@ss".to_string())));
     }
 }
