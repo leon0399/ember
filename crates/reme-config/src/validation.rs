@@ -375,7 +375,8 @@ pub fn validate_mqtt_url(url: &str) -> Result<(), ValidationError> {
 /// # Errors
 ///
 /// Returns [`ValidationError::ConflictingCredentials`] if only one of
-/// `username`/`password` is provided (incomplete explicit credentials).
+/// `username`/`password` is provided (incomplete explicit credentials),
+/// or if URL contains incomplete credentials (username without password or vice versa).
 ///
 /// # Examples
 ///
@@ -418,8 +419,21 @@ pub fn merge_credentials(
             "password provided but username missing".to_string(),
         )),
 
-        // No explicit fields: extract from URL (if present)
-        (None, None) => Ok(extract_url_credentials(url)),
+        // No explicit fields: extract from URL (if present) and validate completeness
+        (None, None) => match extract_url_credentials(url) {
+            Some((u, p)) if !u.is_empty() && !p.is_empty() => Ok(Some((u, p))),
+            Some((u, p)) if u.is_empty() && !p.is_empty() => {
+                Err(ValidationError::ConflictingCredentials(
+                    "URL contains password without username".to_string(),
+                ))
+            }
+            Some((u, p)) if !u.is_empty() && p.is_empty() => {
+                Err(ValidationError::ConflictingCredentials(
+                    "URL contains username without password".to_string(),
+                ))
+            }
+            _ => Ok(None),
+        },
     }
 }
 
@@ -440,7 +454,8 @@ pub fn merge_credentials(
 /// # Errors
 ///
 /// Returns [`ValidationError::ConflictingCredentials`] if only one of
-/// `username`/`password` is provided (incomplete explicit credentials).
+/// `username`/`password` is provided (incomplete explicit credentials),
+/// or if URL contains incomplete credentials (username without password or vice versa).
 #[cfg(feature = "mqtt")]
 pub fn merge_mqtt_credentials(
     url: &str,
@@ -459,8 +474,21 @@ pub fn merge_mqtt_credentials(
             "password provided but username missing".to_string(),
         )),
 
-        // No explicit fields: extract from URL (if present)
-        (None, None) => Ok(extract_url_credentials(url)),
+        // No explicit fields: extract from URL (if present) and validate completeness
+        (None, None) => match extract_url_credentials(url) {
+            Some((u, p)) if !u.is_empty() && !p.is_empty() => Ok(Some((u, p))),
+            Some((u, p)) if u.is_empty() && !p.is_empty() => {
+                Err(ValidationError::ConflictingCredentials(
+                    "URL contains password without username".to_string(),
+                ))
+            }
+            Some((u, p)) if !u.is_empty() && p.is_empty() => {
+                Err(ValidationError::ConflictingCredentials(
+                    "URL contains username without password".to_string(),
+                ))
+            }
+            _ => Ok(None),
+        },
     }
 }
 

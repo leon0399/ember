@@ -360,6 +360,18 @@ pub(crate) fn parse_mqtt_url_auth(url: &str) -> Result<Option<(String, String)>,
     Ok(parsed.auth)
 }
 
+/// Parse MQTT URL to extract credentials and sanitized URL.
+///
+/// Returns a tuple of (auth, sanitized_url) where sanitized_url has userinfo stripped.
+/// This prevents DNS resolution issues when URLs contain embedded credentials.
+pub(crate) fn parse_mqtt_url_with_auth(
+    url: &str,
+) -> Result<(Option<(String, String)>, String), TransportError> {
+    let parsed = parse_url_with_auth(url)
+        .map_err(|e| TransportError::Network(format!("Invalid MQTT URL: {e}")))?;
+    Ok((parsed.auth, parsed.url))
+}
+
 /// Parse an MQTT URL into host, port, and TLS flag.
 fn parse_mqtt_url(url: &str) -> Result<ParsedMqttUrl, TransportError> {
     let use_tls = url.starts_with("mqtts://");

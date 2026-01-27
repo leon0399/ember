@@ -19,7 +19,7 @@
 //! Certificate pinning is not currently supported for MQTT (use HTTP
 //! transport if certificate pinning is required).
 
-use crate::mqtt_target::parse_mqtt_url_auth;
+use crate::mqtt_target::parse_mqtt_url_with_auth;
 use crate::seen_cache::SharedSeenCache;
 use crate::{Transport, TransportError};
 use async_trait::async_trait;
@@ -205,10 +205,11 @@ impl MqttTransport {
     /// Connect to a single broker.
     #[allow(clippy::unused_async)] // Async for API consistency with other transports
     async fn connect_broker(spec: &MqttBrokerSpec) -> Result<ConnectedBroker, TransportError> {
-        let parsed = Self::parse_mqtt_url(&spec.url)?;
+        // Parse URL to extract credentials and get sanitized URL (without userinfo)
+        let (url_auth, sanitized_url) = parse_mqtt_url_with_auth(&spec.url)?;
 
-        // Parse URL-embedded credentials
-        let url_auth = parse_mqtt_url_auth(&spec.url)?;
+        // Parse the sanitized URL for host/port extraction
+        let parsed = Self::parse_mqtt_url(&sanitized_url)?;
 
         // Generate client ID if not specified
         let client_id = spec
