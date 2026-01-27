@@ -23,6 +23,14 @@ pub const DEFAULT_TOPIC_PREFIX: &str = "reme/v1";
 ///
 /// Note: MQTT uses system root certificates for TLS verification.
 /// Certificate pinning is not currently supported for MQTT connections.
+///
+/// ## Authentication
+///
+/// Credentials can be specified in two ways with the following precedence:
+/// 1. **Explicit config field** (highest priority) - `auth`
+/// 2. **URL-embedded credentials** - `mqtt://user:pass@broker:1883`
+///
+/// If both are provided, explicit config field takes precedence.
 #[derive(Debug, Clone)]
 pub struct MqttReceiverConfig {
     /// Broker URL (e.g., "<mqtts://broker:8883>")
@@ -31,6 +39,8 @@ pub struct MqttReceiverConfig {
     pub client_id: Option<String>,
     /// Topic prefix (default: "reme/v1")
     pub topic_prefix: String,
+    /// Authentication credentials (username, password)
+    pub auth: Option<(String, String)>,
 }
 
 impl MqttReceiverConfig {
@@ -40,6 +50,7 @@ impl MqttReceiverConfig {
             url: url.into(),
             client_id: None,
             topic_prefix: DEFAULT_TOPIC_PREFIX.to_string(),
+            auth: None,
         }
     }
 
@@ -52,6 +63,18 @@ impl MqttReceiverConfig {
     /// Set a custom topic prefix.
     pub fn with_topic_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.topic_prefix = prefix.into();
+        self
+    }
+
+    /// Set authentication credentials.
+    pub fn with_auth(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
+        self.auth = Some((username.into(), password.into()));
+        self
+    }
+
+    /// Set optional authentication credentials.
+    pub fn with_auth_opt(mut self, auth: Option<(String, String)>) -> Self {
+        self.auth = auth;
         self
     }
 }
@@ -94,7 +117,13 @@ impl MqttReceiver {
         config: MqttReceiverConfig,
         seen_cache: Arc<SharedSeenCache>,
     ) -> Result<Self, TransportError> {
-        let parsed = Self::parse_mqtt_url(&config.url)?;
+        // Extract URL-embedded credentials and sanitize URL
+        let (url_auth, sanitized_url) = Self::parse_mqtt_url_with_auth(&config.url)?;
+
+        // Merge auth with precedence: explicit config > URL-embedded > none
+        let auth = config.auth.or(url_auth);
+
+        let parsed = Self::parse_mqtt_url(&sanitized_url)?;
 
         // Generate client ID if not specified
         let client_id = config
@@ -105,6 +134,11 @@ impl MqttReceiver {
         let mut options = MqttOptions::new(client_id, &parsed.host, parsed.port);
         options.set_keep_alive(Duration::from_secs(30));
         options.set_clean_session(true);
+
+        // Apply authentication if credentials are provided
+        if let Some((username, password)) = auth {
+            options.set_credentials(username, password);
+        }
 
         // Configure TLS if using mqtts://
         if parsed.use_tls {
@@ -120,6 +154,22 @@ impl MqttReceiver {
             topic_prefix: config.topic_prefix,
             url: config.url,
         })
+    }
+
+    /// Extract URL-embedded credentials and return sanitized URL.
+    ///
+    /// This extracts username:password from URLs like `mqtt://user:pass@broker:1883`
+    /// and returns them separately along with a sanitized URL without credentials.
+    ///
+    /// This prevents DNS resolution issues when URLs contain embedded credentials.
+    fn parse_mqtt_url_with_auth(
+        url: &str,
+    ) -> Result<(Option<(String, String)>, String), TransportError> {
+        use crate::url_auth::parse_url_with_auth;
+
+        let parsed = parse_url_with_auth(url)
+            .map_err(|e| TransportError::Network(format!("Invalid MQTT URL: {e}")))?;
+        Ok((parsed.auth, parsed.url))
     }
 
     /// Parse an MQTT URL into host, port, and TLS flag.

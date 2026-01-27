@@ -139,6 +139,34 @@ pub struct TlsConfig {
 ///
 /// Note: MQTT uses system root certificates for TLS verification.
 /// Certificate pinning is not currently supported for MQTT connections.
+///
+/// ## Authentication
+///
+/// Credentials can be specified in two ways with the following precedence:
+/// 1. **Explicit config fields** (highest priority) - `username` and `password`
+/// 2. **URL-embedded credentials** - `mqtt://user:pass@broker:1883`
+///
+/// If both are provided, explicit config fields take precedence.
+///
+/// ## Examples
+///
+/// ```toml
+/// # Explicit credentials (recommended)
+/// [[mqtt.brokers]]
+/// url = "mqtts://broker.example.com:8883"
+/// username = "node-1"
+/// password = "secret123"
+///
+/// # URL-embedded credentials
+/// [[mqtt.brokers]]
+/// url = "mqtt://user:pass@broker.local:1883"
+///
+/// # Mixed: explicit username overrides URL username
+/// [[mqtt.brokers]]
+/// url = "mqtt://wrong:pass@broker:1883"
+/// username = "correct"  # This takes precedence
+/// password = "secret"
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MqttBrokerConfig {
     /// MQTT broker URL (e.g., "<mqtts://broker.example.com:8883>")
@@ -146,6 +174,12 @@ pub struct MqttBrokerConfig {
     /// Optional client ID (auto-generated if not specified)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
+    /// Optional username for MQTT authentication
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    /// Optional password for MQTT authentication
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
 }
 
 /// MQTT bridge configuration for nodes
@@ -736,6 +770,8 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
             .map(|(i, url)| MqttBrokerConfig {
                 url: url.clone(),
                 client_id: client_ids.get(i).cloned(),
+                username: None, // Auth via env vars not supported yet
+                password: None,
             })
             .collect();
         MqttBridgeConfig {

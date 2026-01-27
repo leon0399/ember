@@ -145,7 +145,7 @@ Both node and client support layered config (CLI args > env vars > config file >
 
 ### Transport Authentication
 
-Both HTTP and MQTT transports support username/password authentication with consistent precedence rules.
+Both HTTP and MQTT transports support username/password authentication with consistent precedence rules. Both **clients** and **nodes** support authentication for their respective transports.
 
 **HTTP Transport:**
 - Authentication via Basic Auth
@@ -158,8 +158,9 @@ Both HTTP and MQTT transports support username/password authentication with cons
 - Credentials in config fields: `username` and `password`
 - Or URL-embedded: `mqtt://user:pass@broker.example.com:1883`
 - Precedence: Explicit config fields > URL-embedded > none
+- Supported for both clients (`[[mqtt_peers]]`) and nodes (`[[mqtt.brokers]]`)
 
-**Configuration example:**
+**Client configuration example:**
 
 ```toml
 # Explicit credentials (highest precedence)
@@ -181,7 +182,26 @@ username = "alice"      # Overrides "bob" from URL
 password = "correct789" # Overrides "wrongpass" from URL
 ```
 
-**Incomplete credentials error:** If only `username` or only `password` is provided (either explicitly or from URL), the configuration will fail validation with a clear error message.
+**Node configuration example:**
+
+```toml
+[mqtt]
+topic_prefix = "reme/v1"
+
+# Explicit credentials (recommended)
+[[mqtt.brokers]]
+url = "mqtts://broker.example.com:8883"
+client_id = "node-1"
+username = "reme-node"
+password = "secret123"
+
+# URL-embedded credentials
+[[mqtt.brokers]]
+url = "mqtt://user:pass@broker.local:1883"
+client_id = "node-2"
+```
+
+**Incomplete credentials error:** If only `username` or only `password` is provided (either explicitly or from URL), the credentials will be ignored and authentication will not be attempted (lenient behavior for backward compatibility).
 
 ## Testing Patterns
 
