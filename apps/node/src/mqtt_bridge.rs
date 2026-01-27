@@ -78,6 +78,7 @@ impl MqttBridge {
             .map(|b| MqttBrokerSpec {
                 url: b.url.clone(),
                 client_id: b.client_id.clone(),
+                auth: None, // Node bridge doesn't support auth yet
             })
             .collect()
     }

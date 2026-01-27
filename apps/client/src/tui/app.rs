@@ -458,6 +458,7 @@ impl App<'_> {
                 .map(|p| MqttBrokerSpec {
                     url: p.url.clone(),
                     client_id: p.client_id.clone(),
+                    auth: p.auth.clone(), // Pass auth from validated config
                 })
                 .collect();
             info!("Connecting to {} MQTT broker(s)...", broker_specs.len());
@@ -1389,6 +1390,7 @@ impl App<'_> {
                 let broker_spec = MqttBrokerSpec {
                     url: url.to_string(),
                     client_id: None, // Auto-generated
+                    auth: None,      // No auth for upstream relay
                 };
                 let transport = MqttTransport::new(vec![broker_spec])
                     .await

@@ -697,6 +697,8 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
                 url: url.clone(),
                 client_id: client_ids.get(i).cloned(),
                 topic_prefix: None,
+                username: None, // CLI peers don't support auth yet
+                password: None,
             };
             peers.mqtt.push(mqtt_peer);
         }
