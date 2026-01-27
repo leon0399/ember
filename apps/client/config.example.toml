@@ -19,9 +19,17 @@ label = "Backup Mailbox"
 # MQTT Broker Peers (optional)
 [[peers.mqtt]]
 url = "mqtts://broker.example.com:8883"
+username = "reme_client"
+password = "secret_password"
 client_id = "my-device-id"
 tier = "quorum"
 priority = 100
+label = "Authenticated MQTT Broker"
+
+# Alternative: URL-embedded credentials (explicit fields take precedence)
+# [[peers.mqtt]]
+# url = "mqtts://user:pass@broker.example.com:8883"
+# tier = "quorum"
 
 # Application settings
 data_dir = "~/.local/share/reme"

@@ -143,6 +143,46 @@ Both node and client support layered config (CLI args > env vars > config file >
 - Client config: `~/.config/reme/config.toml`
 - Env prefix: `REME_NODE_*` / `REME_*`
 
+### Transport Authentication
+
+Both HTTP and MQTT transports support username/password authentication with consistent precedence rules.
+
+**HTTP Transport:**
+- Authentication via Basic Auth
+- Credentials in config fields: `username` and `password`
+- Or URL-embedded: `http://user:pass@example.com:3000`
+- Precedence: Explicit config fields > URL-embedded > none
+
+**MQTT Transport:**
+- Authentication via MQTT CONNECT packet
+- Credentials in config fields: `username` and `password`
+- Or URL-embedded: `mqtt://user:pass@broker.example.com:1883`
+- Precedence: Explicit config fields > URL-embedded > none
+
+**Configuration example:**
+
+```toml
+# Explicit credentials (highest precedence)
+[[mqtt_peers]]
+label = "Authenticated MQTT Broker"
+url = "mqtts://broker.example.com:8883"
+username = "alice"
+password = "secret123"
+
+# URL-embedded credentials (fallback)
+[[mqtt_peers]]
+label = "URL Auth MQTT"
+url = "mqtt://bob:pass456@broker.local:1883"
+
+# Mixed: explicit username overrides URL username
+[[mqtt_peers]]
+url = "mqtt://bob:wrongpass@broker.local:1883"
+username = "alice"      # Overrides "bob" from URL
+password = "correct789" # Overrides "wrongpass" from URL
+```
+
+**Incomplete credentials error:** If only `username` or only `password` is provided (either explicitly or from URL), the configuration will fail validation with a clear error message.
+
 ## Testing Patterns
 
 Integration tests spin up in-process nodes using `TestServer::start()` which binds to port 0:
