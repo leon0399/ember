@@ -362,7 +362,7 @@ pub(crate) fn parse_mqtt_url_auth(url: &str) -> Result<Option<(String, String)>,
 
 /// Parse MQTT URL to extract credentials and sanitized URL.
 ///
-/// Returns a tuple of (auth, sanitized_url) where sanitized_url has userinfo stripped.
+/// Returns a tuple of (`auth`, `sanitized_url`) where `sanitized_url` has userinfo stripped.
 /// This prevents DNS resolution issues when URLs contain embedded credentials.
 pub(crate) fn parse_mqtt_url_with_auth(
     url: &str,
