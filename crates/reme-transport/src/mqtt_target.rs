@@ -345,10 +345,10 @@ impl TransportTarget for MqttTarget {
 }
 
 /// Parsed MQTT URL components.
-struct ParsedMqttUrl {
-    host: String,
-    port: u16,
-    use_tls: bool,
+pub(crate) struct ParsedMqttUrl {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) use_tls: bool,
 }
 
 /// Parse MQTT URL to extract embedded credentials.
@@ -373,7 +373,7 @@ pub(crate) fn parse_mqtt_url_with_auth(
 }
 
 /// Parse an MQTT URL into host, port, and TLS flag.
-fn parse_mqtt_url(url: &str) -> Result<ParsedMqttUrl, TransportError> {
+pub(crate) fn parse_mqtt_url(url: &str) -> Result<ParsedMqttUrl, TransportError> {
     let use_tls = url.starts_with("mqtts://");
     let is_mqtt = url.starts_with("mqtt://") || use_tls;
 

@@ -4,13 +4,24 @@
 //! - Publishes messages received via HTTP to MQTT brokers
 //! - Subscribes to MQTT topics and stores received messages locally
 //! - Uses message ID deduplication to prevent loops in mesh topologies
+//!
+//! ## Authentication
+//!
+//! Both publishing and subscribing support username/password authentication:
+//! - Configure in `node.toml` with `username` and `password` fields per broker
+//! - URL-embedded credentials also supported: `mqtt://user:pass@broker:1883`
+//! - Precedence: explicit config fields > URL-embedded > none
+//!
+//! Incomplete explicit credentials (username without password or vice versa)
+//! are silently ignored for backward compatibility, falling back to URL-embedded
+//! credentials if available.
 
 use crate::config::{MqttBridgeConfig, MqttBrokerConfig};
 use reme_message::OuterEnvelope;
 use reme_node_core::{MailboxStore, PersistentMailboxStore};
 use reme_transport::{
-    MqttBrokerSpec, MqttReceiverConfig, MqttTransport, MultiBrokerReceiver, SharedSeenCache,
-    Transport, TransportEvent,
+    url_auth::parse_url_with_auth, MqttBrokerSpec, MqttReceiverConfig, MqttTransport,
+    MultiBrokerReceiver, SharedSeenCache, Transport, TransportEvent,
 };
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -78,7 +89,11 @@ impl MqttBridge {
             .map(|b| MqttBrokerSpec {
                 url: b.url.clone(),
                 client_id: b.client_id.clone(),
-                auth: Self::merge_auth_credentials(b.username.as_ref(), b.password.as_ref()),
+                auth: Self::merge_auth_credentials(
+                    &b.url,
+                    b.username.as_ref(),
+                    b.password.as_ref(),
+                ),
             })
             .collect()
     }
@@ -94,23 +109,39 @@ impl MqttBridge {
                 url: b.url.clone(),
                 client_id: b.client_id.clone(),
                 topic_prefix: topic_prefix.to_string(),
-                auth: Self::merge_auth_credentials(b.username.as_ref(), b.password.as_ref()),
+                auth: Self::merge_auth_credentials(
+                    &b.url,
+                    b.username.as_ref(),
+                    b.password.as_ref(),
+                ),
             })
             .collect()
     }
 
-    /// Merge username and password into an auth tuple if both are present.
+    /// Merge username and password into an auth tuple with URL fallback.
+    ///
+    /// Precedence: explicit config fields > URL-embedded credentials > none
     ///
     /// Returns `Some((username, password))` only if both fields are non-empty strings.
-    /// This matches the client's validation behavior.
+    ///
+    /// Note: Unlike client-side validation (which rejects incomplete credentials),
+    /// this uses lenient behavior that ignores incomplete credentials for backward
+    /// compatibility with existing node configurations.
     fn merge_auth_credentials(
+        url: &str,
         username: Option<&String>,
         password: Option<&String>,
     ) -> Option<(String, String)> {
+        // Check explicit config first
         match (username, password) {
-            (Some(u), Some(p)) if !u.is_empty() && !p.is_empty() => Some((u.clone(), p.clone())),
-            _ => None,
+            (Some(u), Some(p)) if !u.is_empty() && !p.is_empty() => {
+                return Some((u.clone(), p.clone()));
+            }
+            _ => {}
         }
+
+        // Fall back to URL-embedded credentials
+        parse_url_with_auth(url).ok().and_then(|parsed| parsed.auth)
     }
 
     /// Get the shared seen cache for external deduplication checks.
@@ -250,58 +281,100 @@ mod tests {
 
     #[test]
     fn test_merge_auth_credentials_both_present() {
+        let url = "mqtt://broker:1883";
         let username = Some("user".to_string());
         let password = Some("pass".to_string());
-        let result = MqttBridge::merge_auth_credentials(username.as_ref(), password.as_ref());
+        let result = MqttBridge::merge_auth_credentials(url, username.as_ref(), password.as_ref());
         assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
     }
 
     #[test]
     fn test_merge_auth_credentials_username_only() {
+        let url = "mqtt://broker:1883";
         let username = Some("user".to_string());
         let password = None;
-        let result = MqttBridge::merge_auth_credentials(username.as_ref(), password.as_ref());
+        let result = MqttBridge::merge_auth_credentials(url, username.as_ref(), password.as_ref());
         assert_eq!(result, None);
     }
 
     #[test]
     fn test_merge_auth_credentials_password_only() {
+        let url = "mqtt://broker:1883";
         let username = None;
         let password = Some("pass".to_string());
-        let result = MqttBridge::merge_auth_credentials(username.as_ref(), password.as_ref());
+        let result = MqttBridge::merge_auth_credentials(url, username.as_ref(), password.as_ref());
         assert_eq!(result, None);
     }
 
     #[test]
     fn test_merge_auth_credentials_both_none() {
+        let url = "mqtt://broker:1883";
         let username: Option<String> = None;
         let password: Option<String> = None;
-        let result = MqttBridge::merge_auth_credentials(username.as_ref(), password.as_ref());
+        let result = MqttBridge::merge_auth_credentials(url, username.as_ref(), password.as_ref());
         assert_eq!(result, None);
     }
 
     #[test]
     fn test_merge_auth_credentials_empty_username() {
+        let url = "mqtt://broker:1883";
         let username = Some("".to_string());
         let password = Some("pass".to_string());
-        let result = MqttBridge::merge_auth_credentials(username.as_ref(), password.as_ref());
+        let result = MqttBridge::merge_auth_credentials(url, username.as_ref(), password.as_ref());
         assert_eq!(result, None);
     }
 
     #[test]
     fn test_merge_auth_credentials_empty_password() {
+        let url = "mqtt://broker:1883";
         let username = Some("user".to_string());
         let password = Some("".to_string());
-        let result = MqttBridge::merge_auth_credentials(username.as_ref(), password.as_ref());
+        let result = MqttBridge::merge_auth_credentials(url, username.as_ref(), password.as_ref());
         assert_eq!(result, None);
     }
 
     #[test]
     fn test_merge_auth_credentials_both_empty() {
+        let url = "mqtt://broker:1883";
         let username = Some("".to_string());
         let password = Some("".to_string());
-        let result = MqttBridge::merge_auth_credentials(username.as_ref(), password.as_ref());
+        let result = MqttBridge::merge_auth_credentials(url, username.as_ref(), password.as_ref());
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_merge_auth_credentials_url_only() {
+        let url = "mqtt://url_user:url_pass@broker:1883";
+        let result = MqttBridge::merge_auth_credentials(url, None, None);
+        assert_eq!(
+            result,
+            Some(("url_user".to_string(), "url_pass".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_merge_auth_credentials_explicit_overrides_url() {
+        let url = "mqtt://url_user:url_pass@broker:1883";
+        let username = Some("explicit_user".to_string());
+        let password = Some("explicit_pass".to_string());
+        let result = MqttBridge::merge_auth_credentials(url, username.as_ref(), password.as_ref());
+        assert_eq!(
+            result,
+            Some(("explicit_user".to_string(), "explicit_pass".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_merge_auth_credentials_incomplete_explicit_falls_back_to_url() {
+        let url = "mqtt://url_user:url_pass@broker:1883";
+        let username = Some("explicit_user".to_string());
+        let password = None;
+        let result = MqttBridge::merge_auth_credentials(url, username.as_ref(), password.as_ref());
+        // Incomplete explicit credentials should fall back to URL
+        assert_eq!(
+            result,
+            Some(("url_user".to_string(), "url_pass".to_string()))
+        );
     }
 
     #[test]

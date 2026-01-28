@@ -3,6 +3,7 @@
 //! This module provides the subscription side of MQTT transport,
 //! handling incoming messages and dispatching them to event channels.
 
+use crate::mqtt_target::{parse_mqtt_url, parse_mqtt_url_with_auth};
 use crate::seen_cache::SharedSeenCache;
 use crate::{TransportError, TransportEvent};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -118,12 +119,12 @@ impl MqttReceiver {
         seen_cache: Arc<SharedSeenCache>,
     ) -> Result<Self, TransportError> {
         // Extract URL-embedded credentials and sanitize URL
-        let (url_auth, sanitized_url) = Self::parse_mqtt_url_with_auth(&config.url)?;
+        let (url_auth, sanitized_url) = parse_mqtt_url_with_auth(&config.url)?;
 
         // Merge auth with precedence: explicit config > URL-embedded > none
         let auth = config.auth.or(url_auth);
 
-        let parsed = Self::parse_mqtt_url(&sanitized_url)?;
+        let parsed = parse_mqtt_url(&sanitized_url)?;
 
         // Generate client ID if not specified
         let client_id = config
@@ -153,78 +154,6 @@ impl MqttReceiver {
             seen_cache,
             topic_prefix: config.topic_prefix,
             url: config.url,
-        })
-    }
-
-    /// Extract URL-embedded credentials and return sanitized URL.
-    ///
-    /// This extracts username:password from URLs like `mqtt://user:pass@broker:1883`
-    /// and returns them separately along with a sanitized URL without credentials.
-    ///
-    /// This prevents DNS resolution issues when URLs contain embedded credentials.
-    fn parse_mqtt_url_with_auth(
-        url: &str,
-    ) -> Result<(Option<(String, String)>, String), TransportError> {
-        use crate::url_auth::parse_url_with_auth;
-
-        let parsed = parse_url_with_auth(url)
-            .map_err(|e| TransportError::Network(format!("Invalid MQTT URL: {e}")))?;
-        Ok((parsed.auth, parsed.url))
-    }
-
-    /// Parse an MQTT URL into host, port, and TLS flag.
-    fn parse_mqtt_url(url: &str) -> Result<ParsedMqttUrl, TransportError> {
-        let use_tls = url.starts_with("mqtts://");
-        let is_mqtt = url.starts_with("mqtt://") || use_tls;
-
-        if !is_mqtt {
-            return Err(TransportError::Network(format!(
-                "Invalid MQTT URL scheme: {url}. Expected mqtt:// or mqtts://"
-            )));
-        }
-
-        let prefix = if use_tls { "mqtts://" } else { "mqtt://" };
-        let rest = url.strip_prefix(prefix).unwrap();
-        let default_port = if use_tls { 8883 } else { 1883 };
-
-        // Parse host:port, handling IPv6 addresses in brackets
-        let (host, port) = if rest.starts_with('[') {
-            // IPv6 address: [host]:port or [host]
-            // Strip brackets - MQTT libraries expect raw IPv6 address
-            if let Some(bracket_end) = rest.find(']') {
-                let host = rest[1..bracket_end].to_string();
-                let after_bracket = &rest[bracket_end + 1..];
-
-                if let Some(port_str) = after_bracket.strip_prefix(':') {
-                    let port: u16 = port_str.parse().map_err(|_| {
-                        TransportError::Network(format!("Invalid port in URL: {url}"))
-                    })?;
-                    (host, port)
-                } else if after_bracket.is_empty() {
-                    (host, default_port)
-                } else {
-                    return Err(TransportError::Network(format!(
-                        "Invalid IPv6 URL format: {url}"
-                    )));
-                }
-            } else {
-                return Err(TransportError::Network(format!(
-                    "Unclosed bracket in IPv6 URL: {url}"
-                )));
-            }
-        } else if let Some((h, p)) = rest.rsplit_once(':') {
-            let port: u16 = p
-                .parse()
-                .map_err(|_| TransportError::Network(format!("Invalid port in URL: {url}")))?;
-            (h.to_string(), port)
-        } else {
-            (rest.to_string(), default_port)
-        };
-
-        Ok(ParsedMqttUrl {
-            host,
-            port,
-            use_tls,
         })
     }
 
@@ -371,13 +300,6 @@ impl MqttReceiver {
     pub fn seen_cache(&self) -> &Arc<SharedSeenCache> {
         &self.seen_cache
     }
-}
-
-/// Parsed MQTT URL components.
-struct ParsedMqttUrl {
-    host: String,
-    port: u16,
-    use_tls: bool,
 }
 
 /// Multi-broker MQTT receiver that aggregates events from multiple brokers.
@@ -557,7 +479,7 @@ mod tests {
 
     #[test]
     fn test_parse_url_with_tls() {
-        let result = MqttReceiver::parse_mqtt_url("mqtts://broker.example.com:8883").unwrap();
+        let result = parse_mqtt_url("mqtts://broker.example.com:8883").unwrap();
         assert_eq!(result.host, "broker.example.com");
         assert_eq!(result.port, 8883);
         assert!(result.use_tls);
@@ -565,10 +487,10 @@ mod tests {
 
     #[test]
     fn test_parse_url_default_port() {
-        let result = MqttReceiver::parse_mqtt_url("mqtts://broker.example.com").unwrap();
+        let result = parse_mqtt_url("mqtts://broker.example.com").unwrap();
         assert_eq!(result.port, 8883);
 
-        let result = MqttReceiver::parse_mqtt_url("mqtt://broker.example.com").unwrap();
+        let result = parse_mqtt_url("mqtt://broker.example.com").unwrap();
         assert_eq!(result.port, 1883);
     }
 }
