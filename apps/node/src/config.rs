@@ -767,10 +767,12 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         let brokers: Vec<MqttBrokerConfig> = broker_urls
             .iter()
             .enumerate()
+            // TODO: Add REME_NODE_MQTT_USERNAME and REME_NODE_MQTT_PASSWORD env vars
+            // Currently only config-based MQTT brokers support authentication
             .map(|(i, url)| MqttBrokerConfig {
                 url: url.clone(),
                 client_id: client_ids.get(i).cloned(),
-                username: None, // Auth via env vars not supported yet
+                username: None, // No env var support for auth yet
                 password: None,
             })
             .collect();
