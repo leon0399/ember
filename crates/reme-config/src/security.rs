@@ -347,8 +347,8 @@ mod tests {
     #[test]
     fn cert_pin_wrong_hash_length() {
         // 16 bytes instead of 32
-        let short_hash = BASE64_STANDARD.encode(&[0u8; 16]);
-        let pin_str = format!("spki//sha256/{}", short_hash);
+        let short_hash = BASE64_STANDARD.encode([0u8; 16]);
+        let pin_str = format!("spki//sha256/{short_hash}");
         let err = CertPin::parse(&pin_str).unwrap_err();
 
         assert!(matches!(err, SecurityError::InvalidBase64(_)));
@@ -372,7 +372,7 @@ mod tests {
     fn parse_node_pubkey_valid() {
         let identity = Identity::generate();
         let pubkey_bytes = identity.public_id().to_bytes();
-        let base64_str = BASE64_STANDARD.encode(&pubkey_bytes);
+        let base64_str = BASE64_STANDARD.encode(pubkey_bytes);
 
         let parsed = parse_node_pubkey(&base64_str).unwrap();
         assert_eq!(parsed, *identity.public_id());
@@ -386,7 +386,7 @@ mod tests {
 
     #[test]
     fn parse_node_pubkey_wrong_length() {
-        let short_bytes = BASE64_STANDARD.encode(&[0u8; 16]);
+        let short_bytes = BASE64_STANDARD.encode([0u8; 16]);
         let err = parse_node_pubkey(&short_bytes).unwrap_err();
         assert!(matches!(err, SecurityError::InvalidBase64(_)));
     }
@@ -394,7 +394,7 @@ mod tests {
     #[test]
     fn parse_node_pubkey_low_order_point() {
         // Zero point (low-order)
-        let zero_point = BASE64_STANDARD.encode(&[0u8; 32]);
+        let zero_point = BASE64_STANDARD.encode([0u8; 32]);
         let err = parse_node_pubkey(&zero_point).unwrap_err();
         assert!(matches!(err, SecurityError::InvalidPublicKey(_)));
     }

@@ -844,6 +844,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::items_after_statements)]
     fn test_peers_config_deserialization() {
         // Test new [[peers.http]] format deserialization
         let toml = r#"
@@ -899,7 +900,7 @@ priority = 90
     #[test]
     fn test_cli_peer_override_format() {
         // Test that CLI peers get correct format (from lines 612-632)
-        let peer_urls = vec![
+        let peer_urls = [
             "https://cli-peer1.example.com:23003".to_string(),
             "https://cli-peer2.example.com:23003".to_string(),
         ];

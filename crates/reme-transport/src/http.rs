@@ -719,8 +719,9 @@ mod tests {
         }
     }
 
-    /// Test verify_identity with a valid server response - candidate matches.
+    /// Test `verify_identity` with a valid server response - candidate matches.
     #[tokio::test]
+    #[allow(clippy::items_after_statements)]
     async fn test_verify_identity_valid() {
         use axum::extract::Query;
         use base64::prelude::*;
@@ -784,8 +785,9 @@ mod tests {
         );
     }
 
-    /// Test verify_identity returns None when no candidates match (relay case).
+    /// Test `verify_identity` returns None when no candidates match (relay case).
     #[tokio::test]
+    #[allow(clippy::items_after_statements)]
     async fn test_verify_identity_no_match() {
         use axum::extract::Query;
         use base64::prelude::*;
@@ -852,8 +854,9 @@ mod tests {
         );
     }
 
-    /// Test verify_identity with multiple candidates - second one matches.
+    /// Test `verify_identity` with multiple candidates - second one matches.
     #[tokio::test]
+    #[allow(clippy::items_after_statements)]
     async fn test_verify_identity_multiple_candidates() {
         use axum::extract::Query;
         use base64::prelude::*;
@@ -922,7 +925,7 @@ mod tests {
         );
     }
 
-    /// Test verify_identity handles malformed response gracefully.
+    /// Test `verify_identity` handles malformed response gracefully.
     #[tokio::test]
     async fn test_verify_identity_malformed_response() {
         use axum::response::IntoResponse;
@@ -946,12 +949,12 @@ mod tests {
         );
         match result {
             Err(TransportError::Serialization(_)) => {}
-            Err(e) => panic!("Expected Serialization error, got: {:?}", e),
+            Err(e) => panic!("Expected Serialization error, got: {e:?}"),
             Ok(_) => panic!("Expected error, got success"),
         }
     }
 
-    /// Test verify_identity handles server error.
+    /// Test `verify_identity` handles server error.
     #[tokio::test]
     async fn test_verify_identity_server_error() {
         use axum::response::IntoResponse;
@@ -981,7 +984,7 @@ mod tests {
         );
         match result {
             Err(TransportError::ServerError(_)) => {}
-            Err(e) => panic!("Expected ServerError, got: {:?}", e),
+            Err(e) => panic!("Expected ServerError, got: {e:?}"),
             Ok(_) => panic!("Expected error, got success"),
         }
     }

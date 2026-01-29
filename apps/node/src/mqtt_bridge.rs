@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn test_merge_auth_credentials_empty_username() {
         let url = "mqtt://broker:1883";
-        let username = Some("".to_string());
+        let username = Some(String::new());
         let password = Some("pass".to_string());
         let result = MqttBridge::merge_auth_credentials(url, username.as_ref(), password.as_ref());
         assert_eq!(result, None);
@@ -328,7 +328,7 @@ mod tests {
     fn test_merge_auth_credentials_empty_password() {
         let url = "mqtt://broker:1883";
         let username = Some("user".to_string());
-        let password = Some("".to_string());
+        let password = Some(String::new());
         let result = MqttBridge::merge_auth_credentials(url, username.as_ref(), password.as_ref());
         assert_eq!(result, None);
     }
@@ -336,8 +336,8 @@ mod tests {
     #[test]
     fn test_merge_auth_credentials_both_empty() {
         let url = "mqtt://broker:1883";
-        let username = Some("".to_string());
-        let password = Some("".to_string());
+        let username = Some(String::new());
+        let password = Some(String::new());
         let result = MqttBridge::merge_auth_credentials(url, username.as_ref(), password.as_ref());
         assert_eq!(result, None);
     }

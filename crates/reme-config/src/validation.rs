@@ -548,8 +548,8 @@ mod http_tests {
 
     fn make_cert_pin() -> String {
         let hash = [0u8; 32];
-        let base64_hash = base64::engine::general_purpose::STANDARD.encode(&hash);
-        format!("spki//sha256/{}", base64_hash)
+        let base64_hash = base64::engine::general_purpose::STANDARD.encode(hash);
+        format!("spki//sha256/{base64_hash}")
     }
 
     #[test]
@@ -832,7 +832,7 @@ mod http_tests {
     fn parsed_http_peer_filters_empty_label() {
         let config = HttpPeerConfig {
             common: PeerCommon {
-                label: Some("".to_string()), // Empty label
+                label: Some(String::new()), // Empty label
                 tier: ConfiguredTier::Quorum,
                 priority: 100,
             },
@@ -919,7 +919,7 @@ mod mqtt_tests {
     fn parsed_mqtt_peer_filters_empty_label() {
         let config = MqttPeerConfig {
             common: PeerCommon {
-                label: Some("".to_string()), // Empty label
+                label: Some(String::new()), // Empty label
                 tier: ConfiguredTier::Quorum,
                 priority: 100,
             },
