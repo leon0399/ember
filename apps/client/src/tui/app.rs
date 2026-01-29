@@ -1378,6 +1378,8 @@ impl App<'_> {
 
         match transport_type {
             UpstreamType::Http => {
+                // TODO: Add UI fields for username/password when adding ephemeral HTTP upstreams
+                // Currently only config-based HTTP peers support authentication
                 // Use registry to add HTTP target (handles both composite and metadata)
                 self.registry
                     .add_http_target(url, None, tier)
@@ -1387,10 +1389,12 @@ impl App<'_> {
             }
             UpstreamType::Mqtt => {
                 // Create MQTT transport
+                // TODO: Add UI fields for username/password when adding ephemeral MQTT upstreams
+                // Currently only config-based MQTT peers support authentication
                 let broker_spec = MqttBrokerSpec {
                     url: url.to_string(),
                     client_id: None, // Auto-generated
-                    auth: None,      // No auth for upstream relay
+                    auth: None, // No auth for ephemeral upstreams (config-based peers support auth)
                 };
                 let transport = MqttTransport::new(vec![broker_spec])
                     .await
