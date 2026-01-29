@@ -21,4 +21,12 @@ pub struct MqttPeerConfig {
     /// Topic prefix for messages (default: `reme/v1`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topic_prefix: Option<String>,
+
+    /// Basic Auth username.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+
+    /// Basic Auth password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
 }

@@ -191,6 +191,8 @@ impl TryFrom<HttpPeerConfig> for ParsedHttpPeer {
 ///     url: "mqtts://broker.example.com:8883".to_string(),
 ///     client_id: Some("reme-client-123".to_string()),
 ///     topic_prefix: None,
+///     username: None,
+///     password: None,
 /// };
 ///
 /// let parsed: ParsedMqttPeer = config.try_into()?;
@@ -212,6 +214,12 @@ pub struct ParsedMqttPeer {
 
     /// Topic prefix for messages (default: `reme/v1`)
     pub topic_prefix: Option<String>,
+
+    /// Authentication credentials (username, password)
+    ///
+    /// Merged from explicit fields and URL-embedded credentials.
+    /// Explicit fields take precedence.
+    pub auth: Option<(String, String)>,
 }
 
 #[cfg(feature = "mqtt")]
@@ -221,11 +229,19 @@ impl TryFrom<MqttPeerConfig> for ParsedMqttPeer {
     fn try_from(config: MqttPeerConfig) -> Result<Self, Self::Error> {
         validate_mqtt_url(&config.url)?;
 
+        // Merge credentials with same logic as HTTP
+        let auth = merge_mqtt_credentials(
+            &config.url,
+            config.username.as_deref(),
+            config.password.as_deref(),
+        )?;
+
         Ok(Self {
             common: config.common.normalize(),
             url: config.url,
             client_id: config.client_id,
             topic_prefix: config.topic_prefix,
+            auth,
         })
     }
 }
@@ -359,7 +375,8 @@ pub fn validate_mqtt_url(url: &str) -> Result<(), ValidationError> {
 /// # Errors
 ///
 /// Returns [`ValidationError::ConflictingCredentials`] if only one of
-/// `username`/`password` is provided (incomplete explicit credentials).
+/// `username`/`password` is provided (incomplete explicit credentials),
+/// or if URL contains incomplete credentials (username without password or vice versa).
 ///
 /// # Examples
 ///
@@ -402,8 +419,76 @@ pub fn merge_credentials(
             "password provided but username missing".to_string(),
         )),
 
-        // No explicit fields: extract from URL (if present)
-        (None, None) => Ok(extract_url_credentials(url)),
+        // No explicit fields: extract from URL (if present) and validate completeness
+        (None, None) => match extract_url_credentials(url) {
+            Some((u, p)) if !u.is_empty() && !p.is_empty() => Ok(Some((u, p))),
+            Some((u, p)) if u.is_empty() && !p.is_empty() => {
+                Err(ValidationError::ConflictingCredentials(
+                    "URL contains password without username".to_string(),
+                ))
+            }
+            Some((u, p)) if !u.is_empty() && p.is_empty() => {
+                Err(ValidationError::ConflictingCredentials(
+                    "URL contains username without password".to_string(),
+                ))
+            }
+            _ => Ok(None),
+        },
+    }
+}
+
+/// Merge MQTT authentication credentials with precedence rules.
+///
+/// This function implements the same credential precedence logic as HTTP:
+/// 1. If both explicit username AND password provided, use them (override URL)
+/// 2. If only one explicit field provided, error (incomplete credentials)
+/// 3. If no explicit fields, extract from URL (if present)
+/// 4. If no credentials anywhere, return `None`
+///
+/// # Arguments
+///
+/// * `url` - The MQTT broker URL (may contain embedded credentials)
+/// * `username` - Explicit username from config (overrides URL)
+/// * `password` - Explicit password from config (overrides URL)
+///
+/// # Errors
+///
+/// Returns [`ValidationError::ConflictingCredentials`] if only one of
+/// `username`/`password` is provided (incomplete explicit credentials),
+/// or if URL contains incomplete credentials (username without password or vice versa).
+#[cfg(feature = "mqtt")]
+pub fn merge_mqtt_credentials(
+    url: &str,
+    username: Option<&str>,
+    password: Option<&str>,
+) -> Result<Option<(String, String)>, ValidationError> {
+    match (username, password) {
+        // Both explicit fields provided: use them (override URL)
+        (Some(u), Some(p)) => Ok(Some((u.to_string(), p.to_string()))),
+
+        // Only one explicit field provided: error (incomplete)
+        (Some(_), None) => Err(ValidationError::ConflictingCredentials(
+            "username provided but password missing".to_string(),
+        )),
+        (None, Some(_)) => Err(ValidationError::ConflictingCredentials(
+            "password provided but username missing".to_string(),
+        )),
+
+        // No explicit fields: extract from URL (if present) and validate completeness
+        (None, None) => match extract_url_credentials(url) {
+            Some((u, p)) if !u.is_empty() && !p.is_empty() => Ok(Some((u, p))),
+            Some((u, p)) if u.is_empty() && !p.is_empty() => {
+                Err(ValidationError::ConflictingCredentials(
+                    "URL contains password without username".to_string(),
+                ))
+            }
+            Some((u, p)) if !u.is_empty() && p.is_empty() => {
+                Err(ValidationError::ConflictingCredentials(
+                    "URL contains username without password".to_string(),
+                ))
+            }
+            _ => Ok(None),
+        },
     }
 }
 
@@ -463,8 +548,8 @@ mod http_tests {
 
     fn make_cert_pin() -> String {
         let hash = [0u8; 32];
-        let base64_hash = base64::engine::general_purpose::STANDARD.encode(&hash);
-        format!("spki//sha256/{}", base64_hash)
+        let base64_hash = base64::engine::general_purpose::STANDARD.encode(hash);
+        format!("spki//sha256/{base64_hash}")
     }
 
     #[test]
@@ -747,7 +832,7 @@ mod http_tests {
     fn parsed_http_peer_filters_empty_label() {
         let config = HttpPeerConfig {
             common: PeerCommon {
-                label: Some("".to_string()), // Empty label
+                label: Some(String::new()), // Empty label
                 tier: ConfiguredTier::Quorum,
                 priority: 100,
             },
@@ -790,6 +875,8 @@ mod mqtt_tests {
             url: "mqtts://broker.example.com:8883".to_string(),
             client_id: None,
             topic_prefix: None,
+            username: None,
+            password: None,
         };
 
         let parsed: ParsedMqttPeer = config.try_into().unwrap();
@@ -805,6 +892,8 @@ mod mqtt_tests {
             url: "mqtt://broker.example.com".to_string(),
             client_id: Some("reme-client-123".to_string()),
             topic_prefix: None,
+            username: None,
+            password: None,
         };
 
         let parsed: ParsedMqttPeer = config.try_into().unwrap();
@@ -818,6 +907,8 @@ mod mqtt_tests {
             url: "https://example.com".to_string(),
             client_id: None,
             topic_prefix: None,
+            username: None,
+            password: None,
         };
 
         let err = ParsedMqttPeer::try_from(config).unwrap_err();
@@ -828,13 +919,15 @@ mod mqtt_tests {
     fn parsed_mqtt_peer_filters_empty_label() {
         let config = MqttPeerConfig {
             common: PeerCommon {
-                label: Some("".to_string()), // Empty label
+                label: Some(String::new()), // Empty label
                 tier: ConfiguredTier::Quorum,
                 priority: 100,
             },
             url: "mqtt://broker.example.com".to_string(),
             client_id: None,
             topic_prefix: None,
+            username: None,
+            password: None,
         };
 
         let parsed: ParsedMqttPeer = config.try_into().unwrap();
@@ -850,9 +943,90 @@ mod mqtt_tests {
             url: "MQTTS://BROKER.EXAMPLE.COM:8883".to_string(),
             client_id: None,
             topic_prefix: None,
+            username: None,
+            password: None,
         };
 
         let parsed: ParsedMqttPeer = config.try_into().unwrap();
         assert_eq!(parsed.url, "MQTTS://BROKER.EXAMPLE.COM:8883");
+    }
+
+    #[cfg(feature = "mqtt")]
+    #[test]
+    fn test_mqtt_merge_credentials_explicit() {
+        let url = "mqtt://url_user:url_pass@broker:1883";
+        let result = merge_mqtt_credentials(url, Some("explicit"), Some("secret")).unwrap();
+        assert_eq!(result, Some(("explicit".to_string(), "secret".to_string())));
+    }
+
+    #[cfg(feature = "mqtt")]
+    #[test]
+    fn test_mqtt_merge_credentials_url_only() {
+        let url = "mqtt://url_user:url_pass@broker:1883";
+        let result = merge_mqtt_credentials(url, None, None).unwrap();
+        assert_eq!(
+            result,
+            Some(("url_user".to_string(), "url_pass".to_string()))
+        );
+    }
+
+    #[cfg(feature = "mqtt")]
+    #[test]
+    fn test_mqtt_merge_credentials_incomplete_username() {
+        let url = "mqtt://broker:1883";
+        let err = merge_mqtt_credentials(url, Some("user"), None).unwrap_err();
+        assert!(matches!(err, ValidationError::ConflictingCredentials(_)));
+    }
+
+    #[cfg(feature = "mqtt")]
+    #[test]
+    fn test_mqtt_merge_credentials_incomplete_password() {
+        let url = "mqtt://broker:1883";
+        let err = merge_mqtt_credentials(url, None, Some("pass")).unwrap_err();
+        assert!(matches!(err, ValidationError::ConflictingCredentials(_)));
+    }
+
+    #[cfg(feature = "mqtt")]
+    #[test]
+    fn test_mqtt_merge_credentials_none() {
+        let url = "mqtt://broker:1883";
+        let result = merge_mqtt_credentials(url, None, None).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[cfg(feature = "mqtt")]
+    #[test]
+    fn test_parsed_mqtt_peer_with_auth() {
+        let config = MqttPeerConfig {
+            common: PeerCommon::default(),
+            url: "mqtts://broker:8883".to_string(),
+            client_id: None,
+            topic_prefix: None,
+            username: Some("user".to_string()),
+            password: Some("pass".to_string()),
+        };
+
+        let parsed: ParsedMqttPeer = config.try_into().unwrap();
+        assert_eq!(parsed.auth, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[cfg(feature = "mqtt")]
+    #[test]
+    fn test_parsed_mqtt_peer_url_auth_precedence() {
+        let config = MqttPeerConfig {
+            common: PeerCommon::default(),
+            url: "mqtts://url_user:url_pass@broker:8883".to_string(),
+            client_id: None,
+            topic_prefix: None,
+            username: Some("config_user".to_string()),
+            password: Some("config_pass".to_string()),
+        };
+
+        let parsed: ParsedMqttPeer = config.try_into().unwrap();
+        // Explicit config should override URL
+        assert_eq!(
+            parsed.auth,
+            Some(("config_user".to_string(), "config_pass".to_string()))
+        );
     }
 }

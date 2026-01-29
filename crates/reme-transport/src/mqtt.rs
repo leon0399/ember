@@ -19,6 +19,7 @@
 //! Certificate pinning is not currently supported for MQTT (use HTTP
 //! transport if certificate pinning is required).
 
+use crate::mqtt_target::parse_mqtt_url_with_auth;
 use crate::seen_cache::SharedSeenCache;
 use crate::{Transport, TransportError};
 use async_trait::async_trait;
@@ -47,6 +48,8 @@ pub struct MqttBrokerSpec {
     pub url: String,
     /// Client ID (auto-generated if None)
     pub client_id: Option<String>,
+    /// Authentication credentials (username, password)
+    pub auth: Option<(String, String)>,
 }
 
 impl MqttBrokerSpec {
@@ -55,6 +58,7 @@ impl MqttBrokerSpec {
         Self {
             url: url.into(),
             client_id: None,
+            auth: None,
         }
     }
 
@@ -63,7 +67,20 @@ impl MqttBrokerSpec {
         Self {
             url: url.into(),
             client_id: Some(client_id.into()),
+            auth: None,
         }
+    }
+
+    /// Set authentication credentials.
+    pub fn with_auth(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
+        self.auth = Some((username.into(), password.into()));
+        self
+    }
+
+    /// Set optional authentication credentials.
+    pub fn with_auth_opt(mut self, auth: Option<(String, String)>) -> Self {
+        self.auth = auth;
+        self
     }
 }
 
@@ -188,7 +205,11 @@ impl MqttTransport {
     /// Connect to a single broker.
     #[allow(clippy::unused_async)] // Async for API consistency with other transports
     async fn connect_broker(spec: &MqttBrokerSpec) -> Result<ConnectedBroker, TransportError> {
-        let parsed = Self::parse_mqtt_url(&spec.url)?;
+        // Parse URL to extract credentials and get sanitized URL (without userinfo)
+        let (url_auth, sanitized_url) = parse_mqtt_url_with_auth(&spec.url)?;
+
+        // Parse the sanitized URL for host/port extraction
+        let parsed = Self::parse_mqtt_url(&sanitized_url)?;
 
         // Generate client ID if not specified
         let client_id = spec
@@ -204,6 +225,12 @@ impl MqttTransport {
         if parsed.use_tls {
             // Use rumqttc's native rustls configuration with system roots
             options.set_transport(MqttTransportType::tls_with_default_config());
+        }
+
+        // Apply auth with precedence: explicit > URL-embedded
+        let auth = spec.auth.as_ref().or(url_auth.as_ref());
+        if let Some((username, password)) = auth {
+            options.set_credentials(username, password);
         }
 
         // Create client (capacity 100 for the internal channel)
@@ -501,5 +528,21 @@ mod tests {
         let spec = MqttBrokerSpec::with_client_id("mqtts://broker.example.com:8883", "my-client");
         assert_eq!(spec.url, "mqtts://broker.example.com:8883");
         assert_eq!(spec.client_id, Some("my-client".to_string()));
+    }
+
+    #[test]
+    fn test_mqtt_broker_spec_with_auth() {
+        let spec = MqttBrokerSpec::new("mqtts://broker:8883").with_auth("user", "password");
+        assert_eq!(
+            spec.auth,
+            Some(("user".to_string(), "password".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_mqtt_broker_spec_with_auth_opt() {
+        let auth = Some(("user".to_string(), "pass".to_string()));
+        let spec = MqttBrokerSpec::new("mqtts://broker:8883").with_auth_opt(auth.clone());
+        assert_eq!(spec.auth, auth);
     }
 }

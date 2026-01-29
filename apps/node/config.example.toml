@@ -65,6 +65,25 @@ key_path = "/etc/reme/key.pem"
 [mqtt]
 topic_prefix = "reme/v1"
 
+# Example 1: Explicit credentials (recommended)
 [[mqtt.brokers]]
 url = "mqtts://broker.example.com:8883"
 client_id = "node-1"
+username = "reme-node"
+password = "secret123"
+
+# Example 2: URL-embedded credentials
+[[mqtt.brokers]]
+url = "mqtt://user:pass@broker.local:1883"
+client_id = "node-2"
+
+# Example 3: Mixed (explicit overrides URL-embedded)
+[[mqtt.brokers]]
+url = "mqtt://wrong:pass@broker:1883"
+username = "correct"  # This takes precedence over URL username
+password = "secret"   # This takes precedence over URL password
+
+# Example 4: No authentication
+[[mqtt.brokers]]
+url = "mqtt://public-broker.local:1883"
+client_id = "node-public"

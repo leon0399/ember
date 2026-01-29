@@ -302,6 +302,7 @@ async fn test_two_client_messaging() {
 
 /// Test multi-node replication: messages sent to one node replicate to peers
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn test_multi_node_replication() {
     use node::{api, replication, PersistentMailboxStore, PersistentStoreConfig};
     use reme_config::{ConfiguredTier, HttpPeerConfig, ParsedHttpPeer};

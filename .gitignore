@@ -7,3 +7,6 @@
 
 # Internal documentation
 /spec/
+# AI agent working directories
+.opencode/
+.serena/

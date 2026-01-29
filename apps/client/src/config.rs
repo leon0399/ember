@@ -658,6 +658,8 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
             );
         }
 
+        // TODO: Add --http-username and --http-password CLI flags for HTTP authentication
+        // Currently only config-based HTTP peers support authentication
         for (i, url) in urls.iter().enumerate() {
             let http_peer = HttpPeerConfig {
                 common: PeerCommon {
@@ -668,7 +670,7 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
                 url: url.clone(),
                 cert_pin: cert_pins.get(i).cloned(),
                 node_pubkey: None,
-                username: None,
+                username: None, // No CLI flags for auth yet
                 password: None,
             };
             peers.http.push(http_peer);
@@ -688,6 +690,8 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
         }
 
         for (i, url) in urls.iter().enumerate() {
+            // TODO: Add --mqtt-username and --mqtt-password CLI flags for MQTT authentication
+            // Currently only config-based MQTT peers support authentication
             let mqtt_peer = MqttPeerConfig {
                 common: PeerCommon {
                     label: Some(format!("CLI MQTT {}", i + 1)),
@@ -697,6 +701,8 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
                 url: url.clone(),
                 client_id: client_ids.get(i).cloned(),
                 topic_prefix: None,
+                username: None, // No CLI flags for auth yet
+                password: None,
             };
             peers.mqtt.push(mqtt_peer);
         }
