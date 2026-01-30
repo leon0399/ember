@@ -83,7 +83,7 @@ use clap::Parser;
 use config::{Config, Environment, File, FileFormat};
 use derivative::Derivative;
 use directories::ProjectDirs;
-use reme_config::{ConfiguredTier, HttpPeerConfig, PeerCommon, PeersConfig};
+use reme_config::{HttpPeerConfig, PeersConfig};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::info;
@@ -609,22 +609,7 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     // Apply CLI peer overrides
     if let Some(ref peer_urls) = cli.peers {
         // CLI peers override all file/env config
-        let http_peers: Vec<HttpPeerConfig> = peer_urls
-            .iter()
-            .enumerate()
-            .map(|(i, url)| HttpPeerConfig {
-                common: PeerCommon {
-                    label: Some(format!("CLI Peer {}", i + 1)),
-                    tier: ConfiguredTier::Quorum,
-                    priority: 100,
-                },
-                url: url.clone(),
-                cert_pin: None,
-                node_pubkey: None,
-                username: None,
-                password: None,
-            })
-            .collect();
+        let (http_peers, _warnings) = HttpPeerConfig::from_cli_urls(peer_urls, None, None, None);
 
         peers = PeersConfig {
             http: http_peers,
@@ -848,6 +833,8 @@ mod tests {
     #[test]
     #[allow(clippy::items_after_statements)]
     fn test_peers_config_deserialization() {
+        use reme_config::ConfiguredTier;
+
         // Test new [[peers.http]] format deserialization
         let toml = r#"
 [peers]
@@ -901,28 +888,14 @@ priority = 90
 
     #[test]
     fn test_cli_peer_override_format() {
-        // Test that CLI peers get correct format (from lines 612-632)
+        // Test that CLI peers get correct format using from_cli_urls helper
         let peer_urls = [
             "https://cli-peer1.example.com:23003".to_string(),
             "https://cli-peer2.example.com:23003".to_string(),
         ];
 
-        let http_peers: Vec<HttpPeerConfig> = peer_urls
-            .iter()
-            .enumerate()
-            .map(|(i, url)| HttpPeerConfig {
-                common: PeerCommon {
-                    label: Some(format!("CLI Peer {}", i + 1)),
-                    tier: ConfiguredTier::Quorum,
-                    priority: 100,
-                },
-                url: url.clone(),
-                cert_pin: None,
-                node_pubkey: None,
-                username: None,
-                password: None,
-            })
-            .collect();
+        let (http_peers, warnings) = HttpPeerConfig::from_cli_urls(&peer_urls, None, None, None);
+        assert!(warnings.is_empty());
 
         let peers = PeersConfig {
             http: http_peers,
@@ -931,8 +904,8 @@ priority = 90
 
         assert_eq!(peers.http.len(), 2);
         assert_eq!(peers.http[0].url, "https://cli-peer1.example.com:23003");
-        assert_eq!(peers.http[0].common.label.as_ref().unwrap(), "CLI Peer 1");
+        assert_eq!(peers.http[0].common.label.as_ref().unwrap(), "CLI HTTP 1");
         assert_eq!(peers.http[1].url, "https://cli-peer2.example.com:23003");
-        assert_eq!(peers.http[1].common.label.as_ref().unwrap(), "CLI Peer 2");
+        assert_eq!(peers.http[1].common.label.as_ref().unwrap(), "CLI HTTP 2");
     }
 }
