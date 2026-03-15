@@ -890,7 +890,7 @@ The tradeoff is explicit: reme prioritizes resilience and DTN tolerance over the
 
 **Current development (v0.4):**
 - mDNS/Bonjour LAN discovery
-- Node identity endpoint (challenge-response verification)
+- Discovery-flow integration for challenge-response node identity verification
 - Background identity refresh for Direct tier targets
 
 ### Planned features (see ROADMAP.md)

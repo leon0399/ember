@@ -84,7 +84,7 @@ Automatic peer discovery and verified P2P messaging on local networks.
 - Refresh on delivery failure or network change
 
 **Deliverables:**
-- [ ] Identity endpoint on main node and embedded node
+- [x] Identity endpoint on main node and embedded node
 - [ ] Challenge-response verification in discovery flow
 - [ ] Background identity refresh task
 - [ ] Refresh triggers (periodic, failure, network change)
