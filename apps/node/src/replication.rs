@@ -22,6 +22,7 @@
 use crate::node_identity::NodeIdentity;
 use crate::signed_headers::SignedHeaders;
 use reme_config::ParsedHttpPeer;
+use reme_transport::sanitize_url_for_logging;
 use reqwest::Client;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -74,12 +75,14 @@ impl ReplicationClient {
         let this = Arc::clone(self);
         tokio::spawn(async move {
             for peer_config in &this.peer_configs {
+                let safe_peer_url = sanitize_peer_url_for_logging(&peer_config.url);
+
                 // Skip replicating back to the source node (legacy string matching)
                 // Note: Cryptographic loop prevention is done by the receiving node
                 // by checking if the verified source identity matches their own.
                 if let Some(ref from) = from_node {
                     if peer_config.url.contains(from) {
-                        debug!("Skipping replication to source node: {}", peer_config.url);
+                        debug!("Skipping replication to source node: {}", safe_peer_url);
                         continue;
                     }
                 }
@@ -145,23 +148,23 @@ impl ReplicationClient {
 
                 match result {
                     Ok(resp) if resp.status().is_success() => {
-                        debug!("Replicated payload to {}", peer_config.url);
+                        debug!("Replicated payload to {}", safe_peer_url);
                     }
                     Ok(resp) if resp.status() == reqwest::StatusCode::UNAUTHORIZED => {
                         error!(
                             "Authentication failed for peer {} - check credentials or signature",
-                            peer_config.url
+                            safe_peer_url
                         );
                     }
                     Ok(resp) => {
                         warn!(
                             "Peer {} returned status {} for payload replication",
-                            peer_config.url,
+                            safe_peer_url,
                             resp.status()
                         );
                     }
                     Err(e) => {
-                        error!("Failed to replicate payload to {}: {}", peer_config.url, e);
+                        error!("Failed to replicate payload to {}: {}", safe_peer_url, e);
                     }
                 }
             }
@@ -179,22 +182,49 @@ impl ReplicationClient {
             info!("  Node ID: {}", self.node_id);
             info!("  Peers:");
             for peer_config in &self.peer_configs {
-                let auth_status = if peer_config.auth.is_some() {
-                    " (authenticated)"
-                } else {
-                    ""
-                };
-
-                let label = peer_config
-                    .common
-                    .label
-                    .as_ref()
-                    .map(|l| format!(" [{l}]"))
-                    .unwrap_or_default();
-
-                info!("    - {}{}{}", peer_config.url, auth_status, label);
+                info!("    - {}", format_peer_log_entry(peer_config));
             }
         }
+    }
+}
+
+fn format_peer_log_entry(peer_config: &ParsedHttpPeer) -> String {
+    let auth_status = if peer_config.auth.is_some() {
+        " (authenticated)"
+    } else {
+        ""
+    };
+
+    let label = peer_config
+        .common
+        .label
+        .as_ref()
+        .map(|l| format!(" [{l}]"))
+        .unwrap_or_default();
+
+    format!(
+        "{}{}{}",
+        sanitize_peer_url_for_logging(&peer_config.url),
+        auth_status,
+        label
+    )
+}
+
+fn sanitize_peer_url_for_logging(url_str: &str) -> String {
+    let safe_url = sanitize_url_for_logging(url_str);
+
+    if url_str.ends_with('/') || !safe_url.ends_with('/') {
+        return safe_url;
+    }
+
+    let Ok(parsed) = url::Url::parse(url_str) else {
+        return safe_url;
+    };
+
+    if parsed.path() == "/" && parsed.query().is_none() && parsed.fragment().is_none() {
+        safe_url.trim_end_matches('/').to_string()
+    } else {
+        safe_url
     }
 }
 
@@ -209,5 +239,30 @@ fn extract_host_from_url(url_str: &str) -> Option<String> {
     match parsed.port() {
         Some(port) => Some(format!("{host}:{port}")),
         None => Some(host.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_peer_log_entry;
+    use reme_config::{ParsedHttpPeer, PeerCommon};
+
+    #[test]
+    fn format_peer_log_entry_redacts_embedded_credentials() {
+        let peer = ParsedHttpPeer {
+            common: PeerCommon {
+                label: Some("Primary".to_string()),
+                ..PeerCommon::default()
+            },
+            url: "https://alice:secret@example.com:23003".to_string(),
+            cert_pin: None,
+            node_pubkey: None,
+            auth: Some(("alice".to_string(), "secret".to_string())),
+        };
+
+        let line = format_peer_log_entry(&peer);
+
+        assert_eq!(line, "https://example.com:23003 (authenticated) [Primary]");
+        assert!(!line.contains("alice:secret"));
     }
 }
