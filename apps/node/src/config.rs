@@ -32,6 +32,23 @@
 //! `%APPDATA%\reme\node.toml` (Windows)
 //!
 //! ```toml
+//! # Peer nodes for message replication
+//! [[peers.http]]
+//! url = "https://peer1.example.com:23003"
+//! cert_pin = "spki//sha256/AAAA..."  # Optional SPKI pin
+//! username = "replication"           # Optional Basic Auth
+//! password = "secret"
+//! tier = "quorum"
+//! priority = 100
+//! label = "Primary Peer"
+//!
+//! [[peers.http]]
+//! url = "https://peer2.example.com:23003"
+//! node_pubkey = "base64..."          # Optional identity verification
+//! tier = "quorum"
+//! priority = 90
+//! label = "Backup Peer"
+//!
 //! bind_addr = "0.0.0.0:23003"
 //! max_messages = 1000
 //! default_ttl = 604800
@@ -59,12 +76,14 @@
 //! url = "mqtts://broker.example.com:8883"
 //! client_id = "node-1"  # Optional, auto-generated if not set
 //! ```
+//!
 
 use crate::cleanup::CleanupConfig;
 use clap::Parser;
 use config::{Config, Environment, File, FileFormat};
 use derivative::Derivative;
 use directories::ProjectDirs;
+use reme_config::{HttpPeerConfig, PeersConfig};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::info;
@@ -120,6 +139,34 @@ pub struct TlsConfig {
 ///
 /// Note: MQTT uses system root certificates for TLS verification.
 /// Certificate pinning is not currently supported for MQTT connections.
+///
+/// ## Authentication
+///
+/// Credentials can be specified in two ways with the following precedence:
+/// 1. **Explicit config fields** (highest priority) - `username` and `password`
+/// 2. **URL-embedded credentials** - `mqtt://user:pass@broker:1883`
+///
+/// If both are provided, explicit config fields take precedence.
+///
+/// ## Examples
+///
+/// ```toml
+/// # Explicit credentials (recommended)
+/// [[mqtt.brokers]]
+/// url = "mqtts://broker.example.com:8883"
+/// username = "node-1"
+/// password = "secret123"
+///
+/// # URL-embedded credentials
+/// [[mqtt.brokers]]
+/// url = "mqtt://user:pass@broker.local:1883"
+///
+/// # Mixed: explicit username overrides URL username
+/// [[mqtt.brokers]]
+/// url = "mqtt://wrong:pass@broker:1883"
+/// username = "correct"  # This takes precedence
+/// password = "secret"
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MqttBrokerConfig {
     /// MQTT broker URL (e.g., "<mqtts://broker.example.com:8883>")
@@ -127,6 +174,12 @@ pub struct MqttBrokerConfig {
     /// Optional client ID (auto-generated if not specified)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
+    /// Optional username for MQTT authentication
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    /// Optional password for MQTT authentication
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
 }
 
 /// MQTT bridge configuration for nodes
@@ -229,7 +282,9 @@ pub struct CliArgs {
     #[arg(long, env = "REME_NODE_ID")]
     pub node_id: Option<String>,
 
-    /// Peer node URLs for replication (comma-separated)
+    /// Peer node URLs for replication (comma-separated).
+    /// Overrides configured peers and supports only URL-level settings.
+    /// Use config/env peer entries for cert pins, node public keys, and explicit auth fields.
     #[arg(short = 'P', long, env = "REME_NODE_PEERS", value_delimiter = ',')]
     pub peers: Option<Vec<String>>,
 
@@ -355,9 +410,9 @@ pub struct NodeConfig {
     /// Unique node ID for replication
     pub node_id: String,
 
-    /// Peer node URLs for replication
+    /// Peer node URLs for replication (structured configuration)
     #[serde(default)]
-    pub peers: Vec<String>,
+    pub peers: PeersConfig,
 
     /// Cleanup task configuration
     #[serde(default)]
@@ -411,7 +466,7 @@ impl Default for NodeConfig {
             default_ttl: 7 * 24 * 60 * 60, // 7 days
             log_level: "info".to_string(),
             node_id: uuid::Uuid::new_v4().to_string(),
-            peers: Vec::new(),
+            peers: PeersConfig::default(),
             cleanup: CleanupConfig::default(),
             storage_path: None, // None means :memory:
             auth_username: None,
@@ -477,7 +532,7 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         .set_default("default_ttl", i64::from(defaults.default_ttl))?
         .set_default("log_level", defaults.log_level.clone())?
         .set_default("node_id", defaults.node_id.clone())?
-        .set_default::<_, Vec<String>>("peers", defaults.peers.clone())?
+        // Note: peers default is applied after config extraction (see below)
         // Cleanup defaults
         .set_default("cleanup.enabled", defaults.cleanup.enabled)?
         .set_default("cleanup.interval_secs", defaults.cleanup.interval_secs as i64)?
@@ -520,9 +575,7 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     if let Some(ref node_id) = cli.node_id {
         builder = builder.set_override("node_id", node_id.clone())?;
     }
-    if let Some(ref peers) = cli.peers {
-        builder = builder.set_override("peers", peers.clone())?;
-    }
+    // Note: CLI peers are applied after extraction (complex type incompatible with config crate)
     // Cleanup CLI overrides
     if cli.cleanup_disabled {
         builder = builder.set_override("cleanup.enabled", false)?;
@@ -551,7 +604,20 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         .unwrap_or(defaults.default_ttl);
     let log_level: String = config.get("log_level").unwrap_or(defaults.log_level);
     let node_id: String = config.get("node_id").unwrap_or(defaults.node_id);
-    let peers: Vec<String> = config.get::<Vec<String>>("peers").unwrap_or(defaults.peers);
+
+    // Extract peers configuration
+    let mut peers: PeersConfig = config.get::<PeersConfig>("peers").unwrap_or(defaults.peers);
+
+    // Apply CLI peer overrides (URL-only shorthand, not full peer-config parity)
+    if let Some(ref peer_urls) = cli.peers {
+        // CLI peers override all file/env config
+        let (http_peers, _warnings) = HttpPeerConfig::from_cli_urls(peer_urls, None, None, None);
+
+        peers = PeersConfig {
+            http: http_peers,
+            mqtt: vec![],
+        };
+    }
 
     // Extract cleanup config (using clamped conversions for safety)
     let cleanup = CleanupConfig {
@@ -688,9 +754,13 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         let brokers: Vec<MqttBrokerConfig> = broker_urls
             .iter()
             .enumerate()
+            // TODO: Add REME_NODE_MQTT_USERNAME and REME_NODE_MQTT_PASSWORD env vars
+            // Currently only config-based MQTT brokers support authentication
             .map(|(i, url)| MqttBrokerConfig {
                 url: url.clone(),
                 client_id: client_ids.get(i).cloned(),
+                username: None, // No env var support for auth yet
+                password: None,
             })
             .collect();
         MqttBridgeConfig {
@@ -758,6 +828,86 @@ mod tests {
         assert_eq!(config.default_ttl, 604_800); // 7 days
         assert_eq!(config.log_level, "info");
         assert!(!config.node_id.is_empty());
-        assert!(config.peers.is_empty());
+        assert!(config.peers.http.is_empty());
+        assert!(config.peers.mqtt.is_empty());
+    }
+
+    #[test]
+    #[allow(clippy::items_after_statements)]
+    fn test_peers_config_deserialization() {
+        use reme_config::ConfiguredTier;
+
+        // Test new [[peers.http]] format deserialization
+        let toml = r#"
+[peers]
+[[peers.http]]
+url = "https://peer1.example.com:23003"
+cert_pin = "spki//sha256/AAAA"
+username = "user1"
+password = "pass1"
+tier = "quorum"
+priority = 100
+label = "Peer One"
+
+[[peers.http]]
+url = "https://peer2.example.com:23003"
+node_pubkey = "BASE64KEY"
+tier = "best_effort"
+priority = 90
+"#;
+
+        // Parse into a wrapper type first to extract just the peers section
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            peers: PeersConfig,
+        }
+
+        let wrapper: Wrapper = toml::from_str(toml).expect("Failed to deserialize");
+        let peers = wrapper.peers;
+
+        assert_eq!(peers.http.len(), 2);
+
+        // Check first peer
+        assert_eq!(peers.http[0].url, "https://peer1.example.com:23003");
+        assert_eq!(
+            peers.http[0].cert_pin.as_ref().unwrap(),
+            "spki//sha256/AAAA"
+        );
+        assert_eq!(peers.http[0].username.as_ref().unwrap(), "user1");
+        assert_eq!(peers.http[0].password.as_ref().unwrap(), "pass1");
+        assert_eq!(peers.http[0].common.tier, ConfiguredTier::Quorum);
+        assert_eq!(peers.http[0].common.priority, 100);
+        assert_eq!(peers.http[0].common.label.as_ref().unwrap(), "Peer One");
+
+        // Check second peer
+        assert_eq!(peers.http[1].url, "https://peer2.example.com:23003");
+        assert_eq!(peers.http[1].node_pubkey.as_ref().unwrap(), "BASE64KEY");
+        assert_eq!(peers.http[1].common.tier, ConfiguredTier::BestEffort);
+        assert_eq!(peers.http[1].common.priority, 90);
+        assert!(peers.http[1].cert_pin.is_none());
+        assert!(peers.http[1].username.is_none());
+    }
+
+    #[test]
+    fn test_cli_peer_override_format() {
+        // Test that CLI peers get correct format using from_cli_urls helper
+        let peer_urls = [
+            "https://cli-peer1.example.com:23003".to_string(),
+            "https://cli-peer2.example.com:23003".to_string(),
+        ];
+
+        let (http_peers, warnings) = HttpPeerConfig::from_cli_urls(&peer_urls, None, None, None);
+        assert!(warnings.is_empty());
+
+        let peers = PeersConfig {
+            http: http_peers,
+            mqtt: vec![],
+        };
+
+        assert_eq!(peers.http.len(), 2);
+        assert_eq!(peers.http[0].url, "https://cli-peer1.example.com:23003");
+        assert_eq!(peers.http[0].common.label.as_ref().unwrap(), "CLI HTTP 1");
+        assert_eq!(peers.http[1].url, "https://cli-peer2.example.com:23003");
+        assert_eq!(peers.http[1].common.label.as_ref().unwrap(), "CLI HTTP 2");
     }
 }

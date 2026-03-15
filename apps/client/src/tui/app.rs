@@ -7,6 +7,7 @@ use crate::tui::ui;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use ratatui::prelude::*;
+use reme_config::{ParsedHttpPeer, ParsedMqttPeer};
 use reme_core::Client;
 use reme_identity::{Identity, PublicID};
 use reme_message::Content;
@@ -15,12 +16,11 @@ use reme_node_core::{
 };
 use reme_outbox::{OutboxConfig, TransportRetryPolicy};
 use reme_storage::Storage;
-use reme_transport::http::NodeSpec;
 use reme_transport::http_target::{HttpTarget, HttpTargetConfig};
 use reme_transport::pool::TransportPool;
 use reme_transport::target::TargetKind;
 use reme_transport::{
-    CertPin, CompositeTransport, DeliveryTier, MessageReceiver, MqttBrokerSpec, MqttTransport,
+    CompositeTransport, DeliveryTier, MessageReceiver, MqttBrokerSpec, MqttTransport,
     ReceiverConfig, TargetId, TransportEvent, TransportRegistry, TransportTarget,
 };
 use std::collections::{HashMap, VecDeque};
@@ -365,51 +365,100 @@ impl App<'_> {
             .ok_or("Database path contains invalid UTF-8 characters")?;
         let storage = Storage::open(db_path_str)?;
 
-        // Create HTTP transport with TLS and certificate pinning support
-        let node_specs: Vec<NodeSpec> = config
+        // Parse and validate all HTTP peers
+        let parsed_http_peers: Vec<ParsedHttpPeer> = config
+            .peers
             .http
             .iter()
-            .map(|n| {
-                let cert_pin = match &n.cert_pin {
-                    Some(pin_str) => {
-                        // Fail explicitly if a configured pin is invalid - don't silently disable security
-                        let pin = CertPin::parse(pin_str).map_err(|e| {
-                            format!(
-                                "Invalid certificate pin for node {}: {}. \
-                                Fix the pin or remove it to disable pinning for this node.",
-                                n.url, e
-                            )
-                        })?;
-                        Some(pin)
-                    }
-                    None => None,
-                };
-                Ok(NodeSpec {
-                    url: n.url.clone(),
-                    cert_pin,
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+            .map(|peer| ParsedHttpPeer::try_from(peer.clone()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to parse HTTP peer configuration: {e}"))?;
 
-        // Create HTTP transport pool for both sending and receiving
-        let http_pool = if node_specs.is_empty() {
+        // Create HTTP transport pool with tier/priority/label configuration
+        let http_pool = if parsed_http_peers.is_empty() {
             None
         } else {
-            let pool = TransportPool::from_node_specs(node_specs)?;
+            let pool = TransportPool::new();
+
+            for parsed_peer in &parsed_http_peers {
+                // Build HTTP target config with all metadata
+                let mut config = HttpTargetConfig::stable(&parsed_peer.url);
+
+                // Set certificate pin if present (convert from config type to transport type)
+                if let Some(ref pin) = parsed_peer.cert_pin {
+                    match reme_transport::CertPin::parse(&pin.to_pin_string()) {
+                        Ok(transport_pin) => {
+                            config = config.with_cert_pin(transport_pin);
+                        }
+                        Err(e) => {
+                            warn!(
+                                url = %parsed_peer.url,
+                                error = %e,
+                                "Certificate pin conversion failed after successful validation - this is a bug"
+                            );
+                        }
+                    }
+                }
+
+                // Set label if present
+                if let Some(ref label) = parsed_peer.common.label {
+                    config = config.with_label(label.clone());
+                }
+
+                // Set priority (u16 from config → u8 for transport, clamped)
+                let priority_u8 = if parsed_peer.common.priority > 255 {
+                    warn!(
+                        url = %parsed_peer.url,
+                        configured = parsed_peer.common.priority,
+                        "Priority {} exceeds maximum 255, clamping to 255",
+                        parsed_peer.common.priority
+                    );
+                    255
+                } else {
+                    // Safe cast: we've validated priority <= 255
+                    #[allow(clippy::cast_possible_truncation)]
+                    {
+                        parsed_peer.common.priority as u8
+                    }
+                };
+                config = config.with_priority(priority_u8);
+
+                // Set node pubkey if present
+                config = config.with_node_pubkey_opt(parsed_peer.node_pubkey);
+
+                // Set HTTP Basic Auth if configured
+                if let Some((username, password)) = &parsed_peer.auth {
+                    config = config.with_auth(username, password);
+                }
+
+                // Create target and add to pool
+                let target = HttpTarget::new(config)?;
+                pool.add_target(target);
+            }
+
             Some(Arc::new(pool))
         };
 
+        // Parse and validate all MQTT peers
+        let parsed_mqtt_peers: Vec<ParsedMqttPeer> = config
+            .peers
+            .mqtt
+            .iter()
+            .map(|peer| ParsedMqttPeer::try_from(peer.clone()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to parse MQTT peer configuration: {e}"))?;
+
         // Create MQTT transport if brokers are configured
-        let mqtt_transport = if config.mqtt.is_empty() {
+        let mqtt_transport = if parsed_mqtt_peers.is_empty() {
             None
         } else {
-            // Convert config brokers to transport broker specs
-            let broker_specs: Vec<MqttBrokerSpec> = config
-                .mqtt
+            // Convert parsed peers to transport broker specs
+            let broker_specs: Vec<MqttBrokerSpec> = parsed_mqtt_peers
                 .iter()
-                .map(|b| MqttBrokerSpec {
-                    url: b.url.clone(),
-                    client_id: b.client_id.clone(),
+                .map(|p| MqttBrokerSpec {
+                    url: p.url.clone(),
+                    client_id: p.client_id.clone(),
+                    auth: p.auth.clone(), // Pass auth from validated config
                 })
                 .collect();
             info!("Connecting to {} MQTT broker(s)...", broker_specs.len());
@@ -544,10 +593,26 @@ impl App<'_> {
             registry.set_http_pool(http.clone());
         }
 
+        // Register HTTP targets with their tier/label information
+        for parsed_peer in &parsed_http_peers {
+            let id = TargetId::http(&parsed_peer.url);
+            // Convert ConfiguredTier to DeliveryTier (Direct is determined at send time)
+            let tier = match parsed_peer.common.tier {
+                reme_config::ConfiguredTier::Quorum => DeliveryTier::Quorum,
+                reme_config::ConfiguredTier::BestEffort => DeliveryTier::BestEffort,
+            };
+            registry.register_stable(id, parsed_peer.common.label.clone(), tier);
+        }
+
         // Register MQTT brokers for display (they're in composite but not in a pool)
-        for broker in &config.mqtt {
-            let id = TargetId::mqtt(&broker.url);
-            registry.register_stable(id, broker.label.clone(), DeliveryTier::Quorum);
+        for parsed_peer in &parsed_mqtt_peers {
+            let id = TargetId::mqtt(&parsed_peer.url);
+            // Convert ConfiguredTier to DeliveryTier
+            let tier = match parsed_peer.common.tier {
+                reme_config::ConfiguredTier::Quorum => DeliveryTier::Quorum,
+                reme_config::ConfiguredTier::BestEffort => DeliveryTier::BestEffort,
+            };
+            registry.register_stable(id, parsed_peer.common.label.clone(), tier);
         }
 
         // Register direct peers for display
@@ -1313,6 +1378,8 @@ impl App<'_> {
 
         match transport_type {
             UpstreamType::Http => {
+                // TODO: Add UI fields for username/password when adding ephemeral HTTP upstreams
+                // Currently only config-based HTTP peers support authentication
                 // Use registry to add HTTP target (handles both composite and metadata)
                 self.registry
                     .add_http_target(url, None, tier)
@@ -1322,9 +1389,12 @@ impl App<'_> {
             }
             UpstreamType::Mqtt => {
                 // Create MQTT transport
+                // TODO: Add UI fields for username/password when adding ephemeral MQTT upstreams
+                // Currently only config-based MQTT peers support authentication
                 let broker_spec = MqttBrokerSpec {
                     url: url.to_string(),
                     client_id: None, // Auto-generated
+                    auth: None, // No auth for ephemeral upstreams (config-based peers support auth)
                 };
                 let transport = MqttTransport::new(vec![broker_spec])
                     .await

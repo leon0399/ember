@@ -55,6 +55,7 @@ use config::{default_identity_path, load_config};
 use mqtt_bridge::MqttBridge;
 use node_identity::NodeIdentity;
 use rate_limit::RateLimiters;
+use reme_config::ParsedHttpPeer;
 use reme_node_core::{PersistentMailboxStore, PersistentStoreConfig};
 use replication::ReplicationClient;
 use std::net::SocketAddr;
@@ -200,9 +201,21 @@ async fn main() {
     };
 
     // Create replication client with signing identity
+    // Parse and validate HTTP peer configurations
+    let parsed_peers: Vec<ParsedHttpPeer> = config
+        .peers
+        .http
+        .iter()
+        .map(|peer| ParsedHttpPeer::try_from(peer.clone()))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_else(|e| {
+            error!("Failed to parse peer configuration: {}", e);
+            std::process::exit(1);
+        });
+
     let replication = Arc::new(ReplicationClient::with_identity(
         config.node_id,
-        config.peers,
+        parsed_peers,
         identity.clone(),
     ));
     replication.log_config();

@@ -5,6 +5,18 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/reme-identity/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/reme-message/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/reme-prekeys/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/apps/client/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/apps/node/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/reme-core/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/reme-core/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/reme-encryption/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/reme-node-core/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/reme-outbox/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/reme-storage/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/reme-transport/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/apps/node/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/reme-config/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/reme-transport/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

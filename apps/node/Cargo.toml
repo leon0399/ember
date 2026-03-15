@@ -20,6 +20,7 @@ reme-encryption = { workspace = true }
 reme-message = { workspace = true }
 reme-transport = { workspace = true, features = ["mqtt"] }
 reme-node-core = { workspace = true }
+reme-config = { workspace = true, features = ["http", "mqtt"] }
 
 # storage
 rusqlite = { workspace = true }

@@ -1,0 +1,89 @@
+# Resilient Messenger Node Configuration
+# Default location: ~/.config/reme/node.toml (Linux/macOS)
+#                   %APPDATA%\reme\node.toml (Windows)
+
+# Peer nodes for replication
+# Each peer can have different authentication and verification settings
+[[peers.http]]
+url = "https://peer1.example.com:23003"
+cert_pin = "spki//sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+username = "replication"
+password = "secret"
+tier = "quorum"
+priority = 100
+label = "Primary Peer"
+
+[[peers.http]]
+url = "https://peer2.example.com:23003"
+node_pubkey = "BASE64_ENCODED_PUBLIC_KEY"
+tier = "quorum"
+priority = 90
+label = "Backup Peer"
+
+# Server settings
+bind_addr = "0.0.0.0:23003"
+max_messages = 100000
+default_ttl = 604800  # 7 days in seconds
+
+# Storage
+storage_path = "/var/lib/reme/messages.db"
+
+# Node identity for signed headers (auto-generated if not exists)
+identity_path = "/etc/reme/node-identity.key"
+
+# Public hostname for signature verification (required for secure mode)
+public_host = "node1.example.com:23003"
+additional_hosts = ["192.168.1.5:23003", "localhost:23003"]  # Optional: for multi-homed/dev
+
+# Authentication (for incoming requests)
+auth_username = "client"
+auth_password = "secret"
+
+# Rate limiting
+[rate_limit]
+submit_ip_rps = 10
+submit_ip_burst = 20
+submit_key_rps = 5
+submit_key_burst = 10
+fetch_ip_rps = 50
+fetch_ip_burst = 100
+fetch_key_rps = 30
+fetch_key_burst = 60
+
+# Cleanup
+[cleanup]
+cleanup_interval_secs = 3600
+
+# TLS configuration
+[tls]
+enabled = true
+cert_path = "/etc/reme/cert.pem"
+key_path = "/etc/reme/key.pem"
+
+# MQTT bridge configuration (optional)
+# Note: MQTT uses system root certificates (no certificate pinning support)
+[mqtt]
+topic_prefix = "reme/v1"
+
+# Example 1: Explicit credentials (recommended)
+[[mqtt.brokers]]
+url = "mqtts://broker.example.com:8883"
+client_id = "node-1"
+username = "reme-node"
+password = "secret123"
+
+# Example 2: URL-embedded credentials
+[[mqtt.brokers]]
+url = "mqtt://user:pass@broker.local:1883"
+client_id = "node-2"
+
+# Example 3: Mixed (explicit overrides URL-embedded)
+[[mqtt.brokers]]
+url = "mqtt://wrong:pass@broker:1883"
+username = "correct"  # This takes precedence over URL username
+password = "secret"   # This takes precedence over URL password
+
+# Example 4: No authentication
+[[mqtt.brokers]]
+url = "mqtt://public-broker.local:1883"
+client_id = "node-public"

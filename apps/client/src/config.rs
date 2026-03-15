@@ -1,50 +1,46 @@
-//! Multi-layered configuration system for the client
+//! Configuration management for the reme client.
 //!
-//! Configuration is loaded from multiple sources with the following priority
-//! (highest to lowest):
+//! ## Configuration Sources (in priority order)
 //!
-//! 1. **CLI arguments** - Explicit user input (highest priority)
-//! 2. **Environment variables** - Prefixed with `REME_`
-//! 3. **Config file** - TOML file at `~/.config/reme/config.toml` or custom path
-//! 4. **Built-in defaults** - Hardcoded fallback values (lowest priority)
+//! 1. **CLI arguments** - Append to configured peers (highest priority for individual values)
+//! 2. **Environment variables** - `REME_PEERS` (JSON)
+//! 3. **Config file** - `~/.config/reme/config.toml` (default location)
+//! 4. **Defaults** - Fallback values
 //!
-//! ## Environment Variables
-//!
-//! All environment variables are prefixed with `REME_` and use `_` as separator:
-//! - `REME_HTTP` - JSON array of HTTP endpoint configs: `[{"url":"...", "cert_pin":"..."}]`
-//! - `REME_MQTT` - JSON array of MQTT broker configs: `[{"url":"...", "client_id":"..."}]`
-//! - `REME_DATA_DIR` - Directory for storing identity, keys, and messages
-//! - `REME_LOG_LEVEL` - Log level (trace, debug, info, warn, error)
-//!
-//! ## Config File
-//!
-//! Default location: `~/.config/reme/config.toml` (Linux/macOS) or
-//! `%APPDATA%\reme\config.toml` (Windows)
+//! ## Config File Format
 //!
 //! ```toml
-//! # HTTP endpoint configuration with optional certificate pinning
-//! [[http]]
+//! # Unified peers configuration
+//! [[peers.http]]
 //! url = "https://node1.example.com:23003"
-//! cert_pin = "spki//sha256/AAAA..."  # Optional
+//! cert_pin = "spki//sha256/AAAA..."  # Optional SPKI pin
+//! tier = "quorum"                    # quorum | best_effort
+//! priority = 100                     # Higher = preferred (0-255)
+//! label = "Primary Mailbox"          # Optional display name
 //!
-//! [[http]]
+//! [[peers.http]]
 //! url = "https://node2.example.com:23003"
-//! # No pin - will connect but warn
+//! username = "alice"                 # Optional Basic Auth
+//! password = "secret"
+//! tier = "quorum"
 //!
-//! # MQTT broker configuration (optional)
-//! # Note: MQTT uses system root certificates (no certificate pinning support)
-//! [[mqtt]]
+//! [[peers.mqtt]]
 //! url = "mqtts://broker.example.com:8883"
-//! client_id = "my-client"  # Optional, auto-generated if not set
+//! client_id = "my-client"            # Optional
+//! tier = "quorum"
 //!
 //! data_dir = "~/.local/share/reme"
 //! log_level = "info"
 //! ```
+//!
+//! Prefer `[[peers.http]]` and `[[peers.mqtt]]` for current configs.
+//! Legacy examples may still appear in older templates while migration work is completed.
 
 use clap::Parser;
 use config::{Config, Environment, File, FileFormat};
 use derivative::Derivative;
 use directories::ProjectDirs;
+use reme_config::{ConfiguredTier, HttpPeerConfig, MqttPeerConfig, PeerCommon, PeersConfig};
 use reme_transport::{QuorumStrategy, TieredDeliveryConfig};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -395,81 +391,6 @@ impl From<DeliveryAppConfig> for TieredDeliveryConfig {
     }
 }
 
-/// Target kind: stable (mailboxes, configured peers) or ephemeral (discovered peers).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TargetKindConfig {
-    /// Stable targets with aggressive retry (mailboxes, configured peers).
-    #[default]
-    Stable,
-    /// Ephemeral targets with quick give-up (discovered peers via DHT/mDNS).
-    Ephemeral,
-}
-
-/// HTTP endpoint configuration with optional certificate pinning
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub struct HttpEndpoint {
-    /// Endpoint URL (http:// or https://)
-    pub url: String,
-    /// Optional certificate pin for TLS verification
-    ///
-    /// Format: `spki//sha256/<base64>` or `cert//sha256/<base64>`
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cert_pin: Option<String>,
-    /// Target kind: "stable" (default) or "ephemeral"
-    #[serde(default)]
-    pub kind: TargetKindConfig,
-    /// Priority (higher = preferred). Default: 100 for stable, 200 for ephemeral.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub priority: Option<u8>,
-    /// Optional human-readable label for this endpoint.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-}
-
-#[allow(dead_code)] // Builder API for programmatic configuration
-impl HttpEndpoint {
-    /// Create a new HTTP endpoint with just a URL (no pinning)
-    pub fn new(url: impl Into<String>) -> Self {
-        Self {
-            url: url.into(),
-            cert_pin: None,
-            kind: TargetKindConfig::default(),
-            priority: None,
-            label: None,
-        }
-    }
-
-    /// Create a new HTTP endpoint with URL and certificate pin
-    pub fn with_pin(url: impl Into<String>, cert_pin: impl Into<String>) -> Self {
-        Self {
-            url: url.into(),
-            cert_pin: Some(cert_pin.into()),
-            kind: TargetKindConfig::default(),
-            priority: None,
-            label: None,
-        }
-    }
-
-    /// Set the target kind.
-    pub fn with_kind(mut self, kind: TargetKindConfig) -> Self {
-        self.kind = kind;
-        self
-    }
-
-    /// Set the priority.
-    pub fn with_priority(mut self, priority: u8) -> Self {
-        self.priority = Some(priority);
-        self
-    }
-
-    /// Set the label.
-    pub fn with_label(mut self, label: impl Into<String>) -> Self {
-        self.label = Some(label.into());
-        self
-    }
-}
-
 // =============================================================================
 // Embedded node default value helpers (for serde and derivative Default)
 // =============================================================================
@@ -531,81 +452,12 @@ pub struct DirectPeerConfig {
     pub name: Option<String>,
 }
 
-/// MQTT broker configuration
-///
-/// Note: MQTT uses system root certificates for TLS verification.
-/// Certificate pinning is not currently supported for MQTT connections.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub struct MqttBroker {
-    /// Broker URL (mqtt:// or mqtts://)
-    pub url: String,
-    /// Optional custom client ID (auto-generated if not specified)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_id: Option<String>,
-    /// Topic prefix for messages (default: "reme/v1")
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub topic_prefix: Option<String>,
-    /// Priority (higher = preferred). Default: 100.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub priority: Option<u8>,
-    /// Optional human-readable label for this broker.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-}
-
-#[allow(dead_code)] // Builder API for programmatic configuration
-impl MqttBroker {
-    /// Create a new MQTT broker with just a URL
-    pub fn new(url: impl Into<String>) -> Self {
-        Self {
-            url: url.into(),
-            client_id: None,
-            topic_prefix: None,
-            priority: None,
-            label: None,
-        }
-    }
-
-    /// Create a new MQTT broker with URL and client ID
-    pub fn with_client_id(url: impl Into<String>, client_id: impl Into<String>) -> Self {
-        Self {
-            url: url.into(),
-            client_id: Some(client_id.into()),
-            topic_prefix: None,
-            priority: None,
-            label: None,
-        }
-    }
-
-    /// Set the topic prefix.
-    pub fn with_topic_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.topic_prefix = Some(prefix.into());
-        self
-    }
-
-    /// Set the priority.
-    pub fn with_priority(mut self, priority: u8) -> Self {
-        self.priority = Some(priority);
-        self
-    }
-
-    /// Set the label.
-    pub fn with_label(mut self, label: impl Into<String>) -> Self {
-        self.label = Some(label.into());
-        self
-    }
-}
-
 /// Final resolved configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
-    /// HTTP endpoint configurations with optional certificate pinning
-    #[serde(default = "default_http")]
-    pub http: Vec<HttpEndpoint>,
-
-    /// MQTT broker configurations with optional certificate pinning
+    /// Unified peer configuration (replaces http and mqtt fields)
     #[serde(default)]
-    pub mqtt: Vec<MqttBroker>,
+    pub peers: PeersConfig,
 
     /// Embedded node configuration for in-process mailbox
     #[serde(default)]
@@ -630,15 +482,28 @@ pub struct AppConfig {
     pub delivery: DeliveryAppConfig,
 }
 
-fn default_http() -> Vec<HttpEndpoint> {
-    vec![HttpEndpoint::new("http://localhost:23004")]
+fn default_peers() -> PeersConfig {
+    PeersConfig {
+        http: vec![HttpPeerConfig {
+            common: PeerCommon {
+                label: Some("Default Local Node".to_string()),
+                tier: ConfiguredTier::Quorum,
+                priority: 100,
+            },
+            url: "http://localhost:23004".to_string(),
+            cert_pin: None,
+            node_pubkey: None,
+            username: None,
+            password: None,
+        }],
+        mqtt: Vec::new(),
+    }
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            http: default_http(),
-            mqtt: Vec::new(),
+            peers: default_peers(),
             embedded_node: EmbeddedNodeConfig::default(),
             direct_peers: Vec::new(),
             data_dir: default_data_dir(),
@@ -664,12 +529,11 @@ fn default_config_path() -> Option<PathBuf> {
 }
 
 /// Intermediate config for deserializing from file
+#[allow(deprecated)] // Legacy fields for backward compatibility
 #[derive(Debug, Clone, Deserialize, Default)]
 struct RawConfig {
-    /// HTTP endpoint configurations (new format)
-    http: Option<Vec<HttpEndpoint>>,
-    /// MQTT broker configurations
-    mqtt: Option<Vec<MqttBroker>>,
+    /// Unified peer configuration (new format)
+    peers: Option<PeersConfig>,
     /// Embedded node configuration
     embedded_node: Option<EmbeddedNodeConfig>,
     /// Direct peers for LAN P2P
@@ -680,36 +544,6 @@ struct RawConfig {
     /// Delivery config section
     #[serde(default)]
     delivery: RawDeliveryConfig,
-}
-
-/// Parse HTTP endpoints from `REME_HTTP` environment variable (JSON format)
-fn parse_http_from_env() -> Option<Vec<HttpEndpoint>> {
-    let json = std::env::var("REME_HTTP").ok()?;
-    match serde_json::from_str(&json) {
-        Ok(endpoints) => Some(endpoints),
-        Err(e) => {
-            warn!(
-                "Failed to parse REME_HTTP as JSON: {} - falling back to config file or defaults",
-                e
-            );
-            None
-        }
-    }
-}
-
-/// Parse MQTT brokers from `REME_MQTT` environment variable (JSON format)
-fn parse_mqtt_from_env() -> Option<Vec<MqttBroker>> {
-    let json = std::env::var("REME_MQTT").ok()?;
-    match serde_json::from_str(&json) {
-        Ok(brokers) => Some(brokers),
-        Err(e) => {
-            warn!(
-                "Failed to parse REME_MQTT as JSON: {} - falling back to config file or defaults",
-                e
-            );
-            None
-        }
-    }
 }
 
 /// Raw outbox config from file/env
@@ -792,151 +626,124 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
     // Deserialize raw config for file-based settings
     let raw: RawConfig = config.try_deserialize().unwrap_or_default();
 
-    // Resolve HTTP endpoints with priority:
-    // 1. CLI --http-url and --http-cert-pin (paired by order)
-    // 2. REME_HTTP environment variable (JSON format)
-    // 3. Config file [[http]] array
-    // 4. Default
-    let http = if let Some(urls) = cli.http_url {
-        // Pair URLs with pins by order
-        let pins = cli.http_cert_pin.unwrap_or_default();
-
-        // Warn if counts don't match
-        if !pins.is_empty() && pins.len() != urls.len() {
-            warn!(
-                "Mismatched --http-url ({}) and --http-cert-pin ({}) counts - some endpoints may be unpinned",
-                urls.len(),
-                pins.len()
-            );
+    // Build PeersConfig from multiple sources (evaluated in order):
+    // 1. Config file [peers] section or REME_PEERS env (primary source)
+    // 3. CLI args (--http-url, --mqtt-url) - ADDITIVE (appended to above)
+    // 4. Default if none of the above
+    let mut peers = if let Some(peers_config) = raw.peers {
+        peers_config
+    } else if let Ok(peers_json) = std::env::var("REME_PEERS") {
+        // Parse REME_PEERS if present
+        match serde_json::from_str(&peers_json) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("Failed to parse REME_PEERS as JSON: {} - using defaults", e);
+                default_peers()
+            }
         }
-
-        urls.into_iter()
-            .enumerate()
-            .map(|(i, url)| HttpEndpoint {
-                url,
-                cert_pin: pins.get(i).cloned(),
-                kind: TargetKindConfig::default(),
-                priority: None,
-                label: None,
-            })
-            .collect()
-    } else if let Some(env_http) = parse_http_from_env() {
-        env_http
-    } else if let Some(file_http) = raw.http {
-        file_http
     } else {
-        defaults.http
+        // Use default
+        default_peers()
     };
 
-    // Resolve MQTT brokers with priority:
-    // 1. CLI --mqtt-url and --mqtt-client-id (paired by order)
-    // 2. REME_MQTT environment variable (JSON format)
-    // 3. Config file [[mqtt]] array
-    // 4. Default (empty)
-    let mqtt = if let Some(urls) = cli.mqtt_url {
-        // Pair URLs with client IDs by order
-        let client_ids = cli.mqtt_client_id.unwrap_or_default();
+    // Apply CLI arguments on top of all other sources
+    // Handle HTTP URLs with cert pins
+    if let Some(urls) = &cli.http_url {
+        // TODO: Add --http-username and --http-password CLI flags for HTTP authentication
+        // Currently only config-based HTTP peers support authentication
+        let cert_pins = cli.http_cert_pin.as_deref();
+        let (http_peers, warnings) = HttpPeerConfig::from_cli_urls(urls, cert_pins, None, None);
 
-        // Warn if counts don't match
-        if !client_ids.is_empty() && client_ids.len() != urls.len() {
-            warn!(
-                "Mismatched --mqtt-url ({}) and --mqtt-client-id ({}) counts - some brokers will use random IDs",
-                urls.len(),
-                client_ids.len()
-            );
+        for warning in warnings {
+            warn!("{}", warning);
         }
 
-        urls.into_iter()
-            .enumerate()
-            .map(|(i, url)| MqttBroker {
-                url,
-                client_id: client_ids.get(i).cloned(),
-                topic_prefix: None,
-                priority: None,
-                label: None,
-            })
-            .collect()
-    } else if let Some(env_mqtt) = parse_mqtt_from_env() {
-        env_mqtt
-    } else {
-        raw.mqtt.unwrap_or_default() // MQTT is optional
-    };
+        peers.http.extend(http_peers);
+    }
+
+    // Handle MQTT URLs with client IDs
+    if let Some(urls) = &cli.mqtt_url {
+        // TODO: Add --mqtt-username and --mqtt-password CLI flags for MQTT authentication
+        // Currently only config-based MQTT peers support authentication
+        let client_ids = cli.mqtt_client_id.as_deref();
+        let (mqtt_peers, warnings) = MqttPeerConfig::from_cli_urls(urls, client_ids, None, None);
+
+        for warning in warnings {
+            warn!("{}", warning);
+        }
+
+        peers.mqtt.extend(mqtt_peers);
+    }
 
     // Expand ~ in data_dir path
     let data_dir = expand_tilde(&data_dir_str);
 
     // Build outbox config with priority: CLI > config file > defaults
-    let outbox_defaults = OutboxAppConfig::default();
     let outbox = OutboxAppConfig {
         tick_interval_secs: cli
             .outbox_tick_interval
             .or(raw.outbox.tick_interval_secs)
-            .unwrap_or(outbox_defaults.tick_interval_secs),
+            .unwrap_or_else(default_outbox_tick_interval),
         ttl_days: cli
             .outbox_ttl_days
             .or(raw.outbox.ttl_days)
-            .unwrap_or(outbox_defaults.ttl_days),
+            .unwrap_or_else(default_outbox_ttl_days),
         attempt_timeout_secs: cli
             .outbox_attempt_timeout
             .or(raw.outbox.attempt_timeout_secs)
-            .unwrap_or(outbox_defaults.attempt_timeout_secs),
+            .unwrap_or_else(default_outbox_attempt_timeout),
         retry_initial_delay_secs: cli
             .outbox_retry_initial_delay
             .or(raw.outbox.retry_initial_delay_secs)
-            .unwrap_or(outbox_defaults.retry_initial_delay_secs),
+            .unwrap_or_else(default_outbox_retry_initial_delay),
         retry_max_delay_secs: cli
             .outbox_retry_max_delay
             .or(raw.outbox.retry_max_delay_secs)
-            .unwrap_or(outbox_defaults.retry_max_delay_secs),
+            .unwrap_or_else(default_outbox_retry_max_delay),
     };
 
-    // Build delivery config from config file > defaults
-    // (No CLI arguments for delivery config - use config file or env vars)
-    let delivery_defaults = DeliveryAppConfig::default();
+    // Build delivery config from config file > defaults (no CLI args for delivery)
     let delivery = DeliveryAppConfig {
-        quorum: raw.delivery.quorum.unwrap_or(delivery_defaults.quorum),
+        quorum: raw.delivery.quorum.unwrap_or_default(),
         urgent_initial_delay_secs: raw
             .delivery
             .urgent_initial_delay_secs
-            .unwrap_or(delivery_defaults.urgent_initial_delay_secs),
+            .unwrap_or_else(default_urgent_initial_delay),
         urgent_max_delay_secs: raw
             .delivery
             .urgent_max_delay_secs
-            .unwrap_or(delivery_defaults.urgent_max_delay_secs),
+            .unwrap_or_else(default_urgent_max_delay),
         urgent_backoff_multiplier: raw
             .delivery
             .urgent_backoff_multiplier
-            .unwrap_or(delivery_defaults.urgent_backoff_multiplier),
+            .unwrap_or_else(default_urgent_backoff_multiplier),
         maintenance_interval_hours: raw
             .delivery
             .maintenance_interval_hours
-            .unwrap_or(delivery_defaults.maintenance_interval_hours),
+            .unwrap_or_else(default_maintenance_interval_hours),
         maintenance_enabled: raw
             .delivery
             .maintenance_enabled
-            .unwrap_or(delivery_defaults.maintenance_enabled),
+            .unwrap_or_else(default_maintenance_enabled),
         direct_tier_timeout_ms: raw
             .delivery
             .direct_tier_timeout_ms
-            .unwrap_or(delivery_defaults.direct_tier_timeout_ms),
+            .unwrap_or_else(default_direct_tier_timeout_ms),
         quorum_tier_timeout_secs: raw
             .delivery
             .quorum_tier_timeout_secs
-            .unwrap_or(delivery_defaults.quorum_tier_timeout_secs),
+            .unwrap_or_else(default_quorum_tier_timeout_secs),
     };
 
     // Resolve embedded node config with priority: CLI > config file > defaults
     let embedded_node_file = raw.embedded_node.unwrap_or_default();
     let embedded_node = EmbeddedNodeConfig {
         // CLI flags take priority: --embedded-node enables, --no-embedded-node disables
-        enabled: if cli.embedded_node {
-            true
-        } else if cli.no_embedded_node {
-            false
-        } else {
-            embedded_node_file.enabled
+        enabled: match (cli.embedded_node, cli.no_embedded_node) {
+            (true, _) => true,
+            (_, true) => false,
+            _ => embedded_node_file.enabled,
         },
-        // CLI --embedded-http-bind overrides config file
         http_bind: cli.embedded_http_bind.or(embedded_node_file.http_bind),
         max_messages: embedded_node_file.max_messages,
         default_ttl_secs: embedded_node_file.default_ttl_secs,
@@ -946,8 +753,7 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
     let direct_peers = raw.direct_peers.unwrap_or_default();
 
     Ok(AppConfig {
-        http,
-        mqtt,
+        peers,
         embedded_node,
         direct_peers,
         data_dir,
@@ -1083,7 +889,7 @@ default_ttl_secs = {embedded_ttl_secs}
 # name = "Bob (LAN)"                          # Optional
 # public_id = "BASE64_ENCODED_PUBLIC_ID"      # Optional, reserved for future
 "#,
-        url = defaults.http[0].url,
+        url = defaults.peers.http[0].url,
         data_dir = defaults.data_dir.to_string_lossy(),
         log_level = defaults.log_level,
         tick_interval = defaults.outbox.tick_interval_secs,
@@ -1122,10 +928,10 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = AppConfig::default();
-        assert_eq!(config.http.len(), 1);
-        assert_eq!(config.http[0].url, "http://localhost:23004");
-        assert_eq!(config.http[0].cert_pin, None);
-        assert!(config.mqtt.is_empty());
+        assert_eq!(config.peers.http.len(), 1);
+        assert_eq!(config.peers.http[0].url, "http://localhost:23004");
+        assert_eq!(config.peers.http[0].cert_pin, None);
+        assert!(config.peers.mqtt.is_empty());
         assert!(!config.embedded_node.enabled);
         assert!(config.direct_peers.is_empty());
         assert_eq!(config.log_level, "info");
@@ -1159,89 +965,12 @@ mod tests {
     }
 
     #[test]
-    fn test_default_http() {
-        let endpoints = default_http();
-        assert_eq!(endpoints.len(), 1);
-        assert_eq!(endpoints[0].url, "http://localhost:23004");
-        assert_eq!(endpoints[0].cert_pin, None);
-    }
-
-    #[test]
-    fn test_http_endpoint_constructors() {
-        let endpoint = HttpEndpoint::new("https://example.com");
-        assert_eq!(endpoint.url, "https://example.com");
-        assert_eq!(endpoint.cert_pin, None);
-
-        let endpoint = HttpEndpoint::with_pin("https://example.com", "spki//sha256/abc=");
-        assert_eq!(endpoint.url, "https://example.com");
-        assert_eq!(endpoint.cert_pin, Some("spki//sha256/abc=".to_string()));
-    }
-
-    #[test]
-    fn test_mqtt_broker_constructors() {
-        let broker = MqttBroker::new("mqtts://example.com:8883");
-        assert_eq!(broker.url, "mqtts://example.com:8883");
-        assert_eq!(broker.client_id, None);
-
-        let broker = MqttBroker::with_client_id("mqtts://example.com:8883", "my-client");
-        assert_eq!(broker.url, "mqtts://example.com:8883");
-        assert_eq!(broker.client_id, Some("my-client".to_string()));
-    }
-
-    #[test]
-    fn test_http_endpoint_deserialize() {
-        let json = r#"{"url":"https://example.com","cert_pin":"spki//sha256/test="}"#;
-        let endpoint: HttpEndpoint = serde_json::from_str(json).unwrap();
-        assert_eq!(endpoint.url, "https://example.com");
-        assert_eq!(endpoint.cert_pin, Some("spki//sha256/test=".to_string()));
-
-        // Without cert_pin
-        let json = r#"{"url":"https://example.com"}"#;
-        let endpoint: HttpEndpoint = serde_json::from_str(json).unwrap();
-        assert_eq!(endpoint.url, "https://example.com");
-        assert_eq!(endpoint.cert_pin, None);
-    }
-
-    #[test]
-    fn test_mqtt_broker_deserialize() {
-        let json = r#"{"url":"mqtts://example.com:8883","client_id":"my-client"}"#;
-        let broker: MqttBroker = serde_json::from_str(json).unwrap();
-        assert_eq!(broker.url, "mqtts://example.com:8883");
-        assert_eq!(broker.client_id, Some("my-client".to_string()));
-
-        // Without optional fields
-        let json = r#"{"url":"mqtts://example.com:8883"}"#;
-        let broker: MqttBroker = serde_json::from_str(json).unwrap();
-        assert_eq!(broker.url, "mqtts://example.com:8883");
-        assert_eq!(broker.client_id, None);
-    }
-
-    #[test]
-    fn test_parse_http_from_env_json() {
-        std::env::set_var(
-            "REME_HTTP",
-            r#"[{"url":"https://node1.example.com","cert_pin":"spki//sha256/abc="},{"url":"https://node2.example.com"}]"#,
-        );
-        let endpoints = parse_http_from_env().expect("Should parse JSON");
-        assert_eq!(endpoints.len(), 2);
-        assert_eq!(endpoints[0].url, "https://node1.example.com");
-        assert_eq!(endpoints[0].cert_pin, Some("spki//sha256/abc=".to_string()));
-        assert_eq!(endpoints[1].url, "https://node2.example.com");
-        assert_eq!(endpoints[1].cert_pin, None);
-        std::env::remove_var("REME_HTTP");
-    }
-
-    #[test]
-    fn test_parse_mqtt_from_env_json() {
-        std::env::set_var(
-            "REME_MQTT",
-            r#"[{"url":"mqtts://broker.example.com:8883","client_id":"test-client"}]"#,
-        );
-        let brokers = parse_mqtt_from_env().expect("Should parse JSON");
-        assert_eq!(brokers.len(), 1);
-        assert_eq!(brokers[0].url, "mqtts://broker.example.com:8883");
-        assert_eq!(brokers[0].client_id, Some("test-client".to_string()));
-        std::env::remove_var("REME_MQTT");
+    fn test_default_peers() {
+        let peers = default_peers();
+        assert_eq!(peers.http.len(), 1);
+        assert_eq!(peers.http[0].url, "http://localhost:23004");
+        assert_eq!(peers.http[0].cert_pin, None);
+        assert!(peers.mqtt.is_empty());
     }
 
     #[test]
