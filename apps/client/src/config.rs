@@ -648,64 +648,30 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
     // Apply CLI arguments on top of all other sources
     // Handle HTTP URLs with cert pins
     if let Some(urls) = &cli.http_url {
-        let cert_pins = cli.http_cert_pin.as_deref().unwrap_or(&[]);
-
-        if !cert_pins.is_empty() && urls.len() != cert_pins.len() {
-            warn!(
-                "--http-url count ({}) != --http-cert-pin count ({}), some pins ignored",
-                urls.len(),
-                cert_pins.len()
-            );
-        }
-
         // TODO: Add --http-username and --http-password CLI flags for HTTP authentication
         // Currently only config-based HTTP peers support authentication
-        for (i, url) in urls.iter().enumerate() {
-            let http_peer = HttpPeerConfig {
-                common: PeerCommon {
-                    label: Some(format!("CLI HTTP {}", i + 1)),
-                    tier: ConfiguredTier::Quorum,
-                    priority: 100,
-                },
-                url: url.clone(),
-                cert_pin: cert_pins.get(i).cloned(),
-                node_pubkey: None,
-                username: None, // No CLI flags for auth yet
-                password: None,
-            };
-            peers.http.push(http_peer);
+        let cert_pins = cli.http_cert_pin.as_deref();
+        let (http_peers, warnings) = HttpPeerConfig::from_cli_urls(urls, cert_pins, None, None);
+
+        for warning in warnings {
+            warn!("{}", warning);
         }
+
+        peers.http.extend(http_peers);
     }
 
     // Handle MQTT URLs with client IDs
     if let Some(urls) = &cli.mqtt_url {
-        let client_ids = cli.mqtt_client_id.as_deref().unwrap_or(&[]);
+        // TODO: Add --mqtt-username and --mqtt-password CLI flags for MQTT authentication
+        // Currently only config-based MQTT peers support authentication
+        let client_ids = cli.mqtt_client_id.as_deref();
+        let (mqtt_peers, warnings) = MqttPeerConfig::from_cli_urls(urls, client_ids, None, None);
 
-        if !client_ids.is_empty() && urls.len() != client_ids.len() {
-            warn!(
-                "--mqtt-url count ({}) != --mqtt-client-id count ({}), some IDs ignored",
-                urls.len(),
-                client_ids.len()
-            );
+        for warning in warnings {
+            warn!("{}", warning);
         }
 
-        for (i, url) in urls.iter().enumerate() {
-            // TODO: Add --mqtt-username and --mqtt-password CLI flags for MQTT authentication
-            // Currently only config-based MQTT peers support authentication
-            let mqtt_peer = MqttPeerConfig {
-                common: PeerCommon {
-                    label: Some(format!("CLI MQTT {}", i + 1)),
-                    tier: ConfiguredTier::Quorum,
-                    priority: 100,
-                },
-                url: url.clone(),
-                client_id: client_ids.get(i).cloned(),
-                topic_prefix: None,
-                username: None, // No CLI flags for auth yet
-                password: None,
-            };
-            peers.mqtt.push(mqtt_peer);
-        }
+        peers.mqtt.extend(mqtt_peers);
     }
 
     // Expand ~ in data_dir path
