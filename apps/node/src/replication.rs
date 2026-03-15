@@ -164,7 +164,11 @@ impl ReplicationClient {
                         );
                     }
                     Err(e) => {
-                        error!("Failed to replicate payload to {}: {}", safe_peer_url, e);
+                        error!(
+                            "Failed to replicate payload to {}: {}",
+                            safe_peer_url,
+                            sanitize_reqwest_error_for_logging(e)
+                        );
                     }
                 }
             }
@@ -228,6 +232,10 @@ fn sanitize_peer_url_for_logging(url_str: &str) -> String {
     }
 }
 
+fn sanitize_reqwest_error_for_logging(error: reqwest::Error) -> reqwest::Error {
+    error.without_url()
+}
+
 /// Extract host:port from a URL for signature destination binding.
 ///
 /// Returns `Some("host:port")` or `Some("host")` if no explicit port.
@@ -244,7 +252,7 @@ fn extract_host_from_url(url_str: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::format_peer_log_entry;
+    use super::{format_peer_log_entry, sanitize_reqwest_error_for_logging};
     use reme_config::{ParsedHttpPeer, PeerCommon};
 
     #[test]
@@ -264,5 +272,20 @@ mod tests {
 
         assert_eq!(line, "https://example.com:23003 (authenticated) [Primary]");
         assert!(!line.contains("alice:secret"));
+    }
+
+    #[tokio::test]
+    async fn sanitize_reqwest_error_for_logging_removes_attached_url() {
+        let error = reqwest::Client::new()
+            .post("http://alice:secret@127.0.0.1:1/api/v1/submit")
+            .body("payload")
+            .send()
+            .await
+            .unwrap_err();
+
+        let sanitized = sanitize_reqwest_error_for_logging(error);
+
+        assert!(sanitized.url().is_none());
+        assert!(!sanitized.to_string().contains("alice:secret"));
     }
 }
