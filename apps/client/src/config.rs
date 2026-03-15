@@ -33,8 +33,8 @@
 //! log_level = "info"
 //! ```
 //!
-//! Legacy `[[http]]` and `[[mqtt]]` sections are no longer supported.
-//! Migrate existing configs to `[[peers.http]]` and `[[peers.mqtt]]`.
+//! Prefer `[[peers.http]]` and `[[peers.mqtt]]` for current configs.
+//! Legacy examples may still appear in older templates while migration work is completed.
 
 use clap::Parser;
 use config::{Config, Environment, File, FileFormat};
