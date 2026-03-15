@@ -28,7 +28,7 @@ pub(crate) fn check_cli_array_mismatch(
         .filter(|s| !s.is_empty() && primary_len != s.len())
         .map(|s| {
             format!(
-                "{primary_flag} count ({primary_len}) != {secondary_flag} count ({}), some ignored",
+                "{primary_flag} count ({primary_len}) != {secondary_flag} count ({}); counts differ, pairing may be incomplete",
                 s.len()
             )
         })
@@ -62,4 +62,25 @@ pub struct PeersConfig {
     #[cfg(feature = "mqtt")]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mqtt: Vec<MqttPeerConfig>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_cli_array_mismatch;
+
+    #[test]
+    fn test_check_cli_array_mismatch_uses_neutral_wording_for_shorter_secondary() {
+        let secondary = ["pin-a".to_string()];
+
+        let warning =
+            check_cli_array_mismatch(2, Some(&secondary), "--http-url", "--http-cert-pin");
+
+        assert_eq!(
+            warning,
+            Some(
+                "--http-url count (2) != --http-cert-pin count (1); counts differ, pairing may be incomplete"
+                    .to_string(),
+            ),
+        );
+    }
 }
