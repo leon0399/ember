@@ -282,7 +282,9 @@ pub struct CliArgs {
     #[arg(long, env = "REME_NODE_ID")]
     pub node_id: Option<String>,
 
-    /// Peer node URLs for replication (comma-separated)
+    /// Peer node URLs for replication (comma-separated).
+    /// Overrides configured peers and supports only URL-level settings.
+    /// Use config/env peer entries for cert pins, node public keys, and explicit auth fields.
     #[arg(short = 'P', long, env = "REME_NODE_PEERS", value_delimiter = ',')]
     pub peers: Option<Vec<String>>,
 
@@ -606,7 +608,7 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     // Extract peers configuration
     let mut peers: PeersConfig = config.get::<PeersConfig>("peers").unwrap_or(defaults.peers);
 
-    // Apply CLI peer overrides
+    // Apply CLI peer overrides (URL-only shorthand, not full peer-config parity)
     if let Some(ref peer_urls) = cli.peers {
         // CLI peers override all file/env config
         let (http_peers, _warnings) = HttpPeerConfig::from_cli_urls(peer_urls, None, None, None);
