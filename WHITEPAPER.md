@@ -76,8 +76,8 @@ Reme takes a different approach: designing for intermittent, constrained, and po
 | **DAG** (Directed Acyclic Graph) | The causal ordering structure formed by `prev_self` and `observed_heads` references between messages. Tracks causality and enables gap detection without a central server. |
 | **Epoch** | A per-conversation counter in the DAG. Incremented on intentional history clear. Messages from different epochs are not causally linked. |
 | **Detached message** | A message sent without DAG references (`prev_self: None`, `observed_heads: []`, `FLAG_DETACHED`). Used on constrained transports (BLE, LoRa) to save ~16 bytes of overhead. Does not trigger state-reset detection. |
-| **Tombstone** | A signed acknowledgment that a recipient has received a specific message. Relay nodes use tombstones to clear their caches. Optionally carries an encrypted delivery/read receipt for the sender. |
-| **ack_secret** | A 16-byte value derived from the ECDH shared secret: `BLAKE3_KDF("reme-ack-v1", shared_secret \|\| message_id)[0..16]`. Only the sender and recipient can compute it. The recipient includes it in a tombstone to prove they decrypted the message. |
+| **Tombstone** | A 96-byte signed authorization token targeting a specific message. Contains only a MessageID, ack_secret, and XEdDSA signature. Relay nodes use tombstones to clear their caches. The recipient uses tombstones to acknowledge delivery; the sender can also use them to retract an undelivered message. |
+| **ack_secret** | A 16-byte value derived from the ECDH shared secret: `BLAKE3_KDF("reme-ack-v1", shared_secret \|\| message_id)[0..16]`. Only the sender and recipient can compute it. Included in a tombstone to prove the creator was cryptographically bound to that specific message. |
 | **ack_hash** | `BLAKE3_KDF("reme-ack-hash-v1", ack_secret)[0..16]`. Stored in the OuterEnvelope so relay nodes can verify tombstone authorization in O(1) without knowing any identity. |
 | **Transport** | A mechanism for moving OuterEnvelopes between nodes: HTTP, MQTT, BLE, LoRa, or sneakernet. Transports are interchangeable; the same encrypted envelope works on any of them. |
 | **Mailbox node** | An always-on server that stores and forwards OuterEnvelopes for recipients, indexed by RoutingKey. The primary Internet-based infrastructure. |
@@ -372,8 +372,10 @@ Messages and tombstones share the transport with a 1-byte discriminator:
 
 ```
 0x00: Message (OuterEnvelope)
-0x01: Tombstone (TombstoneEnvelope)
+0x02: AckTombstone (SignedAckTombstone)
 ```
+
+Note: `0x01` was used by the V1 tombstone format and is no longer supported.
 
 ### 8.5 Timestamp design
 
@@ -465,32 +467,33 @@ Detached messages:
 
 ### 10.1 Purpose
 
-Tombstones have two purposes:
+Tombstones have one primary purpose:
 
-1. **Network layer**: Cache clearing and duplicate delivery prevention
-2. **Application layer**: Optional delivery/read receipts
+1. **Network layer**: Cache clearing, duplicate-delivery prevention, and sender-side retraction of undelivered messages
 
-### 10.2 Tombstone format
+User-visible delivery/read receipts are carried separately as `Content::Receipt` messages, not as fields inside the tombstone wire format.
 
-> **WIP:** The tombstone wire format is being revised. The current implementation uses ack_secret-based authorization (V2), which differs from the V1 design described here. The fields below will be updated once the format stabilizes.
+### 10.2 Tombstone format (V2: SignedAckTombstone)
 
-A tombstone contains:
-- The target MessageID being acknowledged
-- The RoutingKey of the mailbox where the message was stored
-- An `ack_secret` proving the recipient decrypted the message (see §2)
-- An XEdDSA signature for attribution
+A tombstone is 96 bytes:
+
+| Field | Size | Description |
+|-------|------|-------------|
+| message_id | 16 bytes | UUID of the message being acknowledged |
+| ack_secret | 16 bytes | Proves the creator could decrypt the message (see §2) |
+| signature | 64 bytes | XEdDSA signature over `message_id \|\| ack_secret` |
+
+No routing key, no timestamp, no identity fields. The tombstone is minimal by design: relay nodes authorize it via `ack_hash` comparison (see §10.3), and clients attribute it via signature verification.
+
+Both sender and recipient can create valid tombstones (both can derive `ack_secret` from the ECDH shared secret).
 
 ### 10.3 Security properties
 
-**Authorization without identity**: Relay nodes verify tombstones by checking `BLAKE3(ack_secret) == ack_hash` from the OuterEnvelope. This is an O(1) hash comparison that requires no knowledge of sender or recipient identity.
+**Authorization without identity**: Relay nodes verify `BLAKE3_KDF("reme-ack-hash-v1", ack_secret)[0..16] == ack_hash` from the stored OuterEnvelope. This is an O(1) constant-time comparison that requires no knowledge of sender or recipient identity.
 
-**Attribution**: Clients verify the XEdDSA signature to determine whether the tombstone came from the sender or recipient.
+**Attribution**: Clients verify the XEdDSA signature against both the sender and recipient public keys to determine who created the tombstone. Three outcomes: Sender, Recipient, or Invalid.
 
-**Verifiable by relays**: Any node can verify tombstone authorization without decrypting messages.
-
-### 10.4 Encrypted receipt (optional)
-
-Tombstones can optionally carry a receipt encrypted for the sender (ephemeral X25519 + ChaCha20-Poly1305). The receipt includes a precise timestamp, delivery status (Delivered, Read, or Deleted), and optionally a proof-of-content HMAC.
+**Replay prevention**: The `ack_secret` is derived from `BLAKE3_KDF("reme-ack-v1", shared_secret || message_id)`, binding each tombstone to a specific message. A tombstone for message A cannot authorize clearing message B.
 
 ---
 
@@ -770,7 +773,7 @@ The tradeoff is explicit: reme prioritizes resilience and DTN tolerance over the
 | Poly1305 tag           | 16 bytes                     |
 | OuterEnvelope overhead | ~73 bytes (bincode)          |
 | InnerEnvelope minimum  | ~107 bytes (with signature)  |
-| Tombstone              | TBD (V2 format)              |
+| Tombstone (V2)         | 96 bytes (fixed)             |
 
 ### C. References
 
