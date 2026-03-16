@@ -8,6 +8,7 @@ pub mod coordinator;
 pub(crate) mod dedup;
 pub mod delivery;
 pub mod http;
+pub(crate) mod http_pagination;
 pub mod http_target;
 pub mod pool;
 pub mod query;

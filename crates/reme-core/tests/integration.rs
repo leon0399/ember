@@ -63,8 +63,15 @@ impl TestServer {
             axum::serve(listener, app).await.expect("Server failed");
         });
 
-        // Small delay to ensure server is ready
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        let mut server_ready = false;
+        for _ in 0..50 {
+            if tokio::net::TcpStream::connect(addr).await.is_ok() {
+                server_ready = true;
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+        assert!(server_ready, "Test server failed to start within 500ms");
 
         TestServer {
             url,
@@ -116,6 +123,51 @@ async fn test_transport_roundtrip() {
     println!("Message roundtrip: OK");
 
     println!("✓ Transport roundtrip test passed!");
+}
+
+#[tokio::test]
+async fn test_transport_fetch_once_drains_paginated_mailbox() {
+    const MESSAGE_COUNT: u8 = 150;
+    const CIPHERTEXT_LEN: usize = 4096;
+
+    let server = TestServer::start().await;
+    let transport = TransportPool::<HttpTarget>::single(server.url()).unwrap();
+
+    let identity = Identity::generate();
+    let routing_key = identity.public_id().routing_key();
+
+    for i in 0u8..MESSAGE_COUNT {
+        let test_envelope = OuterEnvelope::new(
+            routing_key,
+            Some(1),
+            [i; 32],
+            [i; 16],
+            vec![i; CIPHERTEXT_LEN],
+        );
+        transport
+            .submit_message(test_envelope)
+            .await
+            .expect("submit_message failed");
+    }
+
+    let messages = transport
+        .fetch_once(&routing_key)
+        .await
+        .expect("fetch_once failed");
+
+    assert_eq!(messages.len(), usize::from(MESSAGE_COUNT));
+
+    let payload_markers: Vec<u8> = messages
+        .iter()
+        .map(|message| {
+            *message
+                .inner_ciphertext
+                .first()
+                .expect("test payload should contain one byte")
+        })
+        .collect();
+    let expected_markers: Vec<u8> = (0u8..MESSAGE_COUNT).collect();
+    assert_eq!(payload_markers, expected_markers);
 }
 
 /// Test end-to-end encryption using MIK-only stateless encryption

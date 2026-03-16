@@ -15,6 +15,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
+use crate::http_pagination::validate_next_cursor;
 use crate::target::{
     HealthData, HealthState, RawReceipt, TargetConfig, TargetHealth, TargetId, TargetKind,
     TransportTarget,
@@ -190,6 +191,8 @@ impl SubmitResponse {
 #[derive(Debug, Deserialize)]
 struct FetchResponse {
     payloads: Vec<String>,
+    next_cursor: Option<String>,
+    has_more: bool,
 }
 
 impl HttpTarget {
@@ -322,10 +325,11 @@ impl HttpTarget {
     }
 
     /// Internal fetch implementation.
-    async fn fetch_from_endpoint(
+    async fn fetch_page_from_endpoint(
         &self,
         routing_key_b64: &str,
-    ) -> Result<Vec<OuterEnvelope>, TransportError> {
+        after: Option<&str>,
+    ) -> Result<FetchResponse, TransportError> {
         let url = format!(
             "{}/api/v1/fetch/{}",
             self.sanitized_url.trim_end_matches('/'),
@@ -336,6 +340,9 @@ impl HttpTarget {
             .client
             .get(&url)
             .timeout(self.config.base.request_timeout);
+        if let Some(after) = after {
+            request = request.query(&[("after", after)]);
+        }
 
         // Priority 1: Explicit auth from config
         // Priority 2: URL-embedded auth (legacy/backward compat)
@@ -366,14 +373,15 @@ impl HttpTarget {
             )));
         }
 
-        let result: FetchResponse = response
+        response
             .json()
             .await
-            .map_err(|e| TransportError::Serialization(e.to_string()))?;
+            .map_err(|e| TransportError::Serialization(e.to_string()))
+    }
 
-        // Decode and deserialize each wire payload
+    fn decode_fetch_payloads(payloads: Vec<String>) -> Result<Vec<OuterEnvelope>, TransportError> {
         let mut envelopes = Vec::new();
-        for blob in result.payloads {
+        for blob in payloads {
             let wire_bytes = BASE64_STANDARD
                 .decode(&blob)
                 .map_err(|e| TransportError::Serialization(format!("base64 decode: {e}")))?;
@@ -381,10 +389,41 @@ impl HttpTarget {
             let payload = WirePayload::decode(&wire_bytes)
                 .map_err(|e| TransportError::Serialization(format!("wire decode: {e}")))?;
 
-            // Only extract messages (tombstones are handled separately)
             if let WirePayload::Message(envelope) = payload {
                 envelopes.push(envelope);
             }
+        }
+
+        Ok(envelopes)
+    }
+
+    async fn fetch_from_endpoint(
+        &self,
+        routing_key_b64: &str,
+    ) -> Result<Vec<OuterEnvelope>, TransportError> {
+        let mut after = None;
+        let mut previous_cursor = None;
+        let mut envelopes = Vec::new();
+
+        loop {
+            let page = self
+                .fetch_page_from_endpoint(routing_key_b64, after.as_deref())
+                .await?;
+            envelopes.extend(Self::decode_fetch_payloads(page.payloads)?);
+
+            if !page.has_more {
+                break;
+            }
+
+            let next_cursor = page.next_cursor.ok_or_else(|| {
+                TransportError::ServerError(
+                    "Paginated fetch response has_more=true but next_cursor is missing".to_string(),
+                )
+            })?;
+            let parsed_next_cursor = validate_next_cursor(&next_cursor, previous_cursor)?;
+
+            after = Some(next_cursor);
+            previous_cursor = Some(parsed_next_cursor);
         }
 
         Ok(envelopes)
@@ -579,6 +618,67 @@ fn sanitize_url_for_log(url_str: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{extract::Query, routing::get, Json, Router};
+    use base64::prelude::BASE64_STANDARD;
+    use reme_identity::RoutingKey;
+    use reme_message::{MessageID, WirePayload};
+    use serde::{Deserialize, Serialize};
+    use tokio::net::TcpListener;
+
+    async fn start_mock_server(app: Router) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind");
+        let addr = listener.local_addr().expect("Failed to get local addr");
+        let url = format!("http://{addr}");
+
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("Server failed");
+        });
+
+        let client = reqwest::Client::new();
+        let health_url = format!("{url}/");
+        let mut server_ready = false;
+        for _ in 0..50 {
+            if client.get(&health_url).send().await.is_ok() {
+                server_ready = true;
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+        assert!(server_ready, "Mock server failed to start within 500ms");
+
+        (url, handle)
+    }
+
+    fn build_envelope_with_id(message_id: MessageID, ciphertext: Vec<u8>) -> OuterEnvelope {
+        let mut env = OuterEnvelope::new(
+            RoutingKey::from([0u8; 16]),
+            None,
+            [0u8; 32],
+            [0u8; 16],
+            ciphertext,
+        );
+        env.message_id = message_id;
+        env
+    }
+
+    fn encode_envelope_payload(env: &OuterEnvelope) -> String {
+        let wire = WirePayload::Message(env.clone());
+        BASE64_STANDARD.encode(wire.encode())
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct MockFetchQuery {
+        after: Option<String>,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct MockFetchResponse {
+        payloads: Vec<String>,
+        next_cursor: Option<String>,
+        has_more: bool,
+    }
 
     #[test]
     fn test_http_target_config_stable() {
@@ -641,5 +741,129 @@ mod tests {
             sanitize_url_for_log("https://example.com/api"),
             "https://example.com/api"
         );
+    }
+
+    #[tokio::test]
+    async fn test_fetch_once_follows_paginated_responses() {
+        let env_1 = build_envelope_with_id(MessageID::from_bytes([1; 16]), vec![1]);
+        let env_2 = build_envelope_with_id(MessageID::from_bytes([2; 16]), vec![2]);
+        let payload_1 = encode_envelope_payload(&env_1);
+        let payload_2 = encode_envelope_payload(&env_2);
+
+        let app = Router::new().route(
+            "/api/v1/fetch/{routing_key}",
+            get(move |Query(query): Query<MockFetchQuery>| {
+                let payload_1 = payload_1.clone();
+                let payload_2 = payload_2.clone();
+
+                async move {
+                    let response = match query.after.as_deref() {
+                        None => MockFetchResponse {
+                            payloads: vec![payload_1],
+                            next_cursor: Some("1".to_string()),
+                            has_more: true,
+                        },
+                        Some("1") => MockFetchResponse {
+                            payloads: vec![payload_2],
+                            next_cursor: Some("2".to_string()),
+                            has_more: false,
+                        },
+                        Some(other) => panic!("unexpected cursor {other}"),
+                    };
+
+                    Json(response)
+                }
+            }),
+        );
+
+        let (url, _handle) = start_mock_server(app).await;
+        let target = HttpTarget::new(HttpTargetConfig::stable(url)).unwrap();
+        let routing_key = RoutingKey::from([0u8; 16]);
+
+        let result = target.fetch_once(&routing_key).await.unwrap();
+        let message_ids: Vec<_> = result.into_iter().map(|env| env.message_id).collect();
+
+        assert_eq!(message_ids, vec![env_1.message_id, env_2.message_id]);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_once_errors_when_has_more_missing_cursor() {
+        let env = build_envelope_with_id(MessageID::from_bytes([9; 16]), vec![9]);
+        let payload = encode_envelope_payload(&env);
+
+        let app = Router::new().route(
+            "/api/v1/fetch/{routing_key}",
+            get(move || async move {
+                Json(MockFetchResponse {
+                    payloads: vec![payload.clone()],
+                    next_cursor: None,
+                    has_more: true,
+                })
+            }),
+        );
+
+        let (url, _handle) = start_mock_server(app).await;
+        let target = HttpTarget::new(HttpTargetConfig::stable(url)).unwrap();
+        let routing_key = RoutingKey::from([0u8; 16]);
+        let error = target.fetch_once(&routing_key).await.unwrap_err();
+
+        match error {
+            TransportError::ServerError(message) => {
+                assert!(
+                    message.contains("next_cursor"),
+                    "unexpected error: {message}"
+                );
+            }
+            other => panic!("expected server error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fetch_once_errors_when_next_cursor_regresses() {
+        let env_1 = build_envelope_with_id(MessageID::from_bytes([7; 16]), vec![7]);
+        let env_2 = build_envelope_with_id(MessageID::from_bytes([8; 16]), vec![8]);
+        let payload_1 = encode_envelope_payload(&env_1);
+        let payload_2 = encode_envelope_payload(&env_2);
+
+        let app = Router::new().route(
+            "/api/v1/fetch/{routing_key}",
+            get(move |Query(query): Query<MockFetchQuery>| {
+                let payload_1 = payload_1.clone();
+                let payload_2 = payload_2.clone();
+
+                async move {
+                    let response = match query.after.as_deref() {
+                        None => MockFetchResponse {
+                            payloads: vec![payload_1],
+                            next_cursor: Some("2".to_string()),
+                            has_more: true,
+                        },
+                        Some("2") => MockFetchResponse {
+                            payloads: vec![payload_2],
+                            next_cursor: Some("1".to_string()),
+                            has_more: true,
+                        },
+                        Some(other) => panic!("unexpected cursor {other}"),
+                    };
+
+                    Json(response)
+                }
+            }),
+        );
+
+        let (url, _handle) = start_mock_server(app).await;
+        let target = HttpTarget::new(HttpTargetConfig::stable(url)).unwrap();
+        let routing_key = RoutingKey::from([0u8; 16]);
+        let error = target.fetch_once(&routing_key).await.unwrap_err();
+
+        match error {
+            TransportError::ServerError(message) => {
+                assert!(
+                    message.contains("non-advancing next_cursor"),
+                    "unexpected error: {message}"
+                );
+            }
+            other => panic!("expected server error, got {other:?}"),
+        }
     }
 }

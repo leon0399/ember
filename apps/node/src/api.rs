@@ -23,9 +23,9 @@ use base64::prelude::*;
 use reme_encryption::{build_identity_sign_data, build_receipt_sign_data, derive_ack_secret};
 use reme_identity::PublicID;
 use reme_message::{OuterEnvelope, RoutingKey, WirePayload};
-use reme_node_core::{MailboxStore, NodeError, PersistentMailboxStore};
+use reme_node_core::{FetchPage, MailboxStore, NodeError, PersistentMailboxStore};
 use serde::Deserialize;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use tracing::{debug, error, warn};
@@ -54,6 +54,9 @@ pub struct AppState {
 /// Prevents memory exhaustion from oversized payloads.
 /// Typical `OuterEnvelope` is ~2 KiB; 256 KiB provides ample headroom.
 const MAX_BODY_SIZE: usize = 256 * 1024;
+const DEFAULT_FETCH_PAGE_SIZE: usize = 100;
+const MAX_FETCH_PAGE_SIZE: usize = 100;
+const MAX_FETCH_RESPONSE_BYTES: usize = 64 * 1024;
 
 /// Create the API router
 ///
@@ -206,6 +209,11 @@ pub struct SubmitResponse {
 pub struct FetchResponse {
     /// Base64-encoded `WirePayload` bytes (includes wire type prefix)
     pub payloads: Vec<String>,
+    /// Opaque continuation token for the next page. Encoded mailbox row id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    /// Whether more rows remain for this routing key after the current page.
+    pub has_more: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -241,6 +249,136 @@ pub struct IdentityResponse {
 pub struct IdentityQuery {
     /// Base64-encoded 32-byte random challenge
     pub challenge: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct FetchQuery {
+    limit: Option<String>,
+    after: Option<String>,
+}
+
+fn bad_request(message: impl Into<String>) -> axum::response::Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse {
+            error: message.into(),
+        }),
+    )
+        .into_response()
+}
+
+fn decode_fetch_routing_key(routing_key_b64: &str) -> Result<RoutingKey, String> {
+    let routing_key_bytes = URL_SAFE_NO_PAD.decode(routing_key_b64).map_err(|e| {
+        error!("Failed to decode routing key: {}", e);
+        "Invalid routing key encoding".to_string()
+    })?;
+
+    if routing_key_bytes.len() != 16 {
+        return Err("Routing key must be 16 bytes".to_string());
+    }
+
+    let mut routing_key_bytes_arr = [0u8; 16];
+    routing_key_bytes_arr.copy_from_slice(&routing_key_bytes);
+    Ok(RoutingKey::from_bytes(routing_key_bytes_arr))
+}
+
+fn parse_fetch_query(query: &FetchQuery) -> Result<(usize, Option<i64>), String> {
+    let limit = match query.limit.as_deref() {
+        Some(raw_limit) => match raw_limit.parse::<usize>() {
+            Ok(0) => return Err("Invalid limit: must be greater than 0".to_string()),
+            Ok(parsed) => parsed.min(MAX_FETCH_PAGE_SIZE),
+            Err(_) => return Err("Invalid limit: must be an integer".to_string()),
+        },
+        None => DEFAULT_FETCH_PAGE_SIZE,
+    };
+
+    let after = match query.after.as_deref() {
+        Some(raw_after) => match raw_after.parse::<i64>() {
+            Ok(parsed) if parsed > 0 => Some(parsed),
+            Ok(_) => return Err("Invalid after cursor: must be a positive integer".to_string()),
+            Err(_) => return Err("Invalid after cursor: must be an integer".to_string()),
+        },
+        None => None,
+    };
+
+    Ok((limit, after))
+}
+
+struct FetchResponseRef<'a> {
+    payloads: &'a [String],
+    next_cursor: Option<&'a str>,
+    has_more: bool,
+}
+
+impl Serialize for FetchResponseRef<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        let field_count = if self.next_cursor.is_some() { 3 } else { 2 };
+        let mut state = serializer.serialize_struct("FetchResponse", field_count)?;
+        state.serialize_field("payloads", self.payloads)?;
+        if let Some(next_cursor) = self.next_cursor {
+            state.serialize_field("next_cursor", next_cursor)?;
+        }
+        state.serialize_field("has_more", &self.has_more)?;
+        state.end()
+    }
+}
+
+fn fetch_response_size(
+    payloads: &[String],
+    next_cursor: Option<&str>,
+    has_more: bool,
+) -> Result<usize, String> {
+    serde_json::to_vec(&FetchResponseRef {
+        payloads,
+        next_cursor,
+        has_more,
+    })
+    .map(|encoded| encoded.len())
+    .map_err(|e| format!("Failed to serialize fetch response: {e}"))
+}
+
+fn build_fetch_response(page: FetchPage) -> Result<FetchResponse, String> {
+    let total_entries = page.entries.len();
+    let mut payloads = Vec::with_capacity(total_entries);
+    let mut next_cursor = None;
+    let mut has_more = page.has_more;
+
+    for (index, entry) in page.entries.into_iter().enumerate() {
+        let previous_cursor = next_cursor.clone();
+        let wire_payload = WirePayload::Message(entry.envelope);
+        let encoded = BASE64_STANDARD.encode(wire_payload.encode());
+        payloads.push(encoded);
+        next_cursor = Some(entry.row_id.to_string());
+        let candidate_has_more = page.has_more || index + 1 < total_entries;
+        let response_bytes =
+            fetch_response_size(&payloads, next_cursor.as_deref(), candidate_has_more)?;
+
+        if response_bytes > MAX_FETCH_RESPONSE_BYTES {
+            if payloads.len() == 1 {
+                return Err(format!(
+                    "Single fetch payload exceeds maximum response size of {MAX_FETCH_RESPONSE_BYTES} bytes (actual serialized size: {response_bytes} bytes)"
+                ));
+            }
+
+            payloads.pop();
+            next_cursor = previous_cursor;
+            has_more = true;
+            break;
+        }
+
+        has_more = candidate_has_more;
+    }
+
+    Ok(FetchResponse {
+        payloads,
+        next_cursor,
+        has_more,
+    })
 }
 
 // ============================================
@@ -629,55 +767,37 @@ async fn handle_message(
 async fn fetch_messages(
     State(state): State<Arc<AppState>>,
     Path(routing_key_b64): Path<String>,
+    Query(query): Query<FetchQuery>,
 ) -> impl IntoResponse {
-    // Decode routing key (URL-safe base64)
-    let routing_key_bytes = match URL_SAFE_NO_PAD.decode(&routing_key_b64) {
-        Ok(b) => b,
-        Err(e) => {
-            error!("Failed to decode routing key: {}", e);
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Invalid routing key encoding".to_string(),
-                }),
-            )
-                .into_response();
-        }
+    let routing_key = match decode_fetch_routing_key(&routing_key_b64) {
+        Ok(routing_key) => routing_key,
+        Err(message) => return bad_request(message),
+    };
+    let (limit, after) = match parse_fetch_query(&query) {
+        Ok(params) => params,
+        Err(message) => return bad_request(message),
     };
 
-    if routing_key_bytes.len() != 16 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Routing key must be 16 bytes".to_string(),
-            }),
-        )
-            .into_response();
-    }
-
-    let mut routing_key_bytes_arr = [0u8; 16];
-    routing_key_bytes_arr.copy_from_slice(&routing_key_bytes);
-    let routing_key = RoutingKey::from_bytes(routing_key_bytes_arr);
-
     // Fetch messages
-    match state.store.fetch(&routing_key) {
-        Ok(envelopes) => {
-            // Encode as WirePayload format (with type discriminator)
-            let payloads: Vec<String> = envelopes
-                .into_iter()
-                .map(|env| {
-                    let wire_payload = WirePayload::Message(env);
-                    BASE64_STANDARD.encode(wire_payload.encode())
-                })
-                .collect();
-
-            debug!(
-                "Fetched {} payloads for {:?}",
-                payloads.len(),
-                &routing_key[..4]
-            );
-            (StatusCode::OK, Json(FetchResponse { payloads })).into_response()
-        }
+    match state.store.fetch_page(&routing_key, limit, after) {
+        Ok(page) => match build_fetch_response(page) {
+            Ok(response) => {
+                debug!(
+                    "Fetched {} payloads for {:?}",
+                    response.payloads.len(),
+                    &routing_key[..4]
+                );
+                (StatusCode::OK, Json(response)).into_response()
+            }
+            Err(e) => {
+                error!("Failed to build fetch response: {}", e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse { error: e }),
+                )
+                    .into_response()
+            }
+        },
         Err(e) => {
             error!("Failed to fetch messages: {}", e);
             (
