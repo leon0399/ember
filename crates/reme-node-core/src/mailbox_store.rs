@@ -82,6 +82,20 @@ impl PersistentStoreConfig {
     }
 }
 
+/// A single paginated fetch entry from mailbox storage.
+#[derive(Debug, Clone)]
+pub struct FetchPageEntry {
+    pub row_id: i64,
+    pub envelope: OuterEnvelope,
+}
+
+/// A bounded page of mailbox messages with an explicit continuation flag.
+#[derive(Debug, Clone)]
+pub struct FetchPage {
+    pub entries: Vec<FetchPageEntry>,
+    pub has_more: bool,
+}
+
 /// Trait for mailbox storage backends
 ///
 /// This trait abstracts the storage layer for mailbox nodes, allowing
@@ -92,6 +106,17 @@ pub trait MailboxStore: Send + Sync {
 
     /// Fetch all messages for the given routing key
     fn fetch(&self, routing_key: &RoutingKey) -> Result<Vec<OuterEnvelope>, NodeError>;
+
+    /// Fetch a bounded page of messages for the given routing key.
+    ///
+    /// Ordering is defined by mailbox row id (`id ASC`), which is the server-owned
+    /// insertion order and the continuation contract for paginated fetches.
+    fn fetch_page(
+        &self,
+        routing_key: &RoutingKey,
+        limit: usize,
+        after: Option<i64>,
+    ) -> Result<FetchPage, NodeError>;
 
     /// Check if a message with the given ID exists for the routing key
     fn has_message(
@@ -235,6 +260,23 @@ impl PersistentMailboxStore {
         let (envelope, _): (OuterEnvelope, _) = bincode::decode_from_slice(data, bincode_config)
             .map_err(|e| NodeError::Deserialization(e.to_string()))?;
         Ok(envelope)
+    }
+
+    fn delete_rows(conn: &Connection, ids: &[i64]) -> Result<(), NodeError> {
+        for chunk in ids.chunks(SQLITE_MAX_BOUND_VARIABLES) {
+            let placeholders: Vec<&str> = chunk.iter().map(|_| "?").collect();
+            let sql = format!(
+                "DELETE FROM mailbox_messages WHERE id IN ({})",
+                placeholders.join(",")
+            );
+
+            let mut stmt = conn.prepare(&sql)?;
+            let params: Vec<&dyn rusqlite::ToSql> =
+                chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+            stmt.execute(params.as_slice())?;
+        }
+
+        Ok(())
     }
 
     /// Get all message IDs for a routing key (for sync protocol)
@@ -426,52 +468,19 @@ impl MailboxStore for PersistentMailboxStore {
     }
 
     fn fetch(&self, routing_key: &RoutingKey) -> Result<Vec<OuterEnvelope>, NodeError> {
-        let now = now_secs();
-
-        let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
-
-        // Fetch all non-expired messages
-        let mut stmt = conn.prepare(
-            "SELECT id, envelope_data FROM mailbox_messages
-             WHERE routing_key = ? AND expires_at > ?
-             ORDER BY created_at ASC",
-        )?;
-
-        let rows = stmt.query_map(params![&routing_key[..], timestamp_to_i64(now)], |row| {
-            let id: i64 = row.get(0)?;
-            let data: Vec<u8> = row.get(1)?;
-            Ok((id, data))
-        })?;
-
+        let mut after = None;
         let mut envelopes = Vec::new();
-        let mut invalid_ids_to_delete = Vec::new();
 
-        for row in rows {
-            let (id, data) = row?;
-            match Self::deserialize_envelope(&data) {
-                Ok(envelope) => {
-                    envelopes.push(envelope);
-                }
-                Err(e) => {
-                    warn!(id = id, error = %e, "failed to deserialize envelope, deleting");
-                    invalid_ids_to_delete.push(id);
-                }
+        loop {
+            let page = self.fetch_page(routing_key, self.config.max_messages_per_mailbox, after)?;
+            let last_row_id = page.entries.last().map(|entry| entry.row_id);
+            envelopes.extend(page.entries.into_iter().map(|entry| entry.envelope));
+
+            if !page.has_more {
+                break;
             }
-        }
 
-        if !invalid_ids_to_delete.is_empty() {
-            for chunk in invalid_ids_to_delete.chunks(SQLITE_MAX_BOUND_VARIABLES) {
-                let placeholders: Vec<&str> = chunk.iter().map(|_| "?").collect();
-                let sql = format!(
-                    "DELETE FROM mailbox_messages WHERE id IN ({})",
-                    placeholders.join(",")
-                );
-
-                let mut stmt = conn.prepare(&sql)?;
-                let params: Vec<&dyn rusqlite::ToSql> =
-                    chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-                stmt.execute(params.as_slice())?;
-            }
+            after = last_row_id;
         }
 
         debug!(
@@ -481,6 +490,90 @@ impl MailboxStore for PersistentMailboxStore {
         );
 
         Ok(envelopes)
+    }
+
+    fn fetch_page(
+        &self,
+        routing_key: &RoutingKey,
+        limit: usize,
+        after: Option<i64>,
+    ) -> Result<FetchPage, NodeError> {
+        if limit == 0 {
+            return Err(NodeError::InvalidConfig(
+                "fetch limit must be greater than 0".to_string(),
+            ));
+        }
+
+        let now_i64 = timestamp_to_i64(now_secs());
+        let scan_limit = limit.saturating_add(1);
+        let mut last_scanned_id = after.unwrap_or(0);
+        let mut entries = Vec::with_capacity(scan_limit);
+        let mut invalid_ids_to_delete = Vec::new();
+        let mut exhausted = false;
+
+        let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
+
+        while entries.len() < scan_limit {
+            let mut stmt = conn.prepare(
+                "SELECT id, envelope_data FROM mailbox_messages
+                 WHERE routing_key = ? AND expires_at > ? AND id > ?
+                 ORDER BY id ASC
+                 LIMIT ?",
+            )?;
+
+            let rows = stmt.query_map(
+                params![&routing_key[..], now_i64, last_scanned_id, scan_limit],
+                |row| {
+                    let id: i64 = row.get(0)?;
+                    let data: Vec<u8> = row.get(1)?;
+                    Ok((id, data))
+                },
+            )?;
+
+            let mut fetched_row_count = 0usize;
+            let mut batch_last_id = None;
+
+            for row in rows {
+                let (id, data) = row?;
+                fetched_row_count += 1;
+                batch_last_id = Some(id);
+
+                match Self::deserialize_envelope(&data) {
+                    Ok(envelope) => entries.push(FetchPageEntry {
+                        row_id: id,
+                        envelope,
+                    }),
+                    Err(e) => {
+                        warn!(id = id, error = %e, "failed to deserialize envelope, deleting");
+                        invalid_ids_to_delete.push(id);
+                    }
+                }
+
+                if entries.len() >= scan_limit {
+                    break;
+                }
+            }
+
+            if let Some(id) = batch_last_id {
+                last_scanned_id = id;
+            }
+
+            if fetched_row_count < scan_limit || batch_last_id.is_none() {
+                exhausted = true;
+                break;
+            }
+        }
+
+        if !invalid_ids_to_delete.is_empty() {
+            Self::delete_rows(&conn, &invalid_ids_to_delete)?;
+        }
+
+        let has_more = entries.len() > limit || !exhausted;
+        if entries.len() > limit {
+            entries.truncate(limit);
+        }
+
+        Ok(FetchPage { entries, has_more })
     }
 
     fn has_message(
@@ -542,6 +635,29 @@ impl MailboxStore for PersistentMailboxStore {
 mod tests {
     use super::*;
     use reme_message::CURRENT_VERSION;
+
+    fn insert_invalid_row(store: &PersistentMailboxStore, routing_key: RoutingKey) -> MessageID {
+        let message_id = MessageID::new();
+        let expires_at = timestamp_to_i64(now_secs() + 3600);
+        let created_at = timestamp_to_i64(now_secs());
+
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO mailbox_messages
+             (routing_key, message_id, envelope_data, expires_at, created_at)
+             VALUES (?, ?, ?, ?, ?)",
+            params![
+                &routing_key[..],
+                &message_id.as_bytes()[..],
+                &[0xFFu8, 0x00, 0x01][..],
+                expires_at,
+                created_at
+            ],
+        )
+        .unwrap();
+
+        message_id
+    }
 
     fn create_test_envelope(routing_key: RoutingKey, ttl_hours: Option<u16>) -> OuterEnvelope {
         OuterEnvelope {
@@ -726,6 +842,123 @@ mod tests {
         let fetched = store.fetch(&routing_key).unwrap();
         assert!(fetched.is_empty());
         assert!(store.get_message_ids(&routing_key).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_fetch_page_returns_oldest_rows_in_id_order() {
+        let config = PersistentStoreConfig::default();
+        let store = PersistentMailboxStore::in_memory(config).unwrap();
+        let routing_key = RoutingKey::from_bytes([12u8; 16]);
+
+        let env1 = create_test_envelope(routing_key, Some(1));
+        let env2 = create_test_envelope(routing_key, Some(1));
+        let env3 = create_test_envelope(routing_key, Some(1));
+        let id1 = env1.message_id;
+        let id2 = env2.message_id;
+        let id3 = env3.message_id;
+
+        store.enqueue(routing_key, env1).unwrap();
+        store.enqueue(routing_key, env2).unwrap();
+        store.enqueue(routing_key, env3).unwrap();
+
+        let page = store.fetch_page(&routing_key, 2, None).unwrap();
+
+        assert_eq!(page.entries.len(), 2);
+        assert!(page.has_more);
+        assert_eq!(page.entries[0].envelope.message_id, id1);
+        assert_eq!(page.entries[1].envelope.message_id, id2);
+
+        let next_page = store
+            .fetch_page(&routing_key, 2, Some(page.entries[1].row_id))
+            .unwrap();
+
+        assert_eq!(next_page.entries.len(), 1);
+        assert!(!next_page.has_more);
+        assert_eq!(next_page.entries[0].envelope.message_id, id3);
+        assert!(next_page.entries[0].row_id > page.entries[1].row_id);
+    }
+
+    #[test]
+    fn test_fetch_page_skips_invalid_rows_and_keeps_scanning() {
+        let config = PersistentStoreConfig::default();
+        let store = PersistentMailboxStore::in_memory(config).unwrap();
+        let routing_key = RoutingKey::from_bytes([13u8; 16]);
+
+        let invalid_1 = insert_invalid_row(&store, routing_key);
+        let invalid_2 = insert_invalid_row(&store, routing_key);
+
+        let env1 = create_test_envelope(routing_key, Some(1));
+        let env2 = create_test_envelope(routing_key, Some(1));
+        let valid_1 = env1.message_id;
+        let valid_2 = env2.message_id;
+
+        store.enqueue(routing_key, env1).unwrap();
+        store.enqueue(routing_key, env2).unwrap();
+
+        let page = store.fetch_page(&routing_key, 2, None).unwrap();
+
+        assert_eq!(page.entries.len(), 2);
+        assert!(!page.has_more);
+        assert_eq!(page.entries[0].envelope.message_id, valid_1);
+        assert_eq!(page.entries[1].envelope.message_id, valid_2);
+        assert!(!store.has_message(&routing_key, &invalid_1).unwrap());
+        assert!(!store.has_message(&routing_key, &invalid_2).unwrap());
+    }
+
+    #[test]
+    fn test_fetch_page_exhaustion_requires_restart_from_none() {
+        let config = PersistentStoreConfig::default();
+        let store = PersistentMailboxStore::in_memory(config).unwrap();
+        let routing_key = RoutingKey::from_bytes([14u8; 16]);
+
+        let env1 = create_test_envelope(routing_key, Some(1));
+        let env2 = create_test_envelope(routing_key, Some(1));
+        let first_id = env1.message_id;
+        let second_id = env2.message_id;
+
+        store.enqueue(routing_key, env1).unwrap();
+        store.enqueue(routing_key, env2).unwrap();
+
+        let first_page = store.fetch_page(&routing_key, 1, None).unwrap();
+        assert_eq!(first_page.entries.len(), 1);
+        assert_eq!(first_page.entries[0].envelope.message_id, first_id);
+        assert!(first_page.has_more);
+
+        let second_page = store
+            .fetch_page(&routing_key, 1, Some(first_page.entries[0].row_id))
+            .unwrap();
+        assert_eq!(second_page.entries.len(), 1);
+        assert_eq!(second_page.entries[0].envelope.message_id, second_id);
+        assert!(!second_page.has_more);
+
+        let exhausted = store
+            .fetch_page(&routing_key, 1, Some(second_page.entries[0].row_id))
+            .unwrap();
+        assert!(exhausted.entries.is_empty());
+        assert!(!exhausted.has_more);
+
+        let restarted = store.fetch_page(&routing_key, 2, None).unwrap();
+        assert_eq!(restarted.entries.len(), 2);
+        assert_eq!(restarted.entries[0].envelope.message_id, first_id);
+        assert_eq!(restarted.entries[1].envelope.message_id, second_id);
+    }
+
+    #[test]
+    fn test_fetch_page_rejects_zero_limit() {
+        let config = PersistentStoreConfig::default();
+        let store = PersistentMailboxStore::in_memory(config).unwrap();
+        let routing_key = RoutingKey::from_bytes([15u8; 16]);
+
+        let error = store.fetch_page(&routing_key, 0, None).unwrap_err();
+        match error {
+            NodeError::InvalidConfig(message) => {
+                assert!(
+                    message.contains("fetch limit"),
+                    "unexpected error message: {message}"
+                );
+            }
+            other => panic!("expected invalid config, got {other:?}"),
+        }
     }
 
     #[test]

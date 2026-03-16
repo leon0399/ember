@@ -8,7 +8,7 @@ use futures::future::join_all;
 use percent_encoding::{percent_encode, NON_ALPHANUMERIC};
 use rand::Rng;
 use reme_identity::PublicID;
-use reme_message::{MessageID, OuterEnvelope, RoutingKey, SignedAckTombstone, WirePayload};
+use reme_message::{OuterEnvelope, RoutingKey, SignedAckTombstone, WirePayload};
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, info, warn};
@@ -58,6 +58,33 @@ struct SubmitResponse {
 #[derive(Debug, Deserialize)]
 struct FetchResponse {
     payloads: Vec<String>,
+    next_cursor: Option<String>,
+    has_more: bool,
+}
+
+fn validate_next_cursor(
+    next_cursor: &str,
+    previous_cursor: Option<i64>,
+) -> Result<i64, TransportError> {
+    let parsed = next_cursor.parse::<i64>().map_err(|_| {
+        TransportError::ServerError(
+            "Paginated fetch response returned an invalid next_cursor".to_string(),
+        )
+    })?;
+
+    if parsed <= 0 {
+        return Err(TransportError::ServerError(
+            "Paginated fetch response returned an invalid next_cursor".to_string(),
+        ));
+    }
+
+    if previous_cursor.is_some_and(|previous| parsed <= previous) {
+        return Err(TransportError::ServerError(
+            "Paginated fetch response returned a non-advancing next_cursor".to_string(),
+        ));
+    }
+
+    Ok(parsed)
 }
 
 impl HttpTransport {
@@ -316,11 +343,12 @@ impl HttpTransport {
     ///
     /// Supports URL-embedded credentials (e.g., `http://user:pass@host/`)
     /// which are extracted and sent as HTTP Basic Auth headers.
-    async fn fetch_from_node(
+    async fn fetch_page_from_node(
         &self,
         base_url: &str,
         routing_key_b64: &str,
-    ) -> Result<Vec<OuterEnvelope>, TransportError> {
+        after: Option<&str>,
+    ) -> Result<FetchResponse, TransportError> {
         // Parse URL and extract credentials if present
         let parsed = parse_url_with_auth(base_url)
             .map_err(|e| TransportError::Network(format!("Invalid URL: {e}")))?;
@@ -332,6 +360,9 @@ impl HttpTransport {
         );
 
         let mut request = self.client.get(&url);
+        if let Some(after) = after {
+            request = request.query(&[("after", after)]);
+        }
 
         // Add Basic Auth if credentials were embedded in URL
         if let Some((username, password)) = parsed.auth {
@@ -357,14 +388,15 @@ impl HttpTransport {
             )));
         }
 
-        let result: FetchResponse = response
+        response
             .json()
             .await
-            .map_err(|e| TransportError::Serialization(e.to_string()))?;
+            .map_err(|e| TransportError::Serialization(e.to_string()))
+    }
 
-        // Decode and deserialize each wire payload
+    fn decode_fetch_payloads(payloads: Vec<String>) -> Result<Vec<OuterEnvelope>, TransportError> {
         let mut envelopes = Vec::new();
-        for blob in result.payloads {
+        for blob in payloads {
             let wire_bytes = BASE64_STANDARD
                 .decode(&blob)
                 .map_err(|e| TransportError::Serialization(format!("base64 decode: {e}")))?;
@@ -372,10 +404,42 @@ impl HttpTransport {
             let payload = WirePayload::decode(&wire_bytes)
                 .map_err(|e| TransportError::Serialization(format!("wire decode: {e}")))?;
 
-            // Only extract messages (tombstones are handled separately)
             if let WirePayload::Message(envelope) = payload {
                 envelopes.push(envelope);
             }
+        }
+
+        Ok(envelopes)
+    }
+
+    async fn fetch_from_node(
+        &self,
+        base_url: &str,
+        routing_key_b64: &str,
+    ) -> Result<Vec<OuterEnvelope>, TransportError> {
+        let mut after = None;
+        let mut previous_cursor = None;
+        let mut envelopes = Vec::new();
+
+        loop {
+            let page = self
+                .fetch_page_from_node(base_url, routing_key_b64, after.as_deref())
+                .await?;
+            envelopes.extend(Self::decode_fetch_payloads(page.payloads)?);
+
+            if !page.has_more {
+                break;
+            }
+
+            let next_cursor = page.next_cursor.ok_or_else(|| {
+                TransportError::ServerError(
+                    "Paginated fetch response has_more=true but next_cursor is missing".to_string(),
+                )
+            })?;
+            let parsed_next_cursor = validate_next_cursor(&next_cursor, previous_cursor)?;
+
+            after = Some(next_cursor);
+            previous_cursor = Some(parsed_next_cursor);
         }
 
         Ok(envelopes)
@@ -405,7 +469,7 @@ impl HttpTransport {
         let results = join_all(futures).await;
 
         // Aggregate and deduplicate by message_id, preserving conflicting variants
-        let mut accumulated: HashMap<MessageID, Vec<OuterEnvelope>> = HashMap::new();
+        let mut accumulated = crate::dedup::EnvelopeAccumulator::default();
         let mut last_error = None;
         let mut success_count = 0;
 
@@ -601,8 +665,8 @@ fn build_pinning_client(pins: HashMap<String, CertPin>) -> Result<Client, Transp
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{routing::get, Json, Router};
-    use serde::Serialize;
+    use axum::{extract::Query, routing::get, Json, Router};
+    use serde::{Deserialize, Serialize};
     use tokio::net::TcpListener;
 
     /// Start a minimal mock server for testing.
@@ -617,8 +681,17 @@ mod tests {
             axum::serve(listener, app).await.expect("Server failed");
         });
 
-        // Small delay for server startup
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        let client = reqwest::Client::new();
+        let health_url = format!("{url}/");
+        let mut server_ready = false;
+        for _ in 0..50 {
+            if client.get(&health_url).send().await.is_ok() {
+                server_ready = true;
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+        assert!(server_ready, "Mock server failed to start within 500ms");
 
         (url, handle)
     }
@@ -1016,6 +1089,13 @@ mod tests {
     #[derive(Serialize)]
     struct MockFetchResponse {
         payloads: Vec<String>,
+        next_cursor: Option<String>,
+        has_more: bool,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct MockFetchQuery {
+        after: Option<String>,
     }
 
     #[tokio::test]
@@ -1032,6 +1112,8 @@ mod tests {
             get(move || async move {
                 Json(MockFetchResponse {
                     payloads: vec![payload_a.clone()],
+                    next_cursor: Some("1".to_string()),
+                    has_more: false,
                 })
             }),
         );
@@ -1041,6 +1123,8 @@ mod tests {
             get(move || async move {
                 Json(MockFetchResponse {
                     payloads: vec![payload_b.clone()],
+                    next_cursor: Some("1".to_string()),
+                    has_more: false,
                 })
             }),
         );
@@ -1074,6 +1158,8 @@ mod tests {
             get(move || async move {
                 Json(MockFetchResponse {
                     payloads: vec![payload.clone()],
+                    next_cursor: Some("1".to_string()),
+                    has_more: false,
                 })
             }),
         );
@@ -1083,6 +1169,8 @@ mod tests {
             get(move || async move {
                 Json(MockFetchResponse {
                     payloads: vec![payload_clone.clone()],
+                    next_cursor: Some("1".to_string()),
+                    has_more: false,
                 })
             }),
         );
@@ -1099,5 +1187,149 @@ mod tests {
             1,
             "Identical envelopes should be deduplicated"
         );
+    }
+
+    #[tokio::test]
+    async fn test_fetch_once_follows_paginated_responses_in_order() {
+        let env_1 = build_envelope_with_id(reme_message::MessageID::from_bytes([1; 16]), vec![1]);
+        let env_2 = build_envelope_with_id(reme_message::MessageID::from_bytes([2; 16]), vec![2]);
+        let env_3 = build_envelope_with_id(reme_message::MessageID::from_bytes([3; 16]), vec![3]);
+        let env_4 = build_envelope_with_id(reme_message::MessageID::from_bytes([4; 16]), vec![4]);
+
+        let payload_1 = encode_envelope_payload(&env_1);
+        let payload_2 = encode_envelope_payload(&env_2);
+        let payload_3 = encode_envelope_payload(&env_3);
+        let payload_4 = encode_envelope_payload(&env_4);
+
+        let app = Router::new().route(
+            "/api/v1/fetch/{routing_key}",
+            get(move |Query(query): Query<MockFetchQuery>| {
+                let payload_1 = payload_1.clone();
+                let payload_2 = payload_2.clone();
+                let payload_3 = payload_3.clone();
+                let payload_4 = payload_4.clone();
+
+                async move {
+                    let response = match query.after.as_deref() {
+                        None => MockFetchResponse {
+                            payloads: vec![payload_1, payload_2],
+                            next_cursor: Some("2".to_string()),
+                            has_more: true,
+                        },
+                        Some("2") => MockFetchResponse {
+                            payloads: vec![payload_3],
+                            next_cursor: Some("3".to_string()),
+                            has_more: true,
+                        },
+                        Some("3") => MockFetchResponse {
+                            payloads: vec![payload_4],
+                            next_cursor: Some("4".to_string()),
+                            has_more: false,
+                        },
+                        Some(other) => panic!("unexpected cursor {other}"),
+                    };
+
+                    Json(response)
+                }
+            }),
+        );
+
+        let (url, _handle) = start_mock_server(app).await;
+        let transport = HttpTransport::new(url);
+        let routing_key = reme_identity::RoutingKey::from([0u8; 16]);
+
+        let result = transport.fetch_once(&routing_key).await.unwrap();
+        let message_ids: Vec<_> = result.into_iter().map(|env| env.message_id).collect();
+
+        assert_eq!(
+            message_ids,
+            vec![
+                env_1.message_id,
+                env_2.message_id,
+                env_3.message_id,
+                env_4.message_id
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fetch_once_errors_when_has_more_missing_cursor() {
+        let env = build_envelope_with_id(reme_message::MessageID::from_bytes([9; 16]), vec![9]);
+        let payload = encode_envelope_payload(&env);
+
+        let app = Router::new().route(
+            "/api/v1/fetch/{routing_key}",
+            get(move || async move {
+                Json(MockFetchResponse {
+                    payloads: vec![payload.clone()],
+                    next_cursor: None,
+                    has_more: true,
+                })
+            }),
+        );
+
+        let (url, _handle) = start_mock_server(app).await;
+        let transport = HttpTransport::new(url);
+        let routing_key = reme_identity::RoutingKey::from([0u8; 16]);
+        let error = transport.fetch_once(&routing_key).await.unwrap_err();
+
+        match error {
+            TransportError::ServerError(message) => {
+                assert!(
+                    message.contains("next_cursor"),
+                    "unexpected error: {message}"
+                );
+            }
+            other => panic!("expected server error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fetch_once_errors_when_next_cursor_regresses() {
+        let env_1 = build_envelope_with_id(reme_message::MessageID::from_bytes([7; 16]), vec![7]);
+        let env_2 = build_envelope_with_id(reme_message::MessageID::from_bytes([8; 16]), vec![8]);
+        let payload_1 = encode_envelope_payload(&env_1);
+        let payload_2 = encode_envelope_payload(&env_2);
+
+        let app = Router::new().route(
+            "/api/v1/fetch/{routing_key}",
+            get(move |Query(query): Query<MockFetchQuery>| {
+                let payload_1 = payload_1.clone();
+                let payload_2 = payload_2.clone();
+
+                async move {
+                    let response = match query.after.as_deref() {
+                        None => MockFetchResponse {
+                            payloads: vec![payload_1],
+                            next_cursor: Some("2".to_string()),
+                            has_more: true,
+                        },
+                        Some("2") => MockFetchResponse {
+                            payloads: vec![payload_2],
+                            next_cursor: Some("1".to_string()),
+                            has_more: true,
+                        },
+                        Some(other) => panic!("unexpected cursor {other}"),
+                    };
+
+                    Json(response)
+                }
+            }),
+        );
+
+        let (url, _handle) = start_mock_server(app).await;
+        let transport = HttpTransport::new(url);
+        let routing_key = reme_identity::RoutingKey::from([0u8; 16]);
+        let error = transport.fetch_once(&routing_key).await.unwrap_err();
+
+        match error {
+            TransportError::ServerError(message) => {
+                assert!(
+                    message.contains("non-advancing next_cursor"),
+                    "unexpected error: {message}"
+                );
+            }
+            other => panic!("expected server error, got {other:?}"),
+        }
     }
 }

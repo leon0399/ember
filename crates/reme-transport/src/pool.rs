@@ -530,8 +530,7 @@ impl<T: TransportTarget + 'static> TransportQuery for TransportPool<T> {
 use crate::http::NodeSpec;
 use crate::http_target::{HttpTarget, HttpTargetConfig};
 use crate::url_auth::sanitize_url_for_logging;
-use reme_message::{MessageID, RoutingKey};
-use std::collections::HashMap;
+use reme_message::RoutingKey;
 use tracing::info;
 
 impl TransportPool<HttpTarget> {
@@ -636,7 +635,7 @@ impl TransportPool<HttpTarget> {
         let results = join_all(futures).await;
 
         // Aggregate and deduplicate by message_id, preserving conflicting variants
-        let mut accumulated: HashMap<MessageID, Vec<OuterEnvelope>> = HashMap::new();
+        let mut accumulated = crate::dedup::EnvelopeAccumulator::default();
         let mut last_error = None;
         let mut success_count = 0;
 
