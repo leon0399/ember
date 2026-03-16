@@ -177,21 +177,49 @@ Send encrypted messages across an air gap: USB drive, printed QR code, or carrie
 
 Route messages through LAN peers during partial Internet outages.
 
+### Store-and-forward relay queue
+
+v0.6 introduces the **relay queue**, a store-and-forward component that v0.7 and v0.8 reuse with additional ingress paths.
+
+```
+┌────────────┐
+│  Ingress   │    v0.6: HTTP (LAN peer)
+│  Adapters  │    v0.7: + BLE proximity
+│            │    v0.8: + LoRa/Meshtastic
+└─────┬──────┘
+      │
+      ▼
+┌────────────┐
+│   Relay    │    Encrypted envelopes, no decryption needed.
+│   Queue    │    Persistent, survives restarts.
+└─────┬──────┘
+      │
+      ▼
+┌────────────┐
+│  Egress    │    v0.6: HTTP to Quorum
+│            │    v0.8: + LoRa broadcast (Starlink scenario)
+└────────────┘
+```
+
+The queue only handles encrypted `OuterEnvelope` blobs. Relay nodes never decrypt; they move bytes between ingress and egress.
+
 ### Peer relay mode
 
-**Problem:** During partial outages, some LAN peers have Internet access and others don't. Peers without Internet should be able to relay through peers with Internet.
+**Problem:** During partial outages, some LAN peers have Internet access and others don't. Peers without Internet should be able to relay through peers that do.
 
 **Solution:**
-- Discovered peers can act as relays for messages to external recipients
-- No identity verification needed for relay (E2E encrypted, same trust as Quorum)
-- Configuration: opt-in to accept relay requests, opt-in to use LAN relays
+- Discovered peers act as relays for messages to external recipients
+- No identity verification needed for relay (E2E encrypted, same trust model as Quorum)
+- Opt-in configuration for both accepting and using relay requests
 - Relay capability advertised in mDNS TXT records
 
 **Deliverables:**
+- [ ] Relay queue with persistent storage and retry logic
+- [ ] HTTP ingress adapter (accepts envelopes from LAN peers)
+- [ ] HTTP egress adapter (forwards to Quorum nodes)
 - [ ] Relay capability advertisement in mDNS TXT records
 - [ ] Relay accept/use configuration options
 - [ ] Relay routing in transport coordinator
-- [ ] Store-and-forward for offline external recipients
 - [ ] Relay status in TUI (showing relay path)
 
 **Success criteria:**
@@ -200,11 +228,7 @@ Route messages through LAN peers during partial Internet outages.
 - Relay path visible in delivery status
 - Works transparently with existing outbox retry logic
 
-**What this enables:**
-
 Your message reaches the outside world through any peer that has connectivity, even if you don't.
-
-**Architecture note:** This implementation is HTTP-to-HTTP only. Future transports (BLE, LoRa) will reuse the relay queue and egress logic, with transport-specific ingress. Build concrete first, extract abstraction later.
 
 ---
 
@@ -233,17 +257,11 @@ Direct device-to-device messaging with no infrastructure.
 
 ### BLE relay ingress
 
-**Problem:** A phone with BLE + Internet should relay messages received via BLE to Quorum, just like LAN peers relay HTTP messages.
-
-**Solution:**
-- Messages received via BLE are deposited into the same relay queue as HTTP
-- Relay egress (HTTP to Quorum) is transport-agnostic
-- BLE becomes an alternative ingress path for the v0.6 relay infrastructure
+A phone with BLE + Internet can relay BLE-received messages to Quorum by depositing them into the v0.6 relay queue. BLE is another ingress adapter; the egress path (HTTP to Quorum) is unchanged.
 
 **Deliverables:**
 - [ ] BLE ingress adapter for relay queue
 - [ ] Relay capability advertisement in BLE service data
-- [ ] Unified relay queue (shared with HTTP ingress from v0.6)
 
 **Success criteria:**
 - Alice (BLE only) → Bob's phone (BLE + Internet) → Quorum → Charlie
@@ -311,17 +329,9 @@ Kilometers-range messaging without Internet.
 
 ### LoRa relay ingress
 
-**Problem:** A Meshtastic node with Internet (Starlink, home WiFi) should relay messages received over LoRa to Quorum.
+LoRa ingress deposits reassembled `OuterEnvelope`s into the v0.6 relay queue, same as BLE. Works on dedicated relay nodes (Raspberry Pi + Meshtastic) or phones with the Meshtastic app.
 
-**Solution:**
-- LoRa ingress deposits reassembled OuterEnvelopes into the relay queue
-- Same relay egress as v0.6 (HTTP to Quorum)
-- Works on dedicated relay nodes (Raspberry Pi + Meshtastic) or phones with Meshtastic app
-
-**Third-party relay nodes:**
-- Any Meshtastic user running reme relay software can contribute relay capacity
-- No trust required; they only see encrypted bytes
-- Incentive: reciprocal relay services, community resilience
+Any Meshtastic user running reme relay software can contribute relay capacity. No trust required, they only see encrypted bytes.
 
 **Deliverables:**
 - [ ] LoRa ingress adapter for relay queue
@@ -329,14 +339,14 @@ Kilometers-range messaging without Internet.
 - [ ] Relay statistics/monitoring endpoint
 
 **Success criteria:**
-- Stranger's Meshtastic node relays your message to Quorum
+- A stranger's Meshtastic node relays your message to Quorum
 - Works without any prior relationship or key exchange
 
 ### The "Starlink Relay" scenario
 
-**Problem:** You're off-grid across the city during a power outage. Your home has Starlink + a stationary LoRa node. Messages arrive for you via Internet, but you have no Internet access.
+You're off-grid across the city during a power outage. Your home has Starlink + a stationary LoRa node. Messages arrive for you via Internet, but you have no Internet access.
 
-**Solution:** Home relay node fetches messages from Quorum, then re-broadcasts them over LoRa without decrypting them.
+The home relay node fetches messages from Quorum (HTTP ingress), then re-broadcasts them over LoRa (LoRa egress) without decrypting them. This is the reverse direction of normal relay, which means v0.8 needs to add LoRa as an **egress** adapter to the v0.6 relay queue.
 
 ```
                     ┌─────────────────────────────────────────────────────────┐
