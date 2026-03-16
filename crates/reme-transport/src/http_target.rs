@@ -15,6 +15,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
+use crate::http_pagination::validate_next_cursor;
 use crate::target::{
     HealthData, HealthState, RawReceipt, TargetConfig, TargetHealth, TargetId, TargetKind,
     TransportTarget,
@@ -192,31 +193,6 @@ struct FetchResponse {
     payloads: Vec<String>,
     next_cursor: Option<String>,
     has_more: bool,
-}
-
-fn validate_next_cursor(
-    next_cursor: &str,
-    previous_cursor: Option<i64>,
-) -> Result<i64, TransportError> {
-    let parsed = next_cursor.parse::<i64>().map_err(|_| {
-        TransportError::ServerError(
-            "Paginated fetch response returned an invalid next_cursor".to_string(),
-        )
-    })?;
-
-    if parsed <= 0 {
-        return Err(TransportError::ServerError(
-            "Paginated fetch response returned an invalid next_cursor".to_string(),
-        ));
-    }
-
-    if previous_cursor.is_some_and(|previous| parsed <= previous) {
-        return Err(TransportError::ServerError(
-            "Paginated fetch response returned a non-advancing next_cursor".to_string(),
-        ));
-    }
-
-    Ok(parsed)
 }
 
 impl HttpTarget {

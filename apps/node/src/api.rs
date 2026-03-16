@@ -25,7 +25,7 @@ use reme_identity::PublicID;
 use reme_message::{OuterEnvelope, RoutingKey, WirePayload};
 use reme_node_core::{FetchPage, MailboxStore, NodeError, PersistentMailboxStore};
 use serde::Deserialize;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use tracing::{debug, error, warn};
@@ -304,10 +304,42 @@ fn parse_fetch_query(query: &FetchQuery) -> Result<(usize, Option<i64>), String>
     Ok((limit, after))
 }
 
-fn fetch_response_size(response: &FetchResponse) -> Result<usize, String> {
-    serde_json::to_vec(response)
-        .map(|encoded| encoded.len())
-        .map_err(|e| format!("Failed to serialize fetch response: {e}"))
+struct FetchResponseRef<'a> {
+    payloads: &'a [String],
+    next_cursor: Option<&'a str>,
+    has_more: bool,
+}
+
+impl Serialize for FetchResponseRef<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        let field_count = if self.next_cursor.is_some() { 3 } else { 2 };
+        let mut state = serializer.serialize_struct("FetchResponse", field_count)?;
+        state.serialize_field("payloads", self.payloads)?;
+        if let Some(next_cursor) = self.next_cursor {
+            state.serialize_field("next_cursor", next_cursor)?;
+        }
+        state.serialize_field("has_more", &self.has_more)?;
+        state.end()
+    }
+}
+
+fn fetch_response_size(
+    payloads: &[String],
+    next_cursor: Option<&str>,
+    has_more: bool,
+) -> Result<usize, String> {
+    serde_json::to_vec(&FetchResponseRef {
+        payloads,
+        next_cursor,
+        has_more,
+    })
+    .map(|encoded| encoded.len())
+    .map_err(|e| format!("Failed to serialize fetch response: {e}"))
 }
 
 fn build_fetch_response(page: FetchPage) -> Result<FetchResponse, String> {
@@ -322,18 +354,14 @@ fn build_fetch_response(page: FetchPage) -> Result<FetchResponse, String> {
         let encoded = BASE64_STANDARD.encode(wire_payload.encode());
         payloads.push(encoded);
         next_cursor = Some(entry.row_id.to_string());
-
-        let candidate = FetchResponse {
-            payloads: payloads.clone(),
-            next_cursor: next_cursor.clone(),
-            has_more: page.has_more || index + 1 < total_entries,
-        };
-        let response_bytes = fetch_response_size(&candidate)?;
+        let candidate_has_more = page.has_more || index + 1 < total_entries;
+        let response_bytes =
+            fetch_response_size(&payloads, next_cursor.as_deref(), candidate_has_more)?;
 
         if response_bytes > MAX_FETCH_RESPONSE_BYTES {
             if payloads.len() == 1 {
                 return Err(format!(
-                    "Single fetch payload exceeds maximum response size of {MAX_FETCH_RESPONSE_BYTES} bytes"
+                    "Single fetch payload exceeds maximum response size of {MAX_FETCH_RESPONSE_BYTES} bytes (actual serialized size: {response_bytes} bytes)"
                 ));
             }
 
@@ -343,7 +371,7 @@ fn build_fetch_response(page: FetchPage) -> Result<FetchResponse, String> {
             break;
         }
 
-        has_more = candidate.has_more;
+        has_more = candidate_has_more;
     }
 
     Ok(FetchResponse {

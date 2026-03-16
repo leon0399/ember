@@ -514,6 +514,7 @@ impl MailboxStore for PersistentMailboxStore {
         let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
 
         while entries.len() < scan_limit {
+            let remaining_scan = scan_limit.saturating_sub(entries.len());
             let mut stmt = conn.prepare(
                 "SELECT id, envelope_data FROM mailbox_messages
                  WHERE routing_key = ? AND expires_at > ? AND id > ?
@@ -522,7 +523,7 @@ impl MailboxStore for PersistentMailboxStore {
             )?;
 
             let rows = stmt.query_map(
-                params![&routing_key[..], now_i64, last_scanned_id, scan_limit],
+                params![&routing_key[..], now_i64, last_scanned_id, remaining_scan],
                 |row| {
                     let id: i64 = row.get(0)?;
                     let data: Vec<u8> = row.get(1)?;
@@ -558,7 +559,7 @@ impl MailboxStore for PersistentMailboxStore {
                 last_scanned_id = id;
             }
 
-            if fetched_row_count < scan_limit || batch_last_id.is_none() {
+            if fetched_row_count < remaining_scan || batch_last_id.is_none() {
                 exhausted = true;
                 break;
             }
