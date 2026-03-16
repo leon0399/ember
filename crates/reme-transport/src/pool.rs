@@ -635,8 +635,8 @@ impl TransportPool<HttpTarget> {
 
         let results = join_all(futures).await;
 
-        // Aggregate and deduplicate by message_id
-        let mut messages_by_id: HashMap<MessageID, OuterEnvelope> = HashMap::new();
+        // Aggregate and deduplicate by message_id, preserving conflicting variants
+        let mut accumulated: HashMap<MessageID, Vec<OuterEnvelope>> = HashMap::new();
         let mut last_error = None;
         let mut success_count = 0;
 
@@ -644,9 +644,11 @@ impl TransportPool<HttpTarget> {
             match result {
                 Ok(messages) => {
                     success_count += 1;
-                    for msg in messages {
-                        messages_by_id.insert(msg.message_id, msg);
-                    }
+                    crate::dedup::merge_envelopes(
+                        &mut accumulated,
+                        messages,
+                        targets[i].id().as_str(),
+                    );
                 }
                 Err(e) => {
                     warn!("Target {} fetch failed: {}", targets[i].id(), e);
@@ -657,7 +659,7 @@ impl TransportPool<HttpTarget> {
 
         // If we got messages from at least one target, return them
         if success_count > 0 {
-            let messages: Vec<_> = messages_by_id.into_values().collect();
+            let messages = crate::dedup::flatten_variants(accumulated);
             debug!(
                 "Fetched {} unique messages from {}/{} targets",
                 messages.len(),

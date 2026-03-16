@@ -5,6 +5,7 @@ use tokio::sync::mpsc;
 
 pub mod composite;
 pub mod coordinator;
+pub(crate) mod dedup;
 pub mod delivery;
 pub mod http;
 pub mod http_target;
