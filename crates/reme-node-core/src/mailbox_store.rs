@@ -29,6 +29,9 @@ const fn default_ttl_secs() -> u64 {
     7 * 24 * 60 * 60
 }
 
+/// `SQLite` commonly defaults to 999 bound parameters per statement.
+const SQLITE_MAX_BOUND_VARIABLES: usize = 999;
+
 /// Configuration for the persistent store
 #[derive(Debug, Clone, Derivative)]
 #[derivative(Default)]
@@ -87,7 +90,7 @@ pub trait MailboxStore: Send + Sync {
     /// Store a message in the mailbox for the given routing key
     fn enqueue(&self, routing_key: RoutingKey, envelope: OuterEnvelope) -> Result<(), NodeError>;
 
-    /// Fetch and remove all messages for the given routing key
+    /// Fetch all messages for the given routing key
     fn fetch(&self, routing_key: &RoutingKey) -> Result<Vec<OuterEnvelope>, NodeError>;
 
     /// Check if a message with the given ID exists for the routing key
@@ -441,43 +444,41 @@ impl MailboxStore for PersistentMailboxStore {
         })?;
 
         let mut envelopes = Vec::new();
-        let mut ids_to_delete = Vec::new();
+        let mut invalid_ids_to_delete = Vec::new();
 
         for row in rows {
             let (id, data) = row?;
             match Self::deserialize_envelope(&data) {
                 Ok(envelope) => {
                     envelopes.push(envelope);
-                    ids_to_delete.push(id);
                 }
                 Err(e) => {
                     warn!(id = id, error = %e, "failed to deserialize envelope, deleting");
-                    ids_to_delete.push(id);
+                    invalid_ids_to_delete.push(id);
                 }
             }
         }
 
-        // Delete fetched messages
-        if !ids_to_delete.is_empty() {
-            let placeholders: Vec<&str> = ids_to_delete.iter().map(|_| "?").collect();
-            let sql = format!(
-                "DELETE FROM mailbox_messages WHERE id IN ({})",
-                placeholders.join(",")
-            );
+        if !invalid_ids_to_delete.is_empty() {
+            for chunk in invalid_ids_to_delete.chunks(SQLITE_MAX_BOUND_VARIABLES) {
+                let placeholders: Vec<&str> = chunk.iter().map(|_| "?").collect();
+                let sql = format!(
+                    "DELETE FROM mailbox_messages WHERE id IN ({})",
+                    placeholders.join(",")
+                );
 
-            let mut stmt = conn.prepare(&sql)?;
-            let params: Vec<&dyn rusqlite::ToSql> = ids_to_delete
-                .iter()
-                .map(|id| id as &dyn rusqlite::ToSql)
-                .collect();
-            stmt.execute(params.as_slice())?;
-
-            debug!(
-                routing_key = ?&routing_key[..4],
-                count = envelopes.len(),
-                "messages fetched and deleted"
-            );
+                let mut stmt = conn.prepare(&sql)?;
+                let params: Vec<&dyn rusqlite::ToSql> =
+                    chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+                stmt.execute(params.as_slice())?;
+            }
         }
+
+        debug!(
+            routing_key = ?&routing_key[..4],
+            count = envelopes.len(),
+            "messages fetched"
+        );
 
         Ok(envelopes)
     }
@@ -556,7 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn test_enqueue_and_fetch() {
+    fn test_fetch_is_non_destructive_until_delete() {
         let config = PersistentStoreConfig::default();
         let store = PersistentMailboxStore::in_memory(config).unwrap();
         let routing_key = RoutingKey::from_bytes([1u8; 16]);
@@ -572,9 +573,15 @@ mod tests {
         assert_eq!(fetched.len(), 1);
         assert_eq!(fetched[0].message_id, message_id);
 
-        // Should be empty after fetch
+        // Fetch should not delete. Tombstones are the deletion path.
         let fetched_again = store.fetch(&routing_key).unwrap();
-        assert!(fetched_again.is_empty());
+        assert_eq!(fetched_again.len(), 1);
+        assert_eq!(fetched_again[0].message_id, message_id);
+
+        // Explicit deletion should clear it.
+        assert!(store.delete_message(&message_id).unwrap());
+        let fetched_after_delete = store.fetch(&routing_key).unwrap();
+        assert!(fetched_after_delete.is_empty());
     }
 
     #[test]
@@ -653,6 +660,72 @@ mod tests {
         assert!(deleted);
 
         assert!(!store.has_message(&routing_key, &message_id).unwrap());
+    }
+
+    #[test]
+    fn test_fetch_deletes_invalid_rows_only() {
+        let config = PersistentStoreConfig::default();
+        let store = PersistentMailboxStore::in_memory(config).unwrap();
+        let routing_key = RoutingKey::from_bytes([8u8; 16]);
+        let message_id = MessageID::new();
+        let expires_at = timestamp_to_i64(now_secs() + 3600);
+        let created_at = timestamp_to_i64(now_secs());
+
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO mailbox_messages
+                 (routing_key, message_id, envelope_data, expires_at, created_at)
+                 VALUES (?, ?, ?, ?, ?)",
+                params![
+                    &routing_key[..],
+                    &message_id.as_bytes()[..],
+                    &[0xFFu8, 0x00, 0x01][..],
+                    expires_at,
+                    created_at
+                ],
+            )
+            .unwrap();
+        }
+
+        assert!(store.has_message(&routing_key, &message_id).unwrap());
+
+        let fetched = store.fetch(&routing_key).unwrap();
+        assert!(fetched.is_empty());
+        assert!(!store.has_message(&routing_key, &message_id).unwrap());
+    }
+
+    #[test]
+    fn test_fetch_deletes_invalid_rows_in_batches() {
+        let config = PersistentStoreConfig::default();
+        let store = PersistentMailboxStore::in_memory(config).unwrap();
+        let routing_key = RoutingKey::from_bytes([9u8; 16]);
+        let expires_at = timestamp_to_i64(now_secs() + 3600);
+        let created_at = timestamp_to_i64(now_secs());
+
+        {
+            let conn = store.conn.lock().unwrap();
+            for _ in 0..1000 {
+                let message_id = MessageID::new();
+                conn.execute(
+                    "INSERT INTO mailbox_messages
+                     (routing_key, message_id, envelope_data, expires_at, created_at)
+                     VALUES (?, ?, ?, ?, ?)",
+                    params![
+                        &routing_key[..],
+                        &message_id.as_bytes()[..],
+                        &[0xFFu8, 0x00, 0x01][..],
+                        expires_at,
+                        created_at
+                    ],
+                )
+                .unwrap();
+            }
+        }
+
+        let fetched = store.fetch(&routing_key).unwrap();
+        assert!(fetched.is_empty());
+        assert!(store.get_message_ids(&routing_key).unwrap().is_empty());
     }
 
     #[test]

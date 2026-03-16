@@ -60,6 +60,9 @@ pub enum ClientError {
 
     #[error("Invalid sender signature: message may be forged or tampered")]
     InvalidSenderSignature,
+
+    #[error("Conflicting duplicate message ID: {0:?}")]
+    ConflictingDuplicate(MessageID),
 }
 
 /// Represents a contact in the messenger
@@ -591,9 +594,27 @@ impl<T: Transport> Client<T> {
         // Compute content_id for DAG tracking
         let content_id = inner.content_id();
 
-        // Store received message - fail if storage fails to prevent data loss
-        self.storage
-            .store_received_message(contact_id, outer.message_id, &inner.content)?;
+        // Store received message. Duplicate delivery is expected once fetch becomes
+        // non-destructive, so treat an existing message_id as idempotent.
+        let is_duplicate =
+            match self
+                .storage
+                .store_received_message(contact_id, outer.message_id, &inner.content)
+            {
+                Ok(()) => false,
+                Err(StorageError::AlreadyExists) => {
+                    if !self.storage.received_message_matches(
+                        contact_id,
+                        outer.message_id,
+                        &inner.content,
+                    )? {
+                        return Err(ClientError::ConflictingDuplicate(outer.message_id));
+                    }
+                    debug!(message_id = ?outer.message_id, "Duplicate message delivery");
+                    true
+                }
+                Err(e) => return Err(e.into()),
+            };
 
         // NOW send auto-tombstone (fire-and-forget) AFTER successful message storage.
         // This ensures we never lose the message: if storage fails, we don't send tombstone.
@@ -731,8 +752,8 @@ impl<T: Transport> Client<T> {
         }
 
         debug!(
-            "Message received (content_id: {:?}, has_gaps: {}, sender_reset: {}, local_behind: {})",
-            content_id, has_gaps, sender_state_reset, local_state_behind
+            "Message received (content_id: {:?}, duplicate: {}, has_gaps: {}, sender_reset: {}, local_behind: {})",
+            content_id, is_duplicate, has_gaps, sender_state_reset, local_state_behind
         );
 
         Ok(ReceivedMessage {
@@ -1611,6 +1632,163 @@ mod tests {
             Content::Text(text) => assert_eq!(text.body, "Hello Bob!"),
             _ => panic!("Expected text content"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_process_message_is_idempotent_for_duplicate_delivery() {
+        let shared_transport = Arc::new(MockTransport::new());
+
+        let alice_identity = Identity::generate();
+        let alice_storage = Storage::in_memory().unwrap();
+        let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
+
+        let bob_identity = Identity::generate();
+        let bob_storage = Storage::in_memory().unwrap();
+        let bob = Client::new(bob_identity, shared_transport.clone(), bob_storage);
+
+        alice.add_contact(bob.public_id(), Some("Bob")).unwrap();
+        alice
+            .send_text(bob.public_id(), "Hello twice")
+            .await
+            .unwrap();
+
+        let messages = shared_transport.take_messages();
+        assert_eq!(messages.len(), 1);
+
+        let first = bob.process_message(&messages[0]).await.unwrap();
+        let second = bob.process_message(&messages[0]).await.unwrap();
+
+        assert_eq!(first.message_id, second.message_id);
+        assert_eq!(first.from, second.from);
+        match (first.content, second.content) {
+            (Content::Text(first_text), Content::Text(second_text)) => {
+                assert_eq!(first_text.body, "Hello twice");
+                assert_eq!(second_text.body, "Hello twice");
+            }
+            _ => panic!("Expected text content"),
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::cast_possible_truncation)] // Test code, ms since epoch fits in u64
+    async fn test_duplicate_delivery_preserves_gap_detection() {
+        use reme_encryption::encrypt_to_mik;
+        use reme_message::{ContentId, InnerEnvelope, TextContent};
+
+        let shared_transport = Arc::new(MockTransport::new());
+
+        let alice_identity = Identity::generate();
+        let alice_private_key = alice_identity.to_bytes();
+        let alice_storage = Storage::in_memory().unwrap();
+        let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
+
+        let bob_identity = Identity::generate();
+        let bob_storage = Storage::in_memory().unwrap();
+        let bob = Client::new(bob_identity, shared_transport.clone(), bob_storage);
+
+        bob.add_contact(alice.public_id(), Some("Alice")).unwrap();
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let message_id = MessageID::new();
+        let missing_parent: ContentId = [0xAA; 8];
+        let inner = InnerEnvelope {
+            from: *alice.public_id(),
+            created_at_ms: now_ms,
+            content: Content::Text(TextContent {
+                body: "Out of order".to_string(),
+            }),
+            prev_self: Some(missing_parent),
+            observed_heads: Vec::new(),
+            epoch: 0,
+            flags: 0,
+        };
+
+        let enc_output =
+            encrypt_to_mik(&inner, bob.public_id(), &message_id, &alice_private_key).unwrap();
+        let outer = OuterEnvelope {
+            version: CURRENT_VERSION,
+            routing_key: bob.public_id().routing_key(),
+            timestamp_hours: reme_message::now_hours(),
+            ttl_hours: None,
+            message_id,
+            ephemeral_key: enc_output.ephemeral_public,
+            ack_hash: enc_output.ack_hash,
+            inner_ciphertext: enc_output.ciphertext,
+        };
+
+        let first = bob.process_message(&outer).await.unwrap();
+        let second = bob.process_message(&outer).await.unwrap();
+
+        assert!(first.has_gaps);
+        assert!(second.has_gaps);
+        assert_eq!(first.content_id, second.content_id);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::cast_possible_truncation)] // Test code, ms since epoch fits in u64
+    async fn test_conflicting_duplicate_message_id_is_rejected() {
+        use reme_encryption::encrypt_to_mik;
+        use reme_message::{InnerEnvelope, TextContent};
+
+        let shared_transport = Arc::new(MockTransport::new());
+
+        let alice_identity = Identity::generate();
+        let alice_private_key = alice_identity.to_bytes();
+        let alice_storage = Storage::in_memory().unwrap();
+        let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
+
+        let bob_identity = Identity::generate();
+        let bob_storage = Storage::in_memory().unwrap();
+        let bob = Client::new(bob_identity, shared_transport.clone(), bob_storage);
+
+        bob.add_contact(alice.public_id(), Some("Alice")).unwrap();
+
+        let message_id = MessageID::new();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        let make_outer = |body: &str, created_at_ms: u64| {
+            let inner = InnerEnvelope {
+                from: *alice.public_id(),
+                created_at_ms,
+                content: Content::Text(TextContent {
+                    body: body.to_string(),
+                }),
+                prev_self: None,
+                observed_heads: Vec::new(),
+                epoch: 0,
+                flags: 0,
+            };
+
+            let enc_output =
+                encrypt_to_mik(&inner, bob.public_id(), &message_id, &alice_private_key).unwrap();
+            OuterEnvelope {
+                version: CURRENT_VERSION,
+                routing_key: bob.public_id().routing_key(),
+                timestamp_hours: reme_message::now_hours(),
+                ttl_hours: None,
+                message_id,
+                ephemeral_key: enc_output.ephemeral_public,
+                ack_hash: enc_output.ack_hash,
+                inner_ciphertext: enc_output.ciphertext,
+            }
+        };
+
+        let first = make_outer("Original", now_ms);
+        bob.process_message(&first).await.unwrap();
+
+        let conflicting = make_outer("Tampered", now_ms + 1);
+        let result = bob.process_message(&conflicting).await;
+
+        assert!(matches!(
+            result,
+            Err(ClientError::ConflictingDuplicate(id)) if id == message_id
+        ));
     }
 
     #[tokio::test]
