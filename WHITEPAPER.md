@@ -575,7 +575,7 @@ The queue stores encrypted `OuterEnvelope` blobs. Relay nodes never decrypt, so 
 
 **Ingress adapters** accept envelopes from one transport and deposit them into the queue. **Egress adapters** drain the queue and forward envelopes over a different transport. A single relay node can run multiple adapters at once (e.g., BLE ingress + HTTP egress on a phone, or HTTP ingress + Meshtastic egress on a home gateway).
 
-v0.6 ships with HTTP-only ingress and egress. v0.7 adds BLE ingress and egress, v0.8 adds Meshtastic ingress and egress.
+v0.6 ships with HTTP-only ingress and egress. v0.9 adds BLE and Meshtastic ingress, v0.10 adds BLE and Meshtastic egress.
 
 **Trust model:** Same as mailbox nodes. Relay nodes see routing keys, message sizes, and coarse timestamps. E2E encryption prevents relay nodes from reading, modifying, or forging message content.
 
@@ -845,14 +845,21 @@ The tradeoff is explicit: reme prioritizes resilience and DTN tolerance over the
 - LAN relay mode (HTTP ingress/egress) for partial outage scenarios
 
 **v0.7:**
-- BLE proximity exchange
-- BLE relay ingress and egress adapters (RSSI-based relay timing)
-- Message fragmentation for constrained transports
+- BLE direct exchange (point-to-point, no relay)
+- Transport-layer chunking for constrained MTUs
 
 **v0.8:**
-- Meshtastic bridge (reme bridges Meshtastic ↔ other transports; Meshtastic handles mesh routing)
-- Meshtastic relay ingress and egress adapters
+- Meshtastic direct exchange (point-to-point via Meshtastic hardware)
 - Kilometers-range messaging without Internet
+
+**v0.9:**
+- BLE and Meshtastic ingress adapters for relay queue
+- Bridge offline transports to Quorum
+
+**v0.10:**
+- BLE egress with RSSI-based relay timing
+- Meshtastic egress (Starlink relay scenario)
+- Cross-transport relay
 
 **v1.0 (breaking release):**
 - Protobuf wire format for cross-language compatibility
