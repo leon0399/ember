@@ -508,9 +508,9 @@ Transports are asynchronous and may fail independently. A transport coordinator 
 
 Primary transport for reliable connectivity:
 
-- **Endpoint**: `POST /api/v1/messages` (submit)
-- **Endpoint**: `GET /api/v1/messages/:routing_key` (fetch)
-- **Endpoint**: `POST /api/v1/tombstones` (acknowledge)
+- **Endpoint**: `POST /api/v1/submit` (submit a `WirePayload`, either a message or tombstone)
+- **Endpoint**: `GET /api/v1/fetch/{routing_key}` (fetch messages, paginated and byte-bounded)
+- **Endpoint**: `GET /api/v1/identity` (optional node identity verification for discovered peers)
 
 ### 11.3 Future transports
 
@@ -577,7 +577,7 @@ The queue stores encrypted `OuterEnvelope` blobs. Relay nodes never decrypt, so 
 
 v0.6 ships with HTTP-only ingress and egress. v0.9 adds BLE and Meshtastic ingress, v0.10 adds BLE and Meshtastic egress.
 
-**Trust model:** Same as mailbox nodes. Relay nodes see routing keys, message sizes, and coarse timestamps. E2E encryption prevents relay nodes from reading, modifying, or forging message content.
+**Trust model:** Relay nodes see routing keys, message sizes, and coarse timestamps. E2E encryption prevents relay nodes from reading or forging message content, but it does **not** eliminate metadata leakage or availability abuse. Anonymous discovered relays are therefore not equivalent to configured trusted peers: they are suitable for constrained best-effort relay roles, while exact-key fetch, quorum credit, and replication remain trusted-peer functions.
 
 ### 11.6 Node identity verification (v0.4)
 
@@ -601,7 +601,7 @@ sequenceDiagram
 | Mode | Use Case | Identity Required |
 |------|----------|-------------------|
 | **Direct** | Peer IS the recipient | Yes - verify `routing_key` matches |
-| **Relay** | Peer forwards to external recipient | No - E2E encrypted payload |
+| **Relay** | Peer forwards to external recipient | No - but keep peer in a constrained untrusted relay role |
 
 **Background refresh:**
 - Periodic identity refresh (5 min default) detects DHCP reassignment
@@ -636,7 +636,7 @@ sequenceDiagram
 
 **Messages**: UUID message_id provides uniqueness.
 
-**Tombstones**: Timestamp + sequence + device_id prevents replay.
+**Tombstones**: V2 tombstones are cryptographically bound to a specific `message_id` through `ack_secret = BLAKE3_KDF(..., shared_secret || message_id)`. This prevents cross-message replay; duplicate replays of the same tombstone are treated as duplicate/unknown-message cases rather than authorizing new operations.
 
 ### 12.5 Denial of service
 
@@ -652,6 +652,8 @@ sequenceDiagram
 
 **Message size**: No padding in v0.2; fixed-size padding planned for v1.0.
 
+**Polling privacy**: Exact-key fetch reveals a stable routing-key fingerprint and polling cadence to the node being polled. This is acceptable for configured trusted peers, but untrusted/discovered peers need a privacy-preserving fetch mode before they should be used for inbound polling.
+
 ---
 
 ## 13. Comparison with Existing Systems
@@ -661,7 +663,7 @@ sequenceDiagram
 | Aspect            | Signal                            | reme                                           |
 |-------------------|-----------------------------------|------------------------------------------------|
 | Key Exchange      | X3DH with server-mediated prekeys | Direct MIK encryption, Noise XX (v1.0)         |
-| Forward Secrecy   | Double Ratchet                    | Per-ephemeral-key, per-session Noise XX (v1.0) |
+| Forward Secrecy   | Double Ratchet                    | None in v0.3; per-session Noise XX (v1.0)      |
 | Identity          | Phone number                      | Self-sovereign 32-byte key                     |
 | Server Dependency | Required for delivery             | Optional mailboxes                             |
 | Offline First     | No                                | Yes                                            |

@@ -226,8 +226,8 @@ The queue only handles encrypted `OuterEnvelope` blobs. Relay nodes never decryp
 **Problem:** During partial outages, some LAN peers have Internet access and others don't. Peers without Internet should be able to relay through peers that do.
 
 **Solution:**
-- Discovered peers act as relays for messages to external recipients
-- No identity verification needed for relay (E2E encrypted, same trust model as Quorum)
+- Discovered peers can act as **untrusted best-effort relays** for messages to external recipients
+- Contact-style identity verification is not required for submit/store relay, but anonymous discovered relays are **not** equivalent to configured Quorum peers
 - Opt-in configuration for both accepting and using relay requests
 - Relay capability advertised in mDNS TXT records
 
@@ -235,6 +235,7 @@ The queue only handles encrypted `OuterEnvelope` blobs. Relay nodes never decryp
 - [ ] Relay queue with persistent storage and retry logic
 - [ ] HTTP ingress adapter (accepts envelopes from LAN peers)
 - [ ] HTTP egress adapter (forwards to Quorum nodes)
+- [ ] Discovered-peer capability policy (submit/store only, no quorum credit, no replication, no exact-key fetch)
 - [ ] Relay capability advertisement in mDNS TXT records
 - [ ] Relay accept/use configuration options
 - [ ] Relay routing in transport coordinator
@@ -388,7 +389,7 @@ flowchart LR
 5. Your off-grid device receives chunks, reassembles, decrypts
 
 **Community relay network:**
-The same scenario works with **any** Internet-connected Meshtastic node running reme bridge software. A neighbor's node, a community relay on a hilltop, or a stranger's device can all bridge your messages. Zero trust required (E2E encryption), zero coordination required (just run the bridge daemon).
+The same scenario works with **any** Internet-connected Meshtastic node running reme bridge software. A neighbor's node, a community relay on a hilltop, or a stranger's device can all bridge your messages. No plaintext trust is required because the payload is end-to-end encrypted, but metadata and availability remain sensitive, so these bridge nodes must stay in an untrusted relay role unless explicitly configured as trusted peers.
 
 **Success criteria:**
 - Starlink relay scenario works (HTTP → Meshtastic egress without decryption)
