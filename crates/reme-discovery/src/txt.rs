@@ -29,7 +29,13 @@ pub enum TxtError {
 /// Encode discovery-relevant fields into a TXT record map.
 ///
 /// Produces keys: `v` (protocol version), `rk` (hex-encoded routing key),
-/// `port` (decimal port number).
+/// and `port` (decimal port number).
+///
+/// Note: the `port` value here is redundant with the port contained in the
+/// corresponding SRV record and/or [`RawDiscoveredPeer`] metadata. Callers
+/// should treat the SRV/peer port as authoritative in the presence of any
+/// conflict, and may ignore the TXT `port` entirely once the SRV record has
+/// been resolved.
 pub fn encode_txt(routing_key: &RoutingKey, port: u16, version: u8) -> HashMap<String, String> {
     let mut map = HashMap::with_capacity(3);
     map.insert("v".to_owned(), version.to_string());
@@ -42,6 +48,11 @@ pub fn encode_txt(routing_key: &RoutingKey, port: u16, version: u8) -> HashMap<S
 ///
 /// Returns `(routing_key, port, version)` or a [`TxtError`] describing what
 /// went wrong.
+///
+/// Although this function parses and returns the TXT `port` field, it is
+/// recommended that higher-level discovery code prefer the port obtained
+/// from the SRV record or [`RawDiscoveredPeer`] when both are available
+/// (i.e. "SRV/peer port wins; TXT `port` may be ignored").
 pub fn decode_txt(records: &HashMap<String, String>) -> Result<(RoutingKey, u16, u8), TxtError> {
     // --- version ---
     let v_str = records
@@ -50,6 +61,9 @@ pub fn decode_txt(records: &HashMap<String, String>) -> Result<(RoutingKey, u16,
     let version: u8 = v_str
         .parse()
         .map_err(|_| TxtError::InvalidVersion(v_str.clone()))?;
+    if version != 1 {
+        return Err(TxtError::InvalidVersion(v_str.clone()));
+    }
 
     // --- routing key ---
     let rk_str = records

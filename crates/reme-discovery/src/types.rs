@@ -51,7 +51,7 @@ impl Default for AdvertisementSpec {
 }
 
 /// Errors returned by discovery operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum DiscoveryError {
     /// Failed to bind to a network interface or multicast group.
     #[error("failed to bind: {0}")]
