@@ -1,5 +1,5 @@
 use reme_identity::{InvalidPublicKey, PublicID};
-use reme_message::{Content, ContentId, MessageID};
+use reme_message::{Content, ContentId, MessageID, ReceiptContent, ReceiptKind};
 use reme_node_core::{
     now_ms, now_secs_i64, timestamp_opt_to_i64, timestamp_to_i64, NodeError,
     PersistentMailboxStore, PersistentStoreConfig,
@@ -8,7 +8,7 @@ use reme_outbox::{
     AttemptError, AttemptResult, DeliveryConfidence, DeliveryConfirmation, OutboxEntryId,
     OutboxStore, PendingMessage, TargetId, TieredDeliveryPhase, TransportAttempt,
 };
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use thiserror::Error;
@@ -388,11 +388,7 @@ impl Storage {
         trace!(contact_id = contact_id, ?message_id, "storing sent message");
         let now = now_secs_i64();
 
-        let (content_type, body) = match content {
-            Content::Text(text) => ("text", Some(text.body.as_str())),
-            Content::Receipt(_) => ("receipt", None),
-            _ => ("unknown", None),
-        };
+        let (content_type, body) = encode_content(content);
 
         let message_id_bytes = message_id.as_bytes();
 
@@ -400,7 +396,13 @@ impl Storage {
         conn.execute(
             "INSERT INTO messages (message_id, contact_id, direction, content_type, body, created_at)
              VALUES (?, ?, 'sent', ?, ?, ?)",
-            params![&message_id_bytes[..], contact_id, content_type, body, now],
+            params![
+                &message_id_bytes[..],
+                contact_id,
+                content_type,
+                body.as_deref(),
+                now
+            ],
         )?;
 
         Ok(())
@@ -420,11 +422,7 @@ impl Storage {
         );
         let now = now_secs_i64();
 
-        let (content_type, body) = match content {
-            Content::Text(text) => ("text", Some(text.body.as_str())),
-            Content::Receipt(_) => ("receipt", None),
-            _ => ("unknown", None),
-        };
+        let (content_type, body) = encode_content(content);
 
         let message_id_bytes = message_id.as_bytes();
 
@@ -432,10 +430,69 @@ impl Storage {
         conn.execute(
             "INSERT INTO messages (message_id, contact_id, direction, content_type, body, created_at)
              VALUES (?, ?, 'received', ?, ?, ?)",
-            params![&message_id_bytes[..], contact_id, content_type, body, now],
-        )?;
+            params![
+                &message_id_bytes[..],
+                contact_id,
+                content_type,
+                body.as_deref(),
+                now
+            ],
+        )
+        .map_err(|e| {
+            if is_duplicate_message_id_error(&e) {
+                StorageError::AlreadyExists
+            } else {
+                StorageError::Database(e)
+            }
+        })?;
 
         Ok(())
+    }
+
+    /// Check whether an existing message row matches an incoming received message.
+    ///
+    /// This is used to distinguish benign duplicate delivery from a conflicting
+    /// reuse of an existing `message_id`.
+    pub fn received_message_matches(
+        &self,
+        contact_id: i64,
+        message_id: MessageID,
+        content: &Content,
+    ) -> Result<bool, StorageError> {
+        let expected_content_type = content_type_name(content);
+        let expected_body = encoded_body(content);
+        let message_id_bytes = message_id.as_bytes();
+
+        let conn = self.conn.lock().expect("mutex poisoned");
+        let row: Option<(i64, String, String, Option<String>)> = conn
+            .query_row(
+                "SELECT contact_id, direction, content_type, body
+                 FROM messages
+                 WHERE message_id = ?",
+                params![&message_id_bytes[..]],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+
+        let Some((stored_contact_id, direction, stored_content_type, stored_body)) = row else {
+            return Ok(false);
+        };
+
+        if direction != "received" || stored_contact_id != contact_id {
+            return Ok(false);
+        }
+
+        if stored_content_type != expected_content_type {
+            return Ok(false);
+        }
+
+        if matches!(content, Content::Receipt(_)) && stored_body.is_none() {
+            // Legacy receipt rows were stored without a serialized body. Treat
+            // type/contact match as equivalent for backward compatibility.
+            return Ok(true);
+        }
+
+        Ok(stored_body == expected_body)
     }
 
     /// Mark a message as delivered
@@ -863,6 +920,47 @@ impl Storage {
             tiered_phase,
         })
     }
+}
+
+fn content_type_name(content: &Content) -> &'static str {
+    match content {
+        Content::Text(_) => "text",
+        Content::Receipt(_) => "receipt",
+        _ => "unknown",
+    }
+}
+
+fn encoded_body(content: &Content) -> Option<String> {
+    match content {
+        Content::Text(text) => Some(text.body.clone()),
+        Content::Receipt(receipt) => Some(encode_receipt_body(receipt)),
+        _ => None,
+    }
+}
+
+fn encode_content(content: &Content) -> (&'static str, Option<String>) {
+    (content_type_name(content), encoded_body(content))
+}
+
+fn encode_receipt_body(receipt: &ReceiptContent) -> String {
+    format!(
+        "{}:{}",
+        match receipt.kind {
+            ReceiptKind::Delivered => "delivered",
+            ReceiptKind::Read => "read",
+            _ => "unknown",
+        },
+        hex::encode(receipt.target_message_id.as_bytes())
+    )
+}
+
+fn is_duplicate_message_id_error(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(inner, Some(message))
+            if inner.code == ErrorCode::ConstraintViolation
+                && message.contains("messages.message_id")
+    )
 }
 
 // ============================================
@@ -1684,6 +1782,29 @@ mod tests {
             .unwrap();
         storage.mark_delivered(msg_id).unwrap();
         storage.mark_read(msg_id).unwrap();
+    }
+
+    #[test]
+    fn test_received_message_duplicate_returns_already_exists() {
+        let storage = Storage::in_memory().unwrap();
+        let contact = Identity::generate();
+        let contact_id = storage
+            .add_contact(contact.public_id(), Some("Bob"))
+            .unwrap();
+        let msg_id = MessageID::new();
+        let content = Content::Text(reme_message::TextContent {
+            body: "Hello again".to_string(),
+        });
+
+        storage
+            .store_received_message(contact_id, msg_id, &content)
+            .unwrap();
+
+        let duplicate = storage.store_received_message(contact_id, msg_id, &content);
+        assert!(matches!(duplicate, Err(StorageError::AlreadyExists)));
+        assert!(storage
+            .received_message_matches(contact_id, msg_id, &content)
+            .unwrap());
     }
 
     #[test]

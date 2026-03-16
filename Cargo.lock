@@ -2639,6 +2639,7 @@ name = "reme-storage"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "hex",
  "reme-identity",
  "reme-message",
  "reme-node-core",
