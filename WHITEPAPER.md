@@ -160,38 +160,49 @@ reme is designed to resist these adversaries:
 
 ## 5. System Architecture
 
-### 5.1 Crate structure
+### 5.1 Logical components
 
-```
-crates/
-├── reme-identity    # X25519/XEdDSA identity, PublicID (32-byte address)
-├── reme-encryption  # ChaCha20Poly1305 AEAD + ephemeral ECDH
-├── reme-message     # Wire formats, DAG structures, tombstones
-├── reme-transport   # Transport trait, HTTP/MQTT, TransportCoordinator
-├── reme-storage     # SQLite persistence
-├── reme-outbox      # Tiered delivery, retry policies, delivery tracking
-├── reme-node-core   # Shared node/relay logic, embedded HTTP server
-└── reme-core        # High-level Client API
+```mermaid
+flowchart TD
+    subgraph Applications
+        Node[Mailbox Node]
+        Client[Client - TUI + embedded relay]
+    end
 
-apps/
-├── node/            # Mailbox server (store-and-forward)
-└── client/          # TUI client with embedded relay capability
+    subgraph "Core Libraries"
+        NodeCore[Node Logic]
+        ClientAPI[Client API]
+        Transport[Transport - HTTP, MQTT]
+        Outbox[Outbox]
+        Storage[(Storage - SQLite)]
+        Identity[Identity - X25519/XEdDSA]
+        Encryption[Encryption - AEAD + ECDH]
+        Message[Message - wire format, DAG, tombstones]
+    end
+
+    Node --> NodeCore
+    Client --> ClientAPI
+    ClientAPI --> NodeCore & Transport & Outbox & Storage
+    NodeCore --> Transport
+    Transport --> Message
+    Outbox --> Message
+    Message --> Encryption --> Identity
 ```
 
 ### 5.2 Message flow
 
-```
-┌──────────┐     ┌──────────────┐     ┌──────────┐
-│  Sender  │────▶│   Mailbox    │────▶│ Receiver │
-│  Client  │     │    Node      │     │  Client  │
-└──────────┘     └──────────────┘     └──────────┘
-     │                  │                   │
-     │  OuterEnvelope   │  OuterEnvelope    │
-     │  (encrypted)     │  (stored)         │
-     │                  │                   │
-     │                  │   TombstoneEnvelope
-     │                  │◀──────────────────│
-     │                  │  (acknowledges)   │
+```mermaid
+sequenceDiagram
+    participant S as Sender Client
+    participant M as Mailbox Node
+    participant R as Receiver Client
+
+    S->>M: OuterEnvelope (encrypted)
+    M-->>M: Store by RoutingKey
+    R->>M: Poll by RoutingKey
+    M->>R: OuterEnvelope (stored)
+    R->>M: Tombstone (acknowledges)
+    M-->>M: Clear message from cache
 ```
 
 **Send path:**
@@ -235,12 +246,7 @@ reme uses a single X25519 key for both encryption and signatures (via XEdDSA). T
 - **Simplified backup**: Single secret key backs up entire identity
 - **Cross-curve compatibility**: XEdDSA provides Ed25519-compatible signatures from X25519 keys
 
-```rust
-pub struct Identity {
-    public_id: PublicID,    // X25519 public key (32 bytes)
-    x25519_secret: StaticSecret,  // X25519 private key (32 bytes)
-}
-```
+An identity consists of a PublicID (X25519 public key, 32 bytes) and the corresponding X25519 private key (32 bytes).
 
 ### 6.2 XEdDSA signatures
 
@@ -257,21 +263,7 @@ Properties:
 
 ### 6.3 Low-order point validation
 
-All public keys are validated against small-order points that would produce predictable shared secrets:
-
-```rust
-const LOW_ORDER_POINTS: [[u8; 32]; 7] = [
-    [0x00, ...],  // Order 4
-    [0x01, ...],  // Order 1 (identity)
-    // ... 5 more small-order points
-];
-
-fn is_low_order_point(key: &[u8; 32]) -> bool {
-    LOW_ORDER_POINTS.iter().any(|p| p == key)
-}
-```
-
-Defense-in-depth against invalid key attacks per RFC 7748 recommendations.
+All public keys are validated against the 7 known small-order points on Curve25519 that would produce predictable shared secrets (the identity point, two order-4 points, and four order-8 points). Defense-in-depth against invalid key attacks per RFC 7748 recommendations.
 
 ---
 
@@ -279,16 +271,7 @@ Defense-in-depth against invalid key attacks per RFC 7748 recommendations.
 
 ### 7.1 Encryption model: MIK-only (v0.2)
 
-The current version uses stateless encryption where each message includes its own key exchange material:
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    OuterEnvelope                        │
-├─────────────────────────────────────────────────────────┤
-│  ephemeral_key: [u8; 32]    // Fresh X25519 pubkey     │
-│  inner_ciphertext: Vec<u8>  // Encrypted InnerEnvelope │
-└─────────────────────────────────────────────────────────┘
-```
+The current version uses stateless encryption where each message includes its own key exchange material. The OuterEnvelope carries a fresh ephemeral X25519 public key alongside the encrypted InnerEnvelope (see §8.1 for full field list).
 
 **Encryption (sender):**
 ```
@@ -322,39 +305,23 @@ This prevents:
 
 ### 7.3 Key derivation
 
-All key derivation uses BLAKE3 in KDF mode with context strings:
+All key derivation uses BLAKE3 in KDF mode with context strings for domain separation:
 
-```rust
-fn derive_key_from_shared(
-    ephemeral_public: &[u8; 32],
-    recipient_public: &[u8; 32],
-    shared_secret: &[u8],
-) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new_derive_key("reme-encryption-key-v0");
-    hasher.update(ephemeral_public);
-    hasher.update(recipient_public);
-    hasher.update(shared_secret);
-    *hasher.finalize().as_bytes()
-}
+```
+enc_key = BLAKE3_KDF("reme-encryption-key-v0", ephemeral_pub || recipient_pub || shared_secret)
 ```
 
-Including both public keys prevents key confusion attacks where an attacker might claim a ciphertext was intended for a different recipient.
+Including both public keys in the KDF input prevents key confusion attacks where an attacker might claim a ciphertext was intended for a different recipient.
 
 ### 7.4 Future: Async Noise handshake (v1.0)
 
 Version 1.0 will add the **Async DTN-Safe Noise XX Handshake** for forward secrecy and post-compromise security:
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  Noise XX Handshake (DTN-Safe)                         │
-│  ─────────────────────────────────────────────────────  │
-│  1. Encrypted sender in OuterEnvelope (+16 bytes)      │
-│  2. Either party can initiate (deterministic roles)    │
-│  3. Epoch-based replay protection                      │
-│  4. DAG-integrated key lifecycle (delete after ACK)    │
-│  5. MIK fallback when session unavailable              │
-└─────────────────────────────────────────────────────────┘
-```
+1. Encrypted sender in OuterEnvelope (+16 bytes)
+2. Either party can initiate (deterministic roles)
+3. Epoch-based replay protection
+4. DAG-integrated key lifecycle (delete after ACK)
+5. MIK fallback when session unavailable
 
 ---
 
@@ -364,59 +331,40 @@ Version 1.0 will add the **Async DTN-Safe Noise XX Handshake** for forward secre
 
 The outer envelope contains routing metadata visible to relay nodes:
 
-```rust
-pub struct OuterEnvelope {
-    version: Version,           // 2 bytes (major.minor)
-    routing_key: [u8; 16],      // 16 bytes (truncated BLAKE3)
-    timestamp_hours: u32,       // 4 bytes (hour granularity)
-    ttl_hours: Option<u16>,     // 0 or 3 bytes
-    message_id: MessageID,      // 16 bytes (UUID v4)
-    ephemeral_key: [u8; 32],    // 32 bytes (X25519 pubkey)
-    inner_ciphertext: Vec<u8>,  // Variable (encrypted InnerEnvelope)
-}
-```
+| Field | Size | Description |
+|-------|------|-------------|
+| version | 2 bytes | Major.minor protocol version |
+| routing_key | 16 bytes | Truncated BLAKE3 of recipient PublicID |
+| timestamp_hours | 4 bytes | Hour-granularity timestamp (see §8.5) |
+| ttl_hours | 0 or 3 bytes | Optional time-to-live |
+| message_id | 16 bytes | UUID v4 for deduplication |
+| ack_hash | 16 bytes | For tombstone authorization (see §2) |
+| ephemeral_key | 32 bytes | Per-message X25519 public key |
+| inner_ciphertext | variable | Encrypted InnerEnvelope + Poly1305 tag |
 
-**Size analysis:**
-- Fixed overhead: ~73 bytes
-- Ciphertext overhead: +16 bytes (Poly1305 tag)
-- Total minimum: ~89 bytes + content
+> **Wire format note:** Field sizes and encoding are subject to change. The current implementation uses bincode; a migration to Postcard is planned before v0.5, with Protobuf at v1.0. See Appendix B for current size estimates.
 
 ### 8.2 InnerEnvelope
 
-The inner envelope contains authenticated message data:
+The inner envelope contains authenticated message data, readable only by the recipient:
 
-```rust
-pub struct InnerEnvelope {
-    from: PublicID,                    // 32 bytes
-    created_at_ms: u64,                // 8 bytes (precise timestamp)
-    content: Content,                  // Variable
-    signature: Option<[u8; 64]>,       // 0 or 64 bytes
-
-    // DAG fields
-    prev_self: Option<ContentId>,      // 0 or 8 bytes
-    observed_heads: Vec<ContentId>,    // Variable (usually 0-16 bytes)
-    epoch: u16,                        // 2 bytes
-    flags: u8,                         // 1 byte
-}
-```
+| Field | Size | Description |
+|-------|------|-------------|
+| from | 32 bytes | Sender's PublicID |
+| created_at_ms | 8 bytes | Millisecond-precision timestamp |
+| content | variable | Message content (see §8.3) |
+| signature | 0 or 64 bytes | XEdDSA signature over all fields |
+| prev_self | 0 or 8 bytes | ContentId of sender's previous message |
+| observed_heads | variable | ContentIds of peer's latest seen messages |
+| epoch | 2 bytes | Conversation epoch counter |
+| flags | 1 byte | Flags (e.g., FLAG_DETACHED) |
 
 ### 8.3 Content types
 
-```rust
-pub enum Content {
-    Text(TextContent),       // UTF-8 string
-    Receipt(ReceiptContent), // Delivery/read receipt
-}
+Messages carry one of:
 
-pub struct TextContent {
-    body: String,
-}
-
-pub struct ReceiptContent {
-    target_message_id: MessageID,
-    kind: ReceiptKind,  // Delivered | Read
-}
-```
+- **Text**: UTF-8 string body
+- **Receipt**: References a MessageID with a status (Delivered or Read)
 
 ### 8.4 Wire type discrimination
 
@@ -447,15 +395,8 @@ Hour granularity on the outer envelope:
 
 Each message has a content-addressed ID computed from immutable fields:
 
-```rust
-pub fn content_id(&self) -> ContentId {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"reme-content-id-v1");
-    hasher.update(&self.from.to_bytes());       // Sender identity
-    hasher.update(&self.created_at_ms.to_le_bytes());  // Timestamp
-    hasher.update(&content_bytes);              // Content
-    hash[..8].try_into().unwrap()  // 8-byte truncation
-}
+```
+content_id = BLAKE3("reme-content-id-v1" || sender_pubid || timestamp_ms || content)[0:8]
 ```
 
 **Design rationale:**
@@ -467,22 +408,16 @@ pub fn content_id(&self) -> ContentId {
 
 Messages form a directed acyclic graph through references:
 
+```mermaid
+flowchart LR
+    A1[A1] --> A2[A2] --> A3[A3]
+    B1[B1] --> B2[B2]
+    A2 -.->|observed| B1
+    A3 -.->|observed| B2
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Alice's view of conversation with Bob                 │
-│  ─────────────────────────────────────────────────────  │
-│                                                         │
-│  A1 ──────────── A2 ──────────── A3                    │
-│   \              / \                                    │
-│    \            /   observed_heads                      │
-│     \          /                                        │
-│      ▼        ▼                                         │
-│       B1 ──── B2                                        │
-│                                                         │
-│  prev_self: Links own messages (A1→A2→A3)              │
-│  observed_heads: Links to peer's messages seen         │
-└─────────────────────────────────────────────────────────┘
-```
+
+- **Solid arrows** (`prev_self`): Link a sender's own messages into a chain (A1 → A2 → A3, B1 → B2)
+- **Dotted arrows** (`observed_heads`): Reference the peer's latest message seen at send time
 
 **Fields:**
 - `prev_self`: Reference to sender's previous message (chain continuity)
@@ -492,49 +427,20 @@ Messages form a directed acyclic graph through references:
 
 ### 9.3 Gap detection
 
-**Receiver gap detector** tracks incoming message ancestry:
+Two gap detectors operate on each conversation:
 
-```rust
-pub fn on_receive(
-    &mut self,
-    content_id: ContentId,
-    prev_self: Option<ContentId>,
-    received_at_ms: u64,
-) -> GapResult {
-    match prev_self {
-        None => GapResult::Complete { resolved_orphans: vec![] },
-        Some(parent_id) => {
-            if self.complete.contains(&parent_id) {
-                GapResult::Complete { resolved_orphans: self.try_resolve_orphans(content_id) }
-            } else {
-                GapResult::Gap { missing: vec![parent_id] }
-            }
-        }
-    }
-}
-```
+**Receiver gap detector** tracks incoming message ancestry. When a message arrives, the detector checks whether its `prev_self` parent is already known. If the parent is missing, the message is an "orphan" held in a buffer until the parent arrives. When a parent arrives, all downstream orphans are resolved in chain order.
 
-**Sender gap detector** tracks what peer has seen:
-
-```rust
-pub fn find_missing(&self, peer_observed: &[ContentId]) -> Vec<ContentId> {
-    // Returns messages peer hasn't acknowledged
-}
-```
+**Sender gap detector** tracks what the peer has acknowledged. By examining the peer's `observed_heads`, the sender can identify which of its own messages the peer has not yet seen and schedule resends.
 
 ### 9.4 Multi-head support
 
 The DAG supports multiple heads (fork scenarios):
 
-- **Multi-device**: Same user sending from phone + laptop
+- **Multi-device**: Same user sending from phone + laptop creates parallel chains
 - **Concurrent sends**: Race conditions creating parallel branches
 
-```rust
-pub struct SenderGapDetector {
-    sent: HashMap<ContentId, Option<ContentId>>,
-    heads: HashSet<ContentId>,  // Multiple heads supported
-}
-```
+The sender gap detector tracks all current heads and resolves forks when a new message references multiple parents.
 
 ### 9.5 State reset detection
 
@@ -546,16 +452,7 @@ Three anomaly conditions are detected:
 
 ### 9.6 Detached messages
 
-For constrained transports (LoRa, BLE), messages can be sent without DAG linkage:
-
-```rust
-pub const FLAG_DETACHED: u8 = 0x01;
-
-// Detached message has:
-// - prev_self: None
-// - observed_heads: []
-// - flags: FLAG_DETACHED
-```
+For constrained transports (LoRa, BLE), messages can be sent without DAG linkage by setting the `FLAG_DETACHED` flag. A detached message has no `prev_self` or `observed_heads` references.
 
 Detached messages:
 - Save ~16 bytes of DAG overhead
@@ -573,60 +470,39 @@ Tombstones have two purposes:
 1. **Network layer**: Cache clearing and duplicate delivery prevention
 2. **Application layer**: Optional delivery/read receipts
 
-### 10.2 TombstoneEnvelope
+### 10.2 Tombstone format
 
-```rust
-pub struct TombstoneEnvelope {
-    version: Version,
-    target_message_id: MessageID,   // Message being acknowledged
-    routing_key: RoutingKey,        // Mailbox where message was stored
-    recipient_id_pub: [u8; 32],     // For signature verification
-    device_id: [u8; 16],            // Per-device sequence management
-    timestamp_hours: u32,           // Hour granularity
-    sequence: u64,                  // Monotonic per device
-    signature: [u8; 64],            // XEdDSA signature
-    encrypted_receipt: Option<Vec<u8>>,  // Optional sender-visible receipt
-}
-```
+> **WIP:** The tombstone wire format is being revised. The current implementation uses ack_secret-based authorization (V2), which differs from the V1 design described here. The fields below will be updated once the format stabilizes.
+
+A tombstone contains:
+- The target MessageID being acknowledged
+- The RoutingKey of the mailbox where the message was stored
+- An `ack_secret` proving the recipient decrypted the message (see §2)
+- An XEdDSA signature for attribution
 
 ### 10.3 Security properties
 
-**Signed by recipient**: Only the legitimate recipient can create valid tombstones
+**Authorization without identity**: Relay nodes verify tombstones by checking `BLAKE3(ack_secret) == ack_hash` from the OuterEnvelope. This is an O(1) hash comparison that requires no knowledge of sender or recipient identity.
 
-**Replay prevention**:
-- `timestamp_hours` limits validity window (10 days max)
-- `sequence` allows ordering detection
-- `device_id` isolates sequences per device
+**Attribution**: Clients verify the XEdDSA signature to determine whether the tombstone came from the sender or recipient.
 
-**Verifiable by relays**: Any node can verify tombstone authenticity without decrypting messages
+**Verifiable by relays**: Any node can verify tombstone authorization without decrypting messages.
 
 ### 10.4 Encrypted receipt (optional)
 
-Detailed receipts encrypted for sender:
-
-```rust
-pub struct DetailedReceipt {
-    precise_timestamp_secs: u64,
-    status: TombstoneStatus,  // Delivered | Read | Deleted
-    proof_of_content: Option<[u8; 32]>,  // HMAC proving decryption
-}
-```
-
-Encrypted using ephemeral X25519 + ChaCha20-Poly1305 to sender's public key.
+Tombstones can optionally carry a receipt encrypted for the sender (ephemeral X25519 + ChaCha20-Poly1305). The receipt includes a precise timestamp, delivery status (Delivered, Read, or Deleted), and optionally a proof-of-content HMAC.
 
 ---
 
 ## 11. Transport Layer
 
-### 11.1 Transport trait
+### 11.1 Transport interface
 
-```rust
-#[async_trait]
-pub trait Transport: Send + Sync {
-    async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError>;
-    async fn submit_tombstone(&self, tombstone: TombstoneEnvelope) -> Result<(), TransportError>;
-}
-```
+All transports implement two operations:
+- **Submit message**: Send an OuterEnvelope to a destination
+- **Submit tombstone**: Send a tombstone acknowledgment
+
+Transports are asynchronous and may fail independently. A transport coordinator routes messages across available transports and handles failover.
 
 ### 11.2 HTTP transport
 
@@ -656,13 +532,7 @@ Primary transport for reliable connectivity:
 
 ### 11.4 Mailbox node
 
-Simple store-and-forward relay:
-
-```rust
-// Storage: routing_key -> Vec<OuterEnvelope>
-// TTL enforcement: Remove expired messages
-// Tombstone handling: Clear acknowledged messages
-```
+A mailbox node stores OuterEnvelopes indexed by RoutingKey and delivers them when clients poll. TTL enforcement removes expired messages; tombstones clear acknowledged ones.
 
 Nodes learn only:
 - Routing keys (not full identities)
@@ -676,12 +546,26 @@ Mailbox nodes are always-on infrastructure. Peer relay covers partial availabili
 
 The relay is a store-and-forward queue with pluggable ingress and egress adapters:
 
-```
-Ingress (receive)          Queue              Egress (forward)
-─────────────────      ─────────────      ─────────────────
-HTTP (LAN peer)   ───▶                ───▶ HTTP (to Quorum)
-BLE proximity     ───▶  Relay Queue   ───▶ LoRa broadcast
-LoRa mesh         ───▶                ───▶ (future adapters)
+```mermaid
+flowchart LR
+    subgraph Ingress
+        HTTP_IN[HTTP - LAN peer]
+        BLE_IN[BLE proximity]
+        LORA_IN[LoRa mesh]
+    end
+
+    Q[(Relay Queue)]
+
+    subgraph Egress
+        HTTP_OUT[HTTP - to Quorum]
+        LORA_OUT[LoRa broadcast]
+    end
+
+    HTTP_IN --> Q
+    BLE_IN --> Q
+    LORA_IN --> Q
+    Q --> HTTP_OUT
+    Q --> LORA_OUT
 ```
 
 The queue stores encrypted `OuterEnvelope` blobs. Relay nodes never decrypt, so any device can relay without holding private keys.
@@ -697,18 +581,16 @@ v0.6 ships with HTTP-only ingress and egress. v0.7 adds BLE ingress, v0.8 adds L
 For dynamically discovered peers (mDNS), identity verification ensures messages reach the intended recipient.
 
 **Challenge-response protocol:**
-```
-Client                              Node
-   |                                  |
-   |  GET /identity?challenge=<C>     |
-   |--------------------------------->|
-   |                                  |
-   |  { node_pubkey, routing_keys,    |
-   |    signature: XEdDSA(C || pk) }  |
-   |<---------------------------------|
-   |                                  |
-   |  Verify signature                |
-   |  Check routing_key in list       |
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant N as Node
+
+    C->>N: GET /identity?challenge=random_bytes
+    N->>C: node_pubkey, routing_keys, signature
+    Note over C: Verify XEdDSA signature
+    Note over C: Check routing_key in list
 ```
 
 **Two operating modes:**
@@ -871,6 +753,8 @@ The tradeoff is explicit: reme prioritizes resilience and DTN tolerance over the
 
 ### B. Wire format sizes
 
+> **WIP:** These sizes reflect the current bincode encoding. A migration to Postcard is planned before v0.5; wire sizes may change by up to ~5%. The v1.0 Protobuf migration will change the encoding entirely.
+
 | Component              | Size                         |
 |------------------------|------------------------------|
 | PublicID               | 32 bytes                     |
@@ -879,9 +763,9 @@ The tradeoff is explicit: reme prioritizes resilience and DTN tolerance over the
 | ContentId              | 8 bytes                      |
 | Signature              | 64 bytes                     |
 | Poly1305 tag           | 16 bytes                     |
-| OuterEnvelope overhead | ~73 bytes                    |
+| OuterEnvelope overhead | ~73 bytes (bincode)          |
 | InnerEnvelope minimum  | ~107 bytes (with signature)  |
-| Tombstone              | ~155 bytes (without receipt) |
+| Tombstone              | TBD (V2 format)              |
 
 ### C. References
 

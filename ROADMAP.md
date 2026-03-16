@@ -181,25 +181,29 @@ Route messages through LAN peers during partial Internet outages.
 
 v0.6 introduces the **relay queue**, a store-and-forward component that v0.7 and v0.8 reuse with additional ingress paths.
 
+```mermaid
+flowchart TD
+    subgraph "Ingress Adapters"
+        I1["v0.6: HTTP (LAN peer)"]
+        I2["v0.7: + BLE proximity"]
+        I3["v0.8: + LoRa/Meshtastic"]
+    end
+
+    Q[(Relay Queue)]
+
+    subgraph "Egress Adapters"
+        E1["v0.6: HTTP to Quorum"]
+        E2["v0.8: + LoRa broadcast (Starlink)"]
+    end
+
+    I1 --> Q
+    I2 --> Q
+    I3 --> Q
+    Q --> E1
+    Q --> E2
 ```
-┌────────────┐
-│  Ingress   │    v0.6: HTTP (LAN peer)
-│  Adapters  │    v0.7: + BLE proximity
-│            │    v0.8: + LoRa/Meshtastic
-└─────┬──────┘
-      │
-      ▼
-┌────────────┐
-│   Relay    │    Encrypted envelopes, no decryption needed.
-│   Queue    │    Persistent, survives restarts.
-└─────┬──────┘
-      │
-      ▼
-┌────────────┐
-│  Egress    │    v0.6: HTTP to Quorum
-│            │    v0.8: + LoRa broadcast (Starlink scenario)
-└────────────┘
-```
+
+Encrypted envelopes only, no decryption needed. Queue is persistent and survives restarts.
 
 The queue only handles encrypted `OuterEnvelope` blobs. Relay nodes never decrypt; they move bytes between ingress and egress.
 
@@ -273,17 +277,14 @@ A phone with BLE + Internet can relay BLE-received messages to Quorum by deposit
 
 Chunking happens at the transport layer, not application layer. Relay nodes can split/reassemble encrypted blobs without having decryption keys.
 
-**Solution:**
-```
-┌─────────────────────────────────────────────────────────────┐
-│  TransportChunk (no encryption, just byte splitting)        │
-├─────────────────────────────────────────────────────────────┤
-│  envelope_hash: [u8; 8]   // Links chunks of same envelope  │
-│  chunk_index: u8          // Position (0, 1, 2...)          │
-│  chunk_total: u8          // Total count                    │
-│  payload: Vec<u8>         // Raw bytes of OuterEnvelope     │
-└─────────────────────────────────────────────────────────────┘
-```
+**Solution:** A `TransportChunk` header wraps byte-split fragments of an OuterEnvelope. No encryption, just splitting.
+
+| Field | Size | Description |
+|-------|------|-------------|
+| envelope_hash | 8 bytes | Links chunks belonging to the same envelope |
+| chunk_index | 1 byte | Position (0, 1, 2...) |
+| chunk_total | 1 byte | Total chunk count |
+| payload | variable | Raw bytes of the OuterEnvelope fragment |
 
 **Properties:**
 - Any node can split/reassemble (no keys needed)
@@ -348,24 +349,15 @@ You're off-grid across the city during a power outage. Your home has Starlink + 
 
 The home relay node fetches messages from Quorum (HTTP ingress), then re-broadcasts them over LoRa (LoRa egress) without decrypting them. This is the reverse direction of normal relay, which means v0.8 needs to add LoRa as an **egress** adapter to the v0.6 relay queue.
 
-```
-                    ┌─────────────────────────────────────────────────────────┐
-                    │                    YOUR HOME                            │
-                    │  ┌─────────────┐      ┌─────────────┐                   │
-Internet ──────────►│  │  Starlink   │─────►│ LoRa Node   │───── LoRa ────────┼───►
-  (Quorum)          │  │   Modem     │      │ (Relay)     │      Radio        │
-                    │  └─────────────┘      └─────────────┘                   │
-                    └─────────────────────────────────────────────────────────┘
-                                                                      │
-                                                                      │ 10km+
-                                                                      │
-                    ┌─────────────────────────────────────────────────────────┐
-                    │                 YOU (Off-Grid)                          │
-                    │            ┌─────────────┐                              │
-                    │            │ LoRa Client │◄─── Receives via LoRa        │
-                    │            │ (Your Phone)│                              │
-                    │            └─────────────┘                              │
-                    └─────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    Q[Internet / Quorum] -->|HTTP| S[Starlink Modem]
+
+    subgraph "Your Home"
+        S --> R[LoRa Node - Relay]
+    end
+
+    R -->|"LoRa radio (10km+)"| P[Your Phone - LoRa Client]
 ```
 
 **How it works:**
