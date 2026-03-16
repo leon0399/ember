@@ -186,14 +186,15 @@ flowchart TD
     subgraph "Ingress Adapters"
         I1["v0.6: HTTP (LAN peer)"]
         I2["v0.7: + BLE proximity"]
-        I3["v0.8: + LoRa/Meshtastic"]
+        I3["v0.8: + Meshtastic"]
     end
 
     Q[(Relay Queue)]
 
     subgraph "Egress Adapters"
         E1["v0.6: HTTP to Quorum"]
-        E2["v0.8: + LoRa broadcast (Starlink)"]
+        E2["v0.7: + BLE rebroadcast"]
+        E3["v0.8: + Meshtastic"]
     end
 
     I1 --> Q
@@ -201,6 +202,7 @@ flowchart TD
     I3 --> Q
     Q --> E1
     Q --> E2
+    Q --> E3
 ```
 
 Encrypted envelopes only, no decryption needed. Queue is persistent and survives restarts.
@@ -259,16 +261,24 @@ Direct device-to-device messaging with no infrastructure.
 - [ ] Background scanning/advertising
 - [ ] Power-efficient operation
 
-### BLE relay ingress
+### BLE relay (ingress + egress)
 
-A phone with BLE + Internet can relay BLE-received messages to Quorum by depositing them into the v0.6 relay queue. BLE is another ingress adapter; the egress path (HTTP to Quorum) is unchanged.
+BLE works as both an ingress and egress adapter for the v0.6 relay queue:
+
+- **Ingress**: A phone with BLE + Internet receives envelopes via BLE and forwards them to Quorum over HTTP.
+- **Egress**: A device with queued messages rebroadcasts them over BLE to nearby peers. Peers that overhear the broadcast can relay further (BLE-to-BLE) or bridge to Quorum (BLE-to-HTTP).
+
+**RSSI-based relay timing**: To avoid flooding, nodes use received signal strength to schedule rebroadcast delays. Nodes with weaker RSSI (farther from the original sender) rebroadcast first; nodes with stronger RSSI (closer, more likely to have already received it) wait longer and cancel if they overhear a duplicate. This is the same approach Meshtastic uses for LoRa mesh flooding.
 
 **Deliverables:**
 - [ ] BLE ingress adapter for relay queue
+- [ ] BLE egress adapter with RSSI-based relay timing
 - [ ] Relay capability advertisement in BLE service data
+- [ ] Duplicate suppression (heard-before cancellation)
 
 **Success criteria:**
 - Alice (BLE only) → Bob's phone (BLE + Internet) → Quorum → Charlie
+- BLE-to-BLE relay extends range beyond single-hop BLE distance
 - Same relay status/tracking as LAN relay
 
 ### Transport-layer chunking
@@ -309,38 +319,49 @@ Chunking happens at the transport layer, not application layer. Relay nodes can 
 
 Kilometers-range messaging without Internet.
 
-### LoRa/Meshtastic integration
+### LoRa transport: two modes
 
 **Problem:** BLE requires physical proximity (~10m). For disaster response, remote areas, or censorship resistance, we need communication over kilometers without any Internet infrastructure.
 
-**Solution:**
-- Meshtastic device integration via serial/BLE bridge
-- Store-and-forward mesh routing through Meshtastic network
-- Transport-layer chunking for LoRa MTU (~200 bytes)
-- Detached messages by default (minimize overhead)
-- Automatic reassembly on receive
+There are two distinct approaches, depending on whether a Meshtastic network is available:
+
+**Mode 1: Meshtastic bridge (preferred)**
+
+When a Meshtastic mesh exists, reme treats it as an opaque transport. Meshtastic handles all mesh routing, hop counts, and duty cycle management. Reme just sends and receives chunked OuterEnvelopes over the Meshtastic serial/BLE API.
+
+- Reme does **not** relay LoRa-to-LoRa itself; Meshtastic does that
+- Reme **does** bridge Meshtastic ↔ other transports (HTTP, BLE) via the relay queue
+- Any Meshtastic user running reme bridge software can contribute relay capacity. No trust required, they only see encrypted bytes.
+
+**Mode 2: Plain LoRa (no Meshtastic)**
+
+Without Meshtastic, reme would need its own LoRa mesh relay protocol. This is significantly more work (duty cycle management, hop limiting, routing tables) and is deferred unless there's a concrete need. Meshtastic already solves this well.
 
 **Deliverables:**
-- [ ] Meshtastic serial protocol integration
-- [ ] LoRa transport with chunking (reuses v0.7 TransportChunk)
-- [ ] LoRa transport implementation
-- [ ] Mesh routing awareness (hop count, SNR)
-- [ ] Power-efficient transmission scheduling
+- [ ] Meshtastic serial/BLE protocol integration
+- [ ] Meshtastic transport adapter (send/receive chunked envelopes)
+- [ ] Transport-layer chunking for LoRa MTU (~200 bytes, reuses v0.7 TransportChunk)
+- [ ] Detached messages by default (minimize overhead)
+- [ ] Automatic reassembly on receive
 - [ ] Integration with existing transport coordinator
 
-### LoRa relay ingress
+### Meshtastic relay (ingress + egress)
 
-LoRa ingress deposits reassembled `OuterEnvelope`s into the v0.6 relay queue, same as BLE. Works on dedicated relay nodes (Raspberry Pi + Meshtastic) or phones with the Meshtastic app.
+Meshtastic acts as both ingress and egress for the v0.6 relay queue, same as BLE:
 
-Any Meshtastic user running reme relay software can contribute relay capacity. No trust required, they only see encrypted bytes.
+- **Ingress**: Meshtastic-received envelopes are deposited into the relay queue for forwarding to Quorum over HTTP.
+- **Egress**: Envelopes fetched from Quorum (or received via other transports) are sent out over Meshtastic for off-grid recipients.
+
+Works on dedicated relay nodes (Raspberry Pi + Meshtastic) or phones with the Meshtastic app.
 
 **Deliverables:**
-- [ ] LoRa ingress adapter for relay queue
+- [ ] Meshtastic ingress adapter for relay queue
+- [ ] Meshtastic egress adapter for relay queue
 - [ ] Headless relay mode (no TUI, minimal resources)
 - [ ] Relay statistics/monitoring endpoint
 
 **Success criteria:**
-- A stranger's Meshtastic node relays your message to Quorum
+- A stranger's Meshtastic node bridges your message to Quorum
 - Works without any prior relationship or key exchange
 
 ### The "Starlink Relay" scenario
@@ -376,14 +397,13 @@ Your home relay bridges Internet and radio so you receive messages off-grid with
 This is what separates reme from conventional messengers.
 
 **Community relay network:**
-The same scenario works with **any** Internet-connected Meshtastic node running reme relay software, not just your own. A neighbor's node, a community relay on a hilltop, or a stranger's device can all bridge your messages to the Internet. Zero trust required (E2E encryption), zero coordination required (just run the relay daemon).
+The same scenario works with **any** Internet-connected Meshtastic node running reme bridge software, not just your own. A neighbor's node, a community relay on a hilltop, or a stranger's device can all bridge your messages between Meshtastic and the Internet. Zero trust required (E2E encryption), zero coordination required (just run the bridge daemon).
 
 **Success criteria:**
-- Message delivery over 5+ km with line-of-sight
-- Multi-hop mesh routing through intermediate nodes
-- Starlink relay scenario works (HTTP→LoRa bridge without decryption)
-- Third-party relay nodes work without prior trust/coordination
-- Handles unavailable nodes without blocking
+- Message delivery over 5+ km via Meshtastic mesh
+- Meshtastic handles multi-hop routing (reme does not relay LoRa-to-LoRa)
+- Starlink relay scenario works (HTTP → Meshtastic egress without decryption)
+- Third-party bridge nodes work without prior trust/coordination
 - Works with off-the-shelf Meshtastic hardware (T-Beam, Heltec, etc.)
 
 ---
@@ -527,11 +547,12 @@ Implements DTN-safe forward secrecy without prekey servers.
 
 ### v0.7
 - BLE exchange <30s proximity time
+- BLE relay extends range via RSSI-based rebroadcast
 - Works without any Internet connectivity
 
 ### v0.8
-- LoRa message delivery over 5+ km
-- Multi-hop mesh routing
+- Message delivery over 5+ km via Meshtastic mesh
+- Meshtastic bridge works (reme does not relay LoRa-to-LoRa)
 - Works with off-the-shelf Meshtastic hardware
 
 ### v1.0

@@ -515,16 +515,17 @@ Primary transport for reliable connectivity:
 ### 11.3 Future transports
 
 **LoRa/Meshtastic:**
-- MTU: ~200 bytes
-- Requires fragmentation for larger messages
+- MTU: ~200 bytes, requires fragmentation for larger messages
 - Uses detached messages to minimize overhead
-- Store-and-forward through mesh network
-- Can act as both relay ingress and egress (see §11.5)
+- Meshtastic handles mesh routing; reme bridges between Meshtastic and other transports
+- Reme does not relay LoRa-to-LoRa itself
+- Acts as both relay ingress and egress (see §11.5)
 
 **BLE proximity:**
 - Direct device-to-device exchange
 - Background scanning for contacts
-- Can act as relay ingress for Internet-connected peers (see §11.5)
+- Acts as both relay ingress and egress (see §11.5)
+- RSSI-based relay timing: weaker-signal nodes rebroadcast first, stronger-signal nodes wait and cancel on duplicate
 
 **Sneakernet:**
 - QR code or file-based message transfer
@@ -551,28 +552,30 @@ flowchart LR
     subgraph Ingress
         HTTP_IN[HTTP - LAN peer]
         BLE_IN[BLE proximity]
-        LORA_IN[LoRa mesh]
+        MESH_IN[Meshtastic]
     end
 
     Q[(Relay Queue)]
 
     subgraph Egress
         HTTP_OUT[HTTP - to Quorum]
-        LORA_OUT[LoRa broadcast]
+        BLE_OUT[BLE rebroadcast]
+        MESH_OUT[Meshtastic]
     end
 
     HTTP_IN --> Q
     BLE_IN --> Q
-    LORA_IN --> Q
+    MESH_IN --> Q
     Q --> HTTP_OUT
-    Q --> LORA_OUT
+    Q --> BLE_OUT
+    Q --> MESH_OUT
 ```
 
 The queue stores encrypted `OuterEnvelope` blobs. Relay nodes never decrypt, so any device can relay without holding private keys.
 
-**Ingress adapters** accept envelopes from one transport and deposit them into the queue. **Egress adapters** drain the queue and forward envelopes over a different transport. A single relay node can run multiple adapters at once (e.g., BLE ingress + HTTP egress on a phone, or HTTP ingress + LoRa egress on a home gateway).
+**Ingress adapters** accept envelopes from one transport and deposit them into the queue. **Egress adapters** drain the queue and forward envelopes over a different transport. A single relay node can run multiple adapters at once (e.g., BLE ingress + HTTP egress on a phone, or HTTP ingress + Meshtastic egress on a home gateway).
 
-v0.6 ships with HTTP-only ingress and egress. v0.7 adds BLE ingress, v0.8 adds LoRa ingress and LoRa egress.
+v0.6 ships with HTTP-only ingress and egress. v0.7 adds BLE ingress and egress, v0.8 adds Meshtastic ingress and egress.
 
 **Trust model:** Same as mailbox nodes. Relay nodes see routing keys, message sizes, and coarse timestamps. E2E encryption prevents relay nodes from reading, modifying, or forging message content.
 
@@ -843,13 +846,12 @@ The tradeoff is explicit: reme prioritizes resilience and DTN tolerance over the
 
 **v0.7:**
 - BLE proximity exchange
-- BLE relay ingress adapter
+- BLE relay ingress and egress adapters (RSSI-based relay timing)
 - Message fragmentation for constrained transports
 
 **v0.8:**
-- LoRa/Meshtastic mesh integration
-- LoRa relay ingress and egress adapters
-- Multi-hop store-and-forward routing
+- Meshtastic bridge (reme bridges Meshtastic ↔ other transports; Meshtastic handles mesh routing)
+- Meshtastic relay ingress and egress adapters
 - Kilometers-range messaging without Internet
 
 **v1.0 (breaking release):**
