@@ -404,8 +404,8 @@ impl HttpTransport {
 
         let results = join_all(futures).await;
 
-        // Aggregate and deduplicate by message_id
-        let mut messages_by_id: HashMap<MessageID, OuterEnvelope> = HashMap::new();
+        // Aggregate and deduplicate by message_id, preserving conflicting variants
+        let mut accumulated: HashMap<MessageID, Vec<OuterEnvelope>> = HashMap::new();
         let mut last_error = None;
         let mut success_count = 0;
 
@@ -418,9 +418,11 @@ impl HttpTransport {
                         self.base_urls[i]
                     );
                     success_count += 1;
-                    for msg in messages {
-                        messages_by_id.insert(msg.message_id, msg);
-                    }
+                    crate::dedup::merge_envelopes(
+                        &mut accumulated,
+                        messages,
+                        &sanitize_url_for_log(&self.base_urls[i]),
+                    );
                 }
                 Err(e) => {
                     warn!("Failed to fetch from node {}: {}", self.base_urls[i], e);
@@ -431,7 +433,7 @@ impl HttpTransport {
 
         // If we got messages from at least one node, return them
         if success_count > 0 {
-            let messages: Vec<_> = messages_by_id.into_values().collect();
+            let messages = crate::dedup::flatten_variants(accumulated);
             debug!(
                 "Fetched {} unique messages from {}/{} nodes",
                 messages.len(),
@@ -987,5 +989,115 @@ mod tests {
             Err(e) => panic!("Expected ServerError, got: {e:?}"),
             Ok(_) => panic!("Expected error, got success"),
         }
+    }
+
+    /// Build a test envelope with a specific `message_id` and ciphertext.
+    fn build_envelope_with_id(
+        message_id: reme_message::MessageID,
+        ciphertext: Vec<u8>,
+    ) -> OuterEnvelope {
+        let mut env = OuterEnvelope::new(
+            reme_identity::RoutingKey::from([0u8; 16]),
+            None,
+            [0u8; 32],
+            [0u8; 16],
+            ciphertext,
+        );
+        env.message_id = message_id;
+        env
+    }
+
+    /// Encode an envelope as a base64 wire payload string (for mock server responses).
+    fn encode_envelope_payload(env: &OuterEnvelope) -> String {
+        let wire = WirePayload::Message(env.clone());
+        BASE64_STANDARD.encode(wire.encode())
+    }
+
+    #[derive(Serialize)]
+    struct MockFetchResponse {
+        payloads: Vec<String>,
+    }
+
+    #[tokio::test]
+    async fn test_fetch_once_conflicting_envelopes() {
+        let msg_id = reme_message::MessageID::from_bytes([0x42; 16]);
+        let env_a = build_envelope_with_id(msg_id, vec![0xAA; 50]);
+        let env_b = build_envelope_with_id(msg_id, vec![0xBB; 50]);
+
+        let payload_a = encode_envelope_payload(&env_a);
+        let payload_b = encode_envelope_payload(&env_b);
+
+        let app_a = Router::new().route(
+            "/api/v1/fetch/{routing_key}",
+            get(move || async move {
+                Json(MockFetchResponse {
+                    payloads: vec![payload_a.clone()],
+                })
+            }),
+        );
+
+        let app_b = Router::new().route(
+            "/api/v1/fetch/{routing_key}",
+            get(move || async move {
+                Json(MockFetchResponse {
+                    payloads: vec![payload_b.clone()],
+                })
+            }),
+        );
+
+        let (url_a, _h1) = start_mock_server(app_a).await;
+        let (url_b, _h2) = start_mock_server(app_b).await;
+
+        let transport = HttpTransport::with_nodes(vec![url_a, url_b]);
+        let routing_key = reme_identity::RoutingKey::from([0u8; 16]);
+        let result = transport.fetch_once(&routing_key).await.unwrap();
+
+        assert_eq!(
+            result.len(),
+            2,
+            "Both conflicting variants should be preserved"
+        );
+        assert!(result.contains(&env_a));
+        assert!(result.contains(&env_b));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_once_identical_envelopes_deduped() {
+        let msg_id = reme_message::MessageID::from_bytes([0x42; 16]);
+        let env = build_envelope_with_id(msg_id, vec![0xAA; 50]);
+
+        let payload = encode_envelope_payload(&env);
+        let payload_clone = payload.clone();
+
+        let app_a = Router::new().route(
+            "/api/v1/fetch/{routing_key}",
+            get(move || async move {
+                Json(MockFetchResponse {
+                    payloads: vec![payload.clone()],
+                })
+            }),
+        );
+
+        let app_b = Router::new().route(
+            "/api/v1/fetch/{routing_key}",
+            get(move || async move {
+                Json(MockFetchResponse {
+                    payloads: vec![payload_clone.clone()],
+                })
+            }),
+        );
+
+        let (url_a, _h1) = start_mock_server(app_a).await;
+        let (url_b, _h2) = start_mock_server(app_b).await;
+
+        let transport = HttpTransport::with_nodes(vec![url_a, url_b]);
+        let routing_key = reme_identity::RoutingKey::from([0u8; 16]);
+        let result = transport.fetch_once(&routing_key).await.unwrap();
+
+        assert_eq!(
+            result.len(),
+            1,
+            "Identical envelopes should be deduplicated"
+        );
     }
 }

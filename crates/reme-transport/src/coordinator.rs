@@ -250,16 +250,25 @@ impl TransportCoordinator {
                     _ = poll_interval.tick() => {
                         match pool.fetch_once(&routing_key).await {
                             Ok(messages) => {
+                                // Collect IDs to mark after forwarding, so
+                                // byte-distinct variants within the same batch
+                                // are not suppressed by check_and_mark.
+                                let mut ids_to_mark = Vec::new();
                                 for envelope in messages {
-                                    // Deduplicate across transports
-                                    if seen_cache.check_and_mark(&envelope.message_id) {
-                                        if tx.send(TransportEvent::Message(envelope)).is_err() {
-                                            debug!("Coordinator: channel closed");
-                                            return;
-                                        }
-                                    } else {
+                                    // Cross-poll dedup: skip messages already
+                                    // forwarded in a previous poll cycle.
+                                    if seen_cache.was_seen(&envelope.message_id) {
                                         trace!("Coordinator: duplicate message skipped");
+                                        continue;
                                     }
+                                    ids_to_mark.push(envelope.message_id);
+                                    if tx.send(TransportEvent::Message(envelope)).is_err() {
+                                        debug!("Coordinator: channel closed");
+                                        return;
+                                    }
+                                }
+                                for id in &ids_to_mark {
+                                    seen_cache.mark(id);
                                 }
                             }
                             Err(e) => {

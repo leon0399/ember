@@ -151,7 +151,7 @@ pub const CURRENT_VERSION: Version = Version { major: 0, minor: 0 };
 /// 1. Computes `shared_secret` = `X25519(mik_private`, `ephemeral_key`)
 /// 2. Derives same encryption key
 /// 3. Decrypts `InnerEnvelope`
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct OuterEnvelope {
     pub version: Version,
 
