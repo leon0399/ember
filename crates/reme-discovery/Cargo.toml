@@ -1,0 +1,17 @@
+[package]
+name = "reme-discovery"
+version = "0.1.0"
+edition = "2021"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+thiserror = { workspace = true }
+hex = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread"] }

@@ -2548,6 +2548,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "reme-discovery"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hex",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "reme-encryption"
 version = "0.1.0"
 dependencies = [
@@ -2658,6 +2669,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bincode",
+ "bitflags",
  "derivative",
  "derive_more 2.1.0",
  "futures",

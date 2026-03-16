@@ -16,6 +16,7 @@ reme-outbox = { path = "crates/reme-outbox" }
 reme-node = { path = "crates/reme-node" }
 reme-node-core = { path = "crates/reme-node-core" }
 reme-config = { path = "crates/reme-config" }
+reme-discovery = { path = "crates/reme-discovery" }
 
 anyhow = "^1.0.99"
 thiserror = "^2.0.16"
