@@ -8,6 +8,7 @@ workspace = true
 
 [features]
 mdns-sd = ["dep:mdns-sd", "dep:hostname"]
+test-utils = []
 
 [dependencies]
 async-trait = { workspace = true }
