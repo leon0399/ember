@@ -537,7 +537,7 @@ impl App<'_> {
         let mqtt_pool = TransportPool::new();
         if !parsed_mqtt_peers.is_empty() {
             let mut join_set = tokio::task::JoinSet::new();
-            for parsed_peer in parsed_mqtt_peers.clone() {
+            for parsed_peer in parsed_mqtt_peers.iter().cloned() {
                 join_set.spawn(async move {
                     let mut mqtt_config = MqttTargetConfig::new(&parsed_peer.url);
                     if let Some(ref client_id) = parsed_peer.client_id {
