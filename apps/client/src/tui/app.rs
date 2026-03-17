@@ -20,8 +20,9 @@ use reme_transport::http_target::{HttpTarget, HttpTargetConfig};
 use reme_transport::pool::TransportPool;
 use reme_transport::target::TargetKind;
 use reme_transport::{
-    CompositeTransport, DeliveryTier, MessageReceiver, MqttBrokerSpec, MqttTransport,
-    ReceiverConfig, TargetId, TransportEvent, TransportRegistry, TransportTarget,
+    CoordinatorConfig, CoordinatorHandle, DeliveryTier, MqttTarget, MqttTargetConfig,
+    ReceiverConfig, TargetId, TransportCoordinator, TransportEvent, TransportRegistry,
+    TransportTarget,
 };
 use std::collections::{HashMap, VecDeque};
 use std::fs;
@@ -315,10 +316,14 @@ pub struct App<'a> {
     pub input: TextArea<'a>,
     /// Status message
     pub status: String,
-    /// The messenger client (uses `CompositeTransport` for sending via HTTP and/or MQTT)
-    client: Client<CompositeTransport>,
-    /// HTTP transport pool for message receiving (HTTP polling-based receiver)
-    http_pool: Arc<TransportPool<HttpTarget>>,
+    /// The messenger client (uses `TransportCoordinator` for sending via HTTP and/or MQTT)
+    client: Client<TransportCoordinator>,
+    /// Transport coordinator for unified multi-transport messaging
+    coordinator: Arc<TransportCoordinator>,
+    /// Coordinator event receiver for incoming messages
+    coordinator_events: mpsc::UnboundedReceiver<TransportEvent>,
+    /// Coordinator subscription handle (dropped on shutdown to cancel polling)
+    _coordinator_handle: CoordinatorHandle,
     /// Embedded node handle (for shutdown)
     embedded_node_handle: Option<EmbeddedNodeHandle>,
     /// Embedded node task join handle (for awaiting shutdown)
@@ -405,7 +410,7 @@ impl App<'_> {
                     config = config.with_label(label.clone());
                 }
 
-                // Set priority (u16 from config → u8 for transport, clamped)
+                // Set priority (u16 from config -> u8 for transport, clamped)
                 let priority_u8 = if parsed_peer.common.priority > 255 {
                     warn!(
                         url = %parsed_peer.url,
@@ -447,32 +452,6 @@ impl App<'_> {
             .map(|peer| ParsedMqttPeer::try_from(peer.clone()))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("Failed to parse MQTT peer configuration: {e}"))?;
-
-        // Create MQTT transport if brokers are configured
-        let mqtt_transport = if parsed_mqtt_peers.is_empty() {
-            None
-        } else {
-            // Convert parsed peers to transport broker specs
-            let broker_specs: Vec<MqttBrokerSpec> = parsed_mqtt_peers
-                .iter()
-                .map(|p| MqttBrokerSpec {
-                    url: p.url.clone(),
-                    client_id: p.client_id.clone(),
-                    auth: p.auth.clone(), // Pass auth from validated config
-                })
-                .collect();
-            info!("Connecting to {} MQTT broker(s)...", broker_specs.len());
-            match MqttTransport::new(broker_specs).await {
-                Ok(t) => Some(t),
-                Err(e) => {
-                    warn!(
-                        "Failed to connect to MQTT brokers: {}. MQTT transport disabled.",
-                        e
-                    );
-                    None
-                }
-            }
-        };
 
         // Extract identity bytes for HTTP server (before embedded node block)
         // This allows us to create a separate Identity instance for the HTTP server
@@ -541,25 +520,87 @@ impl App<'_> {
             (None, None, None)
         };
 
-        // Build composite transport for sending
-        let mut composite = CompositeTransport::new();
+        // Build transport coordinator with 2s poll interval (matching old MessageReceiver)
+        let coordinator_config = CoordinatorConfig {
+            receiver_config: ReceiverConfig::with_poll_interval(Duration::from_secs(2)),
+            ..CoordinatorConfig::default()
+        };
+        let mut coordinator = TransportCoordinator::new(coordinator_config);
 
-        // Add HTTP nodes from config
-        if let Some(ref http) = http_pool {
-            composite = composite.with_arc_transport(http.clone());
+        // Add HTTP pool to coordinator
+        if let Some(http) = http_pool {
+            coordinator.set_http_pool_arc(http);
         }
 
-        // Add MQTT brokers from config
-        if let Some(mqtt) = mqtt_transport {
-            composite = composite.with_transport(mqtt);
-        }
+        // Create MQTT targets and add to coordinator pool (connect in parallel)
+        let mqtt_pool_arc = if parsed_mqtt_peers.is_empty() {
+            None
+        } else {
+            let mut join_set = tokio::task::JoinSet::new();
+            for parsed_peer in parsed_mqtt_peers.clone() {
+                join_set.spawn(async move {
+                    let mut mqtt_config = MqttTargetConfig::new(&parsed_peer.url);
+                    if let Some(ref client_id) = parsed_peer.client_id {
+                        mqtt_config = mqtt_config.with_client_id(client_id);
+                    }
+                    if let Some(ref auth) = parsed_peer.auth {
+                        mqtt_config = mqtt_config.with_auth(&auth.0, &auth.1);
+                    }
+                    if let Some(ref label) = parsed_peer.common.label {
+                        mqtt_config = mqtt_config.with_label(label);
+                    }
+                    if let Some(ref prefix) = parsed_peer.topic_prefix {
+                        mqtt_config = mqtt_config.with_topic_prefix(prefix);
+                    }
+                    #[allow(clippy::cast_possible_truncation)]
+                    let priority = parsed_peer.common.priority as u8;
+                    mqtt_config = mqtt_config.with_priority(priority);
+                    (
+                        parsed_peer.url.clone(),
+                        MqttTarget::connect(mqtt_config).await,
+                    )
+                });
+            }
 
-        // Note: Embedded node is intentionally NOT added to CompositeTransport here.
+            let mqtt_pool = TransportPool::new();
+            while let Some(result) = join_set.join_next().await {
+                match result {
+                    Ok((_, Ok(target))) => {
+                        mqtt_pool.add_target(target);
+                    }
+                    Ok((url, Err(e))) => {
+                        warn!(
+                            url = %url,
+                            error = %e,
+                            "Failed to connect to MQTT broker, skipping"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "MQTT connection task panicked");
+                    }
+                }
+            }
+
+            if mqtt_pool.has_available() {
+                let arc = Arc::new(mqtt_pool);
+                coordinator.set_mqtt_pool_arc(arc.clone());
+                Some(arc)
+            } else {
+                None
+            }
+        };
+
+        // Note: Embedded node is intentionally NOT added to the coordinator.
         // The embedded node stores messages locally, but recipients fetch via HTTP server
         // (started above if http_bind is configured). Direct P2P messaging uses the
         // direct_peers config to send TO contacts, and HTTP server to receive FROM them.
 
-        // Add direct peers as ephemeral targets for LAN P2P messaging
+        // Add direct peers as ephemeral HTTP targets
+        // Ensure HTTP pool exists if we have direct peers but no HTTP nodes
+        if !config.direct_peers.is_empty() && coordinator.http_pool().is_none() {
+            coordinator.set_http_pool(TransportPool::new());
+        }
+
         let mut direct_peer_ids: Vec<(TargetId, Option<String>)> = Vec::new();
         for peer in &config.direct_peers {
             let target_config = HttpTargetConfig::new(&peer.address, TargetKind::Ephemeral)
@@ -573,7 +614,7 @@ impl App<'_> {
                         "Added direct peer"
                     );
                     direct_peer_ids.push((target.id().clone(), peer.name.clone()));
-                    composite = composite.with_transport(target);
+                    coordinator.add_http_target(target);
                 }
                 Err(e) => {
                     warn!(
@@ -585,18 +626,29 @@ impl App<'_> {
             }
         }
 
-        let transport = Arc::new(composite);
+        // Ensure we have at least one transport
+        if !coordinator.has_transports() {
+            return Err("No transports configured. Add HTTP nodes and/or MQTT brokers.".into());
+        }
+
+        // Subscribe to incoming messages before wrapping in Arc
+        let our_routing_key = identity.public_id().routing_key();
+        let (coordinator_events, coordinator_handle) = coordinator.subscribe(our_routing_key);
+
+        let coordinator = Arc::new(coordinator);
 
         // Create transport registry for UI queries
-        let mut registry = TransportRegistry::with_composite(transport.clone());
-        if let Some(ref http) = http_pool {
+        let mut registry = TransportRegistry::new();
+        if let Some(http) = coordinator.http_pool() {
             registry.set_http_pool(http.clone());
+        }
+        if let Some(mqtt) = mqtt_pool_arc {
+            registry.set_mqtt_pool(mqtt);
         }
 
         // Register HTTP targets with their tier/label information
         for parsed_peer in &parsed_http_peers {
             let id = TargetId::http(&parsed_peer.url);
-            // Convert ConfiguredTier to DeliveryTier (Direct is determined at send time)
             let tier = match parsed_peer.common.tier {
                 reme_config::ConfiguredTier::Quorum => DeliveryTier::Quorum,
                 reme_config::ConfiguredTier::BestEffort => DeliveryTier::BestEffort,
@@ -604,10 +656,9 @@ impl App<'_> {
             registry.register_stable(id, parsed_peer.common.label.clone(), tier);
         }
 
-        // Register MQTT brokers for display (they're in composite but not in a pool)
+        // Register MQTT brokers for display
         for parsed_peer in &parsed_mqtt_peers {
             let id = TargetId::mqtt(&parsed_peer.url);
-            // Convert ConfiguredTier to DeliveryTier
             let tier = match parsed_peer.common.tier {
                 reme_config::ConfiguredTier::Quorum => DeliveryTier::Quorum,
                 reme_config::ConfiguredTier::BestEffort => DeliveryTier::BestEffort,
@@ -618,11 +669,6 @@ impl App<'_> {
         // Register direct peers for display
         for (id, label) in direct_peer_ids {
             registry.register_stable(id, label, DeliveryTier::Direct);
-        }
-
-        // Ensure we have at least one transport
-        if transport.is_empty() {
-            return Err("No transports configured. Add HTTP nodes and/or MQTT brokers.".into());
         }
 
         // Build OutboxConfig from app config
@@ -644,8 +690,8 @@ impl App<'_> {
             ..TransportRetryPolicy::default()
         };
 
-        // Create client with custom outbox config
-        let mut client = Client::with_config(identity, transport.clone(), storage, outbox_config);
+        // Create client with coordinator transport
+        let mut client = Client::with_config(identity, coordinator.clone(), storage, outbox_config);
 
         // Set HTTP transport retry policy
         client.set_transport_policy("http:", retry_policy);
@@ -658,10 +704,6 @@ impl App<'_> {
         input.set_placeholder_text("Type a message...");
         input.set_cursor_line_style(Style::default());
 
-        // Ensure we have HTTP transport pool for message receiving
-        let http_pool_arc =
-            http_pool.ok_or("No HTTP nodes configured. HTTP is required for message receiving.")?;
-
         let mut app = Self {
             running: true,
             focus: Focus::Conversations,
@@ -672,7 +714,9 @@ impl App<'_> {
             input,
             status: HELP_HINT.to_string(),
             client,
-            http_pool: http_pool_arc,
+            coordinator,
+            coordinator_events,
+            _coordinator_handle: coordinator_handle,
             embedded_node_handle,
             embedded_node_task,
             node_event_rx,
@@ -738,19 +782,15 @@ impl App<'_> {
         let mut event_handler = EventHandler::new(100);
         let mut last_outbox_tick = Instant::now();
 
-        // Setup message receiver for incoming messages (uses HTTP pool for polling)
-        let receiver = MessageReceiver::new(self.http_pool.clone());
-        let config = ReceiverConfig::with_poll_interval(Duration::from_secs(2));
-        let (mut msg_events, _handle) = receiver.subscribe(self.client.routing_key(), config);
-
         while self.running {
             // Draw UI
             terminal.draw(|frame| ui::render(frame, self))?;
 
-            // Check for incoming messages from HTTP polling (non-blocking)
-            while let Ok(event) = msg_events.try_recv() {
+            // Check for incoming messages from coordinator (non-blocking)
+            while let Ok(event) = self.coordinator_events.try_recv() {
                 if let TransportEvent::Message(envelope) = event {
-                    self.process_incoming_envelope(&envelope, "HTTP").await;
+                    self.process_incoming_envelope(&envelope, "coordinator")
+                        .await;
                 }
             }
 
@@ -1379,32 +1419,39 @@ impl App<'_> {
         match transport_type {
             UpstreamType::Http => {
                 // TODO: Add UI fields for username/password when adding ephemeral HTTP upstreams
-                // Currently only config-based HTTP peers support authentication
-                // Use registry to add HTTP target (handles both composite and metadata)
-                self.registry
-                    .add_http_target(url, None, tier)
-                    .await
+                let config =
+                    HttpTargetConfig::ephemeral(url).with_request_timeout(Duration::from_secs(10));
+                let target = HttpTarget::new(config)
                     .map_err(|e| format!("Failed to create HTTP transport: {e}"))?;
+                let id = target.id().clone();
+
+                // Add to coordinator's HTTP pool
+                self.coordinator.add_http_target(target);
+
+                // Register in metadata for display
+                self.registry.register_ephemeral(id, None, tier);
+
                 info!(url = %url, "Added ephemeral HTTP upstream");
             }
             UpstreamType::Mqtt => {
-                // Create MQTT transport
                 // TODO: Add UI fields for username/password when adding ephemeral MQTT upstreams
-                // Currently only config-based MQTT peers support authentication
-                let broker_spec = MqttBrokerSpec {
-                    url: url.to_string(),
-                    client_id: None, // Auto-generated
-                    auth: None, // No auth for ephemeral upstreams (config-based peers support auth)
-                };
-                let transport = MqttTransport::new(vec![broker_spec])
+                let mqtt_config = MqttTargetConfig::new(url);
+                let target = MqttTarget::connect(mqtt_config)
                     .await
                     .map_err(|e| format!("Failed to connect to MQTT broker: {e}"))?;
 
-                // Add to composite transport via registry
-                self.registry.composite().add_transport(transport).await;
+                let id = target.id().clone();
+
+                // Add to MQTT pool via registry (which shares the pool with coordinator)
+                if let Some(mqtt_pool) = self.registry.mqtt_pool() {
+                    mqtt_pool.add_target(target);
+                } else {
+                    return Err("Cannot add MQTT upstream: no MQTT pool configured. \
+                         Add MQTT brokers in config first."
+                        .to_string());
+                }
 
                 // Register in metadata for display
-                let id = TargetId::mqtt(url);
                 self.registry.register_ephemeral(id, None, tier);
 
                 info!(url = %url, "Added ephemeral MQTT upstream");
