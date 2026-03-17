@@ -14,7 +14,7 @@ use tracing::{debug, warn};
 
 use crate::query::{HealthSummary, TargetSnapshot, TransportQuery};
 use crate::seen_cache::SharedSeenCache;
-use crate::target::{HealthState, TargetId, TargetKind, TransportTarget};
+use crate::target::{HealthState, TargetCapabilities, TargetId, TargetKind, TransportTarget};
 use crate::{Transport, TransportError};
 
 /// Strategy for selecting and routing to targets in a pool.
@@ -135,6 +135,20 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
         targets.len() < before_len
     }
 
+    /// Atomically remove a target by ID and add a replacement.
+    ///
+    /// Both operations happen under a single write lock so concurrent
+    /// readers never see a state with neither target present.
+    /// Returns `true` if the old target was found and removed.
+    pub fn replace_target(&self, old_id: &TargetId, new_target: T) -> bool {
+        let mut targets = self.targets.write().unwrap();
+        let before_len = targets.len();
+        targets.retain(|t| t.id() != old_id);
+        let removed = targets.len() < before_len;
+        targets.push(Arc::new(new_target));
+        removed
+    }
+
     /// Get all targets.
     pub fn all_targets(&self) -> Vec<Arc<T>> {
         self.targets.read().unwrap().clone()
@@ -158,6 +172,17 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
             .unwrap()
             .iter()
             .filter(|t| t.config().kind == kind)
+            .cloned()
+            .collect()
+    }
+
+    /// Get targets matching a capability predicate.
+    pub fn targets_where(&self, pred: impl Fn(&TargetCapabilities) -> bool) -> Vec<Arc<T>> {
+        self.targets
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|t| pred(&t.config().capabilities))
             .cloned()
             .collect()
     }
@@ -617,13 +642,30 @@ impl TransportPool<HttpTarget> {
     }
 
     /// Fetch from a specific set of targets.
+    ///
+    /// Only targets with the `FETCH` capability are included. Targets without
+    /// this capability (e.g., ephemeral peers) are skipped to avoid exposing
+    /// routing keys to untrusted nodes.
     async fn fetch_from_targets(
         &self,
         targets: &[Arc<HttpTarget>],
         routing_key: &RoutingKey,
     ) -> Result<Vec<OuterEnvelope>, TransportError> {
-        // Fetch from all targets in parallel
-        let futures: Vec<_> = targets
+        // Filter to only targets with FETCH capability
+        let fetchable: Vec<_> = targets
+            .iter()
+            .filter(|t| t.config().capabilities.fetch)
+            .cloned()
+            .collect();
+
+        if fetchable.is_empty() {
+            return Err(TransportError::Network(
+                "No fetchable targets available".to_string(),
+            ));
+        }
+
+        // Fetch from fetchable targets in parallel
+        let futures: Vec<_> = fetchable
             .iter()
             .map(|t| {
                 let t = t.clone();
@@ -646,11 +688,11 @@ impl TransportPool<HttpTarget> {
                     crate::dedup::merge_envelopes(
                         &mut accumulated,
                         messages,
-                        targets[i].id().as_str(),
+                        fetchable[i].id().as_str(),
                     );
                 }
                 Err(e) => {
-                    warn!("Target {} fetch failed: {}", targets[i].id(), e);
+                    warn!("Target {} fetch failed: {}", fetchable[i].id(), e);
                     last_error = Some(e);
                 }
             }
@@ -663,7 +705,7 @@ impl TransportPool<HttpTarget> {
                 "Fetched {} unique messages from {}/{} targets",
                 messages.len(),
                 success_count,
-                targets.len()
+                fetchable.len()
             );
             Ok(messages)
         } else {
@@ -755,5 +797,54 @@ mod tests {
 
         pool.add_target(create_test_target("http://localhost:1"));
         assert!(pool.has_available());
+    }
+
+    // ========================================================================
+    // CAPABILITY-FILTERED FETCH TESTS
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_fetch_skips_non_fetchable_targets() {
+        let pool: TransportPool<HttpTarget> = TransportPool::new();
+
+        // Ephemeral target: SEND only, no FETCH capability
+        pool.add_target(
+            HttpTarget::new(HttpTargetConfig::ephemeral("http://ephemeral:1")).unwrap(),
+        );
+
+        let routing_key = reme_message::RoutingKey::from_bytes([1u8; 16]);
+        let result = pool.fetch_once(&routing_key).await;
+
+        // Should fail because the only target lacks FETCH capability
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("No fetchable targets"),
+            "Expected 'No fetchable targets' error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fetch_includes_fetchable_targets() {
+        let pool: TransportPool<HttpTarget> = TransportPool::new();
+
+        // Stable target: has FETCH capability by default
+        pool.add_target(HttpTarget::new(HttpTargetConfig::stable("http://stable:1")).unwrap());
+
+        // Ephemeral target: no FETCH capability
+        pool.add_target(
+            HttpTarget::new(HttpTargetConfig::ephemeral("http://ephemeral:1")).unwrap(),
+        );
+
+        let routing_key = reme_message::RoutingKey::from_bytes([1u8; 16]);
+        // This will fail with a network error (targets aren't real),
+        // but the error should NOT be "No fetchable targets" since the stable target is fetchable.
+        let result = pool.fetch_once(&routing_key).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            !err.contains("No fetchable targets"),
+            "Should have attempted fetch from stable target, got: {err}"
+        );
     }
 }
