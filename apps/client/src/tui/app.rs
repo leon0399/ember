@@ -532,10 +532,10 @@ impl App<'_> {
             coordinator.set_http_pool_arc(http);
         }
 
-        // Create MQTT targets and add to coordinator pool (connect in parallel)
-        let mqtt_pool_arc = if parsed_mqtt_peers.is_empty() {
-            None
-        } else {
+        // Create MQTT pool and connect configured brokers in parallel.
+        // Pool is always created so runtime MQTT adds work even without initial config.
+        let mqtt_pool = TransportPool::new();
+        if !parsed_mqtt_peers.is_empty() {
             let mut join_set = tokio::task::JoinSet::new();
             for parsed_peer in parsed_mqtt_peers.clone() {
                 join_set.spawn(async move {
@@ -562,7 +562,6 @@ impl App<'_> {
                 });
             }
 
-            let mqtt_pool = TransportPool::new();
             while let Some(result) = join_set.join_next().await {
                 match result {
                     Ok((_, Ok(target))) => {
@@ -580,15 +579,9 @@ impl App<'_> {
                     }
                 }
             }
-
-            if mqtt_pool.has_available() {
-                let arc = Arc::new(mqtt_pool);
-                coordinator.set_mqtt_pool_arc(arc.clone());
-                Some(arc)
-            } else {
-                None
-            }
-        };
+        }
+        let mqtt_pool_arc = Arc::new(mqtt_pool);
+        coordinator.set_mqtt_pool_arc(mqtt_pool_arc.clone());
 
         // Note: Embedded node is intentionally NOT added to the coordinator.
         // The embedded node stores messages locally, but recipients fetch via HTTP server
@@ -642,9 +635,7 @@ impl App<'_> {
         if let Some(http) = coordinator.http_pool() {
             registry.set_http_pool(http.clone());
         }
-        if let Some(mqtt) = mqtt_pool_arc {
-            registry.set_mqtt_pool(mqtt);
-        }
+        registry.set_mqtt_pool(mqtt_pool_arc);
 
         // Register HTTP targets with their tier/label information
         for parsed_peer in &parsed_http_peers {
@@ -1443,13 +1434,10 @@ impl App<'_> {
                 let id = target.id().clone();
 
                 // Add to MQTT pool via registry (which shares the pool with coordinator)
-                if let Some(mqtt_pool) = self.registry.mqtt_pool() {
-                    mqtt_pool.add_target(target);
-                } else {
-                    return Err("Cannot add MQTT upstream: no MQTT pool configured. \
-                         Add MQTT brokers in config first."
-                        .to_string());
-                }
+                self.registry
+                    .mqtt_pool()
+                    .expect("MQTT pool always initialized")
+                    .add_target(target);
 
                 // Register in metadata for display
                 self.registry.register_ephemeral(id, None, tier);
