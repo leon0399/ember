@@ -552,9 +552,20 @@ impl App<'_> {
                     if let Some(ref prefix) = parsed_peer.topic_prefix {
                         mqtt_config = mqtt_config.with_topic_prefix(prefix);
                     }
-                    #[allow(clippy::cast_possible_truncation)]
-                    let priority = parsed_peer.common.priority as u8;
-                    mqtt_config = mqtt_config.with_priority(priority);
+                    let priority_u8 = if parsed_peer.common.priority > 255 {
+                        warn!(
+                            url = %parsed_peer.url,
+                            configured = parsed_peer.common.priority,
+                            "MQTT priority exceeds u8 range, clamping to 255"
+                        );
+                        255u8
+                    } else {
+                        #[allow(clippy::cast_possible_truncation)]
+                        {
+                            parsed_peer.common.priority as u8
+                        }
+                    };
+                    mqtt_config = mqtt_config.with_priority(priority_u8);
                     (
                         parsed_peer.url.clone(),
                         MqttTarget::connect(mqtt_config).await,
