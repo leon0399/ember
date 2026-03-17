@@ -17,6 +17,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 const MAX_PEERS: usize = 256;
+/// Max identity response body size (a valid response is ~120 bytes).
+const MAX_IDENTITY_RESPONSE_BYTES: u64 = 4096;
 
 /// Tracks discovered LAN peers, verifies their identity, and registers them
 /// as ephemeral HTTP targets in the [`TransportCoordinator`].
@@ -31,7 +33,7 @@ pub struct DiscoveryController {
 
 struct PeerEntry {
     target_id: TargetId,
-    verified_identity: Option<PublicID>,
+    verified_identity: PublicID,
     url: String,
 }
 
@@ -75,6 +77,13 @@ pub fn spawn(
                 }
             }
         }
+
+        // Deregister all tracked peers on shutdown.
+        for (name, entry) in &controller.peer_index {
+            coordinator.remove_http_target(&entry.target_id);
+            debug!(instance = %name, "Deregistered peer on shutdown");
+        }
+        controller.peer_index.clear();
 
         info!("Discovery controller stopped");
     })
@@ -128,37 +137,67 @@ impl DiscoveryController {
         if !is_update && self.peer_index.len() >= self.max_peers {
             warn!(
                 instance = %peer.instance_name,
-                "Peer limit reached ({MAX_PEERS}), ignoring new peer"
+                max = self.max_peers,
+                "Peer limit reached, ignoring new peer"
             );
             return;
         }
 
-        let Some(&addr) = peer.addresses.first() else {
+        if peer.addresses.is_empty() {
             warn!(
                 instance = %peer.instance_name,
                 "No addresses in discovery event"
             );
             return;
-        };
+        }
 
-        let url = format!("http://{}", SocketAddr::new(addr, peer.port));
-
-        let verified = match self.verify_peer_identity(&url, candidates).await {
-            Ok(Some(pubkey)) => Some(pubkey),
-            Ok(None) => {
+        // For updates where nothing changed, skip re-verification entirely.
+        if is_update {
+            let entry = &self.peer_index[&peer.instance_name];
+            let new_url = format!("http://{}", SocketAddr::new(peer.addresses[0], peer.port));
+            if entry.url == new_url {
                 debug!(
                     instance = %peer.instance_name,
-                    "Identity verification: no candidate matched"
+                    "Update with unchanged address, skipping re-verification"
                 );
                 return;
             }
-            Err(e) => {
-                debug!(
-                    instance = %peer.instance_name,
-                    "Identity verification failed: {e}"
-                );
-                return;
+        }
+
+        // Try each address until identity verification succeeds.
+        let mut verified = None;
+        let mut working_url = None;
+        for &addr in &peer.addresses {
+            let url = format!("http://{}", SocketAddr::new(addr, peer.port));
+            match self.verify_peer_identity(&url, candidates).await {
+                Ok(Some(pubkey)) => {
+                    verified = Some(pubkey);
+                    working_url = Some(url);
+                    break;
+                }
+                Ok(None) => {
+                    debug!(
+                        instance = %peer.instance_name,
+                        addr = %addr,
+                        "Identity verification: no candidate matched"
+                    );
+                }
+                Err(e) => {
+                    debug!(
+                        instance = %peer.instance_name,
+                        addr = %addr,
+                        "Identity verification failed: {e}"
+                    );
+                }
             }
+        }
+
+        let (Some(verified), Some(url)) = (verified, working_url) else {
+            debug!(
+                instance = %peer.instance_name,
+                "No address passed identity verification"
+            );
+            return;
         };
 
         if is_update {
@@ -168,13 +207,9 @@ impl DiscoveryController {
         }
     }
 
-    fn build_http_target(
-        instance_name: &str,
-        url: &str,
-        verified: Option<PublicID>,
-    ) -> Option<HttpTarget> {
+    fn build_http_target(instance_name: &str, url: &str, verified: PublicID) -> Option<HttpTarget> {
         let config = HttpTargetConfig::ephemeral(url)
-            .with_node_pubkey_opt(verified)
+            .with_node_pubkey(verified)
             .with_label(format!("lan:{instance_name}"));
 
         match HttpTarget::new(config) {
@@ -190,7 +225,7 @@ impl DiscoveryController {
         &mut self,
         instance_name: &str,
         url: &str,
-        verified: Option<PublicID>,
+        verified: PublicID,
         coordinator: &TransportCoordinator,
     ) {
         let Some(target) = Self::build_http_target(instance_name, url, verified) else {
@@ -203,7 +238,6 @@ impl DiscoveryController {
         info!(
             instance = %instance_name,
             url = %url,
-            verified = verified.is_some(),
             "Registered discovered peer"
         );
 
@@ -221,7 +255,7 @@ impl DiscoveryController {
         &mut self,
         instance_name: &str,
         url: &str,
-        verified: Option<PublicID>,
+        verified: PublicID,
         coordinator: &TransportCoordinator,
     ) {
         let entry = self
@@ -229,33 +263,39 @@ impl DiscoveryController {
             .get(instance_name)
             .expect("invariant: is_update implies entry exists");
         let address_changed = entry.url != url;
+        let identity_changed = entry.verified_identity != verified;
         let old_target_id = entry.target_id.clone();
 
-        if address_changed {
+        if !address_changed && !identity_changed {
+            return;
+        }
+
+        if address_changed || identity_changed {
             let Some(target) = Self::build_http_target(instance_name, url, verified) else {
                 return;
             };
 
             coordinator.replace_http_target(&old_target_id, target);
 
-            info!(
-                instance = %instance_name,
-                old_url = %entry.url,
-                new_url = %url,
-                "Updated discovered peer address"
-            );
+            if address_changed {
+                info!(
+                    instance = %instance_name,
+                    old_url = %entry.url,
+                    new_url = %url,
+                    "Updated discovered peer address"
+                );
+            } else {
+                info!(
+                    instance = %instance_name,
+                    "Updated discovered peer identity"
+                );
+            }
         }
-
-        let target_id = if address_changed {
-            TargetId::http(url)
-        } else {
-            old_target_id
-        };
 
         self.peer_index.insert(
             instance_name.to_owned(),
             PeerEntry {
-                target_id,
+                target_id: TargetId::http(url),
                 verified_identity: verified,
                 url: url.to_owned(),
             },
@@ -288,6 +328,12 @@ impl DiscoveryController {
 
         if !resp.status().is_success() {
             debug!(status = %resp.status(), "Identity challenge returned non-success");
+            return Ok(None);
+        }
+
+        // Guard against oversized responses from malicious peers.
+        if resp.content_length().unwrap_or(0) > MAX_IDENTITY_RESPONSE_BYTES {
+            debug!("Identity response too large, skipping");
             return Ok(None);
         }
 
@@ -363,11 +409,12 @@ mod tests {
         let mut controller = DiscoveryController::new(vec![]);
         let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
 
+        let peer_identity = *Identity::generate().public_id();
         controller.peer_index.insert(
             "test-peer".to_string(),
             PeerEntry {
                 target_id: TargetId::http("http://192.168.1.50:23003"),
-                verified_identity: None,
+                verified_identity: peer_identity,
                 url: "http://192.168.1.50:23003".to_owned(),
             },
         );
