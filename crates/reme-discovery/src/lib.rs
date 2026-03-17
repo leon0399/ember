@@ -1,4 +1,7 @@
 pub mod backend;
+pub mod fake;
+#[cfg(feature = "mdns-sd")]
+pub mod mdns_sd;
 pub mod txt;
 pub mod types;
 
