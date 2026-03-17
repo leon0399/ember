@@ -141,5 +141,5 @@ Research/prototype stage — no external users. Breaking changes and public API 
 
 - [ ] `cargo fmt --all -- --check` — formatting
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` — linting
-- [ ] `cargo test` — all tests pass
+- [ ] `cargo test --workspace --all-features --all-targets` — all tests pass
 - [ ] No new `unwrap()` in library crates (use proper error handling)
