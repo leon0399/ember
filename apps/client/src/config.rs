@@ -433,6 +433,14 @@ pub struct EmbeddedNodeConfig {
     pub default_ttl_secs: u64,
 }
 
+/// LAN discovery configuration for mDNS-based peer discovery.
+#[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq)]
+pub struct LanDiscoveryConfig {
+    /// Enable mDNS/LAN peer discovery (default: false).
+    #[serde(default)]
+    pub enabled: bool,
+}
+
 /// Direct peer configuration for LAN P2P messaging.
 ///
 /// Peers configured here are added as ephemeral targets with high priority,
@@ -480,6 +488,10 @@ pub struct AppConfig {
     /// Tiered delivery configuration
     #[serde(default)]
     pub delivery: DeliveryAppConfig,
+
+    /// LAN discovery configuration
+    #[serde(default)]
+    pub lan_discovery: LanDiscoveryConfig,
 }
 
 fn default_peers() -> PeersConfig {
@@ -510,6 +522,7 @@ impl Default for AppConfig {
             log_level: "info".to_string(),
             outbox: OutboxAppConfig::default(),
             delivery: DeliveryAppConfig::default(),
+            lan_discovery: LanDiscoveryConfig::default(),
         }
     }
 }
@@ -544,6 +557,9 @@ struct RawConfig {
     /// Delivery config section
     #[serde(default)]
     delivery: RawDeliveryConfig,
+    /// LAN discovery config section
+    #[serde(default)]
+    lan_discovery: Option<LanDiscoveryConfig>,
 }
 
 /// Raw outbox config from file/env
@@ -752,6 +768,9 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
     // Resolve direct peers from config file > defaults (empty)
     let direct_peers = raw.direct_peers.unwrap_or_default();
 
+    // Resolve LAN discovery config from config file > defaults
+    let lan_discovery = raw.lan_discovery.unwrap_or_default();
+
     Ok(AppConfig {
         peers,
         embedded_node,
@@ -760,6 +779,7 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
         log_level,
         outbox,
         delivery,
+        lan_discovery,
     })
 }
 
@@ -888,6 +908,12 @@ default_ttl_secs = {embedded_ttl_secs}
 # address = "http://192.168.1.101:23004"
 # name = "Bob (LAN)"                          # Optional
 # public_id = "BASE64_ENCODED_PUBLIC_ID"      # Optional, reserved for future
+
+# LAN discovery via mDNS (automatic peer discovery on local network)
+# When enabled, discovers peers via mDNS-SD and registers them as ephemeral targets.
+# Requires embedded_node with http_bind to advertise our own presence.
+# [lan_discovery]
+# enabled = true
 "#,
         url = defaults.peers.http[0].url,
         data_dir = defaults.data_dir.to_string_lossy(),
@@ -935,6 +961,7 @@ mod tests {
         assert!(!config.embedded_node.enabled);
         assert!(config.direct_peers.is_empty());
         assert_eq!(config.log_level, "info");
+        assert!(!config.lan_discovery.enabled);
     }
 
     #[test]
@@ -1182,5 +1209,32 @@ mod tests {
         assert_eq!(config.direct_peers[0].name, Some("Alice".to_string()));
         assert!(config.direct_peers[1].public_id.is_none());
         assert!(config.direct_peers[1].name.is_none());
+    }
+
+    #[test]
+    fn test_lan_discovery_config_default() {
+        let config = LanDiscoveryConfig::default();
+        assert!(!config.enabled);
+    }
+
+    #[test]
+    fn test_lan_discovery_config_enabled() {
+        let toml = r"
+            [lan_discovery]
+            enabled = true
+        ";
+        let config: LanDiscoveryConfig = toml::from_str::<RawConfig>(toml)
+            .unwrap()
+            .lan_discovery
+            .unwrap();
+        assert!(config.enabled);
+    }
+
+    #[test]
+    fn test_lan_discovery_config_disabled_by_default_in_toml() {
+        let toml = "";
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = raw.lan_discovery.unwrap_or_default();
+        assert!(!config.enabled);
     }
 }
