@@ -31,7 +31,6 @@ pub struct DiscoveryController {
 }
 
 struct PeerEntry {
-    target_id: TargetId,
     verified_identity: PublicID,
     url: String,
 }
@@ -53,7 +52,13 @@ pub fn spawn(
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut controller = DiscoveryController::new(contacts, max_peers);
+        let mut controller = match DiscoveryController::new(contacts, max_peers) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Failed to initialize discovery controller: {e}");
+                return;
+            }
+        };
 
         loop {
             tokio::select! {
@@ -79,34 +84,38 @@ pub fn spawn(
         }
 
         // Deregister all tracked peers on shutdown.
-        for (name, entry) in &controller.peer_index {
-            coordinator.remove_http_target(&entry.target_id);
+        for (name, entry) in controller.peer_index.drain() {
+            coordinator.remove_http_target(&TargetId::http(&entry.url));
             debug!(instance = %name, "Deregistered peer on shutdown");
         }
-        controller.peer_index.clear();
 
         info!("Discovery controller stopped");
     })
 }
 
 impl DiscoveryController {
-    fn new(contacts: Vec<(PublicID, [u8; 16])>, max_peers: usize) -> Self {
-        let max_peers = max_peers.max(1); // Clamp to at least 1
+    fn new(contacts: Vec<(PublicID, [u8; 16])>, max_peers: usize) -> Result<Self, reqwest::Error> {
+        let max_peers = if max_peers == 0 {
+            warn!("max_peers was 0, clamping to 1");
+            1
+        } else {
+            max_peers
+        };
+
         let mut contact_index: HashMap<[u8; 16], Vec<PublicID>> = HashMap::new();
         for (pubkey, routing_key) in contacts {
             contact_index.entry(routing_key).or_default().push(pubkey);
         }
 
-        Self {
+        Ok(Self {
             peer_index: HashMap::new(),
             contact_index,
             max_peers,
             http_client: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(2))
                 .timeout(std::time::Duration::from_secs(5))
-                .build()
-                .expect("failed to build reqwest client"),
-        }
+                .build()?,
+        })
     }
 
     async fn handle_discovered(
@@ -114,8 +123,8 @@ impl DiscoveryController {
         peer: reme_discovery::RawDiscoveredPeer,
         coordinator: &TransportCoordinator,
     ) {
-        let (routing_key, _txt_port, _version) = match decode_txt(&peer.txt_records) {
-            Ok(decoded) => decoded,
+        let routing_key = match decode_txt(&peer.txt_records) {
+            Ok(fields) => fields.routing_key,
             Err(e) => {
                 warn!(
                     instance = %peer.instance_name,
@@ -237,7 +246,6 @@ impl DiscoveryController {
             return;
         };
 
-        let target_id = TargetId::http(url);
         // TODO(#90): receipt-gated direct tier — currently a relay attacker who
         // passes identity verification can blackhole messages. Once #90 lands,
         // Direct tier will require a verified receipt before declaring success.
@@ -253,7 +261,6 @@ impl DiscoveryController {
         self.peer_index.insert(
             instance_name.to_owned(),
             PeerEntry {
-                target_id,
                 verified_identity: verified,
                 url: url.to_owned(),
             },
@@ -273,7 +280,7 @@ impl DiscoveryController {
             .expect("invariant: is_update implies entry exists");
         let address_changed = entry.url != url;
         let identity_changed = entry.verified_identity != verified;
-        let old_target_id = entry.target_id.clone();
+        let old_target_id = TargetId::http(&entry.url);
 
         if !address_changed && !identity_changed {
             return;
@@ -302,7 +309,6 @@ impl DiscoveryController {
         self.peer_index.insert(
             instance_name.to_owned(),
             PeerEntry {
-                target_id: TargetId::http(url),
                 verified_identity: verified,
                 url: url.to_owned(),
             },
@@ -311,11 +317,12 @@ impl DiscoveryController {
 
     fn handle_lost(&mut self, instance_name: &str, coordinator: &TransportCoordinator) {
         if let Some(entry) = self.peer_index.remove(instance_name) {
-            coordinator.remove_http_target(&entry.target_id);
+            coordinator.remove_http_target(&TargetId::http(&entry.url));
             info!(instance = %instance_name, "Removed lost peer");
         }
     }
 
+    // FIXME(SEC-3): channel binding not implemented — responder IP:port not in signed data
     async fn verify_peer_identity(
         &self,
         base_url: &str,
@@ -363,20 +370,25 @@ impl DiscoveryController {
         };
 
         let Ok(sig_bytes) = BASE64_STANDARD.decode(&body.signature) else {
+            debug!("Failed to base64-decode identity signature");
             return Ok(None);
         };
         let Ok(signature): Result<[u8; 64], _> = sig_bytes.try_into() else {
+            debug!("Identity signature has wrong length (expected 64 bytes)");
             return Ok(None);
         };
 
+        // Iterate ALL candidates to prevent timing-based information leakage
+        // about which identity was matched or how many candidates exist.
+        let mut matched: Option<PublicID> = None;
         for candidate in candidates {
             let sign_data = build_identity_sign_data(&challenge, &candidate.to_bytes());
-            if candidate.verify_xeddsa(&sign_data, &signature) {
-                return Ok(Some(*candidate));
+            if candidate.verify_xeddsa(&sign_data, &signature) && matched.is_none() {
+                matched = Some(*candidate);
             }
         }
 
-        Ok(None)
+        Ok(matched)
     }
 }
 
@@ -407,7 +419,7 @@ mod tests {
         let pubkey = *identity.public_id();
         let rk = pubkey.routing_key();
         let contacts = vec![(pubkey, *rk)];
-        let controller = DiscoveryController::new(contacts, 256);
+        let controller = DiscoveryController::new(contacts, 256).unwrap();
 
         let stranger_rk = [0xFFu8; 16];
         assert!(!controller.contact_index.contains_key(&stranger_rk));
@@ -422,7 +434,7 @@ mod tests {
 
         let rk = [0xAA; 16];
         let contacts = vec![(pk1, rk), (pk2, rk)];
-        let controller = DiscoveryController::new(contacts, 256);
+        let controller = DiscoveryController::new(contacts, 256).unwrap();
 
         let candidates = controller.contact_index.get(&rk).unwrap();
         assert_eq!(candidates.len(), 2);
@@ -430,14 +442,13 @@ mod tests {
 
     #[test]
     fn handle_lost_removes_peer() {
-        let mut controller = DiscoveryController::new(vec![], 256);
+        let mut controller = DiscoveryController::new(vec![], 256).unwrap();
         let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
 
         let peer_identity = *Identity::generate().public_id();
         controller.peer_index.insert(
             "test-peer".to_string(),
             PeerEntry {
-                target_id: TargetId::http("http://192.168.1.50:23003"),
                 verified_identity: peer_identity,
                 url: "http://192.168.1.50:23003".to_owned(),
             },
@@ -450,7 +461,7 @@ mod tests {
 
     #[test]
     fn handle_lost_noop_for_unknown_peer() {
-        let mut controller = DiscoveryController::new(vec![], 256);
+        let mut controller = DiscoveryController::new(vec![], 256).unwrap();
         let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
 
         controller.handle_lost("nonexistent", &coordinator);

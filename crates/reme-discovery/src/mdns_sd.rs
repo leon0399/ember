@@ -8,6 +8,7 @@ use tracing::{debug, warn};
 use crate::backend::DiscoveryBackend;
 use crate::types::{
     AdvertisementSpec, DiscoveryError, DiscoveryEvent, RawDiscoveredPeer, DEFAULT_SERVICE_TYPE,
+    DISCOVERY_CHANNEL_CAPACITY,
 };
 
 /// mDNS-SD discovery backend using the [`mdns_sd`] crate.
@@ -38,7 +39,7 @@ impl MdnsSdBackend {
         let daemon =
             mdns_sd::ServiceDaemon::new().map_err(|e| DiscoveryError::BindFailed(e.to_string()))?;
 
-        let (tx, _) = broadcast::channel(128);
+        let (tx, _) = broadcast::channel(DISCOVERY_CHANNEL_CAPACITY);
 
         Ok(Self {
             daemon,
@@ -188,19 +189,27 @@ impl DiscoveryBackend for MdnsSdBackend {
     }
 
     async fn stop_advertising(&self) -> Result<(), DiscoveryError> {
-        // m5: Hold the lock through the entire method since daemon.unregister()
-        // is an in-process mpsc send — no need for the clone+split-lock pattern.
-        let mut state = self.state.lock().unwrap();
-        if !state.advertising {
-            return Err(DiscoveryError::NotAdvertising);
-        }
+        // Extract state and start unregister while holding the lock, then drop
+        // the lock before awaiting to avoid holding a non-Send MutexGuard across
+        // an await point.
+        let receiver = {
+            let state = self.state.lock().unwrap();
+            if !state.advertising {
+                return Err(DiscoveryError::NotAdvertising);
+            }
 
-        // C1: Await the unregister receiver to confirm completion.
-        if let Some(ref fullname) = state.registered_fullname {
-            let receiver = self
-                .daemon
-                .unregister(fullname)
-                .map_err(|e| DiscoveryError::BackendError(e.to_string()))?;
+            // C1: Start the unregister if we have a registered fullname.
+            state.registered_fullname.as_ref().map(|fullname| {
+                self.daemon
+                    .unregister(fullname)
+                    .map_err(|e| DiscoveryError::BackendError(e.to_string()))
+            })
+            // Lock dropped here
+        };
+
+        // Await unregister confirmation outside the lock.
+        if let Some(receiver_result) = receiver {
+            let receiver = receiver_result?;
 
             // The receiver is a std sync mpsc — recv on it in a blocking spawn
             // to avoid blocking the async runtime.
@@ -210,10 +219,7 @@ impl DiscoveryBackend for MdnsSdBackend {
 
             match recv_result {
                 Ok(mdns_sd::UnregisterStatus::OK) => {
-                    debug!(
-                        fullname = %state.registered_fullname.as_deref().unwrap_or("?"),
-                        "mDNS-SD: advertising stopped"
-                    );
+                    debug!("mDNS-SD: advertising stopped");
                 }
                 Ok(mdns_sd::UnregisterStatus::NotFound) => {
                     warn!("mDNS-SD: service was not found during unregister");
@@ -224,6 +230,8 @@ impl DiscoveryBackend for MdnsSdBackend {
             }
         }
 
+        // Re-acquire lock to update state.
+        let mut state = self.state.lock().unwrap();
         state.advertising = false;
         state.registered_fullname = None;
 

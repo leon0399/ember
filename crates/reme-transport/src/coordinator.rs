@@ -21,6 +21,7 @@ use crate::delivery::{
 use crate::http_target::HttpTarget;
 use crate::pool::TransportPool;
 use crate::query::{HealthSummary, TargetSnapshot, TransportQuery};
+#[allow(deprecated)]
 use crate::receiver::ReceiverConfig;
 use crate::seen_cache::SharedSeenCache;
 use crate::target::{TargetId, TargetKind, TransportTarget};
@@ -60,6 +61,7 @@ pub struct CoordinatorConfig {
     pub routing_strategy: RoutingStrategy,
 
     /// Configuration for polling (HTTP only).
+    #[allow(deprecated)]
     pub receiver_config: ReceiverConfig,
 }
 
@@ -174,6 +176,12 @@ impl TransportCoordinator {
         self.http_pool.as_ref()
     }
 
+    /// Get a reference to the MQTT pool (for cases needing direct access).
+    #[cfg(feature = "mqtt")]
+    pub fn mqtt_pool(&self) -> Option<&Arc<TransportPool<MqttTarget>>> {
+        self.mqtt_pool.as_ref()
+    }
+
     /// Add an HTTP target at runtime (for discovered peers).
     pub fn add_http_target(&self, target: HttpTarget) {
         if let Some(ref pool) = self.http_pool {
@@ -255,6 +263,7 @@ impl TransportCoordinator {
     }
 
     /// Spawn an HTTP polling receiver task.
+    #[allow(deprecated)]
     fn spawn_http_receiver(
         &self,
         pool: Arc<TransportPool<HttpTarget>>,
@@ -647,7 +656,7 @@ impl TransportCoordinator {
             .http_pool
             .as_ref()
             .map(|pool| {
-                pool.targets_where(|c| c.quorum_credit)
+                pool.targets_by_capability(|c| c.quorum_credit)
                     .into_iter()
                     .filter(|t| {
                         !config.is_excluded(t.id())
@@ -658,13 +667,13 @@ impl TransportCoordinator {
             })
             .unwrap_or_default();
 
-        // Collect MQTT targets
+        // Collect MQTT targets with QUORUM_CREDIT capability (matching HTTP path)
         #[cfg(feature = "mqtt")]
         let mqtt_targets: Vec<Arc<MqttTarget>> = self
             .mqtt_pool
             .as_ref()
             .map(|pool| {
-                pool.all_targets()
+                pool.targets_by_capability(|c| c.quorum_credit)
                     .into_iter()
                     .filter(|t| {
                         !config.is_excluded(t.id())
@@ -769,28 +778,10 @@ impl TransportCoordinator {
     ///
     /// Uses `capabilities.quorum_credit` to identify targets that
     /// count toward quorum, rather than relying on `TargetKind`.
+    /// Delegates to `quorum_target_ids` to avoid duplicating the filter logic.
     #[allow(clippy::cast_possible_truncation)] // Target count won't exceed u32::MAX
     pub fn quorum_target_count(&self, config: &TieredDeliveryConfig) -> u32 {
-        let mut count = 0u32;
-
-        if let Some(ref pool) = self.http_pool {
-            count += pool
-                .targets_where(|c| c.quorum_credit)
-                .iter()
-                .filter(|t| !config.is_excluded(t.id()) && t.is_available())
-                .count() as u32;
-        }
-
-        #[cfg(feature = "mqtt")]
-        if let Some(ref pool) = self.mqtt_pool {
-            count += pool
-                .targets_where(|c| c.quorum_credit)
-                .iter()
-                .filter(|t| !config.is_excluded(t.id()) && t.is_available())
-                .count() as u32;
-        }
-
-        count
+        self.quorum_target_ids(config).len() as u32
     }
 
     /// Get all Quorum tier target IDs (for filtering in retry logic).
@@ -802,7 +793,7 @@ impl TransportCoordinator {
         // HTTP targets with QUORUM_CREDIT capability
         if let Some(ref pool) = self.http_pool {
             ids.extend(
-                pool.targets_where(|c| c.quorum_credit)
+                pool.targets_by_capability(|c| c.quorum_credit)
                     .iter()
                     .filter(|t| !config.is_excluded(t.id()) && t.is_available())
                     .map(|t| t.id().clone()),
@@ -813,7 +804,7 @@ impl TransportCoordinator {
         #[cfg(feature = "mqtt")]
         if let Some(ref pool) = self.mqtt_pool {
             ids.extend(
-                pool.targets_where(|c| c.quorum_credit)
+                pool.targets_by_capability(|c| c.quorum_credit)
                     .iter()
                     .filter(|t| !config.is_excluded(t.id()) && t.is_available())
                     .map(|t| t.id().clone()),

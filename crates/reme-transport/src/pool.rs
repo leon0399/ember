@@ -135,10 +135,14 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
         targets.len() < before_len
     }
 
-    /// Atomically remove a target by ID and add a replacement.
+    /// Atomically replace a target by ID, with upsert semantics.
     ///
-    /// Both operations happen under a single write lock so concurrent
-    /// readers never see a state with neither target present.
+    /// If a target with `old_id` exists it is removed and `new_target` is
+    /// inserted in its place. If no target with `old_id` is found,
+    /// `new_target` is still inserted (upsert). Both operations happen
+    /// under a single write lock so concurrent readers never see a state
+    /// with neither target present.
+    ///
     /// Returns `true` if the old target was found and removed.
     pub fn replace_target(&self, old_id: &TargetId, new_target: T) -> bool {
         let mut targets = self.targets.write().unwrap();
@@ -177,7 +181,7 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
     }
 
     /// Get targets matching a capability predicate.
-    pub fn targets_where(&self, pred: impl Fn(&TargetCapabilities) -> bool) -> Vec<Arc<T>> {
+    pub fn targets_by_capability(&self, pred: impl Fn(&TargetCapabilities) -> bool) -> Vec<Arc<T>> {
         self.targets
             .read()
             .unwrap()
@@ -643,9 +647,12 @@ impl TransportPool<HttpTarget> {
 
     /// Fetch from a specific set of targets.
     ///
-    /// Only targets with the `FETCH` capability are included. Targets without
-    /// this capability (e.g., ephemeral peers) are skipped to avoid exposing
-    /// routing keys to untrusted nodes.
+    /// **Layered capability filter:** The caller (`fetch_once`) pre-filters by
+    /// health/availability, then this method applies a second filter keeping
+    /// only targets with the `FETCH` capability. Targets without this
+    /// capability (e.g., ephemeral peers) are skipped to avoid exposing
+    /// routing keys to untrusted nodes. Future refactors must preserve this
+    /// two-layer invariant: health first, then capability.
     async fn fetch_from_targets(
         &self,
         targets: &[Arc<HttpTarget>],
