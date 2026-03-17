@@ -329,7 +329,7 @@ impl DiscoveryController {
             challenge_encoded
         );
 
-        let resp = self.http_client.get(&url).send().await?;
+        let mut resp = self.http_client.get(&url).send().await?;
 
         if !resp.status().is_success() {
             debug!(status = %resp.status(), "Identity challenge returned non-success");
@@ -337,12 +337,27 @@ impl DiscoveryController {
         }
 
         // Guard against oversized responses from malicious peers.
-        if resp.content_length().unwrap_or(0) > MAX_IDENTITY_RESPONSE_BYTES {
-            debug!("Identity response too large, skipping");
-            return Ok(None);
+        // Stream the body incrementally so we never allocate more than the cap.
+        // A malicious peer omitting Content-Length cannot force unbounded allocation.
+        // Safe: MAX_IDENTITY_RESPONSE_BYTES is 4096, well within usize on any target.
+        #[allow(clippy::cast_possible_truncation)]
+        let max = MAX_IDENTITY_RESPONSE_BYTES as usize;
+        let mut buf = Vec::with_capacity(max.min(4096));
+        while let Some(chunk) = resp.chunk().await? {
+            if buf.len() + chunk.len() > max {
+                debug!(
+                    size = buf.len() + chunk.len(),
+                    "Identity response too large, skipping"
+                );
+                return Ok(None);
+            }
+            buf.extend_from_slice(&chunk);
         }
+        let bytes = buf;
 
-        let body: IdentityResponse = resp.json().await?;
+        let Ok(body) = serde_json::from_slice::<IdentityResponse>(&bytes) else {
+            return Ok(None);
+        };
 
         let Ok(sig_bytes) = BASE64_STANDARD.decode(&body.signature) else {
             return Ok(None);
