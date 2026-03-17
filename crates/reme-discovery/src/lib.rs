@@ -4,4 +4,6 @@ pub mod types;
 
 pub use backend::DiscoveryBackend;
 pub use txt::{decode_txt, encode_txt, RoutingKey, TxtError};
-pub use types::{AdvertisementSpec, DiscoveryError, DiscoveryEvent, RawDiscoveredPeer};
+pub use types::{
+    AdvertisementSpec, DiscoveryError, DiscoveryEvent, RawDiscoveredPeer, DEFAULT_SERVICE_TYPE,
+};

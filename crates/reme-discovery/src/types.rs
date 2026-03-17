@@ -40,11 +40,15 @@ pub struct AdvertisementSpec {
     pub txt_records: HashMap<String, String>,
 }
 
-impl Default for AdvertisementSpec {
-    fn default() -> Self {
+/// Default service type for reme mDNS advertisements.
+pub const DEFAULT_SERVICE_TYPE: &str = "_reme._tcp.local.";
+
+impl AdvertisementSpec {
+    /// Create a new advertisement spec with the given port and default service type.
+    pub fn new(port: u16) -> Self {
         Self {
-            service_type: "_reme._tcp.local.".to_owned(),
-            port: 0,
+            service_type: DEFAULT_SERVICE_TYPE.to_owned(),
+            port,
             txt_records: HashMap::new(),
         }
     }

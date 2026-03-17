@@ -6,6 +6,11 @@ use std::collections::HashMap;
 /// `reme-message` / `reme-identity`.
 pub type RoutingKey = [u8; 16];
 
+// TXT record key names — shared between encode and decode.
+const TXT_KEY_VERSION: &str = "v";
+const TXT_KEY_ROUTING_KEY: &str = "rk";
+const TXT_KEY_PORT: &str = "port";
+
 /// Errors that occur when parsing TXT records.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum TxtError {
@@ -37,11 +42,11 @@ pub enum TxtError {
 /// conflict, and may ignore the TXT `port` entirely once the SRV record has
 /// been resolved.
 pub fn encode_txt(routing_key: &RoutingKey, port: u16, version: u8) -> HashMap<String, String> {
-    let mut map = HashMap::with_capacity(3);
-    map.insert("v".to_owned(), version.to_string());
-    map.insert("rk".to_owned(), hex::encode(routing_key));
-    map.insert("port".to_owned(), port.to_string());
-    map
+    HashMap::from([
+        (TXT_KEY_VERSION.to_owned(), version.to_string()),
+        (TXT_KEY_ROUTING_KEY.to_owned(), hex::encode(routing_key)),
+        (TXT_KEY_PORT.to_owned(), port.to_string()),
+    ])
 }
 
 /// Decode a TXT record map back into structured fields.
@@ -56,8 +61,8 @@ pub fn encode_txt(routing_key: &RoutingKey, port: u16, version: u8) -> HashMap<S
 pub fn decode_txt(records: &HashMap<String, String>) -> Result<(RoutingKey, u16, u8), TxtError> {
     // --- version ---
     let v_str = records
-        .get("v")
-        .ok_or_else(|| TxtError::MissingField("v".to_owned()))?;
+        .get(TXT_KEY_VERSION)
+        .ok_or_else(|| TxtError::MissingField(TXT_KEY_VERSION.to_owned()))?;
     let version: u8 = v_str
         .parse()
         .map_err(|_| TxtError::InvalidVersion(v_str.clone()))?;
@@ -67,17 +72,17 @@ pub fn decode_txt(records: &HashMap<String, String>) -> Result<(RoutingKey, u16,
 
     // --- routing key ---
     let rk_str = records
-        .get("rk")
-        .ok_or_else(|| TxtError::MissingField("rk".to_owned()))?;
+        .get(TXT_KEY_ROUTING_KEY)
+        .ok_or_else(|| TxtError::MissingField(TXT_KEY_ROUTING_KEY.to_owned()))?;
     let rk_bytes = hex::decode(rk_str).map_err(|_| TxtError::InvalidRoutingKey(rk_str.clone()))?;
-    let routing_key: RoutingKey = rk_bytes
-        .try_into()
-        .map_err(|_| TxtError::InvalidRoutingKey(format!("expected 16 bytes, got {rk_str}")))?;
+    let routing_key: RoutingKey = rk_bytes.try_into().map_err(|bytes: Vec<u8>| {
+        TxtError::InvalidRoutingKey(format!("expected 16 bytes, got {}", bytes.len()))
+    })?;
 
     // --- port ---
     let port_str = records
-        .get("port")
-        .ok_or_else(|| TxtError::MissingField("port".to_owned()))?;
+        .get(TXT_KEY_PORT)
+        .ok_or_else(|| TxtError::MissingField(TXT_KEY_PORT.to_owned()))?;
     let port: u16 = port_str
         .parse()
         .map_err(|_| TxtError::InvalidPort(port_str.clone()))?;
@@ -109,12 +114,12 @@ mod tests {
     #[test]
     fn round_trip_zero_port() {
         let rk = [0u8; 16];
-        let txt = encode_txt(&rk, 0, 0);
+        let txt = encode_txt(&rk, 0, 1);
         let (decoded_rk, decoded_port, decoded_version) = decode_txt(&txt).unwrap();
 
         assert_eq!(decoded_rk, rk);
         assert_eq!(decoded_port, 0);
-        assert_eq!(decoded_version, 0);
+        assert_eq!(decoded_version, 1);
     }
 
     #[test]
@@ -187,8 +192,10 @@ mod tests {
         txt.insert("rk".to_owned(), "00".repeat(8));
         txt.insert("port".to_owned(), "443".to_owned());
 
-        let err = decode_txt(&txt).unwrap_err();
-        assert!(matches!(err, TxtError::InvalidRoutingKey(_)));
+        assert_eq!(
+            decode_txt(&txt).unwrap_err(),
+            TxtError::InvalidRoutingKey("expected 16 bytes, got 8".to_owned()),
+        );
     }
 
     #[test]
