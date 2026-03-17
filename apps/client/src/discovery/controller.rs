@@ -152,14 +152,18 @@ impl DiscoveryController {
             return;
         }
 
-        // For updates where nothing changed, skip re-verification entirely.
+        // For updates where the stored URL still matches one of the new addresses,
+        // skip re-verification entirely.
         if is_update {
             let entry = &self.peer_index[&peer.instance_name];
-            let new_url = format!("http://{}", SocketAddr::new(peer.addresses[0], peer.port));
-            if entry.url == new_url {
+            let stored_url_still_valid = peer.addresses.iter().any(|&addr| {
+                let candidate = format!("http://{}", SocketAddr::new(addr, peer.port));
+                entry.url == candidate
+            });
+            if stored_url_still_valid {
                 debug!(
                     instance = %peer.instance_name,
-                    "Update with unchanged address, skipping re-verification"
+                    "Update with matching address, skipping re-verification"
                 );
                 return;
             }
@@ -275,26 +279,24 @@ impl DiscoveryController {
             return;
         }
 
-        if address_changed || identity_changed {
-            let Some(target) = Self::build_http_target(instance_name, url, verified) else {
-                return;
-            };
+        let Some(target) = Self::build_http_target(instance_name, url, verified) else {
+            return;
+        };
 
-            coordinator.replace_http_target(&old_target_id, target);
+        coordinator.replace_http_target(&old_target_id, target);
 
-            if address_changed {
-                info!(
-                    instance = %instance_name,
-                    old_url = %entry.url,
-                    new_url = %url,
-                    "Updated discovered peer address"
-                );
-            } else {
-                info!(
-                    instance = %instance_name,
-                    "Updated discovered peer identity"
-                );
-            }
+        if address_changed {
+            info!(
+                instance = %instance_name,
+                old_url = %entry.url,
+                new_url = %url,
+                "Updated discovered peer address"
+            );
+        } else {
+            info!(
+                instance = %instance_name,
+                "Updated discovered peer identity"
+            );
         }
 
         self.peer_index.insert(
