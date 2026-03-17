@@ -358,6 +358,7 @@ impl DiscoveryController {
         let bytes = buf;
 
         let Ok(body) = serde_json::from_slice::<IdentityResponse>(&bytes) else {
+            debug!("Failed to parse identity response");
             return Ok(None);
         };
 

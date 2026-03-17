@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -92,6 +92,7 @@ impl MdnsSdBackend {
 
         // Bridge the std mpsc receiver from mdns-sd into our broadcast sender.
         std::thread::spawn(move || {
+            let mut known = HashSet::<String>::new();
             while let Ok(event) = browse_receiver.recv() {
                 let discovery_event = match event {
                     mdns_sd::ServiceEvent::ServiceFound(_stype, fullname) => {
@@ -99,10 +100,17 @@ impl MdnsSdBackend {
                         continue;
                     }
                     mdns_sd::ServiceEvent::ServiceResolved(info) => {
-                        debug!(fullname = %info.fullname, "mDNS-SD: service resolved");
-                        DiscoveryEvent::PeerDiscovered(Self::resolved_to_peer(&info))
+                        let peer = Self::resolved_to_peer(&info);
+                        if known.insert(info.fullname.clone()) {
+                            debug!(fullname = %info.fullname, "mDNS-SD: service resolved");
+                            DiscoveryEvent::PeerDiscovered(peer)
+                        } else {
+                            debug!(fullname = %info.fullname, "mDNS-SD: service re-resolved");
+                            DiscoveryEvent::PeerUpdated(peer)
+                        }
                     }
                     mdns_sd::ServiceEvent::ServiceRemoved(_stype, fullname) => {
+                        known.remove(&fullname);
                         debug!(fullname, "mDNS-SD: service removed");
                         DiscoveryEvent::PeerLost(fullname)
                     }
