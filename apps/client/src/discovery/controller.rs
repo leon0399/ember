@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use base64::prelude::*;
@@ -362,6 +362,7 @@ mod tests {
     use super::*;
     use reme_identity::Identity;
     use reme_transport::coordinator::CoordinatorConfig;
+    use std::net::IpAddr;
 
     #[test]
     fn socket_addr_formats_ipv6_with_brackets() {

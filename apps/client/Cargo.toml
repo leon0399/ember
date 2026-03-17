@@ -16,7 +16,7 @@ reme-storage = { workspace = true }
 reme-outbox = { workspace = true }
 reme-core = { workspace = true }
 reme-config = { workspace = true, features = ["http", "mqtt"] }
-reme-discovery = { workspace = true }
+reme-discovery = { workspace = true, features = ["mdns-sd"] }
 
 thiserror = { workspace = true }
 tracing = { workspace = true }

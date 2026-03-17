@@ -1,6 +1,7 @@
 //! Application state and main loop
 
 use crate::config::AppConfig;
+use crate::discovery;
 use crate::tui::event::{Event, EventHandler};
 use crate::tui::http_server;
 use crate::tui::ui;
@@ -9,6 +10,8 @@ use crossterm::execute;
 use ratatui::prelude::*;
 use reme_config::{ParsedHttpPeer, ParsedMqttPeer};
 use reme_core::Client;
+use reme_discovery::mdns_sd::MdnsSdBackend;
+use reme_discovery::DiscoveryBackend;
 use reme_identity::{Identity, PublicID};
 use reme_message::Content;
 use reme_node_core::{
@@ -29,6 +32,7 @@ use std::fs;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use tui_textarea::{Input, TextArea};
 use zeroize::Zeroizing;
@@ -350,6 +354,12 @@ pub struct App<'a> {
     pub registry: TransportRegistry,
     /// Outbox tick interval from config
     outbox_tick_interval: Duration,
+    /// mDNS discovery backend (for shutdown)
+    discovery_backend: Option<Arc<MdnsSdBackend>>,
+    /// Discovery controller cancel token
+    discovery_cancel: Option<CancellationToken>,
+    /// Discovery controller task handle (for awaiting shutdown)
+    discovery_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl App<'_> {
@@ -675,6 +685,70 @@ impl App<'_> {
             registry.register_stable(id, label, DeliveryTier::Direct);
         }
 
+        // --- LAN Discovery ---
+        let (discovery_backend, discovery_cancel, discovery_task) = if config.lan_discovery.enabled
+        {
+            match MdnsSdBackend::new() {
+                Ok(backend) => {
+                    // Build contact list for routing key matching
+                    let contacts: Vec<(PublicID, [u8; 16])> = storage
+                        .list_contacts()
+                        .unwrap_or_else(|e| {
+                            warn!("Failed to load contacts for discovery: {e}");
+                            Vec::new()
+                        })
+                        .into_iter()
+                        .map(|(_, pubkey, _)| {
+                            let rk: [u8; 16] = pubkey.routing_key().into();
+                            (pubkey, rk)
+                        })
+                        .collect();
+
+                    // Subscribe to discovery events
+                    let events = backend.subscribe();
+
+                    // Spawn discovery controller
+                    let cancel = CancellationToken::new();
+                    let controller_handle = discovery::controller::spawn(
+                        events,
+                        coordinator.clone(),
+                        contacts,
+                        cancel.clone(),
+                    );
+
+                    // Start advertising only if HTTP server is bound
+                    if let Some(ref http_bind) = config.embedded_node.http_bind {
+                        let port: u16 = http_bind
+                            .rsplit(':')
+                            .next()
+                            .and_then(|p| p.parse().ok())
+                            .unwrap_or(23004);
+
+                        let our_rk: [u8; 16] = identity.public_id().routing_key().into();
+                        let txt = reme_discovery::encode_txt(&our_rk, port, 1);
+                        let spec = reme_discovery::AdvertisementSpec {
+                            txt_records: txt,
+                            ..reme_discovery::AdvertisementSpec::new(port)
+                        };
+
+                        if let Err(e) = backend.start_advertising(spec).await {
+                            warn!("Failed to start mDNS advertising: {e}");
+                        }
+                    }
+
+                    info!("LAN discovery enabled");
+                    let backend = Arc::new(backend);
+                    (Some(backend), Some(cancel), Some(controller_handle))
+                }
+                Err(e) => {
+                    warn!("Failed to initialize mDNS backend: {e}. LAN discovery disabled.");
+                    (None, None, None)
+                }
+            }
+        } else {
+            (None, None, None)
+        };
+
         // Build OutboxConfig from app config
         let ttl_ms = if config.outbox.ttl_days == 0 {
             None
@@ -734,6 +808,9 @@ impl App<'_> {
             show_upstreams_popup: false,
             registry,
             outbox_tick_interval,
+            discovery_backend,
+            discovery_cancel,
+            discovery_task,
         };
 
         // Load contacts
@@ -853,10 +930,40 @@ impl App<'_> {
             }
         }
 
+        // Graceful shutdown of discovery
+        self.shutdown_discovery().await;
+
         // Graceful shutdown of embedded node
         self.shutdown_embedded_node().await;
 
         Ok(())
+    }
+
+    /// Shutdown the discovery subsystem gracefully.
+    ///
+    /// Cancels the discovery controller, awaits its task, then shuts down
+    /// the mDNS backend to release network resources.
+    async fn shutdown_discovery(&mut self) {
+        if let Some(cancel) = self.discovery_cancel.take() {
+            debug!("Cancelling discovery controller...");
+            cancel.cancel();
+        }
+
+        if let Some(task) = self.discovery_task.take() {
+            debug!("Waiting for discovery controller to stop...");
+            if let Err(e) = task.await {
+                warn!(error = %e, "Discovery controller task panicked during shutdown");
+            }
+        }
+
+        if let Some(backend) = self.discovery_backend.take() {
+            debug!("Shutting down mDNS backend...");
+            if let Err(e) = backend.shutdown().await {
+                warn!(error = %e, "Failed to shutdown mDNS backend");
+            } else {
+                info!("mDNS backend shutdown complete");
+            }
+        }
     }
 
     /// Shutdown the embedded node gracefully.
