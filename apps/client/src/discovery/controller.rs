@@ -347,7 +347,7 @@ impl DiscoveryController {
         };
 
         for candidate in candidates {
-            let sign_data = build_identity_sign_data(&challenge, &candidate.to_bytes());
+            let sign_data = build_identity_sign_data(&challenge, &candidate.to_bytes(), None);
             if candidate.verify_xeddsa(&sign_data, &signature) {
                 return Ok(Some(*candidate));
             }

@@ -83,18 +83,24 @@ pub fn router(state: Arc<AppState>, rate_limiters: Option<&RateLimiters>) -> Rou
         fetch_route
     };
 
-    // Combine routes with shared middleware
-    Router::new()
+    // Routes that require Basic Auth (when configured)
+    let authenticated_routes = Router::new()
         .merge(submit_route)
         .merge(fetch_route)
         .route("/api/v1/health", get(health_check))
         .route("/api/v1/stats", get(get_stats))
-        .route("/api/v1/identity", get(get_identity))
-        .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             check_basic_auth,
-        ))
+        ));
+
+    // Routes exempt from Basic Auth (unauthenticated LAN peers need identity verification)
+    let public_routes = Router::new().route("/api/v1/identity", get(get_identity));
+
+    Router::new()
+        .merge(authenticated_routes)
+        .merge(public_routes)
+        .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
         .with_state(state)
 }
 
@@ -908,7 +914,7 @@ async fn get_identity(
         // Note: node_pubkey is still included in signed data for cryptographic binding,
         // but not returned in response (privacy: prevents identity enumeration)
         let node_pubkey = identity.public_id().to_bytes();
-        let sign_data = build_identity_sign_data(&challenge, &node_pubkey);
+        let sign_data = build_identity_sign_data(&challenge, &node_pubkey, None);
         let signature = identity.sign(&sign_data);
 
         IdentityResponse {
