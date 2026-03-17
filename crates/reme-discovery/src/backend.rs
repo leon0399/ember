@@ -1,4 +1,4 @@
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 
 use crate::types::{AdvertisementSpec, DiscoveryError, DiscoveryEvent};
 
@@ -21,8 +21,10 @@ pub trait DiscoveryBackend: Send + Sync {
 
     /// Subscribe to discovery events (peer found / lost / updated).
     ///
+    /// Each call returns an independent receiver — multiple subscribers are
+    /// supported (e.g. controller + TUI status). Events are cloned to each.
     /// The returned receiver will yield events until the backend is shut down.
-    fn subscribe(&self) -> mpsc::Receiver<DiscoveryEvent>;
+    fn subscribe(&self) -> broadcast::Receiver<DiscoveryEvent>;
 
     /// Gracefully shut down the backend, releasing network resources.
     async fn shutdown(&self) -> Result<(), DiscoveryError>;
