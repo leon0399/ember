@@ -313,6 +313,9 @@ Reme does **not** implement its own LoRa mesh protocol. Meshtastic already solve
 - [ ] Detached messages by default (minimize overhead)
 - [ ] Integration with existing transport coordinator
 
+**Constraints:**
+- Regulatory duty cycle limits (e.g., 1% at EU 868 MHz) mean multi-chunk messages may take several minutes to transmit. LoRa messaging is practical for short texts with minutes of latency, not real-time conversation.
+
 **Success criteria:**
 - Alice and Bob exchange messages over Meshtastic in direct line of sight
 - Message delivery over 5+ km with line-of-sight
@@ -346,13 +349,13 @@ BLE and Meshtastic devices can bridge messages to Quorum via the v0.6 relay queu
 
 Full relay with egress adapters, cross-transport bridging, and multi-hop.
 
-### BLE egress with RSSI-based relay
+### BLE egress with RSSI-informed relay
 
-Rebroadcast queued messages over BLE to nearby peers. Uses received signal strength to schedule relay timing: weaker-signal nodes (farther away) rebroadcast first; stronger-signal nodes wait and cancel if they overhear a duplicate. Same approach Meshtastic uses for LoRa mesh flooding.
+Rebroadcast queued messages over BLE to nearby peers. Uses randomized backoff with received signal strength as a scheduling hint: weaker-signal nodes (farther away) bias toward earlier rebroadcast; stronger-signal nodes wait and cancel if they overhear a duplicate. Unlike Meshtastic's LoRa approach, BLE at 2.4 GHz has high RSSI variance indoors (multipath, body absorption, orientation), so RSSI is a probabilistic hint rather than a deterministic timer.
 
 **Deliverables:**
 - [ ] BLE egress adapter for relay queue
-- [ ] RSSI-based relay timing
+- [ ] Randomized backoff with RSSI hint
 - [ ] Duplicate suppression (heard-before cancellation)
 
 ### Meshtastic egress
@@ -393,7 +396,7 @@ The same scenario works with **any** Internet-connected Meshtastic node running 
 
 **Success criteria:**
 - Starlink relay scenario works (HTTP → Meshtastic egress without decryption)
-- BLE-to-BLE relay extends range beyond single-hop distance
+- BLE-to-BLE relay extends range beyond single-hop distance (RSSI as hint, not deterministic)
 - Third-party bridge nodes work without prior trust/coordination
 - Cross-transport relay works (e.g., BLE → relay queue → Meshtastic)
 
@@ -550,7 +553,7 @@ Implements DTN-safe forward secrecy without prekey servers.
 
 ### v0.10
 - Starlink relay scenario works (HTTP → Meshtastic egress)
-- BLE-to-BLE relay extends range via RSSI-based rebroadcast
+- BLE-to-BLE relay extends range via RSSI-informed rebroadcast
 - Cross-transport relay (e.g., BLE → Meshtastic)
 
 ### v1.0

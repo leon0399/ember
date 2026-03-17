@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to AI coding agents when working with code in this repository.
 
 ## Project Overview
 
@@ -9,23 +9,14 @@ Resilient Messenger (reme) is an outage-resilient, end-to-end encrypted messagin
 ## Build Commands
 
 ```bash
-# Build all crates and apps
-cargo build
-
-# Build release binaries
-cargo build --release
-
-# Run all tests
-cargo test
-
-# Run tests for a specific crate
-cargo test -p reme-core
-
-# Run a single test
-cargo test -p reme-core test_two_client_messaging
-
-# Run integration tests only
-cargo test -p reme-core --test integration
+cargo build                                      # Build all crates and apps
+cargo build --release                            # Build release binaries
+cargo test                                       # Run all tests
+cargo test -p reme-core                          # Run tests for a specific crate
+cargo test -p reme-core test_two_client_messaging # Run a single test
+cargo test -p reme-core --test integration       # Run integration tests only
+cargo fmt --all -- --check                       # Check formatting
+cargo clippy --all-targets --all-features -- -D warnings  # Lint
 ```
 
 ## Running the Applications
@@ -55,6 +46,7 @@ crates/
 ├── reme-storage     # SQLite persistence for contacts, messages
 ├── reme-outbox      # Tiered delivery, retry policies, delivery state tracking
 ├── reme-node-core   # Shared node/relay logic, embedded HTTP server
+├── reme-config      # Layered configuration (CLI args > env vars > config file > defaults)
 └── reme-core        # High-level Client API orchestrating all above
 
 apps/
@@ -68,45 +60,13 @@ apps/
 2. **Mailbox Node**: stores envelope keyed by `routing_key` (truncated blake3 hash of recipient's PublicID)
 3. **Receiver**: `Client::fetch_messages()` → `decrypt_with_mik()` using MIK private key → return `ReceivedMessage`
 
-### Cryptographic Primitives
+### Crypto Summary
 
-- **Identity (MIK)**: Single X25519 key used for both ECDH and XEdDSA signatures
-- **Encryption**: Session V1-style stateless sealed box:
-  1. Generate ephemeral X25519 keypair per message
-  2. ECDH: `shared_secret = X25519(ephemeral_secret, recipient_MIK)`
-  3. Key derivation: `encryption_key = BLAKE3_KDF(ephemeral_pub || recipient_pub || shared_secret)`
-  4. Encrypt: ChaCha20Poly1305 with nonce derived from MessageID + recipient pubkey
-  5. Sign: XEdDSA signature over serialized InnerEnvelope || MessageID (sign-all-bytes)
+- **MIK (Master Identity Key)**: Single X25519 key for both ECDH and XEdDSA signatures
+- **Encryption**: Stateless sealed box — ephemeral X25519 + BLAKE3 KDF + ChaCha20Poly1305
+- **Signatures**: XEdDSA (X25519 key used for Ed25519-compatible signatures)
 - **No prekeys, no session state**: Zero-RTT first message, maximum DTN tolerance
 - **Serialization**: bincode v2 for wire formats
-
-### XEdDSA
-
-XEdDSA (Signal's scheme) allows using a single X25519 key for both:
-- **Diffie-Hellman key exchange** (native X25519)
-- **Digital signatures** (via birational map to Ed25519)
-
-This means the MIK (Master Identity Key) serves as both encryption and signing key, simplifying key management while maintaining security.
-
-### Message Flow (Stateless)
-
-Each message is independently encrypted - no session establishment needed:
-
-```
-Alice → Bob:
-1. Alice generates ephemeral keypair (e, E)
-2. Alice computes shared_secret = X25519(e, Bob_MIK)
-3. Alice derives encryption_key from shared_secret + both public keys
-4. Alice signs InnerEnvelope with her MIK (XEdDSA)
-5. Alice encrypts (InnerEnvelope || signature) with encryption_key
-6. Alice sends OuterEnvelope{routing_key, ephemeral_key=E, ciphertext, ...}
-
-Bob receives:
-1. Bob computes shared_secret = X25519(Bob_MIK_private, E)
-2. Bob derives same encryption_key
-3. Bob decrypts to get InnerEnvelope || signature
-4. Bob verifies XEdDSA signature using Alice's MIK from InnerEnvelope.from
-```
 
 ### Tombstones
 
@@ -145,63 +105,7 @@ Both node and client support layered config (CLI args > env vars > config file >
 
 ### Transport Authentication
 
-Both HTTP and MQTT transports support username/password authentication with consistent precedence rules. Both **clients** and **nodes** support authentication for their respective transports.
-
-**HTTP Transport:**
-- Authentication via Basic Auth
-- Credentials in config fields: `username` and `password`
-- Or URL-embedded: `http://user:pass@example.com:3000`
-- Precedence: Explicit config fields > URL-embedded > none
-
-**MQTT Transport:**
-- Authentication via MQTT CONNECT packet
-- Credentials in config fields: `username` and `password`
-- Or URL-embedded: `mqtt://user:pass@broker.example.com:1883`
-- Precedence: Explicit config fields > URL-embedded > none
-- Supported for both clients (`[[mqtt_peers]]`) and nodes (`[[mqtt.brokers]]`)
-
-**Client configuration example:**
-
-```toml
-# Explicit credentials (highest precedence)
-[[mqtt_peers]]
-label = "Authenticated MQTT Broker"
-url = "mqtts://broker.example.com:8883"
-username = "alice"
-password = "secret123"
-
-# URL-embedded credentials (fallback)
-[[mqtt_peers]]
-label = "URL Auth MQTT"
-url = "mqtt://bob:pass456@broker.local:1883"
-
-# Mixed: explicit username overrides URL username
-[[mqtt_peers]]
-url = "mqtt://bob:wrongpass@broker.local:1883"
-username = "alice"      # Overrides "bob" from URL
-password = "correct789" # Overrides "wrongpass" from URL
-```
-
-**Node configuration example:**
-
-```toml
-[mqtt]
-topic_prefix = "reme/v1"
-
-# Explicit credentials (recommended)
-[[mqtt.brokers]]
-url = "mqtts://broker.example.com:8883"
-client_id = "node-1"
-username = "reme-node"
-password = "secret123"
-
-# URL-embedded credentials
-[[mqtt.brokers]]
-url = "mqtt://user:pass@broker.local:1883"
-client_id = "node-2"
-```
-
-**Incomplete credentials error:** If only `username` or only `password` is provided (either explicitly or from URL), the credentials will be ignored and authentication will not be attempted (lenient behavior for backward compatibility).
+HTTP and MQTT transports both support username/password auth. Credential precedence: explicit config fields > URL-embedded > none. If only one of username/password is provided, credentials are ignored (lenient fallback).
 
 ## Testing Patterns
 
@@ -223,24 +127,19 @@ let transport = HttpTransport::new(server.url());
 - `ack_hash`: 16 bytes (for tombstone V2 authorization)
 - Version: `Version { major: 0, minor: 0 }`
 
+## Project Phase
+
+Research/prototype stage — no external users. Breaking changes and public API restructuring are encouraged when they improve the architecture.
+
 ## Security Model
 
 - **No forward secrecy (V1)**: MIK compromise exposes all messages. Acceptable for DTN-first design.
-- **Future (V2)**: Optional rotating session keys for epoch-based forward secrecy
-- **DTN tolerance**: #1 ranked approach - no prekeys, no session state, message loss/reordering has no impact
-- **Sender authentication**: XEdDSA signature binds sender identity to message content
+- **DTN tolerance**: No prekeys, no session state — message loss/reordering has no impact.
+- **Sender authentication**: XEdDSA signature binds sender identity to message content.
 
-## References
+## Pre-commit Checklist
 
-- [Session Protocol V1](https://getsession.org/session-protocol-technical-information) - Inspiration for stateless approach
-- [XEdDSA Specification](https://signal.org/docs/specifications/xeddsa/) - Signature scheme using X25519 keys
-- [Noise Protocol Framework](http://noiseprotocol.org/noise.html) - Basis for v1.0 forward secrecy (Async Noise XX)
-
-## Why Not X3DH/Double Ratchet?
-
-X3DH and Double Ratchet require prekey servers and synchronized session state. In DTN scenarios:
-- **Prekey servers unreachable** during outages
-- **Message loss causes state divergence** (skipped message keys accumulate unboundedly)
-- **Reordering breaks ratchet** assumptions
-
-Reme's stateless MIK approach trades per-message forward secrecy for DTN tolerance. v1.0 adds optional Noise XX sessions for forward secrecy when connectivity allows.
+- [ ] `cargo fmt --all -- --check` — formatting
+- [ ] `cargo clippy --all-targets --all-features -- -D warnings` — linting
+- [ ] `cargo test --workspace --all-features --all-targets` — all tests pass
+- [ ] No new `unwrap()` in library crates (use proper error handling)
