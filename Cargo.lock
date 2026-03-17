@@ -2669,7 +2669,6 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bincode",
- "bitflags",
  "derivative",
  "derive_more 2.1.0",
  "futures",

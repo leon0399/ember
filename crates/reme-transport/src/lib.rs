@@ -45,8 +45,8 @@ pub use receiver::{MessageReceiver, ReceiverConfig, ReceiverHandle};
 pub use registry::{EnrichedSnapshot, EphemeralMeta, TransportRegistry};
 pub use seen_cache::{SeenCache, SharedSeenCache};
 pub use target::{
-    HealthData, HealthState, RawReceipt, TargetConfig, TargetHealth, TargetId, TargetKind,
-    TransportTarget,
+    HealthData, HealthState, RawReceipt, TargetCapabilities, TargetConfig, TargetHealth, TargetId,
+    TargetKind, TransportTarget,
 };
 pub use tls::{
     build_pinning_config, build_pinning_config_single, CertPin, PinParseError, PinningVerifier,

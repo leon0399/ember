@@ -218,6 +218,57 @@ impl TargetKind {
             TargetKind::Ephemeral => Duration::from_secs(10),
         }
     }
+
+    /// Get the default capabilities for this target kind.
+    pub fn default_capabilities(&self) -> TargetCapabilities {
+        match self {
+            TargetKind::Stable => TargetCapabilities::stable_defaults(),
+            TargetKind::Ephemeral => TargetCapabilities::ephemeral_defaults(),
+        }
+    }
+}
+
+/// Capabilities advertised or inferred for a transport target.
+///
+/// Used by the coordinator to filter targets for specific operations.
+/// This is local configuration, not wire data — plain booleans are clearer
+/// than bitflags for flags that are checked individually.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // These are independent capability flags, not a state machine
+pub struct TargetCapabilities {
+    /// Target accepts submitted messages (POST /api/v1/submit).
+    pub send: bool,
+    /// Target serves fetched messages (GET /api/v1/fetch/{rk}).
+    pub fetch: bool,
+    /// Target counts toward quorum (trusted, persistent node).
+    pub quorum_credit: bool,
+    /// Target replicates messages to other nodes.
+    pub replicate: bool,
+}
+
+impl TargetCapabilities {
+    /// Default capabilities for a Stable target (mailbox node).
+    pub fn stable_defaults() -> Self {
+        Self {
+            send: true,
+            fetch: true,
+            quorum_credit: true,
+            replicate: false,
+        }
+    }
+
+    /// Default capabilities for an Ephemeral target (discovered peer).
+    ///
+    /// Ephemeral targets can send but should NOT be fetched from by default
+    /// (privacy: polling exposes your routing key to discovered peers).
+    pub fn ephemeral_defaults() -> Self {
+        Self {
+            send: true,
+            fetch: false,
+            quorum_credit: false,
+            replicate: false,
+        }
+    }
 }
 
 /// Health state for circuit breaker pattern.
@@ -424,6 +475,13 @@ pub struct TargetConfig {
     /// The `routing_key()` derived from this can also be used to filter targets
     /// during Direct tier delivery (only include targets that can serve the recipient).
     pub node_pubkey: Option<PublicID>,
+
+    /// What operations this target supports.
+    ///
+    /// Defaults are based on `TargetKind`:
+    /// - Stable: `SEND | FETCH | QUORUM_CREDIT`
+    /// - Ephemeral: `SEND` only (no `FETCH` for privacy)
+    pub capabilities: TargetCapabilities,
 }
 
 impl TargetConfig {
@@ -439,6 +497,7 @@ impl TargetConfig {
             circuit_breaker_recovery: kind.default_circuit_breaker_recovery(),
             priority: kind.default_priority(),
             node_pubkey: None,
+            capabilities: kind.default_capabilities(),
         }
     }
 
@@ -503,6 +562,12 @@ impl TargetConfig {
     /// Set an optional node public identity.
     pub fn with_node_pubkey_opt(mut self, pubkey: Option<PublicID>) -> Self {
         self.node_pubkey = pubkey;
+        self
+    }
+
+    /// Override the capabilities for this target.
+    pub fn with_capabilities(mut self, capabilities: TargetCapabilities) -> Self {
+        self.capabilities = capabilities;
         self
     }
 
@@ -735,6 +800,32 @@ mod tests {
             TargetConfig::stable(TargetId::http("https://example.com")).with_node_pubkey(pubkey);
 
         assert!(config.can_serve(&routing_key));
+    }
+
+    #[test]
+    fn test_stable_default_capabilities() {
+        let config = TargetConfig::stable(TargetId::http("https://example.com"));
+        assert_eq!(config.capabilities, TargetCapabilities::stable_defaults());
+    }
+
+    #[test]
+    fn test_ephemeral_default_capabilities() {
+        let config = TargetConfig::ephemeral(TargetId::http("https://example.com"));
+        assert_eq!(
+            config.capabilities,
+            TargetCapabilities::ephemeral_defaults()
+        );
+    }
+
+    #[test]
+    fn test_capabilities_override() {
+        let mut caps = TargetCapabilities::ephemeral_defaults();
+        caps.fetch = true;
+        let config =
+            TargetConfig::ephemeral(TargetId::http("https://example.com")).with_capabilities(caps);
+        assert!(config.capabilities.send);
+        assert!(config.capabilities.fetch);
+        assert!(!config.capabilities.quorum_credit);
     }
 
     #[test]
