@@ -118,15 +118,15 @@ reme is designed to resist these adversaries:
 - Attackers attempting replay or reordering
 
 **Key compromise:**
-- Loss of device does not compromise past messages
-- Future security after key compromise (with session ratcheting in v2)
+- Loss of device does not compromise past messages *(v1.0 target — in v0.x, MIK compromise exposes all messages encrypted to it; see §3.3 goal #4)*
+- Future security after key compromise (with session ratcheting in v1.0)
 
 ### 3.3 Security goals
 
 1. **Confidentiality**: Only intended recipients can read message content
 2. **Authenticity**: Recipients can verify sender identity
 3. **Integrity**: Any modification to messages is detectable
-4. **Forward secrecy** *(v1.0 target)*: Compromise of long-term keys does not expose past messages. In v0.x, each message uses a fresh ephemeral ECDH exchange, but all exchanges are bound to the recipient's long-term MIK — compromising the MIK exposes all past and future messages encrypted to it. The v1.0 Noise XX handshake will provide per-session forward secrecy.
+4. **Forward secrecy** *(v1.0 target)*: v0.x has no forward secrecy — each message uses a fresh ephemeral ECDH exchange, but all exchanges are bound to the recipient's long-term MIK, so compromising the MIK exposes all past and future messages encrypted to it. The v1.0 Noise XX handshake will provide per-session forward secrecy where compromise of long-term keys does not expose past session-encrypted messages.
 5. **Metadata minimization**: Relay nodes learn minimal information about communication patterns
 6. **Authentication** *(non-repudiable)*: XEdDSA signatures in InnerEnvelope prove sender identity to the recipient, but are also verifiable by any third party who obtains the decrypted InnerEnvelope and the sender's PublicID. This provides non-repudiation, not deniability. Deniable authentication (e.g., symmetric MACs derived from shared ECDH secrets) is a potential future improvement.
 
@@ -230,7 +230,7 @@ routing_key = BLAKE3(public_id)[0:16]
 ```
 
 This gives us:
-- **Privacy**: Routing key cannot be reversed to PublicID. However, anyone who knows a target's PublicID can compute their routing key and monitor mailbox polling patterns. The privacy property is hiding identity from relay nodes that don't already know the user, not anonymity against targeted surveillance.
+- **Privacy**: Routing key cannot be reversed to PublicID. However, anyone who knows a target's PublicID can compute their routing key and correlate it with a mailbox. An adversary with access to the mailbox (operator or on-path observer) could then monitor polling patterns. The privacy property is hiding identity from relay nodes that don't already know the user, not anonymity against targeted surveillance (see §12.6 on polling privacy).
 - **Collision resistance**: 128-bit space is sufficient for addressing
 - **Efficiency**: Compact lookup keys for relay storage
 
@@ -402,7 +402,7 @@ content_id = BLAKE3("reme-content-id-v1" || sender_pubid || timestamp_ms || cont
 ```
 
 **Design rationale:**
-- 8 bytes provides ~2³² ≈ 4.3 billion messages at 50% birthday collision probability
+- 8 bytes provides ~1.177 × 2³² ≈ 5 billion messages at 50% birthday collision probability
 - BLAKE3 truncation is safe (XOF design)
 - DAG fields excluded so resends maintain same content_id
 - **Group messaging caveat**: For 1:1 conversations, 64-bit ContentIds are sufficient. For future high-throughput group chats (post-v1.0) with thousands of participants, collision probability grows faster. A ContentId collision would cause incorrect gap detection or silent message loss. Expanding to 16 bytes may be warranted when group messaging is implemented.
