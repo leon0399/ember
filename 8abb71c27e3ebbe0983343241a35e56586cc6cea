@@ -1,0 +1,320 @@
+WHITEPAPER.md
+  863bafd1d3dc05eb 129,131,233,405,408,527,533,636
+ROADMAP.md
+  863bafd1d3dc05eb 316-318,352,354,358,399,556
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "8abb71c27e3ebbe0983343241a35e56586cc6cea",
+  "prompts": {
+    "863bafd1d3dc05eb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "21862df1-41c9-4d08-a3a3-7138dc268908",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [
+        {
+          "type": "user",
+          "text": "Analyze the following review for @ROADMAP.md and @WHITEPAPER.md and it's implications:\n\n```\n1. Forward secrecy claim vs. reality (§3.3 vs §7.1)\nYour security goals in §3.3 list forward secrecy as goal #4, but §7.1 and §12.3 openly admit MIK-only has no forward secrecy. This isn't impossible — it's contradictory. A compromised MIK exposes every past and future message encrypted to it. You acknowledge this, but listing it as a security goal you currently meet is misleading. The honest framing would be: \"forward secrecy is a v1.0 goal, not a v0.x property.\"\n2. Deniability claim is questionable (§3.3, goal #6)\nYou claim repudiation/deniability, but your XEdDSA signature in the InnerEnvelope is bound to the sender's long-term MIK. If Alice sends Bob a message, Bob holds a signature verifiable against Alice's public key. A third party who obtains Bob's decrypted InnerEnvelope can verify that signature against Alice's PublicID. This is not deniable in the way Signal achieves deniability (where MAC keys are revealed, making forgery possible). Your current design provides authentication, not deniability. You'd need something like a ring signature or a shared MAC-based approach to get real deniability.\n3. 8-byte ContentId collision risk (§9.1)\nYou say 8 bytes gives ~4 billion messages before birthday collision. That's not quite right. Birthday bound on 64 bits is ~2³² ≈ 4.3 billion, yes, but that's the 50% collision probability. At scale — say a heavily-used group chat post-v1.0 with thousands of participants — you could hit collisions much sooner. A ContentId collision in the DAG would cause incorrect gap detection, phantom \"missing messages,\" or silent message loss. For a 1:1 chat this is fine. For future group messaging with high throughput, 8 bytes is dangerously tight. Consider 16 bytes, or at least document the group-messaging collision risk explicitly.\n4. Async Noise XX without prekey servers is hard, not impossible (§7.4, §14.1)\nYour v1.0 plan says \"Noise XX session establishment (no prekey servers)\" where \"either party can initiate.\" This is achievable but has a subtle problem in DTN: both parties might simultaneously initiate a handshake while disconnected, creating crossed handshakes. You need a deterministic role assignment (you mention this briefly), but the details matter enormously. If both Alice and Bob initiate Noise XX to each other while offline, you get two independent sessions. Your DAG could help resolve this (the first acknowledged session wins), but you need to spec this conflict resolution carefully or you'll get split-brain session states.\n5. RSSI-based relay timing for BLE (§v0.10) — physically unreliable\nRSSI is notoriously noisy indoors: multipath, body absorption, and orientation cause ±20 dB variance. Meshtastic gets away with this on LoRa because LoRa operates at lower frequencies with more predictable propagation. BLE at 2.4 GHz in indoor environments will produce near-random RSSI ordering. This won't be \"impossible\" but it'll be unreliable enough that your duplicate suppression will frequently misfire. You'll want a randomized backoff with RSSI as a hint, not a deterministic timer.\n6. QR code for ~500 byte messages (§v0.5)\nYour OuterEnvelope overhead is ~73 bytes, InnerEnvelope minimum ~107 bytes, plus Poly1305 tag. A minimal text message is ~180-220 bytes. Base64-encoded for QR, that's ~240-300 characters. A standard QR code handles this fine (Version 10 QR holds ~652 alphanumeric chars). But 500 bytes of content plus envelope overhead would be ~680+ bytes → ~900+ Base64 characters → needs Version 18+ QR code, which is hard to scan reliably from phone cameras at distance. This is feasible but you should set expectations: QR works for short messages only. Binary QR mode would help.\n7. Single-key identity is a real tradeoff (§6.1)\nUsing the same X25519 key for both ECDH and signatures (via XEdDSA) is convenient but means compromising one function compromises both. If an attacker gets your signing key, they also get your decryption key. Most modern protocols separate these (Signal has identity key + signed prekey + one-time prekeys). You're aware of this, but the \"simplified backup\" benefit should be weighed against the blast radius of a single key compromise. Not impossible, just a deliberate single point of failure.\n8. LoRa MTU and realistic message sizes (§11.3)\nYou mention ~200 byte LoRa MTU and transport-layer chunking in v0.7. Meshtastic's practical payload per packet is more like 228 bytes with their headers, but duty cycle regulations (especially in EU at 868 MHz) limit you to ~1% airtime. A 3-chunk message on EU LoRa could take 5-10 minutes to transmit with legal duty cycle compliance. This isn't impossible but it means multi-chunk messages over Meshtastic will be very slow. Your users need to understand \"LoRa messaging\" means \"short texts with minutes of latency.\"\n9. Routing key privacy is weaker than described (§5.3)\nYou say the routing key \"cannot be reversed to PublicID\" — true, but it's a deterministic function of PublicID. Anyone who knows a target's PublicID can compute their routing key and monitor which mailboxes they poll. This is fine for your threat model (relay nodes are semi-trusted), but the privacy property is \"routing key hides identity from nodes that don't already know you,\" not \"routing key provides anonymity.\" Worth being precise here.\n10. No message padding until v1.0 (§12.6)\nWithout padding, message length reveals content type and approximate text length to any relay or network observer. Combined with the stable routing key, this enables \"Alice sent Bob a 47-byte message at 3 PM\" fingerprinting. This is a known limitation you've documented, but it's worth noting that for your adversarial target scenarios (authoritarian regimes, §1), this is a meaningful gap until v1.0.\n```",
+          "timestamp": "2026-03-16T23:31:37.016Z"
+        },
+        {
+          "type": "assistant",
+          "text": "I'll analyze each point for validity and actionability against the actual documents.\n\n## Analysis\n\n### 1. Forward secrecy claim vs. reality — **Valid, should fix**\n\n§3.3 lists forward secrecy as security goal #4 without qualification. §7.1 and §12.3 then contradict this. The fix is simple: qualify goal #4 to say it's a v1.0 target, not a current property. This is a documentation honesty issue, not a design issue.\n\n### 2. Deniability claim is questionable — **Valid, should fix**\n\nThis is a real problem. The XEdDSA signature in InnerEnvelope is verifiable by anyone who has Alice's PublicID + the decrypted InnerEnvelope. Bob can prove to a third party that Alice signed the message. Signal achieves deniability via HMAC with shared keys (either party could have produced the MAC). Your current design provides non-repudiation, which is the *opposite* of deniability. Remove the deniability claim or redesign signing to use a symmetric MAC derived from the ECDH shared secret.\n\n### 3. 8-byte ContentId collision risk — **Valid but low priority**\n\nThe math is correct (birthday bound ~2^32 at 50% collision probability). For 1:1 chats this is fine — you'd need billions of messages. For post-v1.0 group messaging with thousands of participants and high throughput, this becomes tighter. The recommendation to document the group-messaging risk is reasonable. Bumping to 16 bytes now would be cheap insurance but isn't urgent for 1:1.\n\n### 4. Async Noise XX crossed handshakes — **Valid, already partially addressed**\n\nThe roadmap mentions \"deterministic roles\" briefly. The reviewer is right that this needs careful specification. However, this is a v1.0 concern and the current docs appropriately mark it as future work. Worth adding a note about crossed-handshake resolution, but not urgent.\n\n### 5. RSSI-based BLE relay timing — **Valid critique, good suggestion**\n\nThe reviewer is correct that 2.4 GHz RSSI indoors is far less reliable than LoRa RSSI. The suggestion to use \"randomized backoff with RSSI as a hint\" rather than deterministic RSSI-based timing is good engineering advice. Worth updating the v0.10 description to reflect this more nuanced approach.\n\n### 6. QR code ~500 bytes — **Valid, already mostly correct**\n\nThe whitepaper/roadmap already says \"QR codes work for messages up to ~500 bytes\" as a success criterion. The reviewer's math checks out — 500 bytes of *content* plus overhead approaches QR scanning limits. The suggestion to use binary QR mode and set clearer expectations is reasonable but minor.\n\n### 7. Single-key identity tradeoff — **Valid, already acknowledged**\n\nThe reviewer says \"you're aware of this\" — and you are. §6.1 presents the convenience argument. This is a deliberate design decision with documented tradeoffs. No change needed unless you want to add an explicit \"blast radius\" note.\n\n### 8. LoRa duty cycle latency — **Valid, should document**\n\nThe reviewer raises an important practical point that isn't in the docs. EU 868 MHz duty cycle (1%) means multi-chunk messages could take minutes. This doesn't affect the design but should be documented so users have realistic expectations. Add a note about duty cycle implications to the Meshtastic section.\n\n### 9. Routing key privacy precision — **Valid, should tighten language**\n\n§5.3 says routing key \"cannot be reversed to PublicID\" — true but incomplete. Anyone who *knows* a PublicID can compute the routing key and correlate. The privacy property is hiding identity from nodes that *don't already know you*, not anonymity. Worth tightening the language.\n\n### 10. No message padding — **Valid, already documented**\n\n§12.6 already documents this. The reviewer is reinforcing that for the stated adversarial scenarios (authoritarian regimes), this is a meaningful gap. Worth adding a cross-reference to §1's threat scenarios to make the severity explicit.\n\n## Severity Summary\n\n| # | Issue | Severity | Action |\n|---|-------|----------|--------|\n| 1 | Forward secrecy claim | **High** — misleading | Qualify in §3.3 |\n| 2 | Deniability claim | **High** — factually wrong | Remove or redesign |\n| 3 | ContentId collision | **Low** — future risk | Document for group messaging |\n| 5 | RSSI reliability | **Medium** — implementation | Update v0.10 language |\n| 8 | LoRa duty cycle | **Medium** — user expectations | Add documentation |\n| 9 | Routing key privacy | **Medium** — precision | Tighten language |\n| 4, 6, 7, 10 | Various | **Low** — already acknowledged or future | Minor doc tweaks |\n\n## Recommendations\n\n**Immediate fixes (whitepaper accuracy):**\n- §3.3 goal #4: Change to \"Forward secrecy (v1.0 target): ...\" with a note that v0.x provides ephemeral-per-message ECDH but MIK compromise exposes all messages.\n- §3.3 goal #6: Either remove the deniability/repudiation claim entirely, or honestly state \"v0.x does NOT provide deniability — XEdDSA signatures are non-repudiable. Deniability requires a future redesign (e.g., symmetric MAC from shared secret).\"\n- §5.3: Change \"cannot be reversed to PublicID\" to \"cannot be reversed to PublicID, but anyone who knows a target's PublicID can compute their routing key. Privacy is against nodes that don't already know the user's identity.\"\n\n**Documentation additions:**\n- §9.1: Add a note about collision risk scaling with group messaging post-v1.0.\n- v0.10 (roadmap): Clarify RSSI is a scheduling *hint* with randomized backoff, not a deterministic timer.\n- v0.8/§11.3: Add note about regulatory duty cycle constraints and realistic latency expectations for EU LoRa.\n\nWant me to make these changes to the documents?",
+          "timestamp": "2026-03-16T23:32:17.759Z"
+        },
+        {
+          "type": "user",
+          "text": "go on",
+          "timestamp": "2026-03-16T23:35:04.739Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskCreate",
+          "input": {
+            "description": "Qualify forward secrecy as v1.0 target, remove/correct deniability claim",
+            "subject": "Fix forward secrecy and deniability claims in WHITEPAPER.md §3.3"
+          },
+          "timestamp": "2026-03-16T23:35:12.380Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskCreate",
+          "input": {
+            "description": "Clarify that routing key hides identity only from nodes that don't already know the user",
+            "subject": "Tighten routing key privacy language in WHITEPAPER.md §5.3"
+          },
+          "timestamp": "2026-03-16T23:35:13.286Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskCreate",
+          "input": {
+            "description": "Document that 8-byte ContentId becomes tight for high-throughput group chats post-v1.0",
+            "subject": "Add ContentId collision risk note for group messaging in §9.1"
+          },
+          "timestamp": "2026-03-16T23:35:14.017Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskCreate",
+          "input": {
+            "description": "WHITEPAPER §11.3: duty cycle latency. ROADMAP v0.8: duty cycle expectations. ROADMAP v0.10: RSSI as hint not deterministic.",
+            "subject": "Add LoRa duty cycle and RSSI notes in both docs"
+          },
+          "timestamp": "2026-03-16T23:35:15.706Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "in_progress",
+            "taskId": "1"
+          },
+          "timestamp": "2026-03-16T23:35:30.668Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Edit",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/.claude/worktrees/whitepaper-roadmap-review/WHITEPAPER.md",
+            "new_string": "1. **Confidentiality**: Only intended recipients can read message content\n2. **Authenticity**: Recipients can verify sender identity\n3. **Integrity**: Any modification to messages is detectable\n4. **Forward secrecy** *(v1.0 target)*: Compromise of long-term keys does not expose past messages. In v0.x, each message uses a fresh ephemeral ECDH exchange, but all exchanges are bound to the recipient's long-term MIK — compromising the MIK exposes all past and future messages encrypted to it. The v1.0 Noise XX handshake will provide per-session forward secrecy.\n5. **Metadata minimization**: Relay nodes learn minimal information about communication patterns\n6. **Authentication** *(non-repudiable)*: XEdDSA signatures in InnerEnvelope prove sender identity to the recipient, but are also verifiable by any third party who obtains the decrypted InnerEnvelope and the sender's PublicID. This provides non-repudiation, not deniability. Deniable authentication (e.g., symmetric MACs derived from shared ECDH secrets) is a potential future improvement.",
+            "old_string": "1. **Confidentiality**: Only intended recipients can read message content\n2. **Authenticity**: Recipients can verify sender identity\n3. **Integrity**: Any modification to messages is detectable\n4. **Forward secrecy**: Compromise of long-term keys does not expose past messages\n5. **Metadata minimization**: Relay nodes learn minimal information about communication patterns\n6. **Repudiation**: Third parties cannot cryptographically prove who sent a message (deniability)",
+            "replace_all": false
+          },
+          "timestamp": "2026-03-16T23:35:45.639Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Now fix the forward secrecy section in §12.3 to be consistent:",
+          "timestamp": "2026-03-16T23:35:52.627Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Edit",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/.claude/worktrees/whitepaper-roadmap-review/WHITEPAPER.md",
+            "new_string": "**MIK-only (v0.3)**: No forward secrecy. Compromise of the MIK reveals all past and future messages encrypted to it. Each message uses a fresh ephemeral ECDH exchange, but the recipient side of every exchange is the long-term MIK.",
+            "old_string": "**MIK-only (v0.3)**: Limited forward secrecy - compromise of MIK reveals all messages encrypted to it.",
+            "replace_all": false
+          },
+          "timestamp": "2026-03-16T23:35:54.582Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "completed",
+            "taskId": "1"
+          },
+          "timestamp": "2026-03-16T23:36:01.156Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "in_progress",
+            "taskId": "2"
+          },
+          "timestamp": "2026-03-16T23:36:01.464Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Edit",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/.claude/worktrees/whitepaper-roadmap-review/WHITEPAPER.md",
+            "new_string": "This gives us:\n- **Privacy**: Routing key cannot be reversed to PublicID. However, anyone who knows a target's PublicID can compute their routing key and monitor mailbox polling patterns. The privacy property is hiding identity from relay nodes that don't already know the user, not anonymity against targeted surveillance.\n- **Collision resistance**: 128-bit space is sufficient for addressing\n- **Efficiency**: Compact lookup keys for relay storage",
+            "old_string": "This gives us:\n- **Privacy**: Routing key cannot be reversed to PublicID\n- **Collision resistance**: 128-bit space is sufficient for addressing\n- **Efficiency**: Compact lookup keys for relay storage",
+            "replace_all": false
+          },
+          "timestamp": "2026-03-16T23:36:07.150Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "completed",
+            "taskId": "2"
+          },
+          "timestamp": "2026-03-16T23:36:10.362Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "in_progress",
+            "taskId": "3"
+          },
+          "timestamp": "2026-03-16T23:36:10.586Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Edit",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/.claude/worktrees/whitepaper-roadmap-review/WHITEPAPER.md",
+            "new_string": "**Design rationale:**\n- 8 bytes provides ~2³² ≈ 4.3 billion messages at 50% birthday collision probability\n- BLAKE3 truncation is safe (XOF design)\n- DAG fields excluded so resends maintain same content_id\n- **Group messaging caveat**: For 1:1 conversations, 64-bit ContentIds are sufficient. For future high-throughput group chats (post-v1.0) with thousands of participants, collision probability grows faster. A ContentId collision would cause incorrect gap detection or silent message loss. Expanding to 16 bytes may be warranted when group messaging is implemented.",
+            "old_string": "**Design rationale:**\n- 8 bytes provides ~4 billion messages before birthday collision\n- BLAKE3 truncation is safe (XOF design)\n- DAG fields excluded so resends maintain same content_id",
+            "replace_all": false
+          },
+          "timestamp": "2026-03-16T23:36:18.314Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "completed",
+            "taskId": "3"
+          },
+          "timestamp": "2026-03-16T23:36:27.419Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "in_progress",
+            "taskId": "4"
+          },
+          "timestamp": "2026-03-16T23:36:27.650Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Edit",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/.claude/worktrees/whitepaper-roadmap-review/WHITEPAPER.md",
+            "new_string": "**LoRa/Meshtastic:**\n- MTU: ~200 bytes, requires fragmentation for larger messages\n- Uses detached messages to minimize overhead\n- Meshtastic handles mesh routing; reme bridges between Meshtastic and other transports\n- Reme does not relay LoRa-to-LoRa itself\n- Acts as both relay ingress and egress (see §11.5)\n- **Duty cycle constraints**: Regulatory limits (e.g., 1% duty cycle at EU 868 MHz) mean multi-chunk messages may take several minutes to transmit. Users should expect short-text-only messaging with minutes of latency on LoRa transports.",
+            "old_string": "**LoRa/Meshtastic:**\n- MTU: ~200 bytes, requires fragmentation for larger messages\n- Uses detached messages to minimize overhead\n- Meshtastic handles mesh routing; reme bridges between Meshtastic and other transports\n- Reme does not relay LoRa-to-LoRa itself\n- Acts as both relay ingress and egress (see §11.5)",
+            "replace_all": false
+          },
+          "timestamp": "2026-03-16T23:36:39.627Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Now update the BLE section with the RSSI caveat:",
+          "timestamp": "2026-03-16T23:36:45.869Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Edit",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/.claude/worktrees/whitepaper-roadmap-review/WHITEPAPER.md",
+            "new_string": "- RSSI-informed relay timing: randomized backoff with RSSI as a scheduling hint (weaker-signal nodes bias toward earlier rebroadcast). BLE at 2.4 GHz has high RSSI variance indoors (multipath, body absorption), so RSSI cannot be used as a deterministic timer — unlike LoRa where Meshtastic uses this approach more reliably at lower frequencies.",
+            "old_string": "- RSSI-based relay timing: weaker-signal nodes rebroadcast first, stronger-signal nodes wait and cancel on duplicate",
+            "replace_all": false
+          },
+          "timestamp": "2026-03-16T23:36:49.488Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Now update the ROADMAP.md — v0.10 RSSI section and v0.8 duty cycle:",
+          "timestamp": "2026-03-16T23:36:52.764Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Edit",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/.claude/worktrees/whitepaper-roadmap-review/ROADMAP.md",
+            "new_string": "### BLE egress with RSSI-informed relay\n\nRebroadcast queued messages over BLE to nearby peers. Uses randomized backoff with received signal strength as a scheduling hint: weaker-signal nodes (farther away) bias toward earlier rebroadcast; stronger-signal nodes wait and cancel if they overhear a duplicate. Unlike Meshtastic's LoRa approach, BLE at 2.4 GHz has high RSSI variance indoors (multipath, body absorption, orientation), so RSSI is a probabilistic hint rather than a deterministic timer.\n\n**Deliverables:**\n- [ ] BLE egress adapter for relay queue\n- [ ] Randomized backoff with RSSI hint\n- [ ] Duplicate suppression (heard-before cancellation)",
+            "old_string": "### BLE egress with RSSI-based relay\n\nRebroadcast queued messages over BLE to nearby peers. Uses received signal strength to schedule relay timing: weaker-signal nodes (farther away) rebroadcast first; stronger-signal nodes wait and cancel if they overhear a duplicate. Same approach Meshtastic uses for LoRa mesh flooding.\n\n**Deliverables:**\n- [ ] BLE egress adapter for relay queue\n- [ ] RSSI-based relay timing\n- [ ] Duplicate suppression (heard-before cancellation)",
+            "replace_all": false
+          },
+          "timestamp": "2026-03-16T23:36:57.614Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Edit",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/.claude/worktrees/whitepaper-roadmap-review/ROADMAP.md",
+            "new_string": "**Constraints:**\n- Regulatory duty cycle limits (e.g., 1% at EU 868 MHz) mean multi-chunk messages may take several minutes to transmit. LoRa messaging is practical for short texts with minutes of latency, not real-time conversation.\n\n**Success criteria:**\n- Alice and Bob exchange messages over Meshtastic in direct line of sight\n- Message delivery over 5+ km with line-of-sight\n- Works with off-the-shelf Meshtastic hardware (T-Beam, Heltec, etc.)",
+            "old_string": "**Success criteria:**\n- Alice and Bob exchange messages over Meshtastic in direct line of sight\n- Message delivery over 5+ km with line-of-sight\n- Works with off-the-shelf Meshtastic hardware (T-Beam, Heltec, etc.)",
+            "replace_all": false
+          },
+          "timestamp": "2026-03-16T23:37:06.767Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Update the roadmap success metrics for v0.10 to match the RSSI language change:",
+          "timestamp": "2026-03-16T23:37:11.046Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Edit",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/.claude/worktrees/whitepaper-roadmap-review/ROADMAP.md",
+            "new_string": "- BLE-to-BLE relay extends range via RSSI-informed rebroadcast",
+            "old_string": "- BLE-to-BLE relay extends range via RSSI-based rebroadcast",
+            "replace_all": false
+          },
+          "timestamp": "2026-03-16T23:37:12.609Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Edit",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/.claude/worktrees/whitepaper-roadmap-review/ROADMAP.md",
+            "new_string": "- BLE-to-BLE relay extends range beyond single-hop distance (RSSI as hint, not deterministic)",
+            "old_string": "- BLE-to-BLE relay extends range beyond single-hop distance",
+            "replace_all": false
+          },
+          "timestamp": "2026-03-16T23:37:25.200Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "completed",
+            "taskId": "4"
+          },
+          "timestamp": "2026-03-16T23:37:28.380Z"
+        },
+        {
+          "type": "assistant",
+          "text": "All changes applied. Here's a summary of what was changed:\n\n**WHITEPAPER.md:**\n- §3.3 goal #4: Forward secrecy now explicitly marked as a *v1.0 target*, with explanation that MIK compromise exposes all messages in v0.x\n- §3.3 goal #6: Renamed from \"Repudiation\" to \"Authentication (non-repudiable)\" — honestly states that XEdDSA signatures are verifiable by third parties, which is the opposite of deniability\n- §5.3: Routing key privacy clarified — notes that anyone who knows a PublicID can compute the routing key, so privacy is against nodes that *don't already know you*\n- §9.1: Added group messaging caveat for 64-bit ContentId collision risk, suggesting 16-byte expansion when groups ship\n- §11.3: Added LoRa duty cycle constraint note (minutes of latency for multi-chunk messages)\n- §11.3: BLE RSSI relay changed from \"deterministic timer\" to \"randomized backoff with RSSI hint\"\n- §12.3: Changed \"limited forward secrecy\" to \"no forward secrecy\" — no hedging\n\n**ROADMAP.md:**\n- v0.8: Added duty cycle constraints section with realistic latency expectations\n- v0.10: Renamed \"RSSI-based relay\" to \"RSSI-informed relay\", updated description and deliverables to reflect randomized backoff approach\n- v0.10 success metrics: Updated to match RSSI language",
+          "timestamp": "2026-03-16T23:37:40.363Z"
+        },
+        {
+          "type": "user",
+          "text": "commit + push + PR",
+          "timestamp": "2026-03-17T00:49:35.928Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Skill",
+          "input": {
+            "skill": "commit-commands:commit-push-pr"
+          },
+          "timestamp": "2026-03-17T00:49:39.467Z"
+        },
+        {
+          "type": "user",
+          "text": "## Context\r\n\r\n- Current git status: On branch worktree-whitepaper-roadmap-review\nYour branch is up to date with 'origin/master'.\n\nChanges not staged for commit:\n  (use \"git add <file>...\" to update what will be committed)\n  (use \"git restore <file>...\" to discard changes in working directory)\n\tmodified:   ROADMAP.md\n\tmodified:   WHITEPAPER.md\n\nno changes added to commit (use \"git add\" and/or \"git commit -a\")\r\n- Current git diff (staged and unstaged changes): diff --git a/ROADMAP.md b/ROADMAP.md\nindex c388aaa..782b04e 100644\n--- a/ROADMAP.md\n+++ b/ROADMAP.md\n@@ -313,6 +313,9 @@ Reme does **not** implement its own LoRa mesh protocol. Meshtastic already solve\n - [ ] Detached messages by default (minimize overhead)\n - [ ] Integration with existing transport coordinator\n \n+**Constraints:**\n+- Regulatory duty cycle limits (e.g., 1% at EU 868 MHz) mean multi-chunk messages may take several minutes to transmit. LoRa messaging is practical for short texts with minutes of latency, not real-time conversation.\n+\n **Success criteria:**\n - Alice and Bob exchange messages over Meshtastic in direct line of sight\n - Message delivery over 5+ km with line-of-sight\n@@ -346,13 +349,13 @@ BLE and Meshtastic devices can bridge messages to Quorum via the v0.6 relay queu\n \n Full relay with egress adapters, cross-transport bridging, and multi-hop.\n \n-### BLE egress with RSSI-based relay\n+### BLE egress with RSSI-informed relay\n \n-Rebroadcast queued messages over BLE to nearby peers. Uses received signal strength to schedule relay timing: weaker-signal nodes (farther away) rebroadcast first; stronger-signal nodes wait and cancel if they overhear a duplicate. Same approach Meshtastic uses for LoRa mesh flooding.\n+Rebroadcast queued messages over BLE to nearby peers. Uses randomized backoff with received signal strength as a scheduling hint: weaker-signal nodes (farther away) bias toward earlier rebroadcast; stronger-signal nodes wait and cancel if they overhear a duplicate. Unlike Meshtastic's LoRa approach, BLE at 2.4 GHz has high RSSI variance indoors (multipath, body absorption, orientation), so RSSI is a probabilistic hint rather than a deterministic timer.\n \n **Deliverables:**\n - [ ] BLE egress adapter for relay queue\n-- [ ] RSSI-based relay timing\n+- [ ] Randomized backoff with RSSI hint\n - [ ] Duplicate suppression (heard-before cancellation)\n \n ### Meshtastic egress\n@@ -393,7 +396,7 @@ The same scenario works with **any** Internet-connected Meshtastic node running\n \n **Success criteria:**\n - Starlink relay scenario works (HTTP → Meshtastic egress without decryption)\n-- BLE-to-BLE relay extends range beyond single-hop distance\n+- BLE-to-BLE relay extends range beyond single-hop distance (RSSI as hint, not deterministic)\n - Third-party bridge nodes work without prior trust/coordination\n - Cross-transport relay works (e.g., BLE → relay queue → Meshtastic)\n \n@@ -550,7 +553,7 @@ Implements DTN-safe forward secrecy without prekey servers.\n \n ### v0.10\n - Starlink relay scenario works (HTTP → Meshtastic egress)\n-- BLE-to-BLE relay extends range via RSSI-based rebroadcast\n+- BLE-to-BLE relay extends range via RSSI-informed rebroadcast\n - Cross-transport relay (e.g., BLE → Meshtastic)\n \n ### v1.0\ndiff --git a/WH********R.md b/WH********R.md\nindex 346c1f6..a9106c6 100644\n--- a/WH********R.md\n+++ b/WH********R.md\n@@ -126,9 +126,9 @@ reme is designed to resist these adversaries:\n 1. **Confidentiality**: Only intended recipients can read message content\n 2. **Authenticity**: Recipients can verify sender identity\n 3. **Integrity**: Any modification to messages is detectable\n-4. **Forward secrecy**: Compromise of long-term keys does not expose past messages\n+4. **Forward secrecy** *(v1.0 target)*: Compromise of long-term keys does not expose past messages. In v0.x, each message uses a fresh ephemeral ECDH exchange, but all exchanges are bound to the recipient's long-term MIK — compromising the MIK exposes all past and future messages encrypted to it. The v1.0 Noise XX handshake will provide per-session forward secrecy.\n 5. **Metadata minimization**: Relay nodes learn minimal information about communication patterns\n-6. **Repudiation**: Third parties cannot cryptographically prove who sent a message (deniability)\n+6. **Authentication** *(non-repudiable)*: XEdDSA signatures in InnerEnvelope prove sender identity to the recipient, but are also verifiable by any third party who obtains the decrypted InnerEnvelope and the sender's PublicID. This provides non-repudiation, not deniability. Deniable authentication (e.g., symmetric MACs derived from shared ECDH secrets) is a potential future improvement.\n \n ---\n \n@@ -230,7 +230,7 @@ routing_key = BLAKE3(public_id)[0:16]\n ```\n \n This gives us:\n-- **Privacy**: Routing key cannot be reversed to PublicID\n+- **Privacy**: Routing key cannot be reversed to PublicID. However, anyone who knows a target's PublicID can compute their routing key and monitor mailbox polling patterns. The privacy property is hiding identity from relay nodes that don't already know the user, not anonymity against targeted surveillance.\n - **Collision resistance**: 128-bit space is sufficient for addressing\n - **Efficiency**: Compact lookup keys for relay storage\n \n@@ -402,9 +402,10 @@ content_id = BLAKE3(\"reme-content-id-v1\" || sender_pubid || timestamp_ms || cont\n ```\n \n **Design rationale:**\n-- 8 bytes provides ~4 billion messages before birthday collision\n+- 8 bytes provides ~2³² ≈ 4.3 billion messages at 50% birthday collision probability\n - BLAKE3 truncation is safe (XOF design)\n - DAG fields excluded so resends maintain same content_id\n+- **Group messaging caveat**: For 1:1 conversations, 64-bit ContentIds are sufficient. For future high-throughput group chats (post-v1.0) with thousands of participants, collision probability grows faster. A ContentId collision would cause incorrect gap detection or silent message loss. Expanding to 16 bytes may be warranted when group messaging is implemented.\n \n ### 9.2 DAG structure\n \n@@ -523,12 +524,13 @@ Primary transport for reliable connectivity:\n - Meshtastic handles mesh routing; reme bridges between Meshtastic and other transports\n - Reme does not relay LoRa-to-LoRa itself\n - Acts as both relay ingress and egress (see §11.5)\n+- **Duty cycle constraints**: Regulatory limits (e.g., 1% duty cycle at EU 868 MHz) mean multi-chunk messages may take several minutes to transmit. Users should expect short-text-only messaging with minutes of latency on LoRa transports.\n \n **BLE proximity:**\n - Direct device-to-device exchange\n - Background scanning for contacts\n - Acts as both relay ingress and egress (see §11.5)\n-- RSSI-based relay timing: weaker-signal nodes rebroadcast first, stronger-signal nodes wait and cancel on duplicate\n+- RSSI-informed relay timing: randomized backoff with RSSI as a scheduling hint (weaker-signal nodes bias toward earlier rebroadcast). BLE at 2.4 GHz has high RSSI variance indoors (multipath, body absorption), so RSSI cannot be used as a deterministic timer — unlike LoRa where Meshtastic uses this approach more reliably at lower frequencies.\n \n **Sneakernet:**\n - QR code or file-based message transfer\n@@ -631,7 +633,7 @@ sequenceDiagram\n \n ### 12.3 Forward secrecy\n \n-**MIK-only (v0.3)**: Limited forward secrecy - compromise of MIK reveals all messages encrypted to it.\n+**MIK-only (v0.3)**: No forward secrecy. Compromise of the MIK reveals all past and future messages encrypted to it. Each message uses a fresh ephemeral ECDH exchange, but the recipient side of every exchange is the long-term MIK.\n \n **Async Noise (v1.0)**: Will provide per-session forward secrecy through Noise XX handshake with DAG-integrated key lifecycle. Keys deleted after DAG acknowledgment.\r\n- Current branch: worktree-whitepaper-roadmap-review\r\n\r\n## Your task\r\n\r\nBased on the above changes:\r\n\r\n1. Create a new branch if on main\r\n2. Create a single commit with an appropriate message\r\n3. Push the branch to origin\r\n4. Create a pull request using `gh pr create`\r\n5. You have the capability to call multiple tools in a single response. You MUST do all of the above in a single message. Do not use any other tools or do anything else. Do not send any other text or messages besides these tool calls.\r\n",
+          "timestamp": "2026-03-17T00:49:58.750Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Bash",
+          "input": {
+            "command": "git log --oneline -5",
+            "description": "Check recent commit style"
+          },
+          "timestamp": "2026-03-17T00:50:02.612Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Bash",
+          "input": {
+            "command": "git checkout -b worktree-whitepaper-roadmap-review 2>/dev/null; git add ROADMAP.md WHITEPAPER.md && git commit -m \"$(cat <<'EOF'\ndocs: fix misleading security claims and add transport constraints\n\n- Qualify forward secrecy as v1.0 target, not a current property (§3.3, §12.3)\n- Replace false deniability claim with honest non-repudiation statement (§3.3)\n- Clarify routing key privacy limits against targeted surveillance (§5.3)\n- Document 8-byte ContentId collision risk for future group messaging (§9.1)\n- Add LoRa duty cycle constraints and realistic latency expectations (§11.3, v0.8)\n- Change BLE RSSI relay from deterministic timer to randomized backoff with\n  RSSI hint, reflecting 2.4 GHz indoor variance (§11.3, v0.10)\n\nCo-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>\nEOF\n)\"",
+            "description": "Stage and commit changes"
+          },
+          "timestamp": "2026-03-17T00:50:11.039Z"
+        }
+      ],
+      "total_additions": 16,
+      "total_deletions": 11,
+      "accepted_lines": 16,
+      "overriden_lines": 0
+    }
+  }
+}
