@@ -24,6 +24,7 @@
 //! - `Esc` / `Ctrl+C` - Quit
 
 mod config;
+mod discovery;
 mod tui;
 
 use crate::config::{load_config, parse_log_level};
