@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::IpAddr;
 use std::time::Instant;
 
 /// A peer discovered via mDNS/DNS-SD or another discovery backend.
@@ -7,9 +7,12 @@ use std::time::Instant;
 pub struct RawDiscoveredPeer {
     /// The DNS-SD service instance name (unique per advertisement).
     pub instance_name: String,
-    /// Resolved socket addresses for this peer.
-    pub addresses: Vec<SocketAddr>,
-    /// The port advertised in the SRV record.
+    /// Resolved IP addresses from A/AAAA records.
+    ///
+    /// These are bare IPs — combine with [`port`](Self::port) (from the SRV
+    /// record) to get connectable `SocketAddr`s.
+    pub addresses: Vec<IpAddr>,
+    /// The port advertised in the SRV record (authoritative).
     pub port: u16,
     /// TXT record key-value pairs.
     pub txt_records: HashMap<String, String>,
