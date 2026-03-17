@@ -83,18 +83,27 @@ pub fn router(state: Arc<AppState>, rate_limiters: Option<&RateLimiters>) -> Rou
         fetch_route
     };
 
-    // Combine routes with shared middleware
-    Router::new()
+    // Public routes — no authentication required.
+    // Identity is needed for LAN discovery verification (unauthenticated peers).
+    // Health is needed for monitoring probes.
+    let public_routes = Router::new()
+        .route("/api/v1/identity", get(get_identity))
+        .route("/api/v1/health", get(health_check));
+
+    // Authenticated routes — behind Basic Auth when configured.
+    let auth_routes = Router::new()
         .merge(submit_route)
         .merge(fetch_route)
-        .route("/api/v1/health", get(health_check))
         .route("/api/v1/stats", get(get_stats))
-        .route("/api/v1/identity", get(get_identity))
         .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             check_basic_auth,
-        ))
+        ));
+
+    Router::new()
+        .merge(public_routes)
+        .merge(auth_routes)
         .with_state(state)
 }
 
