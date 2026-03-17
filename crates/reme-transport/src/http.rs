@@ -247,7 +247,7 @@ impl HttpTransport {
 
         // Try each candidate until one verifies
         for candidate in candidates {
-            let sign_data = build_identity_sign_data(&challenge, &candidate.to_bytes());
+            let sign_data = build_identity_sign_data(&challenge, &candidate.to_bytes(), None);
             if candidate.verify_xeddsa(&sign_data, &signature) {
                 debug!("Verified identity for {}", candidate);
                 return Ok(Some(*candidate));
@@ -808,7 +808,7 @@ mod tests {
                     .try_into()
                     .expect("Challenge must be 32 bytes");
 
-                let sign_data = build_identity_sign_data(&challenge, &pubkey_bytes);
+                let sign_data = build_identity_sign_data(&challenge, &pubkey_bytes, None);
                 let signature = identity.sign_xeddsa(&sign_data);
 
                 async move {
@@ -876,7 +876,7 @@ mod tests {
                     .expect("Challenge must be 32 bytes");
 
                 // Sign with node's actual key (different from expected)
-                let sign_data = build_identity_sign_data(&challenge, &node_pubkey_bytes);
+                let sign_data = build_identity_sign_data(&challenge, &node_pubkey_bytes, None);
                 let signature = node_identity.sign_xeddsa(&sign_data);
 
                 async move {
@@ -945,7 +945,7 @@ mod tests {
                     .try_into()
                     .expect("Challenge must be 32 bytes");
 
-                let sign_data = build_identity_sign_data(&challenge, &pubkey_bytes);
+                let sign_data = build_identity_sign_data(&challenge, &pubkey_bytes, None);
                 let signature = identity.sign_xeddsa(&sign_data);
 
                 async move {

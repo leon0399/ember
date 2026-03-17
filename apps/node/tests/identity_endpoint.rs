@@ -149,7 +149,7 @@ async fn test_valid_challenge_returns_valid_response() {
         .expect("Wrong signature length");
 
     // Reconstruct signed data using shared helper and known pubkey
-    let sign_data = build_identity_sign_data(&challenge, &node_pubkey.to_bytes());
+    let sign_data = build_identity_sign_data(&challenge, &node_pubkey.to_bytes(), None);
 
     assert!(
         node_pubkey.verify_xeddsa(&sign_data, &signature),
@@ -328,8 +328,8 @@ async fn test_signature_is_challenge_specific() {
 
     // Verify both signatures using the known public key
     let node_pubkey_bytes = node_pubkey.to_bytes();
-    let sign_data1 = build_identity_sign_data(&challenge1, &node_pubkey_bytes);
-    let sign_data2 = build_identity_sign_data(&challenge2, &node_pubkey_bytes);
+    let sign_data1 = build_identity_sign_data(&challenge1, &node_pubkey_bytes, None);
+    let sign_data2 = build_identity_sign_data(&challenge2, &node_pubkey_bytes, None);
 
     assert!(
         node_pubkey.verify_xeddsa(&sign_data1, &signature1),

@@ -365,19 +365,46 @@ pub fn build_receipt_sign_data(signer_pubkey: &[u8; 32], message_id: &MessageID)
 
 /// Build the data to be signed for identity verification.
 ///
-/// Format: `"reme-identity-v1:" || challenge || node_pubkey`
+/// Format: `"reme-identity-v1:" || bound_challenge || node_pubkey`
 ///
 /// Used by both nodes (to sign) and clients (to verify) in the identity
 /// challenge-response protocol.
 ///
+/// When `channel` is provided, the challenge is mixed with the channel bytes
+/// via BLAKE3 to produce a channel-bound challenge. This prevents relay attacks
+/// where a malicious peer forwards identity challenges to the real peer and
+/// replays the response. Both signer and verifier must agree on the channel
+/// value for verification to succeed.
+///
+/// When `channel` is `None`, the original challenge is used as-is for backward
+/// compatibility.
+///
 /// # Arguments
 /// * `challenge` - 32-byte random challenge from the verifier
 /// * `node_pubkey` - 32-byte X25519 public key of the node
-pub fn build_identity_sign_data(challenge: &[u8; 32], node_pubkey: &[u8; 32]) -> [u8; 81] {
-    // Layout: "reme-identity-v1:" (17) || challenge (32) || node_pubkey (32) = 81 bytes
+/// * `channel` - Optional responder address (e.g. `b"192.168.1.50:23003"`) for
+///   channel binding
+pub fn build_identity_sign_data(
+    challenge: &[u8; 32],
+    node_pubkey: &[u8; 32],
+    channel: Option<&[u8]>,
+) -> [u8; 81] {
+    let bound_challenge = if let Some(channel_bytes) = channel {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(challenge);
+        hasher.update(channel_bytes);
+        let hash = hasher.finalize();
+        let mut bound = [0u8; 32];
+        bound.copy_from_slice(&hash.as_bytes()[..32]);
+        bound
+    } else {
+        *challenge
+    };
+
+    // Layout: "reme-identity-v1:" (17) || bound_challenge (32) || node_pubkey (32) = 81 bytes
     let mut sign_data = [0u8; 81];
     sign_data[..17].copy_from_slice(IDENTITY_SIGN_DOMAIN);
-    sign_data[17..49].copy_from_slice(challenge);
+    sign_data[17..49].copy_from_slice(&bound_challenge);
     sign_data[49..].copy_from_slice(node_pubkey);
     sign_data
 }
@@ -453,6 +480,7 @@ pub struct DecryptionOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand_core::RngCore;
     use reme_identity::Identity;
     use reme_message::{Content, TextContent};
 
@@ -1017,6 +1045,99 @@ mod tests {
         assert!(
             !verify_receipt_signature(&node_public, &message_id, &signature),
             "Tampered receipt signature should not verify"
+        );
+    }
+
+    #[test]
+    fn test_identity_sign_data_channel_binding_matching() {
+        let mut challenge = [0u8; 32];
+        rand_core::OsRng.fill_bytes(&mut challenge);
+        let node = Identity::generate();
+        let node_pubkey = node.public_id().to_bytes();
+        let channel = b"192.168.1.50:23003";
+
+        // Sign with channel
+        let sign_data = build_identity_sign_data(&challenge, &node_pubkey, Some(channel));
+        let signature = node.sign_xeddsa(&sign_data);
+
+        // Verify with same channel should succeed
+        let verify_data = build_identity_sign_data(&challenge, &node_pubkey, Some(channel));
+        assert!(
+            node.public_id().verify_xeddsa(&verify_data, &signature),
+            "Channel-bound signature should verify with matching channel"
+        );
+    }
+
+    #[test]
+    fn test_identity_sign_data_channel_binding_mismatch() {
+        let mut challenge = [0u8; 32];
+        rand_core::OsRng.fill_bytes(&mut challenge);
+        let node = Identity::generate();
+        let node_pubkey = node.public_id().to_bytes();
+
+        // Sign with one channel
+        let sign_data =
+            build_identity_sign_data(&challenge, &node_pubkey, Some(b"192.168.1.50:23003"));
+        let signature = node.sign_xeddsa(&sign_data);
+
+        // Verify with different channel should fail
+        let verify_data =
+            build_identity_sign_data(&challenge, &node_pubkey, Some(b"10.0.0.1:9999"));
+        assert!(
+            !node.public_id().verify_xeddsa(&verify_data, &signature),
+            "Channel-bound signature should NOT verify with different channel"
+        );
+    }
+
+    #[test]
+    fn test_identity_sign_data_none_channel_backward_compat() {
+        let mut challenge = [0u8; 32];
+        rand_core::OsRng.fill_bytes(&mut challenge);
+        let node = Identity::generate();
+        let node_pubkey = node.public_id().to_bytes();
+
+        // Sign without channel (backward compat)
+        let sign_data = build_identity_sign_data(&challenge, &node_pubkey, None);
+        let signature = node.sign_xeddsa(&sign_data);
+
+        // Verify without channel should succeed
+        let verify_data = build_identity_sign_data(&challenge, &node_pubkey, None);
+        assert!(
+            node.public_id().verify_xeddsa(&verify_data, &signature),
+            "None-channel signature should verify with None channel"
+        );
+    }
+
+    #[test]
+    fn test_identity_sign_data_channel_vs_none_mismatch() {
+        let mut challenge = [0u8; 32];
+        rand_core::OsRng.fill_bytes(&mut challenge);
+        let node = Identity::generate();
+        let node_pubkey = node.public_id().to_bytes();
+
+        // Sign with channel
+        let sign_data =
+            build_identity_sign_data(&challenge, &node_pubkey, Some(b"192.168.1.50:23003"));
+        let signature = node.sign_xeddsa(&sign_data);
+
+        // Verify with None should fail (channel mismatch)
+        let verify_data = build_identity_sign_data(&challenge, &node_pubkey, None);
+        assert!(
+            !node.public_id().verify_xeddsa(&verify_data, &signature),
+            "Channel-bound signature should NOT verify without channel"
+        );
+
+        // And vice versa: sign with None, verify with channel
+        let sign_data_none = build_identity_sign_data(&challenge, &node_pubkey, None);
+        let signature_none = node.sign_xeddsa(&sign_data_none);
+
+        let verify_with_channel =
+            build_identity_sign_data(&challenge, &node_pubkey, Some(b"192.168.1.50:23003"));
+        assert!(
+            !node
+                .public_id()
+                .verify_xeddsa(&verify_with_channel, &signature_none),
+            "None-channel signature should NOT verify with channel"
         );
     }
 }
