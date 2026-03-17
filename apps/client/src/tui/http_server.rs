@@ -453,7 +453,7 @@ async fn get_identity(
         // Note: node_pubkey is still included in signed data for cryptographic binding,
         // but not returned in response (privacy: prevents identity enumeration)
         let node_pubkey = identity.public_id().to_bytes();
-        let sign_data = build_identity_sign_data(&challenge, &node_pubkey);
+        let sign_data = build_identity_sign_data(&challenge, &node_pubkey, None);
         let signature = identity.sign_xeddsa(&sign_data);
 
         IdentityResponse {
@@ -1151,7 +1151,7 @@ mod tests {
 
         // Reconstruct signed data using helper and known pubkey
         let node_pubkey = identity_pubkey.to_bytes();
-        let sign_data = build_identity_sign_data(&challenge, &node_pubkey);
+        let sign_data = build_identity_sign_data(&challenge, &node_pubkey, None);
 
         assert!(
             identity_pubkey.verify_xeddsa(&sign_data, &signature),
