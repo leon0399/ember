@@ -31,6 +31,11 @@ impl FakeDiscoveryBackend {
         let _ = self.tx.send(DiscoveryEvent::PeerDiscovered(peer));
     }
 
+    /// Inject a peer-updated event, delivering `PeerUpdated` to all subscribers.
+    pub fn inject_updated(&self, peer: RawDiscoveredPeer) {
+        let _ = self.tx.send(DiscoveryEvent::PeerUpdated(peer));
+    }
+
     /// Inject a peer-lost event, delivering `PeerLost` to all subscribers.
     pub fn inject_lost(&self, instance_name: String) {
         let _ = self.tx.send(DiscoveryEvent::PeerLost(instance_name));
@@ -104,6 +109,20 @@ mod tests {
                 assert_eq!(peer.instance_name, "alice");
             }
             other => panic!("expected PeerDiscovered, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn inject_updated_and_receive() {
+        let backend = FakeDiscoveryBackend::new();
+        let mut rx = backend.subscribe();
+
+        backend.inject_updated(make_peer("alice"));
+
+        let event = rx.try_recv().unwrap();
+        match event {
+            DiscoveryEvent::PeerUpdated(peer) => assert_eq!(peer.instance_name, "alice"),
+            other => panic!("expected PeerUpdated, got {other:?}"),
         }
     }
 
