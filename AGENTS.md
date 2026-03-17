@@ -47,6 +47,7 @@ crates/
 ├── reme-outbox      # Tiered delivery, retry policies, delivery state tracking
 ├── reme-node-core   # Shared node/relay logic, embedded HTTP server
 ├── reme-config      # Layered configuration (CLI args > env vars > config file > defaults)
+├── reme-discovery   # mDNS/LAN peer discovery (backend trait, TXT helpers, fake + mdns-sd backends)
 └── reme-core        # High-level Client API orchestrating all above
 
 apps/
@@ -136,6 +137,7 @@ Research/prototype stage — no external users. Breaking changes and public API 
 - **No forward secrecy (V1)**: MIK compromise exposes all messages. Acceptable for DTN-first design.
 - **DTN tolerance**: No prekeys, no session state — message loss/reordering has no impact.
 - **Sender authentication**: XEdDSA signature binds sender identity to message content.
+- **Threat model**: See `docs/threat-model.md` for attack scenarios and mitigations. Review and update when adding new transport mechanisms or discovery features.
 
 ## Pre-commit Checklist
 
