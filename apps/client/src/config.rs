@@ -31,6 +31,12 @@
 //!
 //! data_dir = "~/.local/share/reme"
 //! log_level = "info"
+//!
+//! # LAN Discovery — automatic peer detection on local network
+//! [lan_discovery]
+//! enabled = true              # Enable mDNS browsing (advertising requires embedded_node.http_bind)
+//! # allow_direct_lan = true   # Verify and register discovered peers for direct delivery
+//! # max_peers = 256           # Maximum number of tracked LAN peers
 //! ```
 //!
 //! Prefer `[[peers.http]]` and `[[peers.mqtt]]` for current configs.
@@ -434,11 +440,42 @@ pub struct EmbeddedNodeConfig {
 }
 
 /// LAN discovery configuration for mDNS-based peer discovery.
-#[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct LanDiscoveryConfig {
     /// Enable mDNS/LAN peer discovery (default: false).
     #[serde(default)]
     pub enabled: bool,
+
+    /// Allow direct LAN delivery to discovered peers (default: true when enabled).
+    /// When false, the discovery controller is not spawned — mDNS browsing and
+    /// advertising still run, but no peers are verified or registered as targets.
+    #[serde(default = "default_true")]
+    pub allow_direct_lan: bool,
+
+    /// Max discovered peers to track (default: 256).
+    #[serde(default = "default_max_peers")]
+    pub max_peers: usize,
+}
+
+const DEFAULT_LAN_ALLOW_DIRECT: bool = true;
+const DEFAULT_LAN_MAX_PEERS: usize = 256;
+
+impl Default for LanDiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allow_direct_lan: DEFAULT_LAN_ALLOW_DIRECT,
+            max_peers: DEFAULT_LAN_MAX_PEERS,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    DEFAULT_LAN_ALLOW_DIRECT
+}
+
+fn default_max_peers() -> usize {
+    DEFAULT_LAN_MAX_PEERS
 }
 
 /// Direct peer configuration for LAN P2P messaging.
@@ -1215,6 +1252,8 @@ mod tests {
     fn test_lan_discovery_config_default() {
         let config = LanDiscoveryConfig::default();
         assert!(!config.enabled);
+        assert_eq!(config.allow_direct_lan, DEFAULT_LAN_ALLOW_DIRECT);
+        assert_eq!(config.max_peers, DEFAULT_LAN_MAX_PEERS);
     }
 
     #[test]
@@ -1228,6 +1267,9 @@ mod tests {
             .lan_discovery
             .unwrap();
         assert!(config.enabled);
+        // Defaults should apply for unset fields
+        assert_eq!(config.allow_direct_lan, DEFAULT_LAN_ALLOW_DIRECT);
+        assert_eq!(config.max_peers, DEFAULT_LAN_MAX_PEERS);
     }
 
     #[test]
@@ -1236,5 +1278,22 @@ mod tests {
         let raw: RawConfig = toml::from_str(toml).unwrap();
         let config = raw.lan_discovery.unwrap_or_default();
         assert!(!config.enabled);
+    }
+
+    #[test]
+    fn test_lan_discovery_policy_fields() {
+        let toml = r"
+            [lan_discovery]
+            enabled = true
+            allow_direct_lan = false
+            max_peers = 64
+        ";
+        let config: LanDiscoveryConfig = toml::from_str::<RawConfig>(toml)
+            .unwrap()
+            .lan_discovery
+            .unwrap();
+        assert!(config.enabled);
+        assert!(!config.allow_direct_lan);
+        assert_eq!(config.max_peers, 64);
     }
 }
