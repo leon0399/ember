@@ -95,6 +95,9 @@ pub fn router(state: Arc<AppState>, rate_limiters: Option<&RateLimiters>) -> Rou
         ));
 
     // Routes exempt from Basic Auth (unauthenticated LAN peers need identity verification)
+    // TODO: Add IP-based rate limiting to the identity endpoint to prevent
+    // CPU-amplification attacks on publicly reachable nodes (reuse tower-governor infra)
+    // TODO: Add integration test: auth configured + identity endpoint accessible without credentials
     let public_routes = Router::new().route("/api/v1/identity", get(get_identity));
 
     Router::new()

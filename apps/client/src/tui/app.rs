@@ -601,6 +601,8 @@ impl App<'_> {
 
         // Add direct peers as ephemeral HTTP targets
         // Ensure HTTP pool exists if we have direct peers but no HTTP nodes
+        // TODO: Avoid creating a polling subscription when pool has only SEND-capable
+        // targets (no FETCH targets) — currently produces harmless "no fetchable targets" logs
         if !config.direct_peers.is_empty() && coordinator.http_pool().is_none() {
             coordinator.set_http_pool(TransportPool::new());
         }
@@ -1421,6 +1423,8 @@ impl App<'_> {
         match transport_type {
             UpstreamType::Http => {
                 // TODO: Add UI fields for username/password when adding ephemeral HTTP upstreams
+                // TODO: Create stable (FETCH + QUORUM_CREDIT) targets when user selects Quorum tier,
+                // not always ephemeral (SEND-only) — currently tier selection is cosmetic
                 let config =
                     HttpTargetConfig::ephemeral(url).with_request_timeout(Duration::from_secs(10));
                 let target = HttpTarget::new(config)
