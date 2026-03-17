@@ -141,15 +141,17 @@ impl DiscoveryBackend for MdnsSdBackend {
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
 
+        let host_fqdn = format!("{hostname}.local.");
         let service_info = mdns_sd::ServiceInfo::new(
             &spec.service_type,
             &instance_name,
-            &hostname,
+            &host_fqdn,
             "",
             spec.port,
             &properties[..],
         )
-        .map_err(|e| DiscoveryError::BackendError(e.to_string()))?;
+        .map_err(|e| DiscoveryError::BackendError(e.to_string()))?
+        .enable_addr_auto();
 
         let fullname = service_info.get_fullname().to_owned();
 

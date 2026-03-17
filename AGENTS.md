@@ -55,6 +55,16 @@ apps/
 └── client/          # TUI client (ratatui) with embedded relay capability
 ```
 
+### LAN Discovery
+
+When `lan_discovery.enabled = true`, the client:
+1. Creates an mDNS-SD backend browsing for `_reme._tcp.local.` services
+2. Advertises own presence if embedded HTTP server is bound (`embedded_node.http_bind`)
+3. If `allow_direct_lan = true` (default): spawns a discovery controller that matches peers by routing key against contacts, verifies identity via HTTP challenge-response, and registers verified peers as ephemeral HTTP targets (SEND-only, no FETCH)
+4. If `allow_direct_lan = false`: mDNS browsing/advertising runs but no peers are verified or registered
+
+`max_peers` caps the tracked peer set (default: 256).
+
 ### Key Data Flow
 
 1. **Sender**: `Client::send_text()` → `encrypt_to_mik()` creates ephemeral keypair, ECDH, encrypts `InnerEnvelope` → wrap in `OuterEnvelope` → `Transport::submit_message()`

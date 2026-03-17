@@ -16,7 +16,6 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-const MAX_PEERS: usize = 256;
 /// Max identity response body size (a valid response is ~120 bytes).
 const MAX_IDENTITY_RESPONSE_BYTES: u64 = 4096;
 
@@ -50,10 +49,11 @@ pub fn spawn(
     mut events: broadcast::Receiver<DiscoveryEvent>,
     coordinator: Arc<TransportCoordinator>,
     contacts: Vec<(PublicID, [u8; 16])>,
+    max_peers: usize,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut controller = DiscoveryController::new(contacts);
+        let mut controller = DiscoveryController::new(contacts, max_peers);
 
         loop {
             tokio::select! {
@@ -90,7 +90,8 @@ pub fn spawn(
 }
 
 impl DiscoveryController {
-    fn new(contacts: Vec<(PublicID, [u8; 16])>) -> Self {
+    fn new(contacts: Vec<(PublicID, [u8; 16])>, max_peers: usize) -> Self {
+        let max_peers = max_peers.max(1); // Clamp to at least 1
         let mut contact_index: HashMap<[u8; 16], Vec<PublicID>> = HashMap::new();
         for (pubkey, routing_key) in contacts {
             contact_index.entry(routing_key).or_default().push(pubkey);
@@ -99,7 +100,7 @@ impl DiscoveryController {
         Self {
             peer_index: HashMap::new(),
             contact_index,
-            max_peers: MAX_PEERS,
+            max_peers,
             http_client: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(2))
                 .timeout(std::time::Duration::from_secs(5))
@@ -233,6 +234,10 @@ impl DiscoveryController {
         };
 
         let target_id = TargetId::http(url);
+        // TODO(#90): receipt-gated direct tier — currently a relay attacker who
+        // passes identity verification can blackhole messages. Once #90 lands,
+        // Direct tier will require a verified receipt before declaring success.
+        // See also #27 / #32 for privacy-preserving fetch from ephemeral nodes.
         coordinator.add_http_target(target);
 
         info!(
@@ -384,7 +389,7 @@ mod tests {
         let pubkey = *identity.public_id();
         let rk = pubkey.routing_key();
         let contacts = vec![(pubkey, *rk)];
-        let controller = DiscoveryController::new(contacts);
+        let controller = DiscoveryController::new(contacts, 256);
 
         let stranger_rk = [0xFFu8; 16];
         assert!(!controller.contact_index.contains_key(&stranger_rk));
@@ -399,7 +404,7 @@ mod tests {
 
         let rk = [0xAA; 16];
         let contacts = vec![(pk1, rk), (pk2, rk)];
-        let controller = DiscoveryController::new(contacts);
+        let controller = DiscoveryController::new(contacts, 256);
 
         let candidates = controller.contact_index.get(&rk).unwrap();
         assert_eq!(candidates.len(), 2);
@@ -407,7 +412,7 @@ mod tests {
 
     #[test]
     fn handle_lost_removes_peer() {
-        let mut controller = DiscoveryController::new(vec![]);
+        let mut controller = DiscoveryController::new(vec![], 256);
         let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
 
         let peer_identity = *Identity::generate().public_id();
@@ -427,7 +432,7 @@ mod tests {
 
     #[test]
     fn handle_lost_noop_for_unknown_peer() {
-        let mut controller = DiscoveryController::new(vec![]);
+        let mut controller = DiscoveryController::new(vec![], 256);
         let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
 
         controller.handle_lost("nonexistent", &coordinator);

@@ -690,31 +690,34 @@ impl App<'_> {
         {
             match MdnsSdBackend::new() {
                 Ok(backend) => {
-                    // Build contact list for routing key matching
-                    let contacts: Vec<(PublicID, [u8; 16])> = storage
-                        .list_contacts()
-                        .unwrap_or_else(|e| {
-                            warn!("Failed to load contacts for discovery: {e}");
-                            Vec::new()
-                        })
-                        .into_iter()
-                        .map(|(_, pubkey, _)| {
-                            let rk: [u8; 16] = pubkey.routing_key().into();
-                            (pubkey, rk)
-                        })
-                        .collect();
-
-                    // Subscribe to discovery events
-                    let events = backend.subscribe();
-
-                    // Spawn discovery controller
+                    // Spawn discovery controller only if direct LAN delivery is allowed
                     let cancel = CancellationToken::new();
-                    let controller_handle = discovery::controller::spawn(
-                        events,
-                        coordinator.clone(),
-                        contacts,
-                        cancel.clone(),
-                    );
+                    let controller_handle = if config.lan_discovery.allow_direct_lan {
+                        let contacts: Vec<(PublicID, [u8; 16])> = storage
+                            .list_contacts()
+                            .unwrap_or_else(|e| {
+                                warn!("Failed to load contacts for discovery: {e}");
+                                Vec::new()
+                            })
+                            .into_iter()
+                            .map(|(_, pubkey, _)| {
+                                let rk: [u8; 16] = pubkey.routing_key().into();
+                                (pubkey, rk)
+                            })
+                            .collect();
+
+                        let events = backend.subscribe();
+                        Some(discovery::controller::spawn(
+                            events,
+                            coordinator.clone(),
+                            contacts,
+                            config.lan_discovery.max_peers,
+                            cancel.clone(),
+                        ))
+                    } else {
+                        info!("LAN discovery active but direct delivery disabled (allow_direct_lan = false)");
+                        None
+                    };
 
                     // Start advertising only if HTTP server is bound
                     if let Some(ref http_bind) = config.embedded_node.http_bind {
@@ -738,7 +741,7 @@ impl App<'_> {
 
                     info!("LAN discovery enabled");
                     let backend = Arc::new(backend);
-                    (Some(backend), Some(cancel), Some(controller_handle))
+                    (Some(backend), Some(cancel), controller_handle)
                 }
                 Err(e) => {
                     warn!("Failed to initialize mDNS backend: {e}. LAN discovery disabled.");
