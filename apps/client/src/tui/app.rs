@@ -31,7 +31,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use tui_textarea::{Input, TextArea};
@@ -320,8 +320,9 @@ pub struct App<'a> {
     pub input: TextArea<'a>,
     /// Status message
     pub status: String,
-    /// The messenger client (uses `TransportCoordinator` for sending via HTTP and/or MQTT)
-    client: Client<TransportCoordinator>,
+    /// The messenger client (uses `TransportCoordinator` for sending via HTTP and/or MQTT).
+    /// Arc-wrapped so the outbox tick can run in a background task without blocking the UI.
+    client: Arc<Client<TransportCoordinator>>,
     /// Transport coordinator for unified multi-transport messaging
     coordinator: Arc<TransportCoordinator>,
     /// Coordinator event receiver for incoming messages
@@ -719,10 +720,12 @@ impl App<'_> {
         };
 
         // Create client with coordinator transport
-        let mut client = Client::with_config(identity, coordinator.clone(), storage, outbox_config);
+        let mut client_inner =
+            Client::with_config(identity, coordinator.clone(), storage, outbox_config);
 
         // Set HTTP transport retry policy
-        client.set_transport_policy("http:", retry_policy);
+        client_inner.set_transport_policy("http:", retry_policy);
+        let client = Arc::new(client_inner);
 
         // Store tick interval from config
         let outbox_tick_interval = Duration::from_secs(config.outbox.tick_interval_secs);
@@ -821,7 +824,23 @@ impl App<'_> {
     /// Run the application main loop
     pub async fn run(&mut self, terminal: &mut Terminal<impl Backend>) -> AppResult<()> {
         let mut event_handler = EventHandler::new(100);
-        let mut last_outbox_tick = Instant::now();
+
+        // Spawn outbox tick as a background task so HTTP timeouts don't block the UI.
+        let (outbox_result_tx, mut outbox_result_rx) =
+            tokio::sync::mpsc::channel::<Result<(usize, usize, u64), reme_core::ClientError>>(1);
+        let outbox_client = self.client.clone();
+        let outbox_interval = self.outbox_tick_interval;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(outbox_interval);
+            interval.tick().await; // skip first immediate tick
+            loop {
+                interval.tick().await;
+                let result = outbox_client.tiered_outbox_tick().await;
+                if outbox_result_tx.send(result).await.is_err() {
+                    break; // receiver dropped, app shutting down
+                }
+            }
+        });
 
         while self.running {
             // Draw UI
@@ -861,28 +880,26 @@ impl App<'_> {
                 }
             }
 
-            // Handle UI events
-            match event_handler.next().await? {
-                Event::Tick => {
-                    // Periodically run outbox tick for message retries
-                    if last_outbox_tick.elapsed() >= self.outbox_tick_interval {
-                        match self.client.tiered_outbox_tick().await {
-                            Ok((retried, maintenance, expired)) => {
-                                if retried > 0 || maintenance > 0 || expired > 0 {
-                                    info!(retried, maintenance, expired, "Outbox tick completed");
-                                } else {
-                                    debug!("Outbox tick: no pending messages");
-                                }
-                            }
-                            Err(e) => {
-                                warn!(error = %e, "Outbox tick failed");
-                            }
+            // Collect outbox tick results (non-blocking)
+            while let Ok(result) = outbox_result_rx.try_recv() {
+                match result {
+                    Ok((retried, maintenance, expired)) => {
+                        if retried > 0 || maintenance > 0 || expired > 0 {
+                            info!(retried, maintenance, expired, "Outbox tick completed");
+                        } else {
+                            debug!("Outbox tick: no pending messages");
                         }
-                        last_outbox_tick = Instant::now();
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Outbox tick failed");
                     }
                 }
+            }
+
+            // Handle UI events
+            match event_handler.next().await? {
                 Event::Key(key_event) => self.handle_key_event(key_event).await?,
-                Event::Resize(_, _) => {}
+                Event::Tick | Event::Resize(_, _) => {} // UI refresh handled by loop iteration
             }
         }
 
