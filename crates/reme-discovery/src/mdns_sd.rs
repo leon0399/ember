@@ -239,8 +239,12 @@ impl DiscoveryBackend for MdnsSdBackend {
     }
 
     fn subscribe(&self) -> broadcast::Receiver<DiscoveryEvent> {
+        // Subscribe *before* starting the browse so that events emitted
+        // immediately upon browse start (e.g. already-cached services) are
+        // not lost. broadcast::Receiver only sees messages sent after creation.
+        let rx = self.tx.subscribe();
         self.ensure_browsing();
-        self.tx.subscribe()
+        rx
     }
 
     async fn shutdown(&self) -> Result<(), DiscoveryError> {
