@@ -51,7 +51,7 @@ use reme_transport::{QuorumStrategy, TieredDeliveryConfig};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
-use tracing::{warn, Level};
+use tracing::warn;
 
 /// CLI arguments for the client
 #[derive(Parser, Debug, Clone, Serialize)]
@@ -984,17 +984,6 @@ default_ttl_secs = {embedded_ttl_secs}
         embedded_max_messages = defaults.embedded_node.max_messages,
         embedded_ttl_secs = defaults.embedded_node.default_ttl_secs,
     )
-}
-
-/// Parse log level from string
-pub(crate) fn parse_log_level(level: &str) -> Level {
-    match level.to_lowercase().as_str() {
-        "trace" => Level::TRACE,
-        "debug" => Level::DEBUG,
-        "warn" | "warning" => Level::WARN,
-        "error" => Level::ERROR,
-        _ => Level::INFO, // Default to INFO for "info" and unrecognized levels
-    }
 }
 
 #[cfg(test)]
