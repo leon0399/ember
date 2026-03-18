@@ -866,14 +866,10 @@ impl App<'_> {
                 Event::Tick => {
                     // Periodically run outbox tick for message retries
                     if last_outbox_tick.elapsed() >= self.outbox_tick_interval {
-                        match self.client.outbox_tick().await {
-                            Ok((retried, expired)) => {
-                                if retried > 0 || expired > 0 {
-                                    info!(
-                                        retried = retried,
-                                        expired = expired,
-                                        "Outbox tick completed"
-                                    );
+                        match self.client.tiered_outbox_tick().await {
+                            Ok((retried, maintenance, expired)) => {
+                                if retried > 0 || maintenance > 0 || expired > 0 {
+                                    info!(retried, maintenance, expired, "Outbox tick completed");
                                 } else {
                                     debug!("Outbox tick: no pending messages");
                                 }
