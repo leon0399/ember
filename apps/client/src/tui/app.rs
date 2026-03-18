@@ -22,6 +22,7 @@ use reme_storage::Storage;
 use reme_transport::http_target::{HttpTarget, HttpTargetConfig};
 use reme_transport::pool::TransportPool;
 use reme_transport::target::TargetKind;
+#[allow(deprecated)]
 use reme_transport::{
     CoordinatorConfig, CoordinatorHandle, DeliveryTier, MqttTarget, MqttTargetConfig,
     ReceiverConfig, TargetId, TransportCoordinator, TransportEvent, TransportRegistry,
@@ -531,6 +532,7 @@ impl App<'_> {
         };
 
         // Build transport coordinator with 2s poll interval (matching old MessageReceiver)
+        #[allow(deprecated)]
         let coordinator_config = CoordinatorConfig {
             receiver_config: ReceiverConfig::with_poll_interval(Duration::from_secs(2)),
             ..CoordinatorConfig::default()
@@ -653,12 +655,8 @@ impl App<'_> {
 
         let coordinator = Arc::new(coordinator);
 
-        // Create transport registry for UI queries
-        let mut registry = TransportRegistry::new();
-        if let Some(http) = coordinator.http_pool() {
-            registry.set_http_pool(http.clone());
-        }
-        registry.set_mqtt_pool(mqtt_pool_arc);
+        // Create transport registry as read-only view of coordinator pools
+        let registry = TransportRegistry::with_coordinator(&coordinator);
 
         // Register HTTP targets with their tier/label information
         for parsed_peer in &parsed_http_peers {
@@ -728,7 +726,7 @@ impl App<'_> {
                             .unwrap_or(23004);
 
                         let our_rk: [u8; 16] = identity.public_id().routing_key().into();
-                        let txt = reme_discovery::encode_txt(&our_rk, port, 1);
+                        let txt = reme_discovery::encode_txt(&our_rk, port);
                         let spec = reme_discovery::AdvertisementSpec {
                             txt_records: txt,
                             ..reme_discovery::AdvertisementSpec::new(port)
