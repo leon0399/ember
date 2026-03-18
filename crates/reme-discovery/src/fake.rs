@@ -3,7 +3,10 @@ use std::sync::Mutex;
 use tokio::sync::broadcast;
 
 use crate::backend::DiscoveryBackend;
-use crate::types::{AdvertisementSpec, DiscoveryError, DiscoveryEvent, RawDiscoveredPeer};
+use crate::types::{
+    AdvertisementSpec, DiscoveryError, DiscoveryEvent, RawDiscoveredPeer,
+    DISCOVERY_CHANNEL_CAPACITY,
+};
 
 /// A deterministic discovery backend for testing.
 ///
@@ -18,7 +21,7 @@ pub struct FakeDiscoveryBackend {
 impl FakeDiscoveryBackend {
     /// Create a new fake backend with no peers.
     pub fn new() -> Self {
-        let (tx, _) = broadcast::channel(64);
+        let (tx, _) = broadcast::channel(DISCOVERY_CHANNEL_CAPACITY);
         Self {
             advertising: Mutex::new(false),
             tx,
@@ -96,8 +99,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn inject_peer_and_receive() {
+    #[test]
+    fn inject_peer_and_receive() {
         let backend = FakeDiscoveryBackend::new();
         let mut rx = backend.subscribe();
 
@@ -112,8 +115,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn inject_updated_and_receive() {
+    #[test]
+    fn inject_updated_and_receive() {
         let backend = FakeDiscoveryBackend::new();
         let mut rx = backend.subscribe();
 
@@ -126,8 +129,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn inject_lost_and_receive() {
+    #[test]
+    fn inject_lost_and_receive() {
         let backend = FakeDiscoveryBackend::new();
         let mut rx = backend.subscribe();
 
@@ -170,8 +173,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn multiple_subscribers_receive_events() {
+    #[test]
+    fn multiple_subscribers_receive_events() {
         let backend = FakeDiscoveryBackend::new();
         let mut rx1 = backend.subscribe();
         let mut rx2 = backend.subscribe();

@@ -6,6 +6,17 @@ use std::collections::HashMap;
 /// `reme-message` / `reme-identity`.
 pub type RoutingKey = [u8; 16];
 
+/// Structured fields decoded from a TXT record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxtFields {
+    /// The routing key identifying the peer.
+    pub routing_key: RoutingKey,
+    /// The port advertised in the TXT record.
+    pub port: u16,
+    /// The protocol version.
+    pub version: u8,
+}
+
 // TXT record key names — shared between encode and decode.
 const TXT_KEY_VERSION: &str = "v";
 const TXT_KEY_ROUTING_KEY: &str = "rk";
@@ -41,9 +52,9 @@ pub enum TxtError {
 /// should treat the SRV/peer port as authoritative in the presence of any
 /// conflict, and may ignore the TXT `port` entirely once the SRV record has
 /// been resolved.
-pub fn encode_txt(routing_key: &RoutingKey, port: u16, version: u8) -> HashMap<String, String> {
+pub fn encode_txt(routing_key: &RoutingKey, port: u16) -> HashMap<String, String> {
     HashMap::from([
-        (TXT_KEY_VERSION.to_owned(), version.to_string()),
+        (TXT_KEY_VERSION.to_owned(), "1".to_owned()),
         (TXT_KEY_ROUTING_KEY.to_owned(), hex::encode(routing_key)),
         (TXT_KEY_PORT.to_owned(), port.to_string()),
     ])
@@ -51,14 +62,14 @@ pub fn encode_txt(routing_key: &RoutingKey, port: u16, version: u8) -> HashMap<S
 
 /// Decode a TXT record map back into structured fields.
 ///
-/// Returns `(routing_key, port, version)` or a [`TxtError`] describing what
-/// went wrong.
+/// Returns a [`TxtFields`] struct or a [`TxtError`] describing what went
+/// wrong.
 ///
 /// Although this function parses and returns the TXT `port` field, it is
 /// recommended that higher-level discovery code prefer the port obtained
 /// from the SRV record or [`RawDiscoveredPeer`] when both are available
 /// (i.e. "SRV/peer port wins; TXT `port` may be ignored").
-pub fn decode_txt(records: &HashMap<String, String>) -> Result<(RoutingKey, u16, u8), TxtError> {
+pub fn decode_txt(records: &HashMap<String, String>) -> Result<TxtFields, TxtError> {
     // --- version ---
     let v_str = records
         .get(TXT_KEY_VERSION)
@@ -87,7 +98,11 @@ pub fn decode_txt(records: &HashMap<String, String>) -> Result<(RoutingKey, u16,
         .parse()
         .map_err(|_| TxtError::InvalidPort(port_str.clone()))?;
 
-    Ok((routing_key, port, version))
+    Ok(TxtFields {
+        routing_key,
+        port,
+        version,
+    })
 }
 
 #[cfg(test)]
@@ -101,25 +116,24 @@ mod tests {
             0xba, 0x98,
         ];
         let port = 8443;
-        let version = 1;
 
-        let txt = encode_txt(&rk, port, version);
-        let (decoded_rk, decoded_port, decoded_version) = decode_txt(&txt).unwrap();
+        let txt = encode_txt(&rk, port);
+        let fields = decode_txt(&txt).unwrap();
 
-        assert_eq!(decoded_rk, rk);
-        assert_eq!(decoded_port, port);
-        assert_eq!(decoded_version, version);
+        assert_eq!(fields.routing_key, rk);
+        assert_eq!(fields.port, port);
+        assert_eq!(fields.version, 1);
     }
 
     #[test]
     fn round_trip_zero_port() {
         let rk = [0u8; 16];
-        let txt = encode_txt(&rk, 0, 1);
-        let (decoded_rk, decoded_port, decoded_version) = decode_txt(&txt).unwrap();
+        let txt = encode_txt(&rk, 0);
+        let fields = decode_txt(&txt).unwrap();
 
-        assert_eq!(decoded_rk, rk);
-        assert_eq!(decoded_port, 0);
-        assert_eq!(decoded_version, 1);
+        assert_eq!(fields.routing_key, rk);
+        assert_eq!(fields.port, 0);
+        assert_eq!(fields.version, 1);
     }
 
     #[test]
@@ -221,6 +235,19 @@ mod tests {
         assert_eq!(
             decode_txt(&txt).unwrap_err(),
             TxtError::InvalidVersion("256".to_owned()),
+        );
+    }
+
+    #[test]
+    fn unsupported_version_2_is_rejected() {
+        let mut txt = HashMap::new();
+        txt.insert("v".to_owned(), "2".to_owned());
+        txt.insert("rk".to_owned(), "00".repeat(16));
+        txt.insert("port".to_owned(), "443".to_owned());
+
+        assert_eq!(
+            decode_txt(&txt).unwrap_err(),
+            TxtError::InvalidVersion("2".to_owned()),
         );
     }
 }

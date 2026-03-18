@@ -46,6 +46,13 @@ pub struct AdvertisementSpec {
 /// Default service type for reme mDNS advertisements.
 pub const DEFAULT_SERVICE_TYPE: &str = "_reme._tcp.local.";
 
+/// Channel capacity for discovery event broadcast channels.
+///
+/// Used by both the fake and mDNS-SD backends, which are behind different
+/// feature gates — so this may appear unused in some feature combinations.
+#[allow(dead_code)]
+pub(crate) const DISCOVERY_CHANNEL_CAPACITY: usize = 128;
+
 impl AdvertisementSpec {
     /// Create a new advertisement spec with the given port and default service type.
     pub fn new(port: u16) -> Self {
