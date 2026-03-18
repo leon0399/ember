@@ -1,8 +1,13 @@
-//! Push-based message receiver
+//! Push-based message receiver (deprecated)
 //!
 //! This module provides a push-based interface for receiving messages.
 //! Currently implemented via HTTP polling, but the interface is designed
 //! to support future transport mechanisms (WebSocket, DHT, BLE, `LoRa`).
+//!
+//! **Deprecated**: Use [`TransportCoordinator::subscribe()`] instead.
+
+// Allow deprecated usage within this module since the entire module is deprecated.
+#![allow(deprecated)]
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,6 +24,10 @@ use crate::pool::TransportPool;
 use crate::{EventReceiver, EventSender, TransportEvent};
 
 /// Configuration for the message receiver
+#[deprecated(
+    since = "0.4.0",
+    note = "Use TransportCoordinator::subscribe() instead"
+)]
 #[derive(Debug, Clone, Copy, Derivative)]
 #[derivative(Default)]
 pub struct ReceiverConfig {
@@ -37,6 +46,10 @@ impl ReceiverConfig {
 /// Handle to control a running message receiver
 ///
 /// Drop this handle to stop the receiver.
+#[deprecated(
+    since = "0.4.0",
+    note = "Use TransportCoordinator::subscribe() instead"
+)]
 pub struct ReceiverHandle {
     cancel_token: CancellationToken,
 }
@@ -80,6 +93,10 @@ impl Drop for ReceiverHandle {
 /// // Or stop explicitly
 /// handle.stop();
 /// ```
+#[deprecated(
+    since = "0.4.0",
+    note = "Use TransportCoordinator::subscribe() instead"
+)]
 pub struct MessageReceiver {
     pool: Arc<TransportPool<HttpTarget>>,
 }

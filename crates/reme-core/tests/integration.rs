@@ -3,6 +3,8 @@
 //! These tests spin up an in-process node server for self-contained testing.
 //! Uses MIK-only stateless encryption (no session establishment, no prekeys).
 
+#![allow(deprecated)]
+
 use reme_core::Client;
 use reme_encryption::{decrypt_with_mik, encrypt_to_mik, EncryptionError};
 use reme_identity::Identity;
