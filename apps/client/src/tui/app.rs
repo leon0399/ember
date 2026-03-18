@@ -10,8 +10,7 @@ use crossterm::execute;
 use ratatui::prelude::*;
 use reme_config::{ParsedHttpPeer, ParsedMqttPeer};
 use reme_core::Client;
-use reme_discovery::mdns_sd::MdnsSdBackend;
-use reme_discovery::DiscoveryBackend;
+use reme_discovery::DiscoveryBackend as _;
 use reme_identity::{Identity, PublicID};
 use reme_message::Content;
 use reme_node_core::{
@@ -33,7 +32,6 @@ use std::fs;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use tui_textarea::{Input, TextArea};
 use zeroize::Zeroizing;
@@ -355,12 +353,8 @@ pub struct App<'a> {
     pub registry: TransportRegistry,
     /// Outbox tick interval from config
     outbox_tick_interval: Duration,
-    /// mDNS discovery backend (for shutdown)
-    discovery_backend: Option<Arc<MdnsSdBackend>>,
-    /// Discovery controller cancel token
-    discovery_cancel: Option<CancellationToken>,
-    /// Discovery controller task handle (for awaiting shutdown)
-    discovery_task: Option<tokio::task::JoinHandle<()>>,
+    /// LAN discovery subsystem state (mDNS backend, cancel token, controller task)
+    discovery: Option<discovery::DiscoveryState>,
 }
 
 impl App<'_> {
@@ -684,71 +678,8 @@ impl App<'_> {
         }
 
         // --- LAN Discovery ---
-        let (discovery_backend, discovery_cancel, discovery_task) = if config.lan_discovery.enabled
-        {
-            match MdnsSdBackend::new() {
-                Ok(backend) => {
-                    // Spawn discovery controller only if direct LAN delivery is allowed
-                    let cancel = CancellationToken::new();
-                    let controller_handle = if config.lan_discovery.allow_direct_lan {
-                        let contacts: Vec<(PublicID, [u8; 16])> = storage
-                            .list_contacts()
-                            .unwrap_or_else(|e| {
-                                warn!("Failed to load contacts for discovery: {e}");
-                                Vec::new()
-                            })
-                            .into_iter()
-                            .map(|(_, pubkey, _)| {
-                                let rk: [u8; 16] = pubkey.routing_key().into();
-                                (pubkey, rk)
-                            })
-                            .collect();
-
-                        let events = backend.subscribe();
-                        Some(discovery::controller::spawn(
-                            events,
-                            coordinator.clone(),
-                            contacts,
-                            config.lan_discovery.max_peers,
-                            cancel.clone(),
-                        ))
-                    } else {
-                        info!("LAN discovery active but direct delivery disabled (allow_direct_lan = false)");
-                        None
-                    };
-
-                    // Start advertising only if HTTP server is bound
-                    if let Some(ref http_bind) = config.embedded_node.http_bind {
-                        let port: u16 = http_bind
-                            .rsplit(':')
-                            .next()
-                            .and_then(|p| p.parse().ok())
-                            .unwrap_or(23004);
-
-                        let our_rk: [u8; 16] = identity.public_id().routing_key().into();
-                        let txt = reme_discovery::encode_txt(&our_rk, port);
-                        let spec = reme_discovery::AdvertisementSpec {
-                            txt_records: txt,
-                            ..reme_discovery::AdvertisementSpec::new(port)
-                        };
-
-                        if let Err(e) = backend.start_advertising(spec).await {
-                            warn!("Failed to start mDNS advertising: {e}");
-                        }
-                    }
-
-                    info!("LAN discovery enabled");
-                    let backend = Arc::new(backend);
-                    (Some(backend), Some(cancel), controller_handle)
-                }
-                Err(e) => {
-                    warn!("Failed to initialize mDNS backend: {e}. LAN discovery disabled.");
-                    (None, None, None)
-                }
-            }
-        } else {
-            (None, None, None)
-        };
+        let discovery =
+            discovery::initialize(&config, &identity, &storage, coordinator.clone()).await;
 
         // Build OutboxConfig from app config
         let ttl_ms = if config.outbox.ttl_days == 0 {
@@ -809,9 +740,7 @@ impl App<'_> {
             show_upstreams_popup: false,
             registry,
             outbox_tick_interval,
-            discovery_backend,
-            discovery_cancel,
-            discovery_task,
+            discovery,
         };
 
         // Load contacts
@@ -945,21 +874,19 @@ impl App<'_> {
     /// Cancels the discovery controller, awaits its task, then shuts down
     /// the mDNS backend to release network resources.
     async fn shutdown_discovery(&mut self) {
-        if let Some(cancel) = self.discovery_cancel.take() {
+        if let Some(state) = self.discovery.take() {
             debug!("Cancelling discovery controller...");
-            cancel.cancel();
-        }
+            state.cancel.cancel();
 
-        if let Some(task) = self.discovery_task.take() {
-            debug!("Waiting for discovery controller to stop...");
-            if let Err(e) = task.await {
-                warn!(error = %e, "Discovery controller task panicked during shutdown");
+            if let Some(task) = state.controller_task {
+                debug!("Waiting for discovery controller to stop...");
+                if let Err(e) = task.await {
+                    warn!(error = %e, "Discovery controller task panicked during shutdown");
+                }
             }
-        }
 
-        if let Some(backend) = self.discovery_backend.take() {
             debug!("Shutting down mDNS backend...");
-            if let Err(e) = backend.shutdown().await {
+            if let Err(e) = state.backend.shutdown().await {
                 warn!(error = %e, "Failed to shutdown mDNS backend");
             } else {
                 info!("mDNS backend shutdown complete");
