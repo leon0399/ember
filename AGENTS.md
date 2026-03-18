@@ -60,10 +60,10 @@ apps/
 When `lan_discovery.enabled = true`, the client:
 1. Creates an mDNS-SD backend browsing for `_reme._tcp.local.` services
 2. Advertises own presence if embedded HTTP server is bound (`embedded_node.http_bind`)
-3. If `allow_direct_lan = true` (default): spawns a discovery controller that matches peers by routing key against contacts, verifies identity via HTTP challenge-response, and registers verified peers as ephemeral HTTP targets (SEND-only, no FETCH)
-4. If `allow_direct_lan = false`: mDNS browsing/advertising runs but no peers are verified or registered
+3. If `auto_direct_known_contacts = true` (default): spawns a discovery controller that matches peers by routing key against contacts, verifies identity via HTTP challenge-response, and registers verified peers as ephemeral HTTP targets (SEND-only, no FETCH)
+4. If `auto_direct_known_contacts = false`: mDNS browsing/advertising runs but no peers are verified or registered
 
-`max_peers` caps the tracked peer set (default: 256).
+`max_peers` caps the tracked peer set (default: 256). `refresh_interval_secs` (default: 300) controls periodic re-verification of tracked peers; peers that fail verification twice consecutively are removed (ephemeral circuit breaker).
 
 ### Key Data Flow
 

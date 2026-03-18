@@ -19,11 +19,17 @@ use tracing::{debug, info, warn};
 /// Max identity response body size (a valid response is ~120 bytes).
 const MAX_IDENTITY_RESPONSE_BYTES: u64 = 4096;
 
+/// Number of consecutive verification failures before a peer is removed.
+const FAILURE_THRESHOLD: u8 = 2;
+
 /// Tracks discovered LAN peers, verifies their identity, and registers them
 /// as ephemeral HTTP targets in the [`TransportCoordinator`].
 pub struct DiscoveryController {
     /// Maps `instance_name` to tracked peer state.
     peer_index: HashMap<String, PeerEntry>,
+    /// Maps `PublicID` to the set of instance names belonging to that identity,
+    /// enabling multi-device support (same identity on different devices).
+    verified_peer_index: HashMap<PublicID, Vec<String>>,
     /// Maps `routing_key` to candidate public keys for quick contact lookup.
     contact_index: HashMap<[u8; 16], Vec<PublicID>>,
     max_peers: usize,
@@ -33,6 +39,8 @@ pub struct DiscoveryController {
 struct PeerEntry {
     verified_identity: PublicID,
     url: String,
+    /// Consecutive verification failures during periodic refresh.
+    failure_count: u8,
 }
 
 #[derive(Deserialize)]
@@ -44,11 +52,16 @@ struct IdentityResponse {
 ///
 /// Listens for [`DiscoveryEvent`]s and, for peers whose routing key matches
 /// a known contact, verifies identity and registers them as ephemeral targets.
+///
+/// A periodic refresh timer re-verifies all tracked peers every
+/// `refresh_interval_secs` seconds. Peers that fail verification twice in a row
+/// are removed (ephemeral circuit breaker).
 pub fn spawn(
     mut events: broadcast::Receiver<DiscoveryEvent>,
     coordinator: Arc<TransportCoordinator>,
     contacts: Vec<(PublicID, [u8; 16])>,
     max_peers: usize,
+    refresh_interval_secs: u64,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -59,6 +72,12 @@ pub fn spawn(
                 return;
             }
         };
+
+        let mut refresh_timer =
+            tokio::time::interval(std::time::Duration::from_secs(refresh_interval_secs));
+        // The first tick completes immediately; skip it so we don't
+        // run refresh before any peers have been discovered.
+        refresh_timer.tick().await;
 
         loop {
             tokio::select! {
@@ -80,6 +99,9 @@ pub fn spawn(
                         Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
+                _ = refresh_timer.tick() => {
+                    controller.refresh_all_peers(&coordinator).await;
+                }
             }
         }
 
@@ -88,6 +110,7 @@ pub fn spawn(
             coordinator.remove_http_target(&TargetId::http(&entry.url));
             debug!(instance = %name, "Deregistered peer on shutdown");
         }
+        controller.verified_peer_index.clear();
 
         info!("Discovery controller stopped");
     })
@@ -109,6 +132,7 @@ impl DiscoveryController {
 
         Ok(Self {
             peer_index: HashMap::new(),
+            verified_peer_index: HashMap::new(),
             contact_index,
             max_peers,
             http_client: reqwest::Client::builder()
@@ -116,6 +140,63 @@ impl DiscoveryController {
                 .timeout(std::time::Duration::from_secs(5))
                 .build()?,
         })
+    }
+
+    /// Periodic refresh: re-verify every tracked peer. On failure, increment
+    /// the failure counter; at [`FAILURE_THRESHOLD`] consecutive failures,
+    /// remove the peer entirely (ephemeral circuit breaker). On success, reset
+    /// the counter.
+    async fn refresh_all_peers(&mut self, coordinator: &TransportCoordinator) {
+        // Collect peer data first to avoid borrowing issues.
+        let peers: Vec<(String, String, PublicID)> = self
+            .peer_index
+            .iter()
+            .map(|(name, entry)| (name.clone(), entry.url.clone(), entry.verified_identity))
+            .collect();
+
+        if peers.is_empty() {
+            return;
+        }
+
+        debug!(count = peers.len(), "Starting periodic peer refresh");
+
+        let mut to_remove = Vec::new();
+
+        for (name, url, identity) in &peers {
+            let candidates = std::slice::from_ref(identity);
+            let ok = match self.verify_peer_identity(url, candidates).await {
+                Ok(Some(_)) => true,
+                Ok(None) | Err(_) => false,
+            };
+
+            if ok {
+                if let Some(entry) = self.peer_index.get_mut(name) {
+                    if entry.failure_count > 0 {
+                        debug!(instance = %name, "Peer refresh succeeded, resetting failure count");
+                    }
+                    entry.failure_count = 0;
+                }
+            } else if let Some(entry) = self.peer_index.get_mut(name) {
+                entry.failure_count += 1;
+                debug!(
+                    instance = %name,
+                    failures = entry.failure_count,
+                    "Peer refresh verification failed"
+                );
+                if entry.failure_count >= FAILURE_THRESHOLD {
+                    to_remove.push(name.clone());
+                }
+            }
+        }
+
+        for name in to_remove {
+            info!(
+                instance = %name,
+                "Removing stale peer after {} consecutive verification failures",
+                FAILURE_THRESHOLD
+            );
+            self.remove_peer(&name, coordinator);
+        }
     }
 
     async fn handle_discovered(
@@ -263,8 +344,14 @@ impl DiscoveryController {
             PeerEntry {
                 verified_identity: verified,
                 url: url.to_owned(),
+                failure_count: 0,
             },
         );
+
+        self.verified_peer_index
+            .entry(verified)
+            .or_default()
+            .push(instance_name.to_owned());
     }
 
     fn handle_update(
@@ -281,6 +368,7 @@ impl DiscoveryController {
         let address_changed = entry.url != url;
         let identity_changed = entry.verified_identity != verified;
         let old_target_id = TargetId::http(&entry.url);
+        let old_identity = entry.verified_identity;
 
         if !address_changed && !identity_changed {
             return;
@@ -306,19 +394,50 @@ impl DiscoveryController {
             );
         }
 
+        // If identity changed, update the verified_peer_index.
+        if identity_changed {
+            // Remove from old identity's instance list.
+            if let Some(instances) = self.verified_peer_index.get_mut(&old_identity) {
+                instances.retain(|n| n != instance_name);
+                if instances.is_empty() {
+                    self.verified_peer_index.remove(&old_identity);
+                }
+            }
+            // Add to new identity's instance list.
+            self.verified_peer_index
+                .entry(verified)
+                .or_default()
+                .push(instance_name.to_owned());
+        }
+
         self.peer_index.insert(
             instance_name.to_owned(),
             PeerEntry {
                 verified_identity: verified,
                 url: url.to_owned(),
+                failure_count: 0,
             },
         );
     }
 
     fn handle_lost(&mut self, instance_name: &str, coordinator: &TransportCoordinator) {
+        self.remove_peer(instance_name, coordinator);
+    }
+
+    /// Remove a peer from all indices and deregister its HTTP target.
+    fn remove_peer(&mut self, instance_name: &str, coordinator: &TransportCoordinator) {
         if let Some(entry) = self.peer_index.remove(instance_name) {
             coordinator.remove_http_target(&TargetId::http(&entry.url));
-            info!(instance = %instance_name, "Removed lost peer");
+
+            // Remove from verified_peer_index.
+            if let Some(instances) = self.verified_peer_index.get_mut(&entry.verified_identity) {
+                instances.retain(|n| n != instance_name);
+                if instances.is_empty() {
+                    self.verified_peer_index.remove(&entry.verified_identity);
+                }
+            }
+
+            info!(instance = %instance_name, "Removed peer");
         }
     }
 
@@ -451,12 +570,20 @@ mod tests {
             PeerEntry {
                 verified_identity: peer_identity,
                 url: "http://192.168.1.50:23003".to_owned(),
+                failure_count: 0,
             },
         );
+        controller
+            .verified_peer_index
+            .entry(peer_identity)
+            .or_default()
+            .push("test-peer".to_string());
 
         assert!(controller.peer_index.contains_key("test-peer"));
+        assert!(controller.verified_peer_index.contains_key(&peer_identity));
         controller.handle_lost("test-peer", &coordinator);
         assert!(!controller.peer_index.contains_key("test-peer"));
+        assert!(!controller.verified_peer_index.contains_key(&peer_identity));
     }
 
     #[test]
@@ -465,5 +592,56 @@ mod tests {
         let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
 
         controller.handle_lost("nonexistent", &coordinator);
+    }
+
+    #[test]
+    fn verified_peer_index_tracks_multi_device() {
+        let mut controller = DiscoveryController::new(vec![], 256).unwrap();
+        let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
+        let peer_identity = *Identity::generate().public_id();
+
+        // Simulate two devices with the same identity.
+        controller.handle_new(
+            "device-a",
+            "http://192.168.1.10:23003",
+            peer_identity,
+            &coordinator,
+        );
+        controller.handle_new(
+            "device-b",
+            "http://192.168.1.11:23003",
+            peer_identity,
+            &coordinator,
+        );
+
+        let instances = controller.verified_peer_index.get(&peer_identity).unwrap();
+        assert_eq!(instances.len(), 2);
+        assert!(instances.contains(&"device-a".to_string()));
+        assert!(instances.contains(&"device-b".to_string()));
+
+        // Remove one device; the identity should still be tracked.
+        controller.handle_lost("device-a", &coordinator);
+        let instances = controller.verified_peer_index.get(&peer_identity).unwrap();
+        assert_eq!(instances.len(), 1);
+        assert!(instances.contains(&"device-b".to_string()));
+
+        // Remove the last device; the identity entry should be cleaned up.
+        controller.handle_lost("device-b", &coordinator);
+        assert!(!controller.verified_peer_index.contains_key(&peer_identity));
+    }
+
+    #[test]
+    fn failure_count_starts_at_zero() {
+        let mut controller = DiscoveryController::new(vec![], 256).unwrap();
+        let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
+        let peer_identity = *Identity::generate().public_id();
+
+        controller.handle_new(
+            "peer-1",
+            "http://192.168.1.10:23003",
+            peer_identity,
+            &coordinator,
+        );
+        assert_eq!(controller.peer_index["peer-1"].failure_count, 0);
     }
 }
