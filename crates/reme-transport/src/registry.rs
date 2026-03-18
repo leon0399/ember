@@ -304,7 +304,10 @@ impl TransportQuery for TransportRegistry {
         #[cfg(not(feature = "mqtt"))]
         let mqtt_available = false;
 
-        // Also check metadata-only targets
+        // Metadata-only targets (e.g. LAN peers registered via discovery) have no
+        // pool backing and report HealthState::Unknown. We still consider them
+        // "available" because the coordinator routes sends through their ephemeral
+        // HTTP connections directly.
         let has_meta_targets = !self.target_meta.read().unwrap().is_empty();
 
         http_available || mqtt_available || has_meta_targets

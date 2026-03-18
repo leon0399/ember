@@ -450,7 +450,7 @@ pub struct LanDiscoveryConfig {
     /// contacts for direct LAN delivery (default: true when enabled).
     /// When false, the discovery controller is not spawned — mDNS browsing and
     /// advertising still run, but no peers are verified or registered as targets.
-    #[serde(default = "default_true")]
+    #[serde(default = "default_auto_direct_known_contacts")]
     pub auto_direct_known_contacts: bool,
 
     /// Max discovered peers to track (default: 256).
@@ -479,7 +479,7 @@ impl Default for LanDiscoveryConfig {
     }
 }
 
-fn default_true() -> bool {
+fn default_auto_direct_known_contacts() -> bool {
     DEFAULT_LAN_ALLOW_DIRECT
 }
 

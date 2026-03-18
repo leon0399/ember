@@ -104,8 +104,15 @@ pub fn spawn(config: SpawnConfig) -> JoinHandle<()> {
             }
         };
 
-        let mut refresh_timer =
-            tokio::time::interval(std::time::Duration::from_secs(refresh_interval_secs));
+        let refresh_secs = refresh_interval_secs.max(30);
+        if refresh_secs != refresh_interval_secs {
+            warn!(
+                requested = refresh_interval_secs,
+                actual = refresh_secs,
+                "refresh_interval_secs too low, clamping to 30"
+            );
+        }
+        let mut refresh_timer = tokio::time::interval(std::time::Duration::from_secs(refresh_secs));
         // The first tick completes immediately; skip it so we don't
         // run refresh before any peers have been discovered.
         refresh_timer.tick().await;
@@ -133,7 +140,10 @@ pub fn spawn(config: SpawnConfig) -> JoinHandle<()> {
                     }
                 }
                 Some((pubkey, routing_key)) = contact_rx.recv() => {
-                    controller.contact_index.entry(routing_key).or_default().push(pubkey);
+                    let candidates = controller.contact_index.entry(routing_key).or_default();
+                    if !candidates.contains(&pubkey) {
+                        candidates.push(pubkey);
+                    }
                     debug!(
                         pubkey = %hex::encode(pubkey.to_bytes()),
                         "Added new contact to discovery controller"
@@ -302,14 +312,12 @@ impl DiscoveryController {
         }
 
         // Try each address until identity verification succeeds.
-        let mut verified = None;
-        let mut working_url = None;
+        let mut result: Option<(PublicID, String)> = None;
         for &addr in &peer.addresses {
             let url = format!("http://{}", SocketAddr::new(addr, peer.port));
             match self.verify_peer_identity(&url, candidates).await {
                 Ok(Some(pubkey)) => {
-                    verified = Some(pubkey);
-                    working_url = Some(url);
+                    result = Some((pubkey, url));
                     break;
                 }
                 Ok(None) => {
@@ -329,7 +337,7 @@ impl DiscoveryController {
             }
         }
 
-        let (Some(verified), Some(url)) = (verified, working_url) else {
+        let Some((verified, url)) = result else {
             debug!(
                 instance = %peer.instance_name,
                 "No address passed identity verification"
@@ -409,12 +417,13 @@ impl DiscoveryController {
             .expect("invariant: is_update implies entry exists");
         let address_changed = entry.url != url;
         let identity_changed = entry.verified_identity != verified;
-        let old_target_id = TargetId::http(&entry.url);
-        let old_identity = entry.verified_identity;
 
         if !address_changed && !identity_changed {
             return;
         }
+
+        let old_target_id = TargetId::http(&entry.url);
+        let old_identity = entry.verified_identity;
 
         let Some(target) = Self::build_http_target(instance_name, url, verified) else {
             return;
@@ -452,14 +461,14 @@ impl DiscoveryController {
                 .push(instance_name.to_owned());
         }
 
-        self.peer_index.insert(
-            instance_name.to_owned(),
-            PeerEntry {
-                verified_identity: verified,
-                url: url.to_owned(),
-                failure_count: 0,
-            },
-        );
+        // Update the entry in-place to avoid re-allocating the key.
+        let entry = self
+            .peer_index
+            .get_mut(instance_name)
+            .expect("invariant: is_update implies entry exists");
+        entry.verified_identity = verified;
+        url.clone_into(&mut entry.url);
+        entry.failure_count = 0;
     }
 
     fn handle_lost(&mut self, instance_name: &str, coordinator: &TransportCoordinator) {
@@ -512,7 +521,7 @@ impl DiscoveryController {
         // Safe: MAX_IDENTITY_RESPONSE_BYTES is 4096, well within usize on any target.
         #[allow(clippy::cast_possible_truncation)]
         let max = MAX_IDENTITY_RESPONSE_BYTES as usize;
-        let mut buf = Vec::with_capacity(max.min(4096));
+        let mut buf = Vec::with_capacity(max);
         while let Some(chunk) = resp.chunk().await? {
             if buf.len() + chunk.len() > max {
                 debug!(
@@ -523,9 +532,7 @@ impl DiscoveryController {
             }
             buf.extend_from_slice(&chunk);
         }
-        let bytes = buf;
-
-        let Ok(body) = serde_json::from_slice::<IdentityResponse>(&bytes) else {
+        let Ok(body) = serde_json::from_slice::<IdentityResponse>(&buf) else {
             debug!("Failed to parse identity response");
             return Ok(None);
         };
