@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use base64::prelude::*;
@@ -11,7 +12,7 @@ use reme_transport::coordinator::TransportCoordinator;
 use reme_transport::http_target::{HttpTarget, HttpTargetConfig};
 use reme_transport::target::TargetId;
 use serde::Deserialize;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -48,6 +49,26 @@ struct IdentityResponse {
     signature: String,
 }
 
+/// Configuration for spawning the discovery controller event loop.
+pub struct SpawnConfig {
+    /// Broadcast receiver for mDNS discovery events.
+    pub events: broadcast::Receiver<DiscoveryEvent>,
+    /// Transport coordinator for registering/deregistering HTTP targets.
+    pub coordinator: Arc<TransportCoordinator>,
+    /// Initial contacts to track (public key + routing key).
+    pub contacts: Vec<(PublicID, [u8; 16])>,
+    /// Maximum number of peers to track simultaneously.
+    pub max_peers: usize,
+    /// Interval (in seconds) between periodic peer re-verification.
+    pub refresh_interval_secs: u64,
+    /// Cancellation token for graceful shutdown.
+    pub cancel: CancellationToken,
+    /// Channel receiver for dynamically-added contacts at runtime.
+    pub contact_rx: mpsc::UnboundedReceiver<(PublicID, [u8; 16])>,
+    /// Shared counter updated whenever peers are added or removed.
+    pub peer_count: Arc<AtomicUsize>,
+}
+
 /// Spawn the discovery controller event loop.
 ///
 /// Listens for [`DiscoveryEvent`]s and, for peers whose routing key matches
@@ -56,14 +77,24 @@ struct IdentityResponse {
 /// A periodic refresh timer re-verifies all tracked peers every
 /// `refresh_interval_secs` seconds. Peers that fail verification twice in a row
 /// are removed (ephemeral circuit breaker).
-pub fn spawn(
-    mut events: broadcast::Receiver<DiscoveryEvent>,
-    coordinator: Arc<TransportCoordinator>,
-    contacts: Vec<(PublicID, [u8; 16])>,
-    max_peers: usize,
-    refresh_interval_secs: u64,
-    cancel: CancellationToken,
-) -> JoinHandle<()> {
+///
+/// The `contact_rx` channel allows dynamic contact additions at runtime — when a
+/// new contact is added via the TUI, the controller immediately starts tracking
+/// its routing key for LAN discovery.
+///
+/// The `peer_count` atomic is updated whenever peers are added or removed,
+/// allowing the TUI to display the current discovered peer count without polling.
+pub fn spawn(config: SpawnConfig) -> JoinHandle<()> {
+    let SpawnConfig {
+        mut events,
+        coordinator,
+        contacts,
+        max_peers,
+        refresh_interval_secs,
+        cancel,
+        mut contact_rx,
+        peer_count,
+    } = config;
     tokio::spawn(async move {
         let mut controller = match DiscoveryController::new(contacts, max_peers) {
             Ok(c) => c,
@@ -89,9 +120,11 @@ pub fn spawn(
                             | DiscoveryEvent::PeerUpdated(peer),
                         ) => {
                             controller.handle_discovered(peer, &coordinator).await;
+                            peer_count.store(controller.peer_index.len(), Ordering::Relaxed);
                         }
                         Ok(DiscoveryEvent::PeerLost(name)) => {
                             controller.handle_lost(&name, &coordinator);
+                            peer_count.store(controller.peer_index.len(), Ordering::Relaxed);
                         }
                         Err(broadcast::error::RecvError::Lagged(n)) => {
                             warn!("Discovery controller lagged by {n} events");
@@ -99,8 +132,16 @@ pub fn spawn(
                         Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
+                Some((pubkey, routing_key)) = contact_rx.recv() => {
+                    controller.contact_index.entry(routing_key).or_default().push(pubkey);
+                    debug!(
+                        pubkey = %hex::encode(pubkey.to_bytes()),
+                        "Added new contact to discovery controller"
+                    );
+                }
                 _ = refresh_timer.tick() => {
                     controller.refresh_all_peers(&coordinator).await;
+                    peer_count.store(controller.peer_index.len(), Ordering::Relaxed);
                 }
             }
         }
@@ -111,6 +152,7 @@ pub fn spawn(
             debug!(instance = %name, "Deregistered peer on shutdown");
         }
         controller.verified_peer_index.clear();
+        peer_count.store(0, Ordering::Relaxed);
 
         info!("Discovery controller stopped");
     })

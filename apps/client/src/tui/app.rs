@@ -16,7 +16,7 @@ use reme_message::Content;
 use reme_node_core::{
     EmbeddedNode, EmbeddedNodeHandle, NodeEvent, PersistentMailboxStore, PersistentStoreConfig,
 };
-use reme_outbox::{OutboxConfig, TransportRetryPolicy};
+use reme_outbox::{OutboxConfig, TieredDeliveryPhase, TransportRetryPolicy};
 use reme_storage::Storage;
 use reme_transport::http_target::{HttpTarget, HttpTargetConfig};
 use reme_transport::pool::TransportPool;
@@ -29,6 +29,7 @@ use reme_transport::{
 };
 use std::collections::{HashMap, VecDeque};
 use std::fs;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -355,6 +356,10 @@ pub struct App<'a> {
     outbox_tick_interval: Duration,
     /// LAN discovery subsystem state (mDNS backend, cancel token, controller task)
     discovery: Option<discovery::DiscoveryState>,
+    /// Shared counter of currently discovered LAN peers (updated by controller).
+    pub lan_peer_count: Arc<AtomicUsize>,
+    /// Whether LAN discovery is enabled in config (for status bar display).
+    pub lan_discovery_enabled: bool,
 }
 
 impl App<'_> {
@@ -678,8 +683,21 @@ impl App<'_> {
         }
 
         // --- LAN Discovery ---
-        let discovery =
+        let lan_discovery_enabled = config.lan_discovery.enabled;
+        let init_result =
             discovery::initialize(&config, &identity, &storage, coordinator.clone()).await;
+        let (discovery, lan_peer_count, discovery_status_msg) = match init_result {
+            discovery::InitResult::Disabled => (None, Arc::new(AtomicUsize::new(0)), None),
+            discovery::InitResult::Failed(reason) => (
+                None,
+                Arc::new(AtomicUsize::new(0)),
+                Some(format!("LAN discovery failed: {reason}")),
+            ),
+            discovery::InitResult::Ok(state) => {
+                let peer_count = state.peer_count.clone();
+                (Some(state), peer_count, None)
+            }
+        };
 
         // Build OutboxConfig from app config
         let ttl_ms = if config.outbox.ttl_days == 0 {
@@ -741,7 +759,14 @@ impl App<'_> {
             registry,
             outbox_tick_interval,
             discovery,
+            lan_peer_count,
+            lan_discovery_enabled,
         };
+
+        // Surface mDNS init failure in TUI status bar (M14)
+        if let Some(msg) = discovery_status_msg {
+            app.status = msg;
+        }
 
         // Load contacts
         app.load_contacts()?;
@@ -786,6 +811,11 @@ impl App<'_> {
     /// Get full ID as hex string
     pub fn my_full_id(&self) -> String {
         hex::encode(self.my_public_id().to_bytes())
+    }
+
+    /// Get the current count of discovered LAN peers.
+    pub fn lan_peer_count(&self) -> usize {
+        self.lan_peer_count.load(Ordering::Relaxed)
     }
 
     /// Run the application main loop
@@ -1196,8 +1226,8 @@ impl App<'_> {
             if !text.trim().is_empty() {
                 if let Some(conv) = self.conversations.get(self.selected_conversation) {
                     let public_id = conv.public_id;
-                    match self.client.send_text(&public_id, &text).await {
-                        Ok(_) => {
+                    match self.client.send_text_tiered(&public_id, &text).await {
+                        Ok((_msg_id, phase)) => {
                             // Create message object
                             let message = Message {
                                 from_me: true,
@@ -1214,7 +1244,7 @@ impl App<'_> {
 
                             self.input = TextArea::default();
                             self.input.set_placeholder_text("Type a message...");
-                            self.status = "Message sent!".to_string();
+                            self.status = format_delivery_status(&phase);
                         }
                         Err(e) => {
                             self.status = format!("Send failed: {e}");
@@ -1323,6 +1353,16 @@ impl App<'_> {
         // Add contact via client API
         match self.client.add_contact(&public_id, name.as_deref()) {
             Ok(_) => {
+                // Notify the discovery controller about the new contact (M12)
+                if let Some(ref state) = self.discovery {
+                    if let Some(ref tx) = state.contact_tx {
+                        let rk: [u8; 16] = public_id.routing_key().into();
+                        if let Err(e) = tx.send((public_id, rk)) {
+                            debug!("Discovery contact channel closed: {e}");
+                        }
+                    }
+                }
+
                 // Reuse get_or_create_conversation to add to UI (avoids duplication)
                 let conv_idx = self.get_or_create_conversation(public_id);
                 let display_name = self.conversations[conv_idx].name.clone();
@@ -1524,4 +1564,19 @@ fn format_display_name(name: Option<&str>, public_id: &PublicID) -> String {
         },
         String::from,
     )
+}
+
+/// Format a [`TieredDeliveryPhase`] into a human-readable status message.
+fn format_delivery_status(phase: &TieredDeliveryPhase) -> String {
+    use reme_transport::DeliveryConfidence;
+    match phase {
+        TieredDeliveryPhase::Urgent => "Sent (queued, awaiting delivery)".to_string(),
+        TieredDeliveryPhase::Distributed { confidence, .. } => match confidence {
+            DeliveryConfidence::DirectDelivery { .. } => "Sent (direct delivery)".to_string(),
+            DeliveryConfidence::QuorumReached { count, required } => {
+                format!("Sent (quorum {count}/{required})")
+            }
+        },
+        TieredDeliveryPhase::Confirmed { .. } => "Sent (confirmed)".to_string(),
+    }
 }

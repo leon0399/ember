@@ -1,13 +1,15 @@
 pub mod controller;
 
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use crate::config::AppConfig;
 use reme_discovery::mdns_sd::MdnsSdBackend;
 use reme_discovery::DiscoveryBackend as _;
-use reme_identity::Identity;
+use reme_identity::{Identity, PublicID};
 use reme_storage::Storage;
 use reme_transport::coordinator::TransportCoordinator;
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -20,6 +22,20 @@ pub struct DiscoveryState {
     pub backend: Arc<MdnsSdBackend>,
     pub cancel: CancellationToken,
     pub controller_task: Option<JoinHandle<()>>,
+    /// Channel for dynamically adding contacts to the controller at runtime.
+    pub contact_tx: Option<mpsc::UnboundedSender<(PublicID, [u8; 16])>>,
+    /// Shared counter of currently discovered (verified) LAN peers.
+    pub peer_count: Arc<AtomicUsize>,
+}
+
+/// Result of attempting to initialize the discovery subsystem.
+pub enum InitResult {
+    /// Discovery is disabled in config.
+    Disabled,
+    /// mDNS backend failed to initialize (discovery was enabled).
+    Failed(String),
+    /// Successfully initialized.
+    Ok(DiscoveryState),
 }
 
 /// Initialize the LAN discovery subsystem.
@@ -28,28 +44,30 @@ pub struct DiscoveryState {
 /// (when `auto_direct_known_contacts` is enabled), and starts advertising
 /// if an HTTP server bind address is configured.
 ///
-/// Returns `None` if discovery is disabled or the backend fails to initialize.
+/// Returns [`InitResult`] distinguishing disabled, failed, and success cases.
 pub async fn initialize(
     config: &AppConfig,
     identity: &Identity,
     storage: &Storage,
     coordinator: Arc<TransportCoordinator>,
-) -> Option<DiscoveryState> {
+) -> InitResult {
     if !config.lan_discovery.enabled {
-        return None;
+        return InitResult::Disabled;
     }
 
     let backend = match MdnsSdBackend::new() {
         Ok(b) => b,
         Err(e) => {
             warn!("Failed to initialize mDNS backend: {e}. LAN discovery disabled.");
-            return None;
+            return InitResult::Failed(format!("{e}"));
         }
     };
 
+    let peer_count = Arc::new(AtomicUsize::new(0));
+
     // Spawn discovery controller only if direct LAN delivery is allowed
     let cancel = CancellationToken::new();
-    let controller_task = if config.lan_discovery.auto_direct_known_contacts {
+    let (controller_task, contact_tx) = if config.lan_discovery.auto_direct_known_contacts {
         let contacts = storage
             .list_contacts()
             .unwrap_or_else(|e| {
@@ -64,17 +82,21 @@ pub async fn initialize(
             .collect();
 
         let events = backend.subscribe();
-        Some(controller::spawn(
+        let (contact_tx, contact_rx) = mpsc::unbounded_channel();
+        let task = controller::spawn(controller::SpawnConfig {
             events,
             coordinator,
             contacts,
-            config.lan_discovery.max_peers,
-            config.lan_discovery.refresh_interval_secs,
-            cancel.clone(),
-        ))
+            max_peers: config.lan_discovery.max_peers,
+            refresh_interval_secs: config.lan_discovery.refresh_interval_secs,
+            cancel: cancel.clone(),
+            contact_rx,
+            peer_count: peer_count.clone(),
+        });
+        (Some(task), Some(contact_tx))
     } else {
         info!("LAN discovery active but direct delivery disabled (auto_direct_known_contacts = false)");
-        None
+        (None, None)
     };
 
     // Start advertising only if HTTP server is bound
@@ -98,9 +120,11 @@ pub async fn initialize(
 
     info!("LAN discovery enabled");
     let backend = Arc::new(backend);
-    Some(DiscoveryState {
+    InitResult::Ok(DiscoveryState {
         backend,
         cancel,
         controller_task,
+        contact_tx,
+        peer_count,
     })
 }
