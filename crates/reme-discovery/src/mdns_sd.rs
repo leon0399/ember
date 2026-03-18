@@ -261,8 +261,16 @@ impl DiscoveryBackend for MdnsSdBackend {
             match self.daemon.unregister(fullname) {
                 Ok(receiver) => {
                     let fname = fullname.clone();
-                    if let Err(e) = tokio::task::spawn_blocking(move || receiver.recv()).await {
-                        warn!(fullname = %fname, "mDNS-SD: failed to await unregister during shutdown: {e}");
+                    match tokio::task::spawn_blocking(move || receiver.recv()).await {
+                        Ok(Ok(_status)) => {
+                            debug!(fullname = %fname, "mDNS-SD: unregister confirmed");
+                        }
+                        Ok(Err(e)) => {
+                            warn!(fullname = %fname, "mDNS-SD: unregister channel closed: {e}");
+                        }
+                        Err(e) => {
+                            warn!(fullname = %fname, "mDNS-SD: failed to await unregister: {e}");
+                        }
                     }
                 }
                 Err(e) => {
@@ -277,15 +285,31 @@ impl DiscoveryBackend for MdnsSdBackend {
             .shutdown()
             .map_err(|e| DiscoveryError::BackendError(e.to_string()))?;
 
-        if let Err(e) = tokio::task::spawn_blocking(move || shutdown_receiver.recv()).await {
-            warn!("mDNS-SD: failed to await daemon shutdown status: {e}");
+        match tokio::task::spawn_blocking(move || shutdown_receiver.recv()).await {
+            Ok(Ok(_status)) => {
+                debug!("mDNS-SD: daemon shutdown confirmed");
+            }
+            Ok(Err(e)) => {
+                warn!("mDNS-SD: daemon shutdown channel closed: {e}");
+            }
+            Err(e) => {
+                warn!("mDNS-SD: failed to await daemon shutdown: {e}");
+            }
         }
 
         // C2: Join the browse thread after daemon shutdown (daemon shutdown
         // closes the browse receiver, which causes the thread to exit).
         if let Some(handle) = browse_handle {
-            if let Err(e) = tokio::task::spawn_blocking(move || handle.join()).await {
-                warn!("mDNS-SD: failed to join browse thread: {e}");
+            match tokio::task::spawn_blocking(move || handle.join()).await {
+                Ok(Ok(())) => {
+                    debug!("mDNS-SD: browse thread joined");
+                }
+                Ok(Err(_panic)) => {
+                    warn!("mDNS-SD: browse thread panicked");
+                }
+                Err(e) => {
+                    warn!("mDNS-SD: failed to join browse thread: {e}");
+                }
             }
         }
 
