@@ -9,7 +9,9 @@ use reme_discovery::{decode_txt, DiscoveryEvent};
 use reme_encryption::build_identity_sign_data;
 use reme_identity::PublicID;
 use reme_transport::coordinator::TransportCoordinator;
+use reme_transport::delivery::DeliveryTier;
 use reme_transport::http_target::{HttpTarget, HttpTargetConfig};
+use reme_transport::registry::TransportRegistry;
 use reme_transport::target::TargetId;
 use serde::Deserialize;
 use tokio::sync::{broadcast, mpsc};
@@ -35,11 +37,15 @@ pub struct DiscoveryController {
     contact_index: HashMap<[u8; 16], Vec<PublicID>>,
     max_peers: usize,
     http_client: reqwest::Client,
+    /// Registry for tracking ephemeral target metadata (tier, labels).
+    registry: Arc<TransportRegistry>,
 }
 
 struct PeerEntry {
     verified_identity: PublicID,
     url: String,
+    /// Routing key from TXT records at time of verification.
+    routing_key: [u8; 16],
     /// Consecutive verification failures during periodic refresh.
     failure_count: u8,
 }
@@ -55,6 +61,8 @@ pub struct SpawnConfig {
     pub events: broadcast::Receiver<DiscoveryEvent>,
     /// Transport coordinator for registering/deregistering HTTP targets.
     pub coordinator: Arc<TransportCoordinator>,
+    /// Transport registry for tracking ephemeral target metadata.
+    pub registry: Arc<TransportRegistry>,
     /// Initial contacts to track (public key + routing key).
     pub contacts: Vec<(PublicID, [u8; 16])>,
     /// Maximum number of peers to track simultaneously.
@@ -88,6 +96,7 @@ pub fn spawn(config: SpawnConfig) -> JoinHandle<()> {
     let SpawnConfig {
         mut events,
         coordinator,
+        registry,
         contacts,
         max_peers,
         refresh_interval_secs,
@@ -96,7 +105,7 @@ pub fn spawn(config: SpawnConfig) -> JoinHandle<()> {
         peer_count,
     } = config;
     tokio::spawn(async move {
-        let mut controller = match DiscoveryController::new(contacts, max_peers) {
+        let mut controller = match DiscoveryController::new(contacts, max_peers, registry) {
             Ok(c) => c,
             Err(e) => {
                 warn!("Failed to initialize discovery controller: {e}");
@@ -158,7 +167,9 @@ pub fn spawn(config: SpawnConfig) -> JoinHandle<()> {
 
         // Deregister all tracked peers on shutdown.
         for (name, entry) in controller.peer_index.drain() {
-            coordinator.remove_http_target(&TargetId::http(&entry.url));
+            let target_id = TargetId::http(&entry.url);
+            coordinator.remove_http_target(&target_id);
+            controller.registry.remove_meta(&target_id);
             debug!(instance = %name, "Deregistered peer on shutdown");
         }
         controller.verified_peer_index.clear();
@@ -169,7 +180,11 @@ pub fn spawn(config: SpawnConfig) -> JoinHandle<()> {
 }
 
 impl DiscoveryController {
-    fn new(contacts: Vec<(PublicID, [u8; 16])>, max_peers: usize) -> Result<Self, reqwest::Error> {
+    fn new(
+        contacts: Vec<(PublicID, [u8; 16])>,
+        max_peers: usize,
+        registry: Arc<TransportRegistry>,
+    ) -> Result<Self, reqwest::Error> {
         let max_peers = if max_peers == 0 {
             warn!("max_peers was 0, clamping to 1");
             1
@@ -191,6 +206,7 @@ impl DiscoveryController {
                 .connect_timeout(std::time::Duration::from_secs(2))
                 .timeout(std::time::Duration::from_secs(5))
                 .build()?,
+            registry,
         })
     }
 
@@ -294,18 +310,20 @@ impl DiscoveryController {
             return;
         }
 
-        // For updates where the stored URL still matches one of the new addresses,
-        // skip re-verification entirely.
+        // For updates where both the stored URL and TXT routing key still match,
+        // skip re-verification entirely. If only the address matches but TXT
+        // content changed (e.g. identity rotation), re-verify. (Fixes #105)
         if is_update {
             let entry = &self.peer_index[&peer.instance_name];
             let stored_url_still_valid = peer.addresses.iter().any(|&addr| {
                 let candidate = format!("http://{}", SocketAddr::new(addr, peer.port));
                 entry.url == candidate
             });
-            if stored_url_still_valid {
+            let routing_key_unchanged = entry.routing_key == routing_key;
+            if stored_url_still_valid && routing_key_unchanged {
                 debug!(
                     instance = %peer.instance_name,
-                    "Update with matching address, skipping re-verification"
+                    "Update with matching address and routing key, skipping re-verification"
                 );
                 return;
             }
@@ -346,9 +364,21 @@ impl DiscoveryController {
         };
 
         if is_update {
-            self.handle_update(&peer.instance_name, &url, verified, coordinator);
+            self.handle_update(
+                &peer.instance_name,
+                &url,
+                verified,
+                routing_key,
+                coordinator,
+            );
         } else {
-            self.handle_new(&peer.instance_name, &url, verified, coordinator);
+            self.handle_new(
+                &peer.instance_name,
+                &url,
+                verified,
+                routing_key,
+                coordinator,
+            );
         }
     }
 
@@ -371,17 +401,27 @@ impl DiscoveryController {
         instance_name: &str,
         url: &str,
         verified: PublicID,
+        routing_key: [u8; 16],
         coordinator: &TransportCoordinator,
     ) {
         let Some(target) = Self::build_http_target(instance_name, url, verified) else {
             return;
         };
 
+        let target_id = TargetId::http(url);
+
         // TODO(#90): receipt-gated direct tier — currently a relay attacker who
         // passes identity verification can blackhole messages. Once #90 lands,
         // Direct tier will require a verified receipt before declaring success.
         // See also #27 / #32 for privacy-preserving fetch from ephemeral nodes.
         coordinator.add_http_target(target);
+
+        // Register as ephemeral Direct target so UI/registry show correct tier (#106)
+        self.registry.register_ephemeral(
+            target_id,
+            Some(format!("lan:{instance_name}")),
+            DeliveryTier::Direct,
+        );
 
         info!(
             instance = %instance_name,
@@ -394,6 +434,7 @@ impl DiscoveryController {
             PeerEntry {
                 verified_identity: verified,
                 url: url.to_owned(),
+                routing_key,
                 failure_count: 0,
             },
         );
@@ -409,6 +450,7 @@ impl DiscoveryController {
         instance_name: &str,
         url: &str,
         verified: PublicID,
+        routing_key: [u8; 16],
         coordinator: &TransportCoordinator,
     ) {
         let entry = self
@@ -430,6 +472,17 @@ impl DiscoveryController {
         };
 
         coordinator.replace_http_target(&old_target_id, target);
+
+        // Update registry metadata when address changes (#106)
+        if address_changed {
+            // Remove old target metadata, register new one
+            self.registry.remove_meta(&old_target_id);
+            self.registry.register_ephemeral(
+                TargetId::http(url),
+                Some(format!("lan:{instance_name}")),
+                DeliveryTier::Direct,
+            );
+        }
 
         if address_changed {
             info!(
@@ -468,6 +521,7 @@ impl DiscoveryController {
             .expect("invariant: is_update implies entry exists");
         entry.verified_identity = verified;
         url.clone_into(&mut entry.url);
+        entry.routing_key = routing_key;
         entry.failure_count = 0;
     }
 
@@ -478,7 +532,9 @@ impl DiscoveryController {
     /// Remove a peer from all indices and deregister its HTTP target.
     fn remove_peer(&mut self, instance_name: &str, coordinator: &TransportCoordinator) {
         if let Some(entry) = self.peer_index.remove(instance_name) {
-            coordinator.remove_http_target(&TargetId::http(&entry.url));
+            let target_id = TargetId::http(&entry.url);
+            coordinator.remove_http_target(&target_id);
+            self.registry.remove_meta(&target_id);
 
             // Remove from verified_peer_index.
             if let Some(instances) = self.verified_peer_index.get_mut(&entry.verified_identity) {
@@ -567,6 +623,10 @@ mod tests {
     use reme_transport::coordinator::CoordinatorConfig;
     use std::net::IpAddr;
 
+    fn test_registry() -> Arc<TransportRegistry> {
+        Arc::new(TransportRegistry::new())
+    }
+
     #[test]
     fn socket_addr_formats_ipv6_with_brackets() {
         let addr: IpAddr = "::1".parse().unwrap();
@@ -587,7 +647,7 @@ mod tests {
         let pubkey = *identity.public_id();
         let rk = pubkey.routing_key();
         let contacts = vec![(pubkey, *rk)];
-        let controller = DiscoveryController::new(contacts, 256).unwrap();
+        let controller = DiscoveryController::new(contacts, 256, test_registry()).unwrap();
 
         let stranger_rk = [0xFFu8; 16];
         assert!(!controller.contact_index.contains_key(&stranger_rk));
@@ -602,7 +662,7 @@ mod tests {
 
         let rk = [0xAA; 16];
         let contacts = vec![(pk1, rk), (pk2, rk)];
-        let controller = DiscoveryController::new(contacts, 256).unwrap();
+        let controller = DiscoveryController::new(contacts, 256, test_registry()).unwrap();
 
         let candidates = controller.contact_index.get(&rk).unwrap();
         assert_eq!(candidates.len(), 2);
@@ -610,7 +670,7 @@ mod tests {
 
     #[test]
     fn handle_lost_removes_peer() {
-        let mut controller = DiscoveryController::new(vec![], 256).unwrap();
+        let mut controller = DiscoveryController::new(vec![], 256, test_registry()).unwrap();
         let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
 
         let peer_identity = *Identity::generate().public_id();
@@ -619,6 +679,7 @@ mod tests {
             PeerEntry {
                 verified_identity: peer_identity,
                 url: "http://192.168.1.50:23003".to_owned(),
+                routing_key: [0xAA; 16],
                 failure_count: 0,
             },
         );
@@ -637,7 +698,7 @@ mod tests {
 
     #[test]
     fn handle_lost_noop_for_unknown_peer() {
-        let mut controller = DiscoveryController::new(vec![], 256).unwrap();
+        let mut controller = DiscoveryController::new(vec![], 256, test_registry()).unwrap();
         let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
 
         controller.handle_lost("nonexistent", &coordinator);
@@ -645,21 +706,24 @@ mod tests {
 
     #[test]
     fn verified_peer_index_tracks_multi_device() {
-        let mut controller = DiscoveryController::new(vec![], 256).unwrap();
+        let mut controller = DiscoveryController::new(vec![], 256, test_registry()).unwrap();
         let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
         let peer_identity = *Identity::generate().public_id();
 
         // Simulate two devices with the same identity.
+        let rk = [0xBB; 16];
         controller.handle_new(
             "device-a",
             "http://192.168.1.10:23003",
             peer_identity,
+            rk,
             &coordinator,
         );
         controller.handle_new(
             "device-b",
             "http://192.168.1.11:23003",
             peer_identity,
+            rk,
             &coordinator,
         );
 
@@ -681,7 +745,7 @@ mod tests {
 
     #[test]
     fn failure_count_starts_at_zero() {
-        let mut controller = DiscoveryController::new(vec![], 256).unwrap();
+        let mut controller = DiscoveryController::new(vec![], 256, test_registry()).unwrap();
         let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
         let peer_identity = *Identity::generate().public_id();
 
@@ -689,6 +753,7 @@ mod tests {
             "peer-1",
             "http://192.168.1.10:23003",
             peer_identity,
+            [0xCC; 16],
             &coordinator,
         );
         assert_eq!(controller.peer_index["peer-1"].failure_count, 0);

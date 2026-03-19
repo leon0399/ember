@@ -9,6 +9,7 @@ use reme_discovery::DiscoveryBackend as _;
 use reme_identity::{Identity, PublicID};
 use reme_storage::Storage;
 use reme_transport::coordinator::TransportCoordinator;
+use reme_transport::registry::TransportRegistry;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -50,6 +51,7 @@ pub async fn initialize(
     identity: &Identity,
     storage: &Storage,
     coordinator: Arc<TransportCoordinator>,
+    registry: Arc<TransportRegistry>,
 ) -> InitResult {
     if !config.lan_discovery.enabled {
         return InitResult::Disabled;
@@ -86,6 +88,7 @@ pub async fn initialize(
         let task = controller::spawn(controller::SpawnConfig {
             events,
             coordinator,
+            registry,
             contacts,
             max_peers: config.lan_discovery.max_peers,
             refresh_interval_secs: config.lan_discovery.refresh_interval_secs,
