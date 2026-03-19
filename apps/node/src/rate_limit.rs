@@ -4,6 +4,7 @@
 //! - Per-IP rate limiting (proxy-aware via X-Forwarded-For)
 //! - Per-routing-key rate limiting (prevents mailbox flooding)
 //!
+//! All limiters are enabled by default with sensible values.
 //! Each limiter can be independently disabled by setting its `rps` config to 0.
 
 use crate::config::RateLimitConfig;
