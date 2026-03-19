@@ -644,9 +644,12 @@ impl App<'_> {
             }
         }
 
-        // Ensure we have at least one transport (or discovery can add them later)
+        // Ensure we have at least one transport (or discovery can add them later).
+        // Only allow empty pools when discovery is enabled AND the controller will
+        // actually spawn (auto_direct_known_contacts = true). Otherwise, we'd boot
+        // into a client with no usable transport and no way to acquire one.
         if !coordinator.has_transports() {
-            if config.lan_discovery.enabled {
+            if config.lan_discovery.enabled && config.lan_discovery.auto_direct_known_contacts {
                 warn!("No transports configured yet — LAN discovery may add peers at runtime");
             } else {
                 return Err("No transports configured. Add HTTP nodes and/or MQTT brokers.".into());
