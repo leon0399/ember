@@ -16,11 +16,12 @@ reme-outbox = { path = "crates/reme-outbox" }
 reme-node = { path = "crates/reme-node" }
 reme-node-core = { path = "crates/reme-node-core" }
 reme-config = { path = "crates/reme-config" }
+reme-discovery = { path = "crates/reme-discovery" }
 
 anyhow = "^1.0.99"
 thiserror = "^2.0.16"
 tracing = "^0.1.41"
-tracing-subscriber = "^0.3.20"
+tracing-subscriber = { version = "^0.3.20", features = ["env-filter"] }
 
 # common helpers
 derivative = "^2.2.0"

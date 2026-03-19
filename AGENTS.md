@@ -47,12 +47,23 @@ crates/
 ├── reme-outbox      # Tiered delivery, retry policies, delivery state tracking
 ├── reme-node-core   # Shared node/relay logic, embedded HTTP server
 ├── reme-config      # Layered configuration (CLI args > env vars > config file > defaults)
+├── reme-discovery   # mDNS/LAN peer discovery (backend trait, TXT helpers, fake + mdns-sd backends)
 └── reme-core        # High-level Client API orchestrating all above
 
 apps/
 ├── node/            # Mailbox server (Axum, store-and-forward)
 └── client/          # TUI client (ratatui) with embedded relay capability
 ```
+
+### LAN Discovery
+
+When `lan_discovery.enabled = true`, the client:
+1. Creates an mDNS-SD backend browsing for `_reme._tcp.local.` services
+2. Advertises own presence if embedded HTTP server is bound (`embedded_node.http_bind`)
+3. If `auto_direct_known_contacts = true` (default): spawns a discovery controller that matches peers by routing key against contacts, verifies identity via HTTP challenge-response, and registers verified peers as ephemeral HTTP targets (SEND-only, no FETCH)
+4. If `auto_direct_known_contacts = false`: mDNS browsing/advertising runs but no peers are verified or registered
+
+`max_peers` caps the tracked peer set (default: 256). `refresh_interval_secs` (default: 300) controls periodic re-verification of tracked peers; peers that fail verification twice consecutively are removed (ephemeral circuit breaker).
 
 ### Key Data Flow
 
@@ -136,6 +147,7 @@ Research/prototype stage — no external users. Breaking changes and public API 
 - **No forward secrecy (V1)**: MIK compromise exposes all messages. Acceptable for DTN-first design.
 - **DTN tolerance**: No prekeys, no session state — message loss/reordering has no impact.
 - **Sender authentication**: XEdDSA signature binds sender identity to message content.
+- **Threat model**: See `docs/threat-model.md` for attack scenarios and mitigations. Review and update when adding new transport mechanisms or discovery features.
 
 ## Pre-commit Checklist
 

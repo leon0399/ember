@@ -1,6 +1,6 @@
 # Resilient Messenger Roadmap
 
-**Current Version:** v0.3 (Tiered Delivery)  
+**Current Version:** v0.4 (LAN Discovery)
 **Target Version:** v1.0 (Production Ready)
 
 ---
@@ -25,7 +25,7 @@ Build an outage-resilient, end-to-end encrypted messaging system that works when
 flowchart LR
     subgraph "Direct transports"
         v03["v0.3 ✅<br/>Tiered Delivery"]
-        v04["v0.4<br/>mDNS Discovery"]
+        v04["v0.4 ✅<br/>mDNS Discovery"]
         PC["Postcard<br/>(internal)"]
         v05["v0.5<br/>Sneakernet Export"]
         v06["v0.6<br/>LAN Relay"]
@@ -83,11 +83,11 @@ Automatic peer discovery and verified P2P messaging on local networks.
 - Automatic registration as Direct tier targets
 
 **Deliverables:**
-- [ ] `mdns` crate integration
-- [ ] Service advertisement on client startup
-- [ ] Background discovery task
-- [ ] Automatic transport registration
-- [ ] UI indication of discovered peers
+- [x] `mdns` crate integration (`mdns-sd`)
+- [x] Service advertisement on client startup
+- [x] Background discovery task
+- [x] Automatic transport registration
+- [x] UI indication of discovered peers (LAN peer count in status bar)
 
 ### Node identity verification
 
@@ -101,10 +101,11 @@ Automatic peer discovery and verified P2P messaging on local networks.
 
 **Deliverables:**
 - [x] Identity endpoint on main node and embedded node
-- [ ] Challenge-response verification in discovery flow
-- [ ] Background identity refresh task
-- [ ] Refresh triggers (periodic, failure, network change)
-- [ ] Configuration options for refresh interval
+- [x] Challenge-response verification in discovery flow
+- [x] Background identity refresh task
+- [x] Refresh triggers (periodic, failure-based circuit breaker)
+- [ ] Refresh trigger: network change detection
+- [x] Configuration options for refresh interval (`refresh_interval_secs`)
 
 **Success criteria:**
 - Two clients on same LAN discover each other within 5 seconds

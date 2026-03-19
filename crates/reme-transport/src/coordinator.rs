@@ -21,6 +21,7 @@ use crate::delivery::{
 use crate::http_target::HttpTarget;
 use crate::pool::TransportPool;
 use crate::query::{HealthSummary, TargetSnapshot, TransportQuery};
+#[allow(deprecated)]
 use crate::receiver::ReceiverConfig;
 use crate::seen_cache::SharedSeenCache;
 use crate::target::{TargetId, TargetKind, TransportTarget};
@@ -60,6 +61,7 @@ pub struct CoordinatorConfig {
     pub routing_strategy: RoutingStrategy,
 
     /// Configuration for polling (HTTP only).
+    #[allow(deprecated)]
     pub receiver_config: ReceiverConfig,
 }
 
@@ -169,6 +171,47 @@ impl TransportCoordinator {
         self.config.routing_strategy = strategy;
     }
 
+    /// Get a reference to the HTTP pool (for cases needing direct access).
+    pub fn http_pool(&self) -> Option<&Arc<TransportPool<HttpTarget>>> {
+        self.http_pool.as_ref()
+    }
+
+    /// Get a reference to the MQTT pool (for cases needing direct access).
+    #[cfg(feature = "mqtt")]
+    pub fn mqtt_pool(&self) -> Option<&Arc<TransportPool<MqttTarget>>> {
+        self.mqtt_pool.as_ref()
+    }
+
+    /// Add an HTTP target at runtime (for discovered peers).
+    pub fn add_http_target(&self, target: HttpTarget) {
+        if let Some(ref pool) = self.http_pool {
+            pool.add_target(target);
+        }
+    }
+
+    /// Remove an HTTP target by ID (when peer disappears).
+    pub fn remove_http_target(&self, id: &TargetId) -> bool {
+        self.http_pool
+            .as_ref()
+            .is_some_and(|pool| pool.remove_target(id))
+    }
+
+    /// Replace an HTTP target atomically (e.g. when a discovered peer's address changes).
+    ///
+    /// Removes the target matching `old_id` (if present) and adds `new_target`
+    /// under a single pool write lock, so concurrent senders never observe a
+    /// state where neither target exists. Always adds `new_target` even if
+    /// `old_id` was not found (upsert semantics).
+    ///
+    /// Returns `true` if a target with `old_id` was found and removed.
+    pub fn replace_http_target(&self, old_id: &TargetId, new_target: HttpTarget) -> bool {
+        if let Some(ref pool) = self.http_pool {
+            pool.replace_target(old_id, new_target)
+        } else {
+            false
+        }
+    }
+
     /// Check if any transport pools are available.
     pub fn has_transports(&self) -> bool {
         let has_http = self.http_pool.as_ref().is_some_and(|p| p.has_available());
@@ -220,6 +263,7 @@ impl TransportCoordinator {
     }
 
     /// Spawn an HTTP polling receiver task.
+    #[allow(deprecated)]
     fn spawn_http_receiver(
         &self,
         pool: Arc<TransportPool<HttpTarget>>,
@@ -607,12 +651,12 @@ impl TransportCoordinator {
         let tier_timeout = config.quorum_tier_timeout;
         let message_id = envelope.message_id;
 
-        // Collect HTTP stable targets
+        // Collect HTTP targets with QUORUM_CREDIT capability
         let http_targets: Vec<Arc<HttpTarget>> = self
             .http_pool
             .as_ref()
             .map(|pool| {
-                pool.targets_by_kind(TargetKind::Stable)
+                pool.targets_by_capability(|c| c.quorum_credit)
                     .into_iter()
                     .filter(|t| {
                         !config.is_excluded(t.id())
@@ -623,13 +667,13 @@ impl TransportCoordinator {
             })
             .unwrap_or_default();
 
-        // Collect MQTT targets
+        // Collect MQTT targets with QUORUM_CREDIT capability (matching HTTP path)
         #[cfg(feature = "mqtt")]
         let mqtt_targets: Vec<Arc<MqttTarget>> = self
             .mqtt_pool
             .as_ref()
             .map(|pool| {
-                pool.all_targets()
+                pool.targets_by_capability(|c| c.quorum_credit)
                     .into_iter()
                     .filter(|t| {
                         !config.is_excluded(t.id())
@@ -731,55 +775,40 @@ impl TransportCoordinator {
     }
 
     /// Get count of Quorum tier targets (for quorum calculation).
+    ///
+    /// Uses `capabilities.quorum_credit` to identify targets that
+    /// count toward quorum, rather than relying on `TargetKind`.
+    /// Delegates to `quorum_target_ids` to avoid duplicating the filter logic.
     #[allow(clippy::cast_possible_truncation)] // Target count won't exceed u32::MAX
     pub fn quorum_target_count(&self, config: &TieredDeliveryConfig) -> u32 {
-        let mut count = 0u32;
-
-        // Count HTTP stable targets
-        if let Some(ref pool) = self.http_pool {
-            count += pool
-                .targets_by_kind(TargetKind::Stable)
-                .iter()
-                .filter(|t| !config.is_excluded(t.id()) && t.is_available())
-                .count() as u32;
-        }
-
-        // Count MQTT targets
-        #[cfg(feature = "mqtt")]
-        if let Some(ref pool) = self.mqtt_pool {
-            count += pool
-                .all_targets()
-                .iter()
-                .filter(|t| !config.is_excluded(t.id()) && t.is_available())
-                .count() as u32;
-        }
-
-        count
+        self.quorum_target_ids(config).len() as u32
     }
 
     /// Get all Quorum tier target IDs (for filtering in retry logic).
     ///
-    /// Returns target IDs of all stable HTTP and MQTT targets.
+    /// Returns target IDs of all targets with `QUORUM_CREDIT` capability.
     pub fn quorum_target_ids(&self, config: &TieredDeliveryConfig) -> Vec<TargetId> {
         let mut ids = Vec::new();
 
-        // HTTP stable target IDs
+        // HTTP targets with QUORUM_CREDIT capability
         if let Some(ref pool) = self.http_pool {
-            for target in pool.targets_by_kind(TargetKind::Stable) {
-                if !config.is_excluded(target.id()) && target.is_available() {
-                    ids.push(target.id().clone());
-                }
-            }
+            ids.extend(
+                pool.targets_by_capability(|c| c.quorum_credit)
+                    .iter()
+                    .filter(|t| !config.is_excluded(t.id()) && t.is_available())
+                    .map(|t| t.id().clone()),
+            );
         }
 
-        // MQTT target IDs
+        // MQTT targets with QUORUM_CREDIT capability
         #[cfg(feature = "mqtt")]
         if let Some(ref pool) = self.mqtt_pool {
-            for target in pool.all_targets() {
-                if !config.is_excluded(target.id()) && target.is_available() {
-                    ids.push(target.id().clone());
-                }
-            }
+            ids.extend(
+                pool.targets_by_capability(|c| c.quorum_credit)
+                    .iter()
+                    .filter(|t| !config.is_excluded(t.id()) && t.is_available())
+                    .map(|t| t.id().clone()),
+            );
         }
 
         ids
@@ -889,6 +918,7 @@ impl TransportQuery for TransportCoordinator {
 mod tests {
     use super::*;
     use crate::delivery::QuorumStrategy;
+    use crate::target::TargetCapabilities;
 
     #[test]
     fn test_default_config() {
@@ -1014,6 +1044,189 @@ mod tests {
         assert!(!result.any_success());
         assert_eq!(result.success_count(), 0);
         assert!(result.results.is_empty());
+    }
+
+    // ========================================================================
+    // COORDINATOR MUTATION API TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_add_http_target() {
+        let mut coordinator = TransportCoordinator::with_defaults();
+        let pool = TransportPool::<HttpTarget>::new();
+        coordinator.set_http_pool(pool);
+
+        let target = HttpTarget::new(crate::http_target::HttpTargetConfig::stable(
+            "http://localhost:1",
+        ))
+        .unwrap();
+        let id = target.id().clone();
+
+        coordinator.add_http_target(target);
+
+        let pool = coordinator.http_pool().unwrap();
+        assert_eq!(pool.len(), 1);
+        assert!(pool.get_target(&id).is_some());
+    }
+
+    #[test]
+    fn test_add_http_target_no_pool() {
+        let coordinator = TransportCoordinator::with_defaults();
+        let target = HttpTarget::new(crate::http_target::HttpTargetConfig::stable(
+            "http://localhost:1",
+        ))
+        .unwrap();
+        // Should not panic when no pool is configured
+        coordinator.add_http_target(target);
+    }
+
+    #[test]
+    fn test_remove_http_target() {
+        let mut coordinator = TransportCoordinator::with_defaults();
+        let pool = TransportPool::<HttpTarget>::new();
+        coordinator.set_http_pool(pool);
+
+        let target = HttpTarget::new(crate::http_target::HttpTargetConfig::stable(
+            "http://localhost:1",
+        ))
+        .unwrap();
+        let id = target.id().clone();
+        coordinator.add_http_target(target);
+
+        assert!(coordinator.remove_http_target(&id));
+        assert!(!coordinator.remove_http_target(&id)); // Already removed
+        assert_eq!(coordinator.http_pool().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_remove_http_target_no_pool() {
+        let coordinator = TransportCoordinator::with_defaults();
+        let id = TargetId::http("http://localhost:1");
+        assert!(!coordinator.remove_http_target(&id));
+    }
+
+    #[test]
+    fn test_replace_http_target() {
+        let mut coordinator = TransportCoordinator::with_defaults();
+        let pool = TransportPool::<HttpTarget>::new();
+        coordinator.set_http_pool(pool);
+
+        let target = HttpTarget::new(crate::http_target::HttpTargetConfig::stable(
+            "http://localhost:1",
+        ))
+        .unwrap();
+        let old_id = target.id().clone();
+        coordinator.add_http_target(target);
+
+        let new_target = HttpTarget::new(crate::http_target::HttpTargetConfig::stable(
+            "http://localhost:2",
+        ))
+        .unwrap();
+        let new_id = new_target.id().clone();
+
+        assert!(coordinator.replace_http_target(&old_id, new_target));
+
+        let pool = coordinator.http_pool().unwrap();
+        assert_eq!(pool.len(), 1);
+        assert!(pool.get_target(&old_id).is_none());
+        assert!(pool.get_target(&new_id).is_some());
+    }
+
+    #[test]
+    fn test_replace_http_target_nonexistent() {
+        let mut coordinator = TransportCoordinator::with_defaults();
+        let pool = TransportPool::<HttpTarget>::new();
+        coordinator.set_http_pool(pool);
+
+        let old_id = TargetId::http("http://nonexistent:1");
+        let new_target = HttpTarget::new(crate::http_target::HttpTargetConfig::stable(
+            "http://localhost:2",
+        ))
+        .unwrap();
+
+        // Returns false because old target didn't exist, but still adds new one
+        assert!(!coordinator.replace_http_target(&old_id, new_target));
+        assert_eq!(coordinator.http_pool().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_replace_http_target_no_pool() {
+        let coordinator = TransportCoordinator::with_defaults();
+        let old_id = TargetId::http("http://localhost:1");
+        let new_target = HttpTarget::new(crate::http_target::HttpTargetConfig::stable(
+            "http://localhost:2",
+        ))
+        .unwrap();
+        assert!(!coordinator.replace_http_target(&old_id, new_target));
+    }
+
+    #[test]
+    fn test_http_pool_accessor() {
+        let coordinator = TransportCoordinator::with_defaults();
+        assert!(coordinator.http_pool().is_none());
+
+        let mut coordinator = TransportCoordinator::with_defaults();
+        coordinator.set_http_pool(TransportPool::<HttpTarget>::new());
+        assert!(coordinator.http_pool().is_some());
+    }
+
+    // ========================================================================
+    // CAPABILITY-FILTERED QUORUM TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_quorum_target_count_uses_capabilities() {
+        use crate::http_target::HttpTargetConfig;
+
+        let mut coordinator = TransportCoordinator::with_defaults();
+        let pool = TransportPool::<HttpTarget>::new();
+
+        // Stable target: has QUORUM_CREDIT by default
+        pool.add_target(HttpTarget::new(HttpTargetConfig::stable("http://stable:1")).unwrap());
+
+        // Ephemeral target: no QUORUM_CREDIT by default
+        pool.add_target(
+            HttpTarget::new(HttpTargetConfig::ephemeral("http://ephemeral:1")).unwrap(),
+        );
+
+        // Ephemeral target with QUORUM_CREDIT override
+        let mut config = HttpTargetConfig::ephemeral("http://ephemeral-quorum:1");
+        config.base.capabilities = TargetCapabilities {
+            send: true,
+            quorum_credit: true,
+            ..TargetCapabilities::ephemeral_defaults()
+        };
+        pool.add_target(HttpTarget::new(config).unwrap());
+
+        coordinator.set_http_pool(pool);
+
+        let delivery_config = TieredDeliveryConfig::default();
+        // Should count 2: stable (has QUORUM_CREDIT) + ephemeral-quorum (override)
+        assert_eq!(coordinator.quorum_target_count(&delivery_config), 2);
+    }
+
+    #[test]
+    fn test_quorum_target_ids_uses_capabilities() {
+        use crate::http_target::HttpTargetConfig;
+
+        let mut coordinator = TransportCoordinator::with_defaults();
+        let pool = TransportPool::<HttpTarget>::new();
+
+        let stable = HttpTarget::new(HttpTargetConfig::stable("http://stable:1")).unwrap();
+        let stable_id = stable.id().clone();
+        pool.add_target(stable);
+
+        // Ephemeral: no QUORUM_CREDIT
+        pool.add_target(
+            HttpTarget::new(HttpTargetConfig::ephemeral("http://ephemeral:1")).unwrap(),
+        );
+
+        coordinator.set_http_pool(pool);
+
+        let delivery_config = TieredDeliveryConfig::default();
+        let ids = coordinator.quorum_target_ids(&delivery_config);
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids[0], stable_id);
     }
 
     #[tokio::test]

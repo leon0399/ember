@@ -1,6 +1,7 @@
 //! Application state and main loop
 
 use crate::config::AppConfig;
+use crate::discovery;
 use crate::tui::event::{Event, EventHandler};
 use crate::tui::http_server;
 use crate::tui::ui;
@@ -9,24 +10,28 @@ use crossterm::execute;
 use ratatui::prelude::*;
 use reme_config::{ParsedHttpPeer, ParsedMqttPeer};
 use reme_core::Client;
+use reme_discovery::DiscoveryBackend as _;
 use reme_identity::{Identity, PublicID};
 use reme_message::Content;
 use reme_node_core::{
     EmbeddedNode, EmbeddedNodeHandle, NodeEvent, PersistentMailboxStore, PersistentStoreConfig,
 };
-use reme_outbox::{OutboxConfig, TransportRetryPolicy};
+use reme_outbox::{OutboxConfig, TieredDeliveryPhase, TransportRetryPolicy};
 use reme_storage::Storage;
 use reme_transport::http_target::{HttpTarget, HttpTargetConfig};
 use reme_transport::pool::TransportPool;
 use reme_transport::target::TargetKind;
+#[allow(deprecated)]
 use reme_transport::{
-    CompositeTransport, DeliveryTier, MessageReceiver, MqttBrokerSpec, MqttTransport,
-    ReceiverConfig, TargetId, TransportEvent, TransportRegistry, TransportTarget,
+    CoordinatorConfig, CoordinatorHandle, DeliveryTier, MqttTarget, MqttTargetConfig,
+    ReceiverConfig, TargetId, TransportCoordinator, TransportEvent, TransportRegistry,
+    TransportTarget,
 };
 use std::collections::{HashMap, VecDeque};
 use std::fs;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use tui_textarea::{Input, TextArea};
@@ -315,10 +320,15 @@ pub struct App<'a> {
     pub input: TextArea<'a>,
     /// Status message
     pub status: String,
-    /// The messenger client (uses `CompositeTransport` for sending via HTTP and/or MQTT)
-    client: Client<CompositeTransport>,
-    /// HTTP transport pool for message receiving (HTTP polling-based receiver)
-    http_pool: Arc<TransportPool<HttpTarget>>,
+    /// The messenger client (uses `TransportCoordinator` for sending via HTTP and/or MQTT).
+    /// Arc-wrapped so the outbox tick can run in a background task without blocking the UI.
+    client: Arc<Client<TransportCoordinator>>,
+    /// Transport coordinator for unified multi-transport messaging
+    coordinator: Arc<TransportCoordinator>,
+    /// Coordinator event receiver for incoming messages
+    coordinator_events: mpsc::UnboundedReceiver<TransportEvent>,
+    /// Coordinator subscription handle (dropped on shutdown to cancel polling)
+    _coordinator_handle: CoordinatorHandle,
     /// Embedded node handle (for shutdown)
     embedded_node_handle: Option<EmbeddedNodeHandle>,
     /// Embedded node task join handle (for awaiting shutdown)
@@ -342,9 +352,15 @@ pub struct App<'a> {
     /// Whether the view upstreams popup is visible
     pub show_upstreams_popup: bool,
     /// Transport registry for querying and managing transports
-    pub registry: TransportRegistry,
+    pub registry: Arc<TransportRegistry>,
     /// Outbox tick interval from config
     outbox_tick_interval: Duration,
+    /// LAN discovery subsystem state (mDNS backend, cancel token, controller task)
+    discovery: Option<discovery::DiscoveryState>,
+    /// Shared counter of currently discovered LAN peers (updated by controller).
+    pub lan_peer_count: Arc<AtomicUsize>,
+    /// Whether LAN discovery is enabled in config (for status bar display).
+    pub lan_discovery_enabled: bool,
 }
 
 impl App<'_> {
@@ -405,7 +421,7 @@ impl App<'_> {
                     config = config.with_label(label.clone());
                 }
 
-                // Set priority (u16 from config → u8 for transport, clamped)
+                // Set priority (u16 from config -> u8 for transport, clamped)
                 let priority_u8 = if parsed_peer.common.priority > 255 {
                     warn!(
                         url = %parsed_peer.url,
@@ -447,32 +463,6 @@ impl App<'_> {
             .map(|peer| ParsedMqttPeer::try_from(peer.clone()))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("Failed to parse MQTT peer configuration: {e}"))?;
-
-        // Create MQTT transport if brokers are configured
-        let mqtt_transport = if parsed_mqtt_peers.is_empty() {
-            None
-        } else {
-            // Convert parsed peers to transport broker specs
-            let broker_specs: Vec<MqttBrokerSpec> = parsed_mqtt_peers
-                .iter()
-                .map(|p| MqttBrokerSpec {
-                    url: p.url.clone(),
-                    client_id: p.client_id.clone(),
-                    auth: p.auth.clone(), // Pass auth from validated config
-                })
-                .collect();
-            info!("Connecting to {} MQTT broker(s)...", broker_specs.len());
-            match MqttTransport::new(broker_specs).await {
-                Ok(t) => Some(t),
-                Err(e) => {
-                    warn!(
-                        "Failed to connect to MQTT brokers: {}. MQTT transport disabled.",
-                        e
-                    );
-                    None
-                }
-            }
-        };
 
         // Extract identity bytes for HTTP server (before embedded node block)
         // This allows us to create a separate Identity instance for the HTTP server
@@ -541,25 +531,94 @@ impl App<'_> {
             (None, None, None)
         };
 
-        // Build composite transport for sending
-        let mut composite = CompositeTransport::new();
+        // Build transport coordinator with 2s poll interval (matching old MessageReceiver)
+        #[allow(deprecated)]
+        let coordinator_config = CoordinatorConfig {
+            receiver_config: ReceiverConfig::with_poll_interval(Duration::from_secs(2)),
+            ..CoordinatorConfig::default()
+        };
+        let mut coordinator = TransportCoordinator::new(coordinator_config);
 
-        // Add HTTP nodes from config
-        if let Some(ref http) = http_pool {
-            composite = composite.with_arc_transport(http.clone());
+        // Add HTTP pool to coordinator.
+        // Always create a pool so runtime HTTP upstream adds and subscribe() work
+        // even when no HTTP nodes are configured at startup.
+        if let Some(http) = http_pool {
+            coordinator.set_http_pool_arc(http);
+        } else {
+            coordinator.set_http_pool(TransportPool::new());
         }
 
-        // Add MQTT brokers from config
-        if let Some(mqtt) = mqtt_transport {
-            composite = composite.with_transport(mqtt);
-        }
+        // Create MQTT pool and connect configured brokers in parallel.
+        // Pool is always created so runtime MQTT adds work even without initial config.
+        let mqtt_pool = TransportPool::new();
+        if !parsed_mqtt_peers.is_empty() {
+            let mut join_set = tokio::task::JoinSet::new();
+            for parsed_peer in parsed_mqtt_peers.iter().cloned() {
+                join_set.spawn(async move {
+                    let mut mqtt_config = MqttTargetConfig::new(&parsed_peer.url);
+                    if let Some(ref client_id) = parsed_peer.client_id {
+                        mqtt_config = mqtt_config.with_client_id(client_id);
+                    }
+                    if let Some(ref auth) = parsed_peer.auth {
+                        mqtt_config = mqtt_config.with_auth(&auth.0, &auth.1);
+                    }
+                    if let Some(ref label) = parsed_peer.common.label {
+                        mqtt_config = mqtt_config.with_label(label);
+                    }
+                    if let Some(ref prefix) = parsed_peer.topic_prefix {
+                        mqtt_config = mqtt_config.with_topic_prefix(prefix);
+                    }
+                    let priority_u8 = if parsed_peer.common.priority > 255 {
+                        warn!(
+                            url = %parsed_peer.url,
+                            configured = parsed_peer.common.priority,
+                            "MQTT priority exceeds u8 range, clamping to 255"
+                        );
+                        255u8
+                    } else {
+                        #[allow(clippy::cast_possible_truncation)]
+                        {
+                            parsed_peer.common.priority as u8
+                        }
+                    };
+                    mqtt_config = mqtt_config.with_priority(priority_u8);
+                    (
+                        parsed_peer.url.clone(),
+                        MqttTarget::connect(mqtt_config).await,
+                    )
+                });
+            }
 
-        // Note: Embedded node is intentionally NOT added to CompositeTransport here.
+            while let Some(result) = join_set.join_next().await {
+                match result {
+                    Ok((_, Ok(target))) => {
+                        mqtt_pool.add_target(target);
+                    }
+                    Ok((url, Err(e))) => {
+                        warn!(
+                            url = %url,
+                            error = %e,
+                            "Failed to connect to MQTT broker, skipping"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "MQTT connection task panicked");
+                    }
+                }
+            }
+        }
+        let mqtt_pool_arc = Arc::new(mqtt_pool);
+        coordinator.set_mqtt_pool_arc(mqtt_pool_arc.clone());
+
+        // Note: Embedded node is intentionally NOT added to the coordinator.
         // The embedded node stores messages locally, but recipients fetch via HTTP server
         // (started above if http_bind is configured). Direct P2P messaging uses the
         // direct_peers config to send TO contacts, and HTTP server to receive FROM them.
 
-        // Add direct peers as ephemeral targets for LAN P2P messaging
+        // Add direct peers as ephemeral HTTP targets
+        // TODO: Avoid creating a polling subscription when pool has only SEND-capable
+        // targets (no FETCH targets) — currently produces harmless "no fetchable targets" logs
+
         let mut direct_peer_ids: Vec<(TargetId, Option<String>)> = Vec::new();
         for peer in &config.direct_peers {
             let target_config = HttpTargetConfig::new(&peer.address, TargetKind::Ephemeral)
@@ -573,7 +632,7 @@ impl App<'_> {
                         "Added direct peer"
                     );
                     direct_peer_ids.push((target.id().clone(), peer.name.clone()));
-                    composite = composite.with_transport(target);
+                    coordinator.add_http_target(target);
                 }
                 Err(e) => {
                     warn!(
@@ -585,18 +644,30 @@ impl App<'_> {
             }
         }
 
-        let transport = Arc::new(composite);
-
-        // Create transport registry for UI queries
-        let mut registry = TransportRegistry::with_composite(transport.clone());
-        if let Some(ref http) = http_pool {
-            registry.set_http_pool(http.clone());
+        // Ensure we have at least one transport (or discovery can add them later).
+        // Only allow empty pools when discovery is enabled AND the controller will
+        // actually spawn (auto_direct_known_contacts = true). Otherwise, we'd boot
+        // into a client with no usable transport and no way to acquire one.
+        if !coordinator.has_transports() {
+            if config.lan_discovery.enabled && config.lan_discovery.auto_direct_known_contacts {
+                warn!("No transports configured yet — LAN discovery may add peers at runtime");
+            } else {
+                return Err("No transports configured. Add HTTP nodes and/or MQTT brokers.".into());
+            }
         }
+
+        // Subscribe to incoming messages before wrapping in Arc
+        let our_routing_key = identity.public_id().routing_key();
+        let (coordinator_events, coordinator_handle) = coordinator.subscribe(our_routing_key);
+
+        let coordinator = Arc::new(coordinator);
+
+        // Create transport registry as read-only view of coordinator pools
+        let registry = Arc::new(TransportRegistry::with_coordinator(&coordinator));
 
         // Register HTTP targets with their tier/label information
         for parsed_peer in &parsed_http_peers {
             let id = TargetId::http(&parsed_peer.url);
-            // Convert ConfiguredTier to DeliveryTier (Direct is determined at send time)
             let tier = match parsed_peer.common.tier {
                 reme_config::ConfiguredTier::Quorum => DeliveryTier::Quorum,
                 reme_config::ConfiguredTier::BestEffort => DeliveryTier::BestEffort,
@@ -604,10 +675,9 @@ impl App<'_> {
             registry.register_stable(id, parsed_peer.common.label.clone(), tier);
         }
 
-        // Register MQTT brokers for display (they're in composite but not in a pool)
+        // Register MQTT brokers for display
         for parsed_peer in &parsed_mqtt_peers {
             let id = TargetId::mqtt(&parsed_peer.url);
-            // Convert ConfiguredTier to DeliveryTier
             let tier = match parsed_peer.common.tier {
                 reme_config::ConfiguredTier::Quorum => DeliveryTier::Quorum,
                 reme_config::ConfiguredTier::BestEffort => DeliveryTier::BestEffort,
@@ -620,10 +690,28 @@ impl App<'_> {
             registry.register_stable(id, label, DeliveryTier::Direct);
         }
 
-        // Ensure we have at least one transport
-        if transport.is_empty() {
-            return Err("No transports configured. Add HTTP nodes and/or MQTT brokers.".into());
-        }
+        // --- LAN Discovery ---
+        let lan_discovery_enabled = config.lan_discovery.enabled;
+        let init_result = discovery::initialize(
+            &config,
+            &identity,
+            &storage,
+            coordinator.clone(),
+            registry.clone(),
+        )
+        .await;
+        let (discovery, lan_peer_count, discovery_status_msg) = match init_result {
+            discovery::InitResult::Disabled => (None, Arc::new(AtomicUsize::new(0)), None),
+            discovery::InitResult::Failed(reason) => (
+                None,
+                Arc::new(AtomicUsize::new(0)),
+                Some(format!("LAN discovery failed: {reason}")),
+            ),
+            discovery::InitResult::Ok(state) => {
+                let peer_count = state.peer_count.clone();
+                (Some(state), peer_count, None)
+            }
+        };
 
         // Build OutboxConfig from app config
         let ttl_ms = if config.outbox.ttl_days == 0 {
@@ -644,11 +732,13 @@ impl App<'_> {
             ..TransportRetryPolicy::default()
         };
 
-        // Create client with custom outbox config
-        let mut client = Client::with_config(identity, transport.clone(), storage, outbox_config);
+        // Create client with coordinator transport
+        let mut client_inner =
+            Client::with_config(identity, coordinator.clone(), storage, outbox_config);
 
         // Set HTTP transport retry policy
-        client.set_transport_policy("http:", retry_policy);
+        client_inner.set_transport_policy("http:", retry_policy);
+        let client = Arc::new(client_inner);
 
         // Store tick interval from config
         let outbox_tick_interval = Duration::from_secs(config.outbox.tick_interval_secs);
@@ -657,10 +747,6 @@ impl App<'_> {
         let mut input = TextArea::default();
         input.set_placeholder_text("Type a message...");
         input.set_cursor_line_style(Style::default());
-
-        // Ensure we have HTTP transport pool for message receiving
-        let http_pool_arc =
-            http_pool.ok_or("No HTTP nodes configured. HTTP is required for message receiving.")?;
 
         let mut app = Self {
             running: true,
@@ -672,7 +758,9 @@ impl App<'_> {
             input,
             status: HELP_HINT.to_string(),
             client,
-            http_pool: http_pool_arc,
+            coordinator,
+            coordinator_events,
+            _coordinator_handle: coordinator_handle,
             embedded_node_handle,
             embedded_node_task,
             node_event_rx,
@@ -686,7 +774,15 @@ impl App<'_> {
             show_upstreams_popup: false,
             registry,
             outbox_tick_interval,
+            discovery,
+            lan_peer_count,
+            lan_discovery_enabled,
         };
+
+        // Surface mDNS init failure in TUI status bar (M14)
+        if let Some(msg) = discovery_status_msg {
+            app.status = msg;
+        }
 
         // Load contacts
         app.load_contacts()?;
@@ -733,24 +829,41 @@ impl App<'_> {
         hex::encode(self.my_public_id().to_bytes())
     }
 
+    /// Get the current count of discovered LAN peers.
+    pub fn lan_peer_count(&self) -> usize {
+        self.lan_peer_count.load(Ordering::Relaxed)
+    }
+
     /// Run the application main loop
     pub async fn run(&mut self, terminal: &mut Terminal<impl Backend>) -> AppResult<()> {
         let mut event_handler = EventHandler::new(100);
-        let mut last_outbox_tick = Instant::now();
 
-        // Setup message receiver for incoming messages (uses HTTP pool for polling)
-        let receiver = MessageReceiver::new(self.http_pool.clone());
-        let config = ReceiverConfig::with_poll_interval(Duration::from_secs(2));
-        let (mut msg_events, _handle) = receiver.subscribe(self.client.routing_key(), config);
+        // Spawn outbox tick as a background task so HTTP timeouts don't block the UI.
+        let (outbox_result_tx, mut outbox_result_rx) =
+            tokio::sync::mpsc::channel::<Result<(usize, usize, u64), reme_core::ClientError>>(1);
+        let outbox_client = self.client.clone();
+        let outbox_interval = self.outbox_tick_interval;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(outbox_interval);
+            interval.tick().await; // skip first immediate tick
+            loop {
+                interval.tick().await;
+                let result = outbox_client.tiered_outbox_tick().await;
+                if outbox_result_tx.send(result).await.is_err() {
+                    break; // receiver dropped, app shutting down
+                }
+            }
+        });
 
         while self.running {
             // Draw UI
             terminal.draw(|frame| ui::render(frame, self))?;
 
-            // Check for incoming messages from HTTP polling (non-blocking)
-            while let Ok(event) = msg_events.try_recv() {
+            // Check for incoming messages from coordinator (non-blocking)
+            while let Ok(event) = self.coordinator_events.try_recv() {
                 if let TransportEvent::Message(envelope) = event {
-                    self.process_incoming_envelope(&envelope, "HTTP").await;
+                    self.process_incoming_envelope(&envelope, "coordinator")
+                        .await;
                 }
             }
 
@@ -780,39 +893,61 @@ impl App<'_> {
                 }
             }
 
-            // Handle UI events
-            match event_handler.next().await? {
-                Event::Tick => {
-                    // Periodically run outbox tick for message retries
-                    if last_outbox_tick.elapsed() >= self.outbox_tick_interval {
-                        match self.client.outbox_tick().await {
-                            Ok((retried, expired)) => {
-                                if retried > 0 || expired > 0 {
-                                    info!(
-                                        retried = retried,
-                                        expired = expired,
-                                        "Outbox tick completed"
-                                    );
-                                } else {
-                                    debug!("Outbox tick: no pending messages");
-                                }
-                            }
-                            Err(e) => {
-                                warn!(error = %e, "Outbox tick failed");
-                            }
+            // Collect outbox tick results (non-blocking)
+            while let Ok(result) = outbox_result_rx.try_recv() {
+                match result {
+                    Ok((retried, maintenance, expired)) => {
+                        if retried > 0 || maintenance > 0 || expired > 0 {
+                            info!(retried, maintenance, expired, "Outbox tick completed");
+                        } else {
+                            debug!("Outbox tick: no pending messages");
                         }
-                        last_outbox_tick = Instant::now();
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Outbox tick failed");
                     }
                 }
+            }
+
+            // Handle UI events
+            match event_handler.next().await? {
                 Event::Key(key_event) => self.handle_key_event(key_event).await?,
-                Event::Resize(_, _) => {}
+                Event::Tick | Event::Resize(_, _) => {} // UI refresh handled by loop iteration
             }
         }
+
+        // Graceful shutdown of discovery
+        self.shutdown_discovery().await;
 
         // Graceful shutdown of embedded node
         self.shutdown_embedded_node().await;
 
         Ok(())
+    }
+
+    /// Shutdown the discovery subsystem gracefully.
+    ///
+    /// Cancels the discovery controller, awaits its task, then shuts down
+    /// the mDNS backend to release network resources.
+    async fn shutdown_discovery(&mut self) {
+        if let Some(state) = self.discovery.take() {
+            debug!("Cancelling discovery controller...");
+            state.cancel.cancel();
+
+            if let Some(task) = state.controller_task {
+                debug!("Waiting for discovery controller to stop...");
+                if let Err(e) = task.await {
+                    warn!(error = %e, "Discovery controller task panicked during shutdown");
+                }
+            }
+
+            debug!("Shutting down mDNS backend...");
+            if let Err(e) = state.backend.shutdown().await {
+                warn!(error = %e, "Failed to shutdown mDNS backend");
+            } else {
+                info!("mDNS backend shutdown complete");
+            }
+        }
     }
 
     /// Shutdown the embedded node gracefully.
@@ -1117,8 +1252,8 @@ impl App<'_> {
             if !text.trim().is_empty() {
                 if let Some(conv) = self.conversations.get(self.selected_conversation) {
                     let public_id = conv.public_id;
-                    match self.client.send_text(&public_id, &text).await {
-                        Ok(_) => {
+                    match self.client.send_text_tiered(&public_id, &text).await {
+                        Ok((_msg_id, phase)) => {
                             // Create message object
                             let message = Message {
                                 from_me: true,
@@ -1135,7 +1270,7 @@ impl App<'_> {
 
                             self.input = TextArea::default();
                             self.input.set_placeholder_text("Type a message...");
-                            self.status = "Message sent!".to_string();
+                            self.status = format_delivery_status(&phase);
                         }
                         Err(e) => {
                             self.status = format!("Send failed: {e}");
@@ -1244,6 +1379,16 @@ impl App<'_> {
         // Add contact via client API
         match self.client.add_contact(&public_id, name.as_deref()) {
             Ok(_) => {
+                // Notify the discovery controller about the new contact (M12)
+                if let Some(ref state) = self.discovery {
+                    if let Some(ref tx) = state.contact_tx {
+                        let rk: [u8; 16] = public_id.routing_key().into();
+                        if let Err(e) = tx.send((public_id, rk)) {
+                            debug!("Discovery contact channel closed: {e}");
+                        }
+                    }
+                }
+
                 // Reuse get_or_create_conversation to add to UI (avoids duplication)
                 let conv_idx = self.get_or_create_conversation(public_id);
                 let display_name = self.conversations[conv_idx].name.clone();
@@ -1379,32 +1524,38 @@ impl App<'_> {
         match transport_type {
             UpstreamType::Http => {
                 // TODO: Add UI fields for username/password when adding ephemeral HTTP upstreams
-                // Currently only config-based HTTP peers support authentication
-                // Use registry to add HTTP target (handles both composite and metadata)
-                self.registry
-                    .add_http_target(url, None, tier)
-                    .await
+                // TODO: Create stable (FETCH + QUORUM_CREDIT) targets when user selects Quorum tier,
+                // not always ephemeral (SEND-only) — currently tier selection is cosmetic
+                let config =
+                    HttpTargetConfig::ephemeral(url).with_request_timeout(Duration::from_secs(10));
+                let target = HttpTarget::new(config)
                     .map_err(|e| format!("Failed to create HTTP transport: {e}"))?;
+                let id = target.id().clone();
+
+                // Add to coordinator's HTTP pool
+                self.coordinator.add_http_target(target);
+
+                // Register in metadata for display
+                self.registry.register_ephemeral(id, None, tier);
+
                 info!(url = %url, "Added ephemeral HTTP upstream");
             }
             UpstreamType::Mqtt => {
-                // Create MQTT transport
                 // TODO: Add UI fields for username/password when adding ephemeral MQTT upstreams
-                // Currently only config-based MQTT peers support authentication
-                let broker_spec = MqttBrokerSpec {
-                    url: url.to_string(),
-                    client_id: None, // Auto-generated
-                    auth: None, // No auth for ephemeral upstreams (config-based peers support auth)
-                };
-                let transport = MqttTransport::new(vec![broker_spec])
+                let mqtt_config = MqttTargetConfig::new(url);
+                let target = MqttTarget::connect(mqtt_config)
                     .await
                     .map_err(|e| format!("Failed to connect to MQTT broker: {e}"))?;
 
-                // Add to composite transport via registry
-                self.registry.composite().add_transport(transport).await;
+                let id = target.id().clone();
+
+                // Add to MQTT pool via registry (which shares the pool with coordinator)
+                self.registry
+                    .mqtt_pool()
+                    .expect("MQTT pool always initialized")
+                    .add_target(target);
 
                 // Register in metadata for display
-                let id = TargetId::mqtt(url);
                 self.registry.register_ephemeral(id, None, tier);
 
                 info!(url = %url, "Added ephemeral MQTT upstream");
@@ -1439,4 +1590,19 @@ fn format_display_name(name: Option<&str>, public_id: &PublicID) -> String {
         },
         String::from,
     )
+}
+
+/// Format a [`TieredDeliveryPhase`] into a human-readable status message.
+fn format_delivery_status(phase: &TieredDeliveryPhase) -> String {
+    use reme_transport::DeliveryConfidence;
+    match phase {
+        TieredDeliveryPhase::Urgent => "Sent (queued, awaiting delivery)".to_string(),
+        TieredDeliveryPhase::Distributed { confidence, .. } => match confidence {
+            DeliveryConfidence::DirectDelivery { .. } => "Sent (direct delivery)".to_string(),
+            DeliveryConfidence::QuorumReached { count, required } => {
+                format!("Sent (quorum {count}/{required})")
+            }
+        },
+        TieredDeliveryPhase::Confirmed { .. } => "Sent (confirmed)".to_string(),
+    }
 }

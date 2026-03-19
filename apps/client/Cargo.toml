@@ -16,6 +16,7 @@ reme-storage = { workspace = true }
 reme-outbox = { workspace = true }
 reme-core = { workspace = true }
 reme-config = { workspace = true, features = ["http", "mqtt"] }
+reme-discovery = { workspace = true, features = ["mdns-sd"] }
 
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -31,6 +32,12 @@ serde_json = { workspace = true }
 
 # async
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
+tokio-util = { workspace = true }
+
+# networking
+reqwest = { workspace = true }
+rand = { workspace = true }
+percent-encoding = "2"
 
 # config
 clap = { workspace = true }
