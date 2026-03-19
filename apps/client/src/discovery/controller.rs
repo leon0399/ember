@@ -267,6 +267,10 @@ impl DiscoveryController {
         }
     }
 
+    // This handler orchestrates validation, identity verification, and routing
+    // for a single discovery event; keeping it in one function preserves the
+    // control-flow context, so we suppress the length lint rather than splitting.
+    #[allow(clippy::too_many_lines)]
     async fn handle_discovered(
         &mut self,
         peer: reme_discovery::RawDiscoveredPeer,
@@ -314,7 +318,13 @@ impl DiscoveryController {
         // skip re-verification entirely. If only the address matches but TXT
         // content changed (e.g. identity rotation), re-verify. (Fixes #105)
         if is_update {
-            let entry = &self.peer_index[&peer.instance_name];
+            let Some(entry) = self.peer_index.get(&peer.instance_name) else {
+                warn!(
+                    instance = %peer.instance_name,
+                    "PeerUpdated for unknown peer (possible mDNS race), skipping"
+                );
+                return;
+            };
             let stored_url_still_valid = peer.addresses.iter().any(|&addr| {
                 let candidate = format!("http://{}", SocketAddr::new(addr, peer.port));
                 entry.url == candidate
@@ -453,10 +463,13 @@ impl DiscoveryController {
         routing_key: [u8; 16],
         coordinator: &TransportCoordinator,
     ) {
-        let entry = self
-            .peer_index
-            .get(instance_name)
-            .expect("invariant: is_update implies entry exists");
+        let Some(entry) = self.peer_index.get(instance_name) else {
+            warn!(
+                instance = %instance_name,
+                "handle_update called for unknown peer (possible mDNS race), skipping"
+            );
+            return;
+        };
         let address_changed = entry.url != url;
         let identity_changed = entry.verified_identity != verified;
 
@@ -515,10 +528,16 @@ impl DiscoveryController {
         }
 
         // Update the entry in-place to avoid re-allocating the key.
-        let entry = self
-            .peer_index
-            .get_mut(instance_name)
-            .expect("invariant: is_update implies entry exists");
+        // Safety: this method takes `&mut self` so no concurrent removal is possible,
+        // and no code path above removes from `peer_index`, so this lookup cannot fail
+        // if the guard at the top of the function succeeded.
+        let Some(entry) = self.peer_index.get_mut(instance_name) else {
+            warn!(
+                instance = %instance_name,
+                "Peer entry vanished before in-place update (possible mDNS race), skipping"
+            );
+            return;
+        };
         entry.verified_identity = verified;
         url.clone_into(&mut entry.url);
         entry.routing_key = routing_key;
@@ -741,6 +760,26 @@ mod tests {
         // Remove the last device; the identity entry should be cleaned up.
         controller.handle_lost("device-b", &coordinator);
         assert!(!controller.verified_peer_index.contains_key(&peer_identity));
+    }
+
+    #[test]
+    fn handle_update_noop_for_unknown_peer() {
+        let mut controller = DiscoveryController::new(vec![], 256, test_registry()).unwrap();
+        let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
+        let peer_identity = *Identity::generate().public_id();
+
+        // Calling handle_update for a peer not in peer_index must not panic
+        // and must not mutate any indices.
+        controller.handle_update(
+            "nonexistent",
+            "http://192.168.1.99:23003",
+            peer_identity,
+            [0xDD; 16],
+            &coordinator,
+        );
+
+        assert!(controller.peer_index.is_empty());
+        assert!(controller.verified_peer_index.is_empty());
     }
 
     #[test]
