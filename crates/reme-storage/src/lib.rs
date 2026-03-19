@@ -141,6 +141,7 @@ impl Storage {
             );
 
             CREATE INDEX IF NOT EXISTS idx_messages_contact ON messages(contact_id);
+            CREATE INDEX IF NOT EXISTS idx_messages_contact_id_desc ON messages(contact_id, id DESC);
             CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
 
             -- Outbox for pending outgoing messages
@@ -556,13 +557,14 @@ impl Storage {
         Ok(())
     }
 
-    /// Retrieve messages for a contact in reverse-chronological order.
+    /// Retrieve messages for a contact in chronological order (oldest first).
     ///
     /// Uses cursor-based pagination: when `before_id` is `Some(id)`, only
     /// messages with `id < before_id` are returned. When `None`, returns
     /// the most recent messages.
     ///
-    /// Results are ordered by `id DESC` with at most `limit` rows.
+    /// Internally queries `ORDER BY id DESC` for efficient cursor pagination,
+    /// then reverses to return chronological order. At most `limit` rows.
     pub fn get_messages(
         &self,
         contact_id: i64,
@@ -604,6 +606,9 @@ impl Storage {
     ///
     /// Returns a map from `contact_id` to the body of the latest text message.
     /// Receipts and messages without a body are skipped.
+    /// `SQLite` bound variable limit (matches `reme-node-core`).
+    const SQLITE_MAX_BOUND_VARIABLES: usize = 999;
+
     pub fn get_last_message_per_contact(
         &self,
         contact_ids: &[i64],
@@ -613,36 +618,37 @@ impl Storage {
         }
 
         let conn = self.conn.lock().expect("mutex poisoned");
-
-        // Use a single query with a correlated subquery for efficiency.
-        // For each contact, find the max id among text messages with a body.
-        let placeholders: Vec<&str> = contact_ids.iter().map(|_| "?").collect();
-        let sql = format!(
-            "SELECT m.contact_id, m.body
-             FROM messages m
-             INNER JOIN (
-                 SELECT contact_id, MAX(id) AS max_id
-                 FROM messages
-                 WHERE contact_id IN ({})
-                   AND content_type = 'text'
-                   AND body IS NOT NULL
-                 GROUP BY contact_id
-             ) latest ON m.id = latest.max_id",
-            placeholders.join(", ")
-        );
-
-        let mut stmt = conn.prepare(&sql)?;
-        let params_iter = rusqlite::params_from_iter(contact_ids.iter());
-        let rows = stmt.query_map(params_iter, |row| {
-            let cid: i64 = row.get(0)?;
-            let body: String = row.get(1)?;
-            Ok((cid, body))
-        })?;
-
         let mut result = HashMap::new();
-        for row in rows {
-            let (cid, body) = row?;
-            result.insert(cid, body);
+
+        // Chunk to stay within SQLite's bound-parameter limit
+        for chunk in contact_ids.chunks(Self::SQLITE_MAX_BOUND_VARIABLES) {
+            let placeholders: Vec<&str> = chunk.iter().map(|_| "?").collect();
+            let sql = format!(
+                "SELECT m.contact_id, m.body
+                 FROM messages m
+                 INNER JOIN (
+                     SELECT contact_id, MAX(id) AS max_id
+                     FROM messages
+                     WHERE contact_id IN ({})
+                       AND content_type = 'text'
+                       AND body IS NOT NULL
+                     GROUP BY contact_id
+                 ) latest ON m.id = latest.max_id",
+                placeholders.join(", ")
+            );
+
+            let mut stmt = conn.prepare(&sql)?;
+            let params_iter = rusqlite::params_from_iter(chunk.iter());
+            let rows = stmt.query_map(params_iter, |row| {
+                let cid: i64 = row.get(0)?;
+                let body: String = row.get(1)?;
+                Ok((cid, body))
+            })?;
+
+            for row in rows {
+                let (cid, body) = row?;
+                result.insert(cid, body);
+            }
         }
         Ok(result)
     }
@@ -1060,13 +1066,23 @@ fn map_stored_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMessage
         let arr: [u8; 16] = message_id_bytes.try_into().expect("checked length");
         MessageID::from_bytes(arr)
     } else {
-        MessageID::new() // fallback for corrupt rows
+        return Err(rusqlite::Error::InvalidColumnType(
+            1,
+            "message_id".to_string(),
+            rusqlite::types::Type::Blob,
+        ));
     };
 
-    let direction = if direction_str == "sent" {
-        MessageDirection::Sent
-    } else {
-        MessageDirection::Received
+    let direction = match direction_str.as_str() {
+        "sent" => MessageDirection::Sent,
+        "received" => MessageDirection::Received,
+        _ => {
+            return Err(rusqlite::Error::InvalidColumnType(
+                3,
+                "direction".to_string(),
+                rusqlite::types::Type::Text,
+            ));
+        }
     };
 
     Ok(StoredMessage {
