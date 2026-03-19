@@ -102,8 +102,15 @@ pub async fn initialize(
         (None, None)
     };
 
-    // Start advertising only if HTTP server is bound
-    if let Some(ref http_bind) = config.embedded_node.http_bind {
+    // Start advertising only if the embedded node is enabled and HTTP server is bound.
+    // Without `enabled`, there is no HTTP server listening — advertising a dead
+    // endpoint would cause discovery probes to fail silently.
+    if let Some(http_bind) = config
+        .embedded_node
+        .http_bind
+        .as_ref()
+        .filter(|_| config.embedded_node.enabled)
+    {
         let port: u16 = http_bind
             .parse::<std::net::SocketAddr>()
             .map(|a| a.port())

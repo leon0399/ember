@@ -145,9 +145,12 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
     ///
     /// Returns `true` if the old target was found and removed.
     pub fn replace_target(&self, old_id: &TargetId, new_target: T) -> bool {
+        let new_id = new_target.id();
         let mut targets = self.targets.write().unwrap();
         let before_len = targets.len();
-        targets.retain(|t| t.id() != old_id);
+        // Remove both the old target and any existing target with the new ID
+        // to prevent duplicate entries when old_id != new_id.
+        targets.retain(|t| t.id() != old_id && t.id() != new_id);
         let removed = targets.len() < before_len;
         targets.push(Arc::new(new_target));
         removed

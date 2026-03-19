@@ -479,7 +479,7 @@ pub struct TargetConfig {
     /// What operations this target supports.
     ///
     /// Defaults are based on `TargetKind`:
-    /// - Stable: `SEND | FETCH | QUORUM_CREDIT`
+    /// - Stable: `SEND | FETCH | QUORUM_CREDIT | REPLICATE`
     /// - Ephemeral: `SEND` only (no `FETCH` for privacy)
     pub capabilities: TargetCapabilities,
 }

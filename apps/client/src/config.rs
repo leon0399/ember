@@ -34,7 +34,7 @@
 //!
 //! # LAN Discovery — automatic peer detection on local network
 //! [lan_discovery]
-//! enabled = true              # Enable mDNS browsing (advertising requires embedded_node.http_bind)
+//! enabled = true              # Enable mDNS advertisement (browsing requires auto_direct_known_contacts)
 //! # auto_direct_known_contacts = true   # Verify and register discovered peers for direct delivery
 //! # max_peers = 256           # Maximum number of tracked LAN peers
 //! ```
@@ -448,8 +448,8 @@ pub struct LanDiscoveryConfig {
 
     /// Automatically verify and register discovered peers that match known
     /// contacts for direct LAN delivery (default: true when enabled).
-    /// When false, the discovery controller is not spawned — mDNS browsing and
-    /// advertising still run, but no peers are verified or registered as targets.
+    /// When false, the discovery controller is not spawned — the node is
+    /// advertise-only (no browsing or peer verification).
     #[serde(
         default = "default_auto_direct_known_contacts",
         alias = "allow_direct_lan"
