@@ -267,6 +267,7 @@ impl DiscoveryController {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn handle_discovered(
         &mut self,
         peer: reme_discovery::RawDiscoveredPeer,
@@ -314,7 +315,13 @@ impl DiscoveryController {
         // skip re-verification entirely. If only the address matches but TXT
         // content changed (e.g. identity rotation), re-verify. (Fixes #105)
         if is_update {
-            let entry = &self.peer_index[&peer.instance_name];
+            let Some(entry) = self.peer_index.get(&peer.instance_name) else {
+                warn!(
+                    instance = %peer.instance_name,
+                    "PeerUpdated for unknown peer (possible mDNS race), skipping"
+                );
+                return;
+            };
             let stored_url_still_valid = peer.addresses.iter().any(|&addr| {
                 let candidate = format!("http://{}", SocketAddr::new(addr, peer.port));
                 entry.url == candidate
@@ -453,10 +460,13 @@ impl DiscoveryController {
         routing_key: [u8; 16],
         coordinator: &TransportCoordinator,
     ) {
-        let entry = self
-            .peer_index
-            .get(instance_name)
-            .expect("invariant: is_update implies entry exists");
+        let Some(entry) = self.peer_index.get(instance_name) else {
+            warn!(
+                instance = %instance_name,
+                "handle_update called for unknown peer (possible mDNS race), skipping"
+            );
+            return;
+        };
         let address_changed = entry.url != url;
         let identity_changed = entry.verified_identity != verified;
 
@@ -515,10 +525,13 @@ impl DiscoveryController {
         }
 
         // Update the entry in-place to avoid re-allocating the key.
-        let entry = self
-            .peer_index
-            .get_mut(instance_name)
-            .expect("invariant: is_update implies entry exists");
+        let Some(entry) = self.peer_index.get_mut(instance_name) else {
+            warn!(
+                instance = %instance_name,
+                "Peer entry vanished before in-place update (possible mDNS race), skipping"
+            );
+            return;
+        };
         entry.verified_identity = verified;
         url.clone_into(&mut entry.url);
         entry.routing_key = routing_key;
