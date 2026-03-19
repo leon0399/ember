@@ -267,6 +267,9 @@ impl DiscoveryController {
         }
     }
 
+    // This handler orchestrates validation, identity verification, and routing
+    // for a single discovery event; keeping it in one function preserves the
+    // control-flow context, so we suppress the length lint rather than splitting.
     #[allow(clippy::too_many_lines)]
     async fn handle_discovered(
         &mut self,
@@ -525,6 +528,9 @@ impl DiscoveryController {
         }
 
         // Update the entry in-place to avoid re-allocating the key.
+        // Safety: this method takes `&mut self` so no concurrent removal is possible,
+        // and no code path above removes from `peer_index`, so this lookup cannot fail
+        // if the guard at the top of the function succeeded.
         let Some(entry) = self.peer_index.get_mut(instance_name) else {
             warn!(
                 instance = %instance_name,
@@ -754,6 +760,26 @@ mod tests {
         // Remove the last device; the identity entry should be cleaned up.
         controller.handle_lost("device-b", &coordinator);
         assert!(!controller.verified_peer_index.contains_key(&peer_identity));
+    }
+
+    #[test]
+    fn handle_update_noop_for_unknown_peer() {
+        let mut controller = DiscoveryController::new(vec![], 256, test_registry()).unwrap();
+        let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
+        let peer_identity = *Identity::generate().public_id();
+
+        // Calling handle_update for a peer not in peer_index must not panic
+        // and must not mutate any indices.
+        controller.handle_update(
+            "nonexistent",
+            "http://192.168.1.99:23003",
+            peer_identity,
+            [0xDD; 16],
+            &coordinator,
+        );
+
+        assert!(controller.peer_index.is_empty());
+        assert!(controller.verified_peer_index.is_empty());
     }
 
     #[test]
