@@ -79,6 +79,10 @@ pub enum EncryptedIdentityError {
     #[error("Password required: identity file is encrypted")]
     PasswordRequired,
 
+    /// Empty password provided
+    #[error("Empty password: password must not be empty when provided")]
+    EmptyPassword,
+
     /// Encryption failed
     #[error("Encryption failed: {0}")]
     EncryptionFailed(String),
@@ -307,12 +311,13 @@ pub fn save_identity(
     password: Option<&[u8]>,
 ) -> Result<Vec<u8>, EncryptedIdentityError> {
     match password {
-        Some(pwd) if !pwd.is_empty() => {
+        Some([]) => Err(EncryptedIdentityError::EmptyPassword),
+        Some(pwd) => {
             let enc = EncryptedIdentity::encrypt(identity, pwd)?;
             Ok(enc.to_bytes())
         }
-        _ => {
-            // No password or empty password: save as plaintext
+        None => {
+            // No password: save as plaintext
             Ok(identity.to_bytes().to_vec())
         }
     }
@@ -466,11 +471,10 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_password_saves_plaintext() {
+    fn test_empty_password_returns_error() {
         let identity = Identity::generate();
 
-        let saved = save_identity(&identity, Some(b"")).unwrap();
-        assert_eq!(saved.len(), PLAINTEXT_FILE_SIZE);
-        assert!(!is_encrypted(&saved));
+        let result = save_identity(&identity, Some(b""));
+        assert!(matches!(result, Err(EncryptedIdentityError::EmptyPassword)));
     }
 }
