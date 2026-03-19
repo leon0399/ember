@@ -90,31 +90,36 @@ use tracing::info;
 
 /// Rate limiting configuration
 ///
+/// All rate limits are enabled by default with sensible values.
 /// Each limit can be independently disabled by setting its `_rps` value to 0.
 /// Limits are applied per-IP (using X-Forwarded-For if present) and per-routing-key.
 #[derive(Debug, Clone, Deserialize, Serialize, Derivative)]
 #[derivative(Default)]
 #[serde(default)]
 pub struct RateLimitConfig {
-    /// Submit endpoint: per-IP requests per second (0 = disabled)
+    /// Submit endpoint: per-IP requests per second (0 = disabled, default: 10)
+    #[derivative(Default(value = "10"))]
     pub submit_ip_rps: u32,
-    /// Submit endpoint: per-IP burst capacity
+    /// Submit endpoint: per-IP burst capacity (0 = use rps value)
     #[derivative(Default(value = "10"))]
     pub submit_ip_burst: u32,
-    /// Submit endpoint: per-routing-key requests per second (0 = disabled)
+    /// Submit endpoint: per-routing-key requests per second (0 = disabled, default: 5)
+    #[derivative(Default(value = "5"))]
     pub submit_key_rps: u32,
-    /// Submit endpoint: per-routing-key burst capacity
+    /// Submit endpoint: per-routing-key burst capacity (0 = use rps value)
     #[derivative(Default(value = "20"))]
     pub submit_key_burst: u32,
 
-    /// Fetch endpoint: per-IP requests per second (0 = disabled)
+    /// Fetch endpoint: per-IP requests per second (0 = disabled, default: 20)
+    #[derivative(Default(value = "20"))]
     pub fetch_ip_rps: u32,
-    /// Fetch endpoint: per-IP burst capacity
+    /// Fetch endpoint: per-IP burst capacity (0 = use rps value)
     #[derivative(Default(value = "50"))]
     pub fetch_ip_burst: u32,
-    /// Fetch endpoint: per-routing-key requests per second (0 = disabled)
+    /// Fetch endpoint: per-routing-key requests per second (0 = disabled, default: 10)
+    #[derivative(Default(value = "10"))]
     pub fetch_key_rps: u32,
-    /// Fetch endpoint: per-routing-key burst capacity
+    /// Fetch endpoint: per-routing-key burst capacity (0 = use rps value)
     #[derivative(Default(value = "30"))]
     pub fetch_key_burst: u32,
 }
@@ -320,30 +325,30 @@ pub struct CliArgs {
     pub auth_password: Option<String>,
 
     // Rate limiting: Submit endpoint
-    /// Submit endpoint: per-IP requests per second (0 = disabled)
+    /// Submit endpoint: per-IP requests per second (0 = disabled, default: 10)
     #[arg(long, env = "REME_NODE_RATE_LIMIT_SUBMIT_IP_RPS")]
     pub rate_limit_submit_ip_rps: Option<u32>,
-    /// Submit endpoint: per-IP burst capacity
+    /// Submit endpoint: per-IP burst capacity (0 = use rps value, default: 10)
     #[arg(long, env = "REME_NODE_RATE_LIMIT_SUBMIT_IP_BURST")]
     pub rate_limit_submit_ip_burst: Option<u32>,
-    /// Submit endpoint: per-routing-key requests per second (0 = disabled)
+    /// Submit endpoint: per-routing-key requests per second (0 = disabled, default: 5)
     #[arg(long, env = "REME_NODE_RATE_LIMIT_SUBMIT_KEY_RPS")]
     pub rate_limit_submit_key_rps: Option<u32>,
-    /// Submit endpoint: per-routing-key burst capacity
+    /// Submit endpoint: per-routing-key burst capacity (0 = use rps value, default: 20)
     #[arg(long, env = "REME_NODE_RATE_LIMIT_SUBMIT_KEY_BURST")]
     pub rate_limit_submit_key_burst: Option<u32>,
 
     // Rate limiting: Fetch endpoint
-    /// Fetch endpoint: per-IP requests per second (0 = disabled)
+    /// Fetch endpoint: per-IP requests per second (0 = disabled, default: 20)
     #[arg(long, env = "REME_NODE_RATE_LIMIT_FETCH_IP_RPS")]
     pub rate_limit_fetch_ip_rps: Option<u32>,
-    /// Fetch endpoint: per-IP burst capacity
+    /// Fetch endpoint: per-IP burst capacity (0 = use rps value, default: 50)
     #[arg(long, env = "REME_NODE_RATE_LIMIT_FETCH_IP_BURST")]
     pub rate_limit_fetch_ip_burst: Option<u32>,
-    /// Fetch endpoint: per-routing-key requests per second (0 = disabled)
+    /// Fetch endpoint: per-routing-key requests per second (0 = disabled, default: 10)
     #[arg(long, env = "REME_NODE_RATE_LIMIT_FETCH_KEY_RPS")]
     pub rate_limit_fetch_key_rps: Option<u32>,
-    /// Fetch endpoint: per-routing-key burst capacity
+    /// Fetch endpoint: per-routing-key burst capacity (0 = use rps value, default: 30)
     #[arg(long, env = "REME_NODE_RATE_LIMIT_FETCH_KEY_BURST")]
     pub rate_limit_fetch_key_burst: Option<u32>,
 
@@ -830,6 +835,16 @@ mod tests {
         assert!(!config.node_id.is_empty());
         assert!(config.peers.http.is_empty());
         assert!(config.peers.mqtt.is_empty());
+
+        // Rate limit defaults must be non-zero (security-sensitive)
+        assert_eq!(config.rate_limit.submit_ip_rps, 10);
+        assert_eq!(config.rate_limit.submit_ip_burst, 10);
+        assert_eq!(config.rate_limit.submit_key_rps, 5);
+        assert_eq!(config.rate_limit.submit_key_burst, 20);
+        assert_eq!(config.rate_limit.fetch_ip_rps, 20);
+        assert_eq!(config.rate_limit.fetch_ip_burst, 50);
+        assert_eq!(config.rate_limit.fetch_key_rps, 10);
+        assert_eq!(config.rate_limit.fetch_key_burst, 30);
     }
 
     #[test]
