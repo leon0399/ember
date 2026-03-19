@@ -58,6 +58,7 @@ const ARGON2_P: u32 = 1; // 1 parallelism
 
 /// Errors that can occur during encrypted identity operations
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum EncryptedIdentityError {
     /// Invalid file size
     #[error("Invalid file size: expected {expected} bytes, got {actual}")]
@@ -304,7 +305,8 @@ pub fn load_identity(
 
 /// Save an identity to bytes, optionally encrypting with a password.
 ///
-/// - If `password` is `Some`: encrypt with Argon2id + ChaCha20-Poly1305
+/// - If `password` is `Some(pwd)` where `pwd` is non-empty: encrypt with Argon2id + ChaCha20-Poly1305
+/// - If `password` is `Some(b"")`: return [`EncryptedIdentityError::EmptyPassword`]
 /// - If `password` is `None`: save as plaintext 32-byte key
 pub fn save_identity(
     identity: &Identity,
