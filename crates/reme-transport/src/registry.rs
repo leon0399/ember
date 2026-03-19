@@ -124,6 +124,11 @@ impl TransportRegistry {
         );
     }
 
+    /// Remove metadata for a target (e.g. when a discovered peer is deregistered).
+    pub fn remove_meta(&self, id: &TargetId) {
+        self.target_meta.write().unwrap().remove(id);
+    }
+
     /// Get metadata for a target.
     pub fn get_ephemeral_meta(&self, id: &TargetId) -> Option<EphemeralMeta> {
         self.target_meta.read().unwrap().get(id).cloned()

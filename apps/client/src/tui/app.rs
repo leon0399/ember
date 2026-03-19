@@ -352,7 +352,7 @@ pub struct App<'a> {
     /// Whether the view upstreams popup is visible
     pub show_upstreams_popup: bool,
     /// Transport registry for querying and managing transports
-    pub registry: TransportRegistry,
+    pub registry: Arc<TransportRegistry>,
     /// Outbox tick interval from config
     outbox_tick_interval: Duration,
     /// LAN discovery subsystem state (mDNS backend, cancel token, controller task)
@@ -644,9 +644,16 @@ impl App<'_> {
             }
         }
 
-        // Ensure we have at least one transport
+        // Ensure we have at least one transport (or discovery can add them later).
+        // Only allow empty pools when discovery is enabled AND the controller will
+        // actually spawn (auto_direct_known_contacts = true). Otherwise, we'd boot
+        // into a client with no usable transport and no way to acquire one.
         if !coordinator.has_transports() {
-            return Err("No transports configured. Add HTTP nodes and/or MQTT brokers.".into());
+            if config.lan_discovery.enabled && config.lan_discovery.auto_direct_known_contacts {
+                warn!("No transports configured yet — LAN discovery may add peers at runtime");
+            } else {
+                return Err("No transports configured. Add HTTP nodes and/or MQTT brokers.".into());
+            }
         }
 
         // Subscribe to incoming messages before wrapping in Arc
@@ -656,7 +663,7 @@ impl App<'_> {
         let coordinator = Arc::new(coordinator);
 
         // Create transport registry as read-only view of coordinator pools
-        let registry = TransportRegistry::with_coordinator(&coordinator);
+        let registry = Arc::new(TransportRegistry::with_coordinator(&coordinator));
 
         // Register HTTP targets with their tier/label information
         for parsed_peer in &parsed_http_peers {
@@ -685,8 +692,14 @@ impl App<'_> {
 
         // --- LAN Discovery ---
         let lan_discovery_enabled = config.lan_discovery.enabled;
-        let init_result =
-            discovery::initialize(&config, &identity, &storage, coordinator.clone()).await;
+        let init_result = discovery::initialize(
+            &config,
+            &identity,
+            &storage,
+            coordinator.clone(),
+            registry.clone(),
+        )
+        .await;
         let (discovery, lan_peer_count, discovery_status_msg) = match init_result {
             discovery::InitResult::Disabled => (None, Arc::new(AtomicUsize::new(0)), None),
             discovery::InitResult::Failed(reason) => (
