@@ -1,6 +1,6 @@
 # Resilient Messenger Roadmap
 
-**Current Version:** v0.3 (Tiered Delivery)  
+**Current Version:** v0.4 (LAN Discovery)
 **Target Version:** v1.0 (Production Ready)
 
 ---
@@ -25,7 +25,7 @@ Build an outage-resilient, end-to-end encrypted messaging system that works when
 flowchart LR
     subgraph "Direct transports"
         v03["v0.3 ✅<br/>Tiered Delivery"]
-        v04["v0.4<br/>mDNS Discovery"]
+        v04["v0.4 ✅<br/>mDNS Discovery"]
         PC["Postcard<br/>(internal)"]
         v05["v0.5<br/>Sneakernet Export"]
         v06["v0.6<br/>LAN Relay"]

@@ -788,9 +788,9 @@ The tradeoff is explicit: reme prioritizes resilience and DTN tolerance over the
 
 ---
 
-*This document describes Resilient Messenger version 0.3 (Tiered Delivery). The protocol is under active development; specifications may change.*
+*This document describes Resilient Messenger version 0.4 (LAN Discovery). The protocol is under active development; specifications may change.*
 
-## Appendix D. Current implementation status (v0.3)
+## Appendix D. Current implementation status (v0.4)
 
 ### Completed features
 
