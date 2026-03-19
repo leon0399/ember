@@ -834,12 +834,14 @@ The tradeoff is explicit: reme prioritizes resilience and DTN tolerance over the
 - Mailbox node server
 - Client-as-relay capability (embedded node)
 
-### In progress
-
-**Current development (v0.4):**
-- mDNS/Bonjour LAN discovery
-- Discovery-flow integration for challenge-response node identity verification
-- Background identity refresh for Direct tier targets
+**LAN discovery (v0.4):**
+- mDNS/Bonjour LAN discovery (`mdns-sd` crate, `_reme._tcp.local.`)
+- Challenge-response identity verification in discovery flow
+- Background identity refresh with circuit breaker (configurable interval)
+- Periodic peer re-verification with stale-peer removal
+- Dynamic contact updates to discovery controller
+- TUI peer count display and mDNS failure notification
+- Tiered delivery integration (Direct tier via LAN peers)
 
 ### Planned features (see ROADMAP.md)
 

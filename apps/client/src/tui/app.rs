@@ -10,18 +10,18 @@ use crossterm::execute;
 use ratatui::prelude::*;
 use reme_config::{ParsedHttpPeer, ParsedMqttPeer};
 use reme_core::Client;
-use reme_discovery::mdns_sd::MdnsSdBackend;
-use reme_discovery::DiscoveryBackend;
+use reme_discovery::DiscoveryBackend as _;
 use reme_identity::{Identity, PublicID};
 use reme_message::Content;
 use reme_node_core::{
     EmbeddedNode, EmbeddedNodeHandle, NodeEvent, PersistentMailboxStore, PersistentStoreConfig,
 };
-use reme_outbox::{OutboxConfig, TransportRetryPolicy};
+use reme_outbox::{OutboxConfig, TieredDeliveryPhase, TransportRetryPolicy};
 use reme_storage::Storage;
 use reme_transport::http_target::{HttpTarget, HttpTargetConfig};
 use reme_transport::pool::TransportPool;
 use reme_transport::target::TargetKind;
+#[allow(deprecated)]
 use reme_transport::{
     CoordinatorConfig, CoordinatorHandle, DeliveryTier, MqttTarget, MqttTargetConfig,
     ReceiverConfig, TargetId, TransportCoordinator, TransportEvent, TransportRegistry,
@@ -29,10 +29,10 @@ use reme_transport::{
 };
 use std::collections::{HashMap, VecDeque};
 use std::fs;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use tui_textarea::{Input, TextArea};
 use zeroize::Zeroizing;
@@ -320,8 +320,9 @@ pub struct App<'a> {
     pub input: TextArea<'a>,
     /// Status message
     pub status: String,
-    /// The messenger client (uses `TransportCoordinator` for sending via HTTP and/or MQTT)
-    client: Client<TransportCoordinator>,
+    /// The messenger client (uses `TransportCoordinator` for sending via HTTP and/or MQTT).
+    /// Arc-wrapped so the outbox tick can run in a background task without blocking the UI.
+    client: Arc<Client<TransportCoordinator>>,
     /// Transport coordinator for unified multi-transport messaging
     coordinator: Arc<TransportCoordinator>,
     /// Coordinator event receiver for incoming messages
@@ -354,12 +355,12 @@ pub struct App<'a> {
     pub registry: TransportRegistry,
     /// Outbox tick interval from config
     outbox_tick_interval: Duration,
-    /// mDNS discovery backend (for shutdown)
-    discovery_backend: Option<Arc<MdnsSdBackend>>,
-    /// Discovery controller cancel token
-    discovery_cancel: Option<CancellationToken>,
-    /// Discovery controller task handle (for awaiting shutdown)
-    discovery_task: Option<tokio::task::JoinHandle<()>>,
+    /// LAN discovery subsystem state (mDNS backend, cancel token, controller task)
+    discovery: Option<discovery::DiscoveryState>,
+    /// Shared counter of currently discovered LAN peers (updated by controller).
+    pub lan_peer_count: Arc<AtomicUsize>,
+    /// Whether LAN discovery is enabled in config (for status bar display).
+    pub lan_discovery_enabled: bool,
 }
 
 impl App<'_> {
@@ -531,6 +532,7 @@ impl App<'_> {
         };
 
         // Build transport coordinator with 2s poll interval (matching old MessageReceiver)
+        #[allow(deprecated)]
         let coordinator_config = CoordinatorConfig {
             receiver_config: ReceiverConfig::with_poll_interval(Duration::from_secs(2)),
             ..CoordinatorConfig::default()
@@ -653,12 +655,8 @@ impl App<'_> {
 
         let coordinator = Arc::new(coordinator);
 
-        // Create transport registry for UI queries
-        let mut registry = TransportRegistry::new();
-        if let Some(http) = coordinator.http_pool() {
-            registry.set_http_pool(http.clone());
-        }
-        registry.set_mqtt_pool(mqtt_pool_arc);
+        // Create transport registry as read-only view of coordinator pools
+        let registry = TransportRegistry::with_coordinator(&coordinator);
 
         // Register HTTP targets with their tier/label information
         for parsed_peer in &parsed_http_peers {
@@ -686,70 +684,20 @@ impl App<'_> {
         }
 
         // --- LAN Discovery ---
-        let (discovery_backend, discovery_cancel, discovery_task) = if config.lan_discovery.enabled
-        {
-            match MdnsSdBackend::new() {
-                Ok(backend) => {
-                    // Spawn discovery controller only if direct LAN delivery is allowed
-                    let cancel = CancellationToken::new();
-                    let controller_handle = if config.lan_discovery.allow_direct_lan {
-                        let contacts: Vec<(PublicID, [u8; 16])> = storage
-                            .list_contacts()
-                            .unwrap_or_else(|e| {
-                                warn!("Failed to load contacts for discovery: {e}");
-                                Vec::new()
-                            })
-                            .into_iter()
-                            .map(|(_, pubkey, _)| {
-                                let rk: [u8; 16] = pubkey.routing_key().into();
-                                (pubkey, rk)
-                            })
-                            .collect();
-
-                        let events = backend.subscribe();
-                        Some(discovery::controller::spawn(
-                            events,
-                            coordinator.clone(),
-                            contacts,
-                            config.lan_discovery.max_peers,
-                            cancel.clone(),
-                        ))
-                    } else {
-                        info!("LAN discovery active but direct delivery disabled (allow_direct_lan = false)");
-                        None
-                    };
-
-                    // Start advertising only if HTTP server is bound
-                    if let Some(ref http_bind) = config.embedded_node.http_bind {
-                        let port: u16 = http_bind
-                            .rsplit(':')
-                            .next()
-                            .and_then(|p| p.parse().ok())
-                            .unwrap_or(23004);
-
-                        let our_rk: [u8; 16] = identity.public_id().routing_key().into();
-                        let txt = reme_discovery::encode_txt(&our_rk, port, 1);
-                        let spec = reme_discovery::AdvertisementSpec {
-                            txt_records: txt,
-                            ..reme_discovery::AdvertisementSpec::new(port)
-                        };
-
-                        if let Err(e) = backend.start_advertising(spec).await {
-                            warn!("Failed to start mDNS advertising: {e}");
-                        }
-                    }
-
-                    info!("LAN discovery enabled");
-                    let backend = Arc::new(backend);
-                    (Some(backend), Some(cancel), controller_handle)
-                }
-                Err(e) => {
-                    warn!("Failed to initialize mDNS backend: {e}. LAN discovery disabled.");
-                    (None, None, None)
-                }
+        let lan_discovery_enabled = config.lan_discovery.enabled;
+        let init_result =
+            discovery::initialize(&config, &identity, &storage, coordinator.clone()).await;
+        let (discovery, lan_peer_count, discovery_status_msg) = match init_result {
+            discovery::InitResult::Disabled => (None, Arc::new(AtomicUsize::new(0)), None),
+            discovery::InitResult::Failed(reason) => (
+                None,
+                Arc::new(AtomicUsize::new(0)),
+                Some(format!("LAN discovery failed: {reason}")),
+            ),
+            discovery::InitResult::Ok(state) => {
+                let peer_count = state.peer_count.clone();
+                (Some(state), peer_count, None)
             }
-        } else {
-            (None, None, None)
         };
 
         // Build OutboxConfig from app config
@@ -772,10 +720,12 @@ impl App<'_> {
         };
 
         // Create client with coordinator transport
-        let mut client = Client::with_config(identity, coordinator.clone(), storage, outbox_config);
+        let mut client_inner =
+            Client::with_config(identity, coordinator.clone(), storage, outbox_config);
 
         // Set HTTP transport retry policy
-        client.set_transport_policy("http:", retry_policy);
+        client_inner.set_transport_policy("http:", retry_policy);
+        let client = Arc::new(client_inner);
 
         // Store tick interval from config
         let outbox_tick_interval = Duration::from_secs(config.outbox.tick_interval_secs);
@@ -811,10 +761,15 @@ impl App<'_> {
             show_upstreams_popup: false,
             registry,
             outbox_tick_interval,
-            discovery_backend,
-            discovery_cancel,
-            discovery_task,
+            discovery,
+            lan_peer_count,
+            lan_discovery_enabled,
         };
+
+        // Surface mDNS init failure in TUI status bar (M14)
+        if let Some(msg) = discovery_status_msg {
+            app.status = msg;
+        }
 
         // Load contacts
         app.load_contacts()?;
@@ -861,10 +816,31 @@ impl App<'_> {
         hex::encode(self.my_public_id().to_bytes())
     }
 
+    /// Get the current count of discovered LAN peers.
+    pub fn lan_peer_count(&self) -> usize {
+        self.lan_peer_count.load(Ordering::Relaxed)
+    }
+
     /// Run the application main loop
     pub async fn run(&mut self, terminal: &mut Terminal<impl Backend>) -> AppResult<()> {
         let mut event_handler = EventHandler::new(100);
-        let mut last_outbox_tick = Instant::now();
+
+        // Spawn outbox tick as a background task so HTTP timeouts don't block the UI.
+        let (outbox_result_tx, mut outbox_result_rx) =
+            tokio::sync::mpsc::channel::<Result<(usize, usize, u64), reme_core::ClientError>>(1);
+        let outbox_client = self.client.clone();
+        let outbox_interval = self.outbox_tick_interval;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(outbox_interval);
+            interval.tick().await; // skip first immediate tick
+            loop {
+                interval.tick().await;
+                let result = outbox_client.tiered_outbox_tick().await;
+                if outbox_result_tx.send(result).await.is_err() {
+                    break; // receiver dropped, app shutting down
+                }
+            }
+        });
 
         while self.running {
             // Draw UI
@@ -904,32 +880,26 @@ impl App<'_> {
                 }
             }
 
-            // Handle UI events
-            match event_handler.next().await? {
-                Event::Tick => {
-                    // Periodically run outbox tick for message retries
-                    if last_outbox_tick.elapsed() >= self.outbox_tick_interval {
-                        match self.client.outbox_tick().await {
-                            Ok((retried, expired)) => {
-                                if retried > 0 || expired > 0 {
-                                    info!(
-                                        retried = retried,
-                                        expired = expired,
-                                        "Outbox tick completed"
-                                    );
-                                } else {
-                                    debug!("Outbox tick: no pending messages");
-                                }
-                            }
-                            Err(e) => {
-                                warn!(error = %e, "Outbox tick failed");
-                            }
+            // Collect outbox tick results (non-blocking)
+            while let Ok(result) = outbox_result_rx.try_recv() {
+                match result {
+                    Ok((retried, maintenance, expired)) => {
+                        if retried > 0 || maintenance > 0 || expired > 0 {
+                            info!(retried, maintenance, expired, "Outbox tick completed");
+                        } else {
+                            debug!("Outbox tick: no pending messages");
                         }
-                        last_outbox_tick = Instant::now();
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Outbox tick failed");
                     }
                 }
+            }
+
+            // Handle UI events
+            match event_handler.next().await? {
                 Event::Key(key_event) => self.handle_key_event(key_event).await?,
-                Event::Resize(_, _) => {}
+                Event::Tick | Event::Resize(_, _) => {} // UI refresh handled by loop iteration
             }
         }
 
@@ -947,21 +917,19 @@ impl App<'_> {
     /// Cancels the discovery controller, awaits its task, then shuts down
     /// the mDNS backend to release network resources.
     async fn shutdown_discovery(&mut self) {
-        if let Some(cancel) = self.discovery_cancel.take() {
+        if let Some(state) = self.discovery.take() {
             debug!("Cancelling discovery controller...");
-            cancel.cancel();
-        }
+            state.cancel.cancel();
 
-        if let Some(task) = self.discovery_task.take() {
-            debug!("Waiting for discovery controller to stop...");
-            if let Err(e) = task.await {
-                warn!(error = %e, "Discovery controller task panicked during shutdown");
+            if let Some(task) = state.controller_task {
+                debug!("Waiting for discovery controller to stop...");
+                if let Err(e) = task.await {
+                    warn!(error = %e, "Discovery controller task panicked during shutdown");
+                }
             }
-        }
 
-        if let Some(backend) = self.discovery_backend.take() {
             debug!("Shutting down mDNS backend...");
-            if let Err(e) = backend.shutdown().await {
+            if let Err(e) = state.backend.shutdown().await {
                 warn!(error = %e, "Failed to shutdown mDNS backend");
             } else {
                 info!("mDNS backend shutdown complete");
@@ -1271,8 +1239,8 @@ impl App<'_> {
             if !text.trim().is_empty() {
                 if let Some(conv) = self.conversations.get(self.selected_conversation) {
                     let public_id = conv.public_id;
-                    match self.client.send_text(&public_id, &text).await {
-                        Ok(_) => {
+                    match self.client.send_text_tiered(&public_id, &text).await {
+                        Ok((_msg_id, phase)) => {
                             // Create message object
                             let message = Message {
                                 from_me: true,
@@ -1289,7 +1257,7 @@ impl App<'_> {
 
                             self.input = TextArea::default();
                             self.input.set_placeholder_text("Type a message...");
-                            self.status = "Message sent!".to_string();
+                            self.status = format_delivery_status(&phase);
                         }
                         Err(e) => {
                             self.status = format!("Send failed: {e}");
@@ -1398,6 +1366,16 @@ impl App<'_> {
         // Add contact via client API
         match self.client.add_contact(&public_id, name.as_deref()) {
             Ok(_) => {
+                // Notify the discovery controller about the new contact (M12)
+                if let Some(ref state) = self.discovery {
+                    if let Some(ref tx) = state.contact_tx {
+                        let rk: [u8; 16] = public_id.routing_key().into();
+                        if let Err(e) = tx.send((public_id, rk)) {
+                            debug!("Discovery contact channel closed: {e}");
+                        }
+                    }
+                }
+
                 // Reuse get_or_create_conversation to add to UI (avoids duplication)
                 let conv_idx = self.get_or_create_conversation(public_id);
                 let display_name = self.conversations[conv_idx].name.clone();
@@ -1599,4 +1577,19 @@ fn format_display_name(name: Option<&str>, public_id: &PublicID) -> String {
         },
         String::from,
     )
+}
+
+/// Format a [`TieredDeliveryPhase`] into a human-readable status message.
+fn format_delivery_status(phase: &TieredDeliveryPhase) -> String {
+    use reme_transport::DeliveryConfidence;
+    match phase {
+        TieredDeliveryPhase::Urgent => "Sent (queued, awaiting delivery)".to_string(),
+        TieredDeliveryPhase::Distributed { confidence, .. } => match confidence {
+            DeliveryConfidence::DirectDelivery { .. } => "Sent (direct delivery)".to_string(),
+            DeliveryConfidence::QuorumReached { count, required } => {
+                format!("Sent (quorum {count}/{required})")
+            }
+        },
+        TieredDeliveryPhase::Confirmed { .. } => "Sent (confirmed)".to_string(),
+    }
 }

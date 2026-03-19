@@ -41,6 +41,7 @@ pub use http::NodeSpec;
 pub use http_target::{HttpTarget, HttpTargetConfig};
 pub use pool::{PoolConfig, PoolStrategy, TransportPool};
 pub use query::{HealthSummary, TargetSnapshot, TransportQuery};
+#[allow(deprecated)]
 pub use receiver::{MessageReceiver, ReceiverConfig, ReceiverHandle};
 pub use registry::{EnrichedSnapshot, EphemeralMeta, TransportRegistry};
 pub use seen_cache::{SeenCache, SharedSeenCache};
@@ -130,7 +131,7 @@ impl TransportError {
 ///
 /// This trait abstracts the underlying transport mechanism (HTTP, `LoRa`, BLE, etc.)
 /// for outgoing operations. Incoming messages are handled separately via
-/// `MessageReceiver` which provides push-based delivery.
+/// `TransportCoordinator::subscribe()` which provides push-based delivery.
 ///
 /// With MIK-only encryption, there are no prekeys to upload or fetch.
 /// Each message includes an ephemeral key for stateless ECDH.

@@ -8,6 +8,7 @@ use tracing::{debug, warn};
 use crate::backend::DiscoveryBackend;
 use crate::types::{
     AdvertisementSpec, DiscoveryError, DiscoveryEvent, RawDiscoveredPeer, DEFAULT_SERVICE_TYPE,
+    DISCOVERY_CHANNEL_CAPACITY,
 };
 
 /// mDNS-SD discovery backend using the [`mdns_sd`] crate.
@@ -25,6 +26,8 @@ struct MdnsState {
     registered_fullname: Option<String>,
     /// Whether a browse thread is already running.
     browsing: bool,
+    /// Handle to the browse thread, joined on shutdown.
+    browse_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl MdnsSdBackend {
@@ -36,7 +39,7 @@ impl MdnsSdBackend {
         let daemon =
             mdns_sd::ServiceDaemon::new().map_err(|e| DiscoveryError::BindFailed(e.to_string()))?;
 
-        let (tx, _) = broadcast::channel(128);
+        let (tx, _) = broadcast::channel(DISCOVERY_CHANNEL_CAPACITY);
 
         Ok(Self {
             daemon,
@@ -44,6 +47,7 @@ impl MdnsSdBackend {
                 advertising: false,
                 registered_fullname: None,
                 browsing: false,
+                browse_handle: None,
             }),
             tx,
         })
@@ -74,24 +78,31 @@ impl MdnsSdBackend {
 
     /// Start the browse thread if not already running. Called on first subscribe.
     fn ensure_browsing(&self) {
-        let mut state = self.state.lock().unwrap();
-        if state.browsing {
-            return;
+        // M2: Claim the browsing slot under lock, then drop the lock before
+        // calling daemon.browse() (which may block briefly on the internal
+        // mpsc channel). If browse() fails, re-acquire and reset.
+        {
+            let mut state = self.state.lock().unwrap();
+            if state.browsing {
+                return;
+            }
+            state.browsing = true;
         }
 
         let browse_receiver = match self.daemon.browse(DEFAULT_SERVICE_TYPE) {
             Ok(r) => r,
             Err(e) => {
                 warn!("mDNS-SD: failed to start browsing: {e}");
+                let mut state = self.state.lock().unwrap();
+                state.browsing = false;
                 return;
             }
         };
 
-        state.browsing = true;
         let tx = self.tx.clone();
 
         // Bridge the std mpsc receiver from mdns-sd into our broadcast sender.
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             let mut known = HashSet::<String>::new();
             while let Ok(event) = browse_receiver.recv() {
                 let discovery_event = match event {
@@ -121,21 +132,24 @@ impl MdnsSdBackend {
                 let _ = tx.send(discovery_event);
             }
         });
+
+        // Store the handle so we can join it on shutdown.
+        let mut state = self.state.lock().unwrap();
+        state.browse_handle = Some(handle);
     }
 }
 
 #[async_trait::async_trait]
 impl DiscoveryBackend for MdnsSdBackend {
     async fn start_advertising(&self, spec: AdvertisementSpec) -> Result<(), DiscoveryError> {
-        // Phase 1: Check state under lock.
-        {
-            let state = self.state.lock().unwrap();
-            if state.advertising {
-                return Err(DiscoveryError::AlreadyAdvertising);
-            }
+        // M1: Hold the lock through the entire operation to avoid TOCTOU.
+        // The work below (hostname lookup, ServiceInfo::new, daemon.register)
+        // is fast in-process work, not blocking I/O.
+        let mut state = self.state.lock().unwrap();
+        if state.advertising {
+            return Err(DiscoveryError::AlreadyAdvertising);
         }
 
-        // Phase 2: Build and register service (no lock held).
         let hostname = hostname::get()
             .ok()
             .and_then(|h| h.into_string().ok())
@@ -167,66 +181,138 @@ impl DiscoveryBackend for MdnsSdBackend {
             .register(service_info)
             .map_err(|e| DiscoveryError::BackendError(e.to_string()))?;
 
-        // Phase 3: Commit state under lock.
-        {
-            let mut state = self.state.lock().unwrap();
-            debug!(fullname = %fullname, "mDNS-SD: advertising started");
-            state.advertising = true;
-            state.registered_fullname = Some(fullname);
-        }
+        debug!(fullname = %fullname, "mDNS-SD: advertising started");
+        state.advertising = true;
+        state.registered_fullname = Some(fullname);
+
         Ok(())
     }
 
     async fn stop_advertising(&self) -> Result<(), DiscoveryError> {
-        // Phase 1: Clone fullname under lock (don't take — keep it for retry on failure).
-        let fullname = {
+        // Extract state and start unregister while holding the lock, then drop
+        // the lock before awaiting to avoid holding a non-Send MutexGuard across
+        // an await point.
+        let receiver = {
             let state = self.state.lock().unwrap();
             if !state.advertising {
                 return Err(DiscoveryError::NotAdvertising);
             }
-            state.registered_fullname.clone()
+
+            // C1: Start the unregister if we have a registered fullname.
+            state.registered_fullname.as_ref().map(|fullname| {
+                self.daemon
+                    .unregister(fullname)
+                    .map_err(|e| DiscoveryError::BackendError(e.to_string()))
+            })
+            // Lock dropped here
         };
 
-        // Phase 2: Unregister with daemon (no lock held).
-        if let Some(ref fullname) = fullname {
-            self.daemon
-                .unregister(fullname)
+        // Await unregister confirmation outside the lock.
+        if let Some(receiver_result) = receiver {
+            let receiver = receiver_result?;
+
+            // The receiver is a std sync mpsc — recv on it in a blocking spawn
+            // to avoid blocking the async runtime.
+            let recv_result = tokio::task::spawn_blocking(move || receiver.recv())
+                .await
                 .map_err(|e| DiscoveryError::BackendError(e.to_string()))?;
-            debug!(fullname = %fullname, "mDNS-SD: advertising stopped");
+
+            match recv_result {
+                Ok(mdns_sd::UnregisterStatus::OK) => {
+                    debug!("mDNS-SD: advertising stopped");
+                }
+                Ok(mdns_sd::UnregisterStatus::NotFound) => {
+                    warn!("mDNS-SD: service was not found during unregister");
+                }
+                Err(e) => {
+                    warn!("mDNS-SD: failed to receive unregister status: {e}");
+                }
+            }
         }
 
-        // Phase 3: Commit state under lock only on success.
-        {
-            let mut state = self.state.lock().unwrap();
-            state.advertising = false;
-            state.registered_fullname = None;
-        }
+        // Re-acquire lock to update state.
+        let mut state = self.state.lock().unwrap();
+        state.advertising = false;
+        state.registered_fullname = None;
+
         Ok(())
     }
 
     fn subscribe(&self) -> broadcast::Receiver<DiscoveryEvent> {
+        // Subscribe *before* starting the browse so that events emitted
+        // immediately upon browse start (e.g. already-cached services) are
+        // not lost. broadcast::Receiver only sees messages sent after creation.
+        let rx = self.tx.subscribe();
         self.ensure_browsing();
-        self.tx.subscribe()
+        rx
     }
 
     async fn shutdown(&self) -> Result<(), DiscoveryError> {
-        // Phase 1: Read state under lock.
-        let fullname = {
+        // Take state values under lock.
+        let (fullname, browse_handle) = {
             let mut state = self.state.lock().unwrap();
             state.advertising = false;
-            state.registered_fullname.take()
+            state.browsing = false;
+            (state.registered_fullname.take(), state.browse_handle.take())
         };
 
-        // Phase 2: Unregister and shut down daemon (no lock held).
+        // C1: Await unregister confirmation if we were advertising.
         if let Some(ref fullname) = fullname {
-            if let Err(e) = self.daemon.unregister(fullname) {
-                warn!(fullname = %fullname, "mDNS-SD: failed to unregister during shutdown: {e}");
+            match self.daemon.unregister(fullname) {
+                Ok(receiver) => {
+                    let fname = fullname.clone();
+                    match tokio::task::spawn_blocking(move || receiver.recv()).await {
+                        Ok(Ok(_status)) => {
+                            debug!(fullname = %fname, "mDNS-SD: unregister confirmed");
+                        }
+                        Ok(Err(e)) => {
+                            warn!(fullname = %fname, "mDNS-SD: unregister channel closed: {e}");
+                        }
+                        Err(e) => {
+                            warn!(fullname = %fname, "mDNS-SD: failed to await unregister: {e}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(fullname = %fullname, "mDNS-SD: failed to unregister during shutdown: {e}");
+                }
             }
         }
 
-        self.daemon
+        // C1: Await daemon shutdown confirmation.
+        let shutdown_receiver = self
+            .daemon
             .shutdown()
             .map_err(|e| DiscoveryError::BackendError(e.to_string()))?;
+
+        match tokio::task::spawn_blocking(move || shutdown_receiver.recv()).await {
+            Ok(Ok(_status)) => {
+                debug!("mDNS-SD: daemon shutdown confirmed");
+            }
+            Ok(Err(e)) => {
+                warn!("mDNS-SD: daemon shutdown channel closed: {e}");
+            }
+            Err(e) => {
+                warn!("mDNS-SD: failed to await daemon shutdown: {e}");
+            }
+        }
+
+        // C2: Join the browse thread after daemon shutdown (daemon shutdown
+        // closes the browse receiver, which causes the thread to exit).
+        if let Some(handle) = browse_handle {
+            match tokio::task::spawn_blocking(move || handle.join()).await {
+                Ok(Ok(())) => {
+                    debug!("mDNS-SD: browse thread joined");
+                }
+                Ok(Err(_panic)) => {
+                    warn!("mDNS-SD: browse thread panicked");
+                }
+                Err(e) => {
+                    warn!("mDNS-SD: failed to join browse thread: {e}");
+                }
+            }
+        }
+
         Ok(())
     }
 }

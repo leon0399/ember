@@ -27,9 +27,9 @@ mod config;
 mod discovery;
 mod tui;
 
-use crate::config::{load_config, parse_log_level};
+use crate::config::load_config;
 use std::fs::{self, File};
-use tracing_subscriber::FmtSubscriber;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -43,11 +43,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Ensure data directory exists for log file
     fs::create_dir_all(&config.data_dir)?;
 
-    // Initialize tracing - write to file to avoid breaking TUI
-    let log_level = parse_log_level(&config.log_level);
+    // Initialize tracing - write to file to avoid breaking TUI.
+    // RUST_LOG env var takes precedence; falls back to config file level.
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level));
     let log_file = File::create(config.data_dir.join("client.log"))?;
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(log_level)
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
         .with_writer(log_file)
         .with_ansi(false)
         .finish();

@@ -233,7 +233,7 @@ impl TargetKind {
 /// Used by the coordinator to filter targets for specific operations.
 /// This is local configuration, not wire data — plain booleans are clearer
 /// than bitflags for flags that are checked individually.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[allow(clippy::struct_excessive_bools)] // These are independent capability flags, not a state machine
 pub struct TargetCapabilities {
     /// Target accepts submitted messages (POST /api/v1/submit).
@@ -248,12 +248,14 @@ pub struct TargetCapabilities {
 
 impl TargetCapabilities {
     /// Default capabilities for a Stable target (mailbox node).
+    #[allow(clippy::needless_update)] // ..Default future-proofs against new fields
     pub fn stable_defaults() -> Self {
         Self {
             send: true,
             fetch: true,
             quorum_credit: true,
-            replicate: false,
+            replicate: true,
+            ..Self::default()
         }
     }
 
@@ -264,9 +266,7 @@ impl TargetCapabilities {
     pub fn ephemeral_defaults() -> Self {
         Self {
             send: true,
-            fetch: false,
-            quorum_credit: false,
-            replicate: false,
+            ..Self::default()
         }
     }
 }

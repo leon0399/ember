@@ -35,7 +35,7 @@
 //! # LAN Discovery — automatic peer detection on local network
 //! [lan_discovery]
 //! enabled = true              # Enable mDNS browsing (advertising requires embedded_node.http_bind)
-//! # allow_direct_lan = true   # Verify and register discovered peers for direct delivery
+//! # auto_direct_known_contacts = true   # Verify and register discovered peers for direct delivery
 //! # max_peers = 256           # Maximum number of tracked LAN peers
 //! ```
 //!
@@ -51,7 +51,7 @@ use reme_transport::{QuorumStrategy, TieredDeliveryConfig};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
-use tracing::{warn, Level};
+use tracing::warn;
 
 /// CLI arguments for the client
 #[derive(Parser, Debug, Clone, Serialize)]
@@ -446,36 +446,52 @@ pub struct LanDiscoveryConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Allow direct LAN delivery to discovered peers (default: true when enabled).
+    /// Automatically verify and register discovered peers that match known
+    /// contacts for direct LAN delivery (default: true when enabled).
     /// When false, the discovery controller is not spawned — mDNS browsing and
     /// advertising still run, but no peers are verified or registered as targets.
-    #[serde(default = "default_true")]
-    pub allow_direct_lan: bool,
+    #[serde(
+        default = "default_auto_direct_known_contacts",
+        alias = "allow_direct_lan"
+    )]
+    pub auto_direct_known_contacts: bool,
 
     /// Max discovered peers to track (default: 256).
     #[serde(default = "default_max_peers")]
     pub max_peers: usize,
+
+    /// Interval in seconds between periodic re-verification of tracked peers
+    /// (default: 300). On each tick, all peers in the index are re-verified;
+    /// peers that fail verification are subject to the stale-peer circuit breaker.
+    #[serde(default = "default_refresh_interval")]
+    pub refresh_interval_secs: u64,
 }
 
 const DEFAULT_LAN_ALLOW_DIRECT: bool = true;
 const DEFAULT_LAN_MAX_PEERS: usize = 256;
+const DEFAULT_LAN_REFRESH_INTERVAL_SECS: u64 = 300;
 
 impl Default for LanDiscoveryConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            allow_direct_lan: DEFAULT_LAN_ALLOW_DIRECT,
+            auto_direct_known_contacts: DEFAULT_LAN_ALLOW_DIRECT,
             max_peers: DEFAULT_LAN_MAX_PEERS,
+            refresh_interval_secs: DEFAULT_LAN_REFRESH_INTERVAL_SECS,
         }
     }
 }
 
-fn default_true() -> bool {
+fn default_auto_direct_known_contacts() -> bool {
     DEFAULT_LAN_ALLOW_DIRECT
 }
 
 fn default_max_peers() -> usize {
     DEFAULT_LAN_MAX_PEERS
+}
+
+fn default_refresh_interval() -> u64 {
+    DEFAULT_LAN_REFRESH_INTERVAL_SECS
 }
 
 /// Direct peer configuration for LAN P2P messaging.
@@ -973,17 +989,6 @@ default_ttl_secs = {embedded_ttl_secs}
     )
 }
 
-/// Parse log level from string
-pub(crate) fn parse_log_level(level: &str) -> Level {
-    match level.to_lowercase().as_str() {
-        "trace" => Level::TRACE,
-        "debug" => Level::DEBUG,
-        "warn" | "warning" => Level::WARN,
-        "error" => Level::ERROR,
-        _ => Level::INFO, // Default to INFO for "info" and unrecognized levels
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1252,8 +1257,12 @@ mod tests {
     fn test_lan_discovery_config_default() {
         let config = LanDiscoveryConfig::default();
         assert!(!config.enabled);
-        assert_eq!(config.allow_direct_lan, DEFAULT_LAN_ALLOW_DIRECT);
+        assert_eq!(config.auto_direct_known_contacts, DEFAULT_LAN_ALLOW_DIRECT);
         assert_eq!(config.max_peers, DEFAULT_LAN_MAX_PEERS);
+        assert_eq!(
+            config.refresh_interval_secs,
+            DEFAULT_LAN_REFRESH_INTERVAL_SECS
+        );
     }
 
     #[test]
@@ -1268,8 +1277,12 @@ mod tests {
             .unwrap();
         assert!(config.enabled);
         // Defaults should apply for unset fields
-        assert_eq!(config.allow_direct_lan, DEFAULT_LAN_ALLOW_DIRECT);
+        assert_eq!(config.auto_direct_known_contacts, DEFAULT_LAN_ALLOW_DIRECT);
         assert_eq!(config.max_peers, DEFAULT_LAN_MAX_PEERS);
+        assert_eq!(
+            config.refresh_interval_secs,
+            DEFAULT_LAN_REFRESH_INTERVAL_SECS
+        );
     }
 
     #[test]
@@ -1285,15 +1298,17 @@ mod tests {
         let toml = r"
             [lan_discovery]
             enabled = true
-            allow_direct_lan = false
+            auto_direct_known_contacts = false
             max_peers = 64
+            refresh_interval_secs = 120
         ";
         let config: LanDiscoveryConfig = toml::from_str::<RawConfig>(toml)
             .unwrap()
             .lan_discovery
             .unwrap();
         assert!(config.enabled);
-        assert!(!config.allow_direct_lan);
+        assert!(!config.auto_direct_known_contacts);
         assert_eq!(config.max_peers, 64);
+        assert_eq!(config.refresh_interval_secs, 120);
     }
 }

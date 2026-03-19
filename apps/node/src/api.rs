@@ -1,8 +1,15 @@
 //! HTTP API for the mailbox node (MIK-only, no prekeys)
 //!
 //! Provides REST endpoints for:
-//! - `POST /api/v1/submit` - Submit a message (tombstones temporarily disabled)
-//! - `GET /api/v1/fetch/:routing_key` - Fetch messages
+//!
+//! ### Public (unauthenticated)
+//! - `GET  /api/v1/identity?challenge=<base64>` — Challenge-response identity verification
+//! - `GET  /api/v1/health` — Health check / readiness probe
+//!
+//! ### Authenticated (HTTP Basic Auth when configured)
+//! - `POST /api/v1/submit` — Submit a message or ack-tombstone
+//! - `GET  /api/v1/fetch/{routing_key}` — Fetch messages for a routing key
+//! - `GET  /api/v1/stats` — Mailbox statistics
 
 use crate::mqtt_bridge::MqttBridge;
 use crate::node_identity::NodeIdentity;
@@ -917,8 +924,9 @@ async fn get_identity(
         // Note: node_pubkey is still included in signed data for cryptographic binding,
         // but not returned in response (privacy: prevents identity enumeration)
         let node_pubkey = identity.public_id().to_bytes();
-        let sign_data = build_identity_sign_data(&challenge, &node_pubkey);
+        let mut sign_data = build_identity_sign_data(&challenge, &node_pubkey);
         let signature = identity.sign(&sign_data);
+        sign_data.zeroize();
 
         IdentityResponse {
             signature: BASE64_STANDARD.encode(signature),

@@ -4,7 +4,7 @@ Attack scenarios, mitigations, and residual risks for the reme messaging system.
 
 ## LAN Discovery
 
-## 1. Impersonation via mDNS routing key spoofing
+### 1. Impersonation via mDNS routing key spoofing
 
 **Attack**: Mallory advertises herself on mDNS with Bob's routing key (`rk=<Bob's RK>`). Alice's discovery controller matches the routing key against her contact list and attempts to register Mallory as Bob's direct transport target.
 
@@ -12,7 +12,7 @@ Attack scenarios, mitigations, and residual risks for the reme messaging system.
 
 **Residual risk**: None — Mallory is never registered as a target.
 
-## 2. Identity challenge relay (MITM on verification)
+### 2. Identity challenge relay (MITM on verification)
 
 **Attack**: Mallory advertises Bob's routing key, intercepts Alice's identity challenge, forwards it to the real Bob, and replays Bob's signed response back to Alice. Alice now believes Mallory is Bob and registers her as a direct target.
 
@@ -31,11 +31,11 @@ Attack scenarios, mitigations, and residual risks for the reme messaging system.
 <!-- successful. Without this, a relay attacker returning 200 OK can silently -->
 <!-- blackhole messages. See threat model §2. -->
 
-**Residual risk**: A relay attacker who passes identity verification can silently drop messages by returning HTTP 200 with an empty/invalid receipt. Mallory also learns that Alice (by her IP address) is attempting to send to Bob's routing key — this is an information leak beyond what mDNS broadcasts reveal, since the advertisement shows Bob's presence but not which clients are interested in it.
+**Residual risk**: A relay attacker who passes identity verification can silently drop messages by returning HTTP 200 with an empty/invalid receipt. Mallory also learns that Alice (by her IP address) is attempting to send to Bob's routing key — this reveals a contact-graph edge (Alice → Bob) beyond what mDNS broadcasts expose, since the advertisement shows Bob's presence but not which clients are interested in it.
 
-**Why channel binding was rejected**: An earlier design included channel binding (mixing the responder's IP:port into the challenge hash). Even with channel binding, the receipt-gating gap above would still allow message blackholing. The correct fix is receipt-gated direct tier success, not channel binding. See PR #87 close rationale.
+**Why channel binding was deferred**: An earlier design included channel binding (mixing the responder's IP:port into the challenge hash). Even with channel binding, the receipt-gating gap above would still allow message blackholing. The correct fix is receipt-gated direct tier success, not channel binding. Channel binding may be revisited once receipt-gated tiers are implemented. See PR #87 close rationale.
 
-## 3. Discovery spam / resource exhaustion
+### 3. Discovery spam / resource exhaustion
 
 **Attack**: Mallory floods the network with thousands of mDNS advertisements, each with a different routing key, attempting to exhaust the discovery controller's resources.
 
@@ -45,9 +45,9 @@ Attack scenarios, mitigations, and residual risks for the reme messaging system.
 - Identity verification adds latency per peer, but the 256 cap bounds total work
 - The mDNS-SD backend uses `broadcast` channels that drop events on lag rather than growing unboundedly
 
-**Residual risk**: An attacker who knows a contact's routing key (16 bytes, derived from their public key via BLAKE3) could trigger verification attempts. The 256 peer cap (`MAX_PEERS` in `apps/client/src/discovery/controller.rs`) and the discovery controller's reqwest client timeouts (2s connect, 5s total) bound the amplification.
+**Residual risk**: An attacker who knows a contact's routing key (16 bytes, derived from their public key via BLAKE3) could trigger verification attempts. The configurable peer cap (default: 256, via `LanDiscoveryConfig.max_peers`) and the discovery controller's reqwest client timeouts (2s connect, 5s total) bound the amplification.
 
-## 4. Stale peer targets after network change
+### 4. Stale peer targets after network change
 
 **Attack**: Not an adversarial attack, but a reliability concern. A peer goes offline without sending an mDNS goodbye packet (e.g., abrupt network disconnect). The controller retains the stale target, and direct-tier delivery attempts fail until the mDNS TTL expires.
 
@@ -60,7 +60,7 @@ Attack scenarios, mitigations, and residual risks for the reme messaging system.
 
 **Residual risk**: Brief window (seconds) of failed direct delivery before circuit breaker trips. Quorum fallback ensures delivery.
 
-## 5. Routing key privacy leakage
+### 5. Routing key privacy leakage
 
 **Attack**: An observer on the LAN can see routing keys in mDNS TXT records. Since `routing_key = BLAKE3(PublicID)[..16]`, this is a 16-byte truncated hash of the peer's public identity. An attacker who knows a target's PublicID can confirm their presence on the network.
 
@@ -71,7 +71,7 @@ Attack scenarios, mitigations, and residual risks for the reme messaging system.
 
 **Residual risk**: Presence confirmation for targeted surveillance. Acceptable for the LAN-first threat model. Future mitigation options include rotating routing keys or using ephemeral advertisement identifiers.
 
-## 6. Fetch polling privacy (why ephemeral targets are SEND-only)
+### 6. Fetch polling privacy (why ephemeral targets are SEND-only)
 
 **Attack**: If Alice polls an mDNS-discovered peer for messages (`GET /api/v1/fetch/{routing_key}`), she reveals her own routing key to that peer. A malicious peer could collect routing keys of all clients polling it.
 

@@ -428,7 +428,7 @@ impl HttpTransport {
     /// - One-shot message retrieval
     /// - Initial sync before starting push-based receiving
     ///
-    /// For continuous message receiving, use `MessageReceiver` instead.
+    /// For continuous message receiving, use `TransportCoordinator::subscribe()` instead.
     pub async fn fetch_once(
         &self,
         routing_key: &RoutingKey,

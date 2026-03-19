@@ -226,9 +226,15 @@ fn render_status(frame: &mut Frame, app: &App) {
         height: 1,
     };
 
-    // Build status line
+    // Build status line with optional LAN peer count
     let id_display = app.my_short_id();
-    let status_text = format!(" [{}] {} ", id_display, app.status);
+    let lan_indicator = if app.lan_discovery_enabled {
+        let count = app.lan_peer_count();
+        format!(" LAN:{count}")
+    } else {
+        String::new()
+    };
+    let status_text = format!(" [{}]{} {} ", id_display, lan_indicator, app.status);
 
     let status =
         Paragraph::new(status_text).style(Style::default().bg(Color::DarkGray).fg(Color::White));
