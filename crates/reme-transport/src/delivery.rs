@@ -659,6 +659,9 @@ impl TieredDeliveryConfig {
     }
 
     /// Calculate next retry delay using exponential backoff with AWS Full Jitter.
+    ///
+    /// Returns a uniformly random duration in `[0, min(max_delay, base * multiplier^attempt)]`
+    /// to prevent thundering-herd synchronization across clients.
     #[allow(clippy::cast_possible_wrap)] // attempt count will never exceed i32::MAX
     pub fn calculate_retry_delay(&self, attempt: u32) -> Duration {
         let delay = self.urgent_initial_delay.as_secs_f32()

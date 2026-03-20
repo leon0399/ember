@@ -154,7 +154,11 @@ impl TransportRetryPolicy {
         }
     }
 
-    /// Calculate the delay for the nth retry attempt.
+    /// Calculate the delay for the nth retry attempt using AWS Full Jitter.
+    ///
+    /// Returns a uniformly random duration in `[0, min(max_delay, base * multiplier^attempt)]`
+    /// to prevent thundering-herd synchronization across clients.
+    /// Attempt 0 always returns [`Duration::ZERO`].
     #[allow(
         clippy::cast_possible_wrap,      // attempt count won't exceed i32::MAX
         clippy::cast_precision_loss,     // delay calculation doesn't need full precision
@@ -170,11 +174,11 @@ impl TransportRetryPolicy {
             .backoff_multiplier
             .powi(attempt.saturating_sub(1) as i32);
         let delay_ms = self.initial_delay.as_millis() as f32 * multiplier;
-        let capped = delay_ms.min(self.max_delay.as_millis() as f32);
+        let capped_ms = delay_ms.min(self.max_delay.as_millis() as f32) as u64;
 
         // AWS Full Jitter: uniform random in [0, capped_delay]
-        let jittered = rand::rng().random_range(0.0..=capped);
-        Duration::from_millis(jittered as u64)
+        let jittered_ms = rand::rng().random_range(0..=capped_ms);
+        Duration::from_millis(jittered_ms)
     }
 
     /// Check if we should give up after the given number of attempts.
