@@ -390,6 +390,38 @@ impl ConversationDag {
         }
     }
 
+    /// Restore from persisted state.
+    ///
+    /// Reconstructs the minimal DAG state needed to avoid false gaps on restart:
+    /// - `epoch`: conversation epoch
+    /// - `sender_head`: our last sent `ContentId` (becomes `prev_self` in next message)
+    /// - `peer_heads`: the peer's latest message IDs (for `observed_heads`)
+    ///
+    /// The receiver gap detector and full sender history are NOT restored —
+    /// only the sender's head is seeded so `prev_self` is correct.
+    pub fn from_persisted(
+        epoch: u16,
+        sender_head: Option<ContentId>,
+        peer_heads: Vec<ContentId>,
+    ) -> Self {
+        let mut sender = SenderGapDetector::new();
+        if let Some(head) = sender_head {
+            // Seed the sender with the last known head so `sender.head()` returns it.
+            // We don't have the full chain, but that's fine — we only need the head
+            // for `prev_self` in the next outgoing message.
+            sender.on_send(head, None);
+        }
+
+        let peer_head_set: HashSet<ContentId> = peer_heads.into_iter().collect();
+
+        Self {
+            receiver: ReceiverGapDetector::new(),
+            sender,
+            epoch,
+            peer_heads: peer_head_set,
+        }
+    }
+
     /// Increment the epoch (e.g., when clearing history).
     pub fn increment_epoch(&mut self) {
         self.epoch = self.epoch.wrapping_add(1);
@@ -883,6 +915,36 @@ mod tests {
                 }
             );
             assert!(dag.receiver.is_orphan(&epoch1_id));
+        }
+
+        #[test]
+        fn test_from_persisted_restores_sender_head() {
+            let head = make_id(42);
+            let dag = ConversationDag::from_persisted(3, Some(head), vec![]);
+            assert_eq!(dag.epoch, 3);
+            assert_eq!(dag.sender.head(), Some(head));
+            assert!(dag.observed_heads().is_empty());
+        }
+
+        #[test]
+        fn test_from_persisted_restores_peer_heads() {
+            let peer1 = make_id(10);
+            let peer2 = make_id(20);
+            let dag = ConversationDag::from_persisted(1, None, vec![peer1, peer2]);
+            assert_eq!(dag.epoch, 1);
+            assert!(dag.sender.head().is_none());
+            let heads = dag.observed_heads();
+            assert_eq!(heads.len(), 2);
+            assert!(heads.contains(&peer1));
+            assert!(heads.contains(&peer2));
+        }
+
+        #[test]
+        fn test_from_persisted_empty() {
+            let dag = ConversationDag::from_persisted(0, None, vec![]);
+            assert_eq!(dag.epoch, 0);
+            assert!(dag.sender.head().is_none());
+            assert!(dag.observed_heads().is_empty());
         }
     }
 }
