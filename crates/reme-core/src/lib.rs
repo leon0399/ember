@@ -63,6 +63,9 @@ pub enum ClientError {
 
     #[error("Conflicting duplicate message ID: {0:?}")]
     ConflictingDuplicate(MessageID),
+
+    #[error("Internal lock poisoned")]
+    LockPoisoned,
 }
 
 /// Represents a contact in the messenger
@@ -309,19 +312,25 @@ impl<T: Transport> Client<T> {
     ///
     /// Note: This does NOT delete stored messages from local storage.
     /// Use this when both parties agree to clear history.
-    pub fn clear_conversation_dag(&self, contact: &PublicID) -> u16 {
+    pub fn clear_conversation_dag(&self, contact: &PublicID) -> Result<u16, ClientError> {
         let contact_key = contact.to_bytes();
-        let mut dag_state = self.dag_state.lock().unwrap();
+        let mut dag_state = self
+            .dag_state
+            .lock()
+            .map_err(|_| ClientError::LockPoisoned)?;
         let dag = dag_state.entry(contact_key).or_default();
         dag.increment_epoch();
-        dag.epoch
+        Ok(dag.epoch)
     }
 
     /// Get the current epoch for a conversation.
-    pub fn get_conversation_epoch(&self, contact: &PublicID) -> u16 {
+    pub fn get_conversation_epoch(&self, contact: &PublicID) -> Result<u16, ClientError> {
         let contact_key = contact.to_bytes();
-        let dag_state = self.dag_state.lock().unwrap();
-        dag_state.get(&contact_key).map_or(0, |d| d.epoch)
+        let dag_state = self
+            .dag_state
+            .lock()
+            .map_err(|_| ClientError::LockPoisoned)?;
+        Ok(dag_state.get(&contact_key).map_or(0, |d| d.epoch))
     }
 
     // ========================================
@@ -412,7 +421,10 @@ impl<T: Transport> Client<T> {
         // Get DAG fields from conversation state
         let contact_key = to.to_bytes();
         let (prev_self, observed_heads, epoch) = {
-            let dag_state = self.dag_state.lock().unwrap();
+            let dag_state = self
+                .dag_state
+                .lock()
+                .map_err(|_| ClientError::LockPoisoned)?;
             if detached {
                 let epoch = dag_state.get(&contact_key).map_or(0, |d| d.epoch);
                 (None, Vec::new(), epoch)
@@ -463,7 +475,10 @@ impl<T: Transport> Client<T> {
 
         // Update DAG tracking (skip for detached)
         if !detached {
-            let mut dag_state = self.dag_state.lock().unwrap();
+            let mut dag_state = self
+                .dag_state
+                .lock()
+                .map_err(|_| ClientError::LockPoisoned)?;
             let dag = dag_state.entry(contact_key).or_default();
             dag.sender.on_send(content_id, prev_self);
         }
@@ -677,7 +692,10 @@ impl<T: Transport> Client<T> {
             .unwrap_or(0);
 
         let (has_gaps, sender_state_reset, local_state_behind) = {
-            let mut dag_state = self.dag_state.lock().unwrap();
+            let mut dag_state = self
+                .dag_state
+                .lock()
+                .map_err(|_| ClientError::LockPoisoned)?;
             let dag = dag_state.entry(contact_key).or_default();
 
             // Check if peer has advanced their epoch (intentional history clear)
@@ -1954,7 +1972,12 @@ mod tests {
             .unwrap();
 
         // Initial epoch is 0
-        assert_eq!(alice.get_conversation_epoch(bob_identity.public_id()), 0);
+        assert_eq!(
+            alice
+                .get_conversation_epoch(bob_identity.public_id())
+                .unwrap(),
+            0
+        );
 
         // Send a message to establish state
         alice
@@ -1963,12 +1986,21 @@ mod tests {
             .unwrap();
 
         // Clear conversation DAG
-        let new_epoch = alice.clear_conversation_dag(bob_identity.public_id());
+        let new_epoch = alice
+            .clear_conversation_dag(bob_identity.public_id())
+            .unwrap();
         assert_eq!(new_epoch, 1);
-        assert_eq!(alice.get_conversation_epoch(bob_identity.public_id()), 1);
+        assert_eq!(
+            alice
+                .get_conversation_epoch(bob_identity.public_id())
+                .unwrap(),
+            1
+        );
 
         // Clear again
-        let newer_epoch = alice.clear_conversation_dag(bob_identity.public_id());
+        let newer_epoch = alice
+            .clear_conversation_dag(bob_identity.public_id())
+            .unwrap();
         assert_eq!(newer_epoch, 2);
     }
 

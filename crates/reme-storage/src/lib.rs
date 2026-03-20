@@ -67,6 +67,9 @@ pub enum StorageError {
 
     #[error("Node error: {0}")]
     Node(#[from] NodeError),
+
+    #[error("Internal lock poisoned")]
+    LockPoisoned,
 }
 
 /// Simple `SQLite` storage for desktop v0.1
@@ -117,7 +120,7 @@ impl Storage {
     /// MIK-only storage: no sessions table, no prekeys table.
     /// Each message is encrypted with a fresh ephemeral key directly to the recipient's MIK.
     fn init_schema(&self) -> Result<(), StorageError> {
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS contacts (
@@ -234,7 +237,7 @@ impl Storage {
     /// but share the same database file for unified storage.
     pub fn init_mailbox_schema(&self) -> Result<(), StorageError> {
         debug!("initializing mailbox schema for embedded node");
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.execute_batch(
             r"
             -- Mailbox messages table for embedded node
@@ -319,7 +322,7 @@ impl Storage {
         let public_id_bytes = public_id.to_bytes();
         let now = now_secs_i64();
 
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.execute(
             "INSERT INTO contacts (public_id, name, created_at) VALUES (?, ?, ?)",
             params![&public_id_bytes[..], name, now],
@@ -333,7 +336,7 @@ impl Storage {
     /// Get contact ID by public ID
     pub fn get_contact_id(&self, public_id: &PublicID) -> Result<i64, StorageError> {
         let public_id_bytes = public_id.to_bytes();
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.query_row(
             "SELECT id FROM contacts WHERE public_id = ?",
             params![&public_id_bytes[..]],
@@ -345,7 +348,7 @@ impl Storage {
 
     /// Get contact public ID by contact ID
     pub fn get_contact_public_id(&self, contact_id: i64) -> Result<PublicID, StorageError> {
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let bytes: Vec<u8> = conn
             .query_row(
                 "SELECT public_id FROM contacts WHERE id = ?",
@@ -367,7 +370,7 @@ impl Storage {
 
     /// Get contact name by contact ID
     pub fn get_contact_name(&self, contact_id: i64) -> Result<Option<String>, StorageError> {
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.query_row(
             "SELECT name FROM contacts WHERE id = ?",
             params![contact_id],
@@ -379,7 +382,7 @@ impl Storage {
 
     /// List all contacts
     pub fn list_contacts(&self) -> Result<Vec<(i64, PublicID, Option<String>)>, StorageError> {
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let mut stmt =
             conn.prepare("SELECT id, public_id, name FROM contacts ORDER BY name, id")?;
 
@@ -424,7 +427,7 @@ impl Storage {
 
         let message_id_bytes = message_id.as_bytes();
 
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.execute(
             "INSERT INTO messages (message_id, contact_id, direction, content_type, body, created_at)
              VALUES (?, ?, 'sent', ?, ?, ?)",
@@ -458,7 +461,7 @@ impl Storage {
 
         let message_id_bytes = message_id.as_bytes();
 
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.execute(
             "INSERT INTO messages (message_id, contact_id, direction, content_type, body, created_at)
              VALUES (?, ?, 'received', ?, ?, ?)",
@@ -495,7 +498,7 @@ impl Storage {
         let expected_body = encoded_body(content);
         let message_id_bytes = message_id.as_bytes();
 
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let row: Option<(i64, String, String, Option<String>)> = conn
             .query_row(
                 "SELECT contact_id, direction, content_type, body
@@ -533,7 +536,7 @@ impl Storage {
 
         let message_id_bytes = message_id.as_bytes();
 
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.execute(
             "UPDATE messages SET delivered_at = ? WHERE message_id = ?",
             params![now, &message_id_bytes[..]],
@@ -548,7 +551,7 @@ impl Storage {
 
         let message_id_bytes = message_id.as_bytes();
 
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.execute(
             "UPDATE messages SET read_at = ? WHERE message_id = ?",
             params![now, &message_id_bytes[..]],
@@ -571,7 +574,7 @@ impl Storage {
         limit: u32,
         before_id: Option<i64>,
     ) -> Result<Vec<StoredMessage>, StorageError> {
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
 
         let mut messages = if let Some(cursor) = before_id {
             let mut stmt = conn.prepare(
@@ -617,7 +620,7 @@ impl Storage {
             return Ok(HashMap::new());
         }
 
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let mut result = HashMap::new();
 
         // Chunk to stay within SQLite's bound-parameter limit
@@ -670,7 +673,7 @@ impl Storage {
 
         let message_id_bytes = message_id.as_bytes();
 
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.execute(
             "INSERT OR REPLACE INTO pending_acks (message_id, ack_secret, created_at)
              VALUES (?, ?, ?)",
@@ -690,7 +693,7 @@ impl Storage {
     ) -> Result<Option<[u8; 16]>, StorageError> {
         let message_id_bytes = message_id.as_bytes();
 
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let result: Option<Vec<u8>> = conn
             .query_row(
                 "SELECT ack_secret FROM pending_acks WHERE message_id = ?",
@@ -716,7 +719,7 @@ impl Storage {
     pub fn remove_pending_ack(&self, message_id: &MessageID) -> Result<(), StorageError> {
         let message_id_bytes = message_id.as_bytes();
 
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.execute(
             "DELETE FROM pending_acks WHERE message_id = ?",
             params![&message_id_bytes[..]],
@@ -734,7 +737,7 @@ impl Storage {
 
         let cutoff = now - timestamp_to_i64(max_age_secs);
 
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let count = conn.execute(
             "DELETE FROM pending_acks WHERE created_at < ?",
             params![cutoff],
@@ -1160,7 +1163,7 @@ impl OutboxStore for Storage {
         let recipient_bytes = recipient.to_bytes();
         let message_id_bytes = message_id.as_bytes();
 
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.execute(
             "INSERT INTO outbox (message_id, recipient_id, content_id, envelope_bytes, inner_bytes, created_at_ms, expires_at_ms, next_retry_at_ms)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1181,7 +1184,7 @@ impl OutboxStore for Storage {
     }
 
     fn outbox_get_pending(&self) -> Result<Vec<PendingMessage>, Self::Error> {
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let mut stmt = conn.prepare(
             "SELECT message_id, recipient_id, content_id, envelope_bytes, inner_bytes,
                     created_at_ms, expires_at_ms, next_retry_at_ms, confirmation_type, confirmation_data
@@ -1245,7 +1248,7 @@ impl OutboxStore for Storage {
     ) -> Result<Vec<PendingMessage>, Self::Error> {
         let recipient_bytes = recipient.to_bytes();
 
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let mut stmt = conn.prepare(
             "SELECT message_id, recipient_id, content_id, envelope_bytes, inner_bytes,
                     created_at_ms, expires_at_ms, next_retry_at_ms, confirmation_type, confirmation_data
@@ -1304,7 +1307,7 @@ impl OutboxStore for Storage {
     }
 
     fn outbox_get_due_for_retry(&self, now_ms: u64) -> Result<Vec<PendingMessage>, Self::Error> {
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let mut stmt = conn.prepare(
             "SELECT message_id, recipient_id, content_id, envelope_bytes, inner_bytes,
                     created_at_ms, expires_at_ms, next_retry_at_ms, confirmation_type, confirmation_data
@@ -1374,7 +1377,7 @@ impl OutboxStore for Storage {
         entry_id: OutboxEntryId,
     ) -> Result<Option<PendingMessage>, Self::Error> {
         let entry_id_bytes = entry_id.as_bytes();
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let result: Option<(
             Vec<u8>,  // message_id
             Vec<u8>,  // recipient_id
@@ -1448,7 +1451,7 @@ impl OutboxStore for Storage {
         &self,
         content_id: ContentId,
     ) -> Result<Option<PendingMessage>, Self::Error> {
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let result: Option<(
             Vec<u8>,  // message_id
             Vec<u8>,  // recipient_id
@@ -1543,7 +1546,7 @@ impl OutboxStore for Storage {
         };
 
         // Use transaction to ensure atomicity of attempt + retry scheduling
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.execute("BEGIN IMMEDIATE", [])?;
 
         let result = (|| {
@@ -1603,7 +1606,7 @@ impl OutboxStore for Storage {
             } => ("dag", observed_in_message_id.to_vec()),
         };
 
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.execute(
             "UPDATE outbox SET confirmed_at_ms = ?, confirmation_type = ?, confirmation_data = ?, next_retry_at_ms = NULL
              WHERE message_id = ?",
@@ -1617,7 +1620,7 @@ impl OutboxStore for Storage {
         let entry_id_bytes = entry_id.as_bytes();
         let now_ms = now_ms();
 
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.execute(
             "UPDATE outbox SET expired_at_ms = ?, next_retry_at_ms = NULL WHERE message_id = ?",
             params![timestamp_to_i64(now_ms), &entry_id_bytes[..]],
@@ -1636,7 +1639,7 @@ impl OutboxStore for Storage {
         }
 
         // Use transaction for atomic batch update
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.execute("BEGIN IMMEDIATE", [])?;
 
         let result = (|| {
@@ -1669,7 +1672,7 @@ impl OutboxStore for Storage {
     }
 
     fn outbox_cleanup(&self, confirmed_before_ms: u64) -> Result<u64, Self::Error> {
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let count = conn.execute(
             "DELETE FROM outbox WHERE (confirmed_at_ms IS NOT NULL AND confirmed_at_ms <= ?) OR (expired_at_ms IS NOT NULL AND expired_at_ms <= ?)",
             params![timestamp_to_i64(confirmed_before_ms), timestamp_to_i64(confirmed_before_ms)],
@@ -1679,7 +1682,7 @@ impl OutboxStore for Storage {
     }
 
     fn outbox_expire_due(&self, now_ms: u64) -> Result<u64, Self::Error> {
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let count = conn.execute(
             "UPDATE outbox SET expired_at_ms = ?, next_retry_at_ms = NULL
              WHERE confirmed_at_ms IS NULL
@@ -1700,7 +1703,7 @@ impl OutboxStore for Storage {
         phase: &TieredDeliveryPhase,
     ) -> Result<(), Self::Error> {
         let entry_id_bytes = entry_id.as_bytes();
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         match phase {
             TieredDeliveryPhase::Urgent => {
                 conn.execute(
@@ -1758,7 +1761,7 @@ impl OutboxStore for Storage {
         let entry_id_bytes = entry_id.as_bytes();
         let now_ms = now_ms();
 
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.execute(
             "INSERT OR REPLACE INTO outbox_successes (message_id, target_id, succeeded_at_ms)
              VALUES (?, ?, ?)",
@@ -1772,7 +1775,7 @@ impl OutboxStore for Storage {
     }
 
     fn outbox_get_urgent_retry_due(&self, now_ms: u64) -> Result<Vec<PendingMessage>, Self::Error> {
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let mut stmt = conn.prepare(
             "SELECT message_id, recipient_id, content_id, envelope_bytes, inner_bytes,
                     created_at_ms, expires_at_ms, next_retry_at_ms, confirmation_type, confirmation_data
@@ -1839,7 +1842,7 @@ impl OutboxStore for Storage {
     ) -> Result<Vec<PendingMessage>, Self::Error> {
         let cutoff = now_ms.saturating_sub(maintenance_interval_ms);
 
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let mut stmt = conn.prepare(
             "SELECT message_id, recipient_id, content_id, envelope_bytes, inner_bytes,
                     created_at_ms, expires_at_ms, next_retry_at_ms, confirmation_type, confirmation_data
@@ -1909,7 +1912,7 @@ impl OutboxStore for Storage {
         last_maintenance_ms: u64,
     ) -> Result<(), Self::Error> {
         let entry_id_bytes = entry_id.as_bytes();
-        let conn = self.conn.lock().expect("mutex poisoned");
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.execute(
             "UPDATE outbox SET last_maintenance_ms = ? WHERE message_id = ?",
             params![timestamp_to_i64(last_maintenance_ms), &entry_id_bytes[..]],
