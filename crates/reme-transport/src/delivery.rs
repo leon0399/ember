@@ -10,6 +10,7 @@ use std::time::Duration;
 use reme_identity::PublicID;
 
 use derivative::Derivative;
+use rand::Rng;
 use strum::{Display, EnumIter};
 
 use crate::target::TargetId;
@@ -657,13 +658,19 @@ impl TieredDeliveryConfig {
         self.excluded_targets.contains(target)
     }
 
-    /// Calculate next retry delay using exponential backoff.
+    /// Calculate next retry delay using exponential backoff with AWS Full Jitter.
+    ///
+    /// Returns a uniformly random duration in `[0, min(max_delay, base * multiplier^attempt)]`
+    /// to prevent thundering-herd synchronization across clients.
     #[allow(clippy::cast_possible_wrap)] // attempt count will never exceed i32::MAX
     pub fn calculate_retry_delay(&self, attempt: u32) -> Duration {
         let delay = self.urgent_initial_delay.as_secs_f32()
             * self.urgent_backoff_multiplier.powi(attempt as i32);
         let capped = delay.min(self.urgent_max_delay.as_secs_f32());
-        Duration::from_secs_f32(capped)
+
+        // AWS Full Jitter: uniform random in [0, capped_delay]
+        let jittered = rand::rng().random_range(0.0..=capped);
+        Duration::from_secs_f32(jittered)
     }
 }
 
@@ -797,23 +804,43 @@ mod tests {
     fn test_retry_delay_calculation() {
         let config = TieredDeliveryConfig::default();
 
-        // First attempt: 5s
-        assert_eq!(config.calculate_retry_delay(0), Duration::from_secs(5));
+        // With full jitter, delays are in [0, deterministic_cap]
+        let d0 = config.calculate_retry_delay(0);
+        assert!(
+            d0 <= Duration::from_secs(5),
+            "attempt 0 should be <= 5s, got {d0:?}"
+        );
 
-        // Second attempt: 10s
-        assert_eq!(config.calculate_retry_delay(1), Duration::from_secs(10));
+        let d1 = config.calculate_retry_delay(1);
+        assert!(
+            d1 <= Duration::from_secs(10),
+            "attempt 1 should be <= 10s, got {d1:?}"
+        );
 
-        // Third attempt: 20s
-        assert_eq!(config.calculate_retry_delay(2), Duration::from_secs(20));
+        let d2 = config.calculate_retry_delay(2);
+        assert!(
+            d2 <= Duration::from_secs(20),
+            "attempt 2 should be <= 20s, got {d2:?}"
+        );
 
-        // Fourth attempt: 40s
-        assert_eq!(config.calculate_retry_delay(3), Duration::from_secs(40));
+        let d3 = config.calculate_retry_delay(3);
+        assert!(
+            d3 <= Duration::from_secs(40),
+            "attempt 3 should be <= 40s, got {d3:?}"
+        );
 
-        // Fifth attempt: capped at 60s
-        assert_eq!(config.calculate_retry_delay(4), Duration::from_secs(60));
+        // Capped at max delay (60s)
+        let d4 = config.calculate_retry_delay(4);
+        assert!(
+            d4 <= Duration::from_secs(60),
+            "attempt 4 should be <= 60s, got {d4:?}"
+        );
 
-        // Further attempts stay at cap
-        assert_eq!(config.calculate_retry_delay(10), Duration::from_secs(60));
+        let d10 = config.calculate_retry_delay(10);
+        assert!(
+            d10 <= Duration::from_secs(60),
+            "attempt 10 should be <= 60s, got {d10:?}"
+        );
     }
 
     #[test]

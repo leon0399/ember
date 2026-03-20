@@ -2689,6 +2689,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "derivative",
+ "rand 0.9.2",
  "reme-identity",
  "reme-message",
  "reme-transport",

@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use derivative::Derivative;
+use rand::Rng;
 
 // =============================================================================
 // Default value helpers (for derivative Default)
@@ -153,7 +154,11 @@ impl TransportRetryPolicy {
         }
     }
 
-    /// Calculate the delay for the nth retry attempt.
+    /// Calculate the delay for the nth retry attempt using AWS Full Jitter.
+    ///
+    /// Returns a uniformly random duration in `[0, min(max_delay, base * multiplier^attempt)]`
+    /// to prevent thundering-herd synchronization across clients.
+    /// Attempt 0 always returns [`Duration::ZERO`].
     #[allow(
         clippy::cast_possible_wrap,      // attempt count won't exceed i32::MAX
         clippy::cast_precision_loss,     // delay calculation doesn't need full precision
@@ -169,9 +174,11 @@ impl TransportRetryPolicy {
             .backoff_multiplier
             .powi(attempt.saturating_sub(1) as i32);
         let delay_ms = self.initial_delay.as_millis() as f32 * multiplier;
-        let delay = Duration::from_millis(delay_ms as u64);
+        let capped_ms = delay_ms.min(self.max_delay.as_millis() as f32) as u64;
 
-        delay.min(self.max_delay)
+        // AWS Full Jitter: uniform random in [0, capped_delay]
+        let jittered_ms = rand::rng().random_range(0..=capped_ms);
+        Duration::from_millis(jittered_ms)
     }
 
     /// Check if we should give up after the given number of attempts.
@@ -225,14 +232,24 @@ mod tests {
         // First attempt (attempt 0) has no delay
         assert_eq!(policy.delay_for_attempt(0), Duration::ZERO);
 
-        // Second attempt (attempt 1) uses initial delay
-        assert_eq!(policy.delay_for_attempt(1), Duration::from_secs(5));
+        // With full jitter, delays are in [0, deterministic_cap]
+        let d1 = policy.delay_for_attempt(1);
+        assert!(
+            d1 <= Duration::from_secs(5),
+            "attempt 1 should be <= 5s, got {d1:?}"
+        );
 
-        // Third attempt doubles
-        assert_eq!(policy.delay_for_attempt(2), Duration::from_secs(10));
+        let d2 = policy.delay_for_attempt(2);
+        assert!(
+            d2 <= Duration::from_secs(10),
+            "attempt 2 should be <= 10s, got {d2:?}"
+        );
 
-        // Fourth attempt doubles again
-        assert_eq!(policy.delay_for_attempt(3), Duration::from_secs(20));
+        let d3 = policy.delay_for_attempt(3);
+        assert!(
+            d3 <= Duration::from_secs(20),
+            "attempt 3 should be <= 20s, got {d3:?}"
+        );
     }
 
     #[test]
@@ -244,8 +261,12 @@ mod tests {
             max_attempts: None,
         };
 
-        // Should cap at max_delay
-        assert_eq!(policy.delay_for_attempt(10), Duration::from_secs(30));
+        // Should cap at max_delay even with jitter
+        let d = policy.delay_for_attempt(10);
+        assert!(
+            d <= Duration::from_secs(30),
+            "should be capped at 30s, got {d:?}"
+        );
     }
 
     #[test]
