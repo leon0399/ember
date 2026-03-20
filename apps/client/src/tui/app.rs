@@ -337,8 +337,10 @@ pub struct App<'a> {
     node_event_rx: Option<mpsc::Receiver<NodeEvent>>,
     /// Contacts by name (for reverse lookup)
     contacts_by_id: HashMap<PublicID, String>,
-    /// In-memory message cache per contact (until storage retrieval is implemented)
+    /// In-memory message cache per contact
     message_cache: HashMap<PublicID, VecDeque<Message>>,
+    /// Tracks contacts whose message history has been loaded from storage
+    history_loaded: std::collections::HashSet<PublicID>,
     /// Whether the add contact popup is visible
     pub show_add_contact_popup: bool,
     /// Add contact popup state
@@ -766,6 +768,7 @@ impl App<'_> {
             node_event_rx,
             contacts_by_id: HashMap::new(),
             message_cache: HashMap::new(),
+            history_loaded: std::collections::HashSet::new(),
             show_add_contact_popup: false,
             add_contact_popup: AddContactPopup::default(),
             show_my_id_popup: false,
@@ -784,28 +787,41 @@ impl App<'_> {
             app.status = msg;
         }
 
-        // Load contacts
+        // Load contacts and seed the initially selected conversation
         app.load_contacts()?;
+        app.load_conversation_messages();
 
         Ok(app)
     }
 
-    /// Load contacts from storage
+    /// Load contacts from storage, including the most recent message preview
     fn load_contacts(&mut self) -> AppResult<()> {
         let contacts = self.client.list_contacts()?;
         self.conversations.clear();
         self.contacts_by_id.clear();
+
+        // Collect contact IDs for batch last-message lookup
+        let contact_ids: Vec<i64> = contacts.iter().map(|c| c.id).collect();
+        let last_messages = self
+            .client
+            .get_last_message_per_contact(&contact_ids)
+            .unwrap_or_else(|e| {
+                tracing::warn!("Failed to load last message previews: {e}");
+                HashMap::new()
+            });
 
         for contact in contacts {
             let name = format_display_name(contact.name.as_deref(), &contact.public_id);
 
             self.contacts_by_id.insert(contact.public_id, name.clone());
 
+            let last_message = last_messages.get(&contact.id).cloned();
+
             self.conversations.push(Conversation {
                 id: contact.id,
                 public_id: contact.public_id,
                 name,
-                last_message: None, // TODO: Load from storage
+                last_message,
                 unread_count: 0,
             });
         }
@@ -1295,18 +1311,66 @@ impl App<'_> {
         }
     }
 
-    /// Load messages for the selected conversation
+    /// Load messages for the selected conversation.
+    ///
+    /// On first load (empty cache), seeds from persistent storage.
+    /// Subsequent loads use the in-memory cache which includes new
+    /// messages received/sent during this session.
     fn load_conversation_messages(&mut self) {
         self.messages.clear();
         self.message_scroll = 0;
 
-        // Load from in-memory cache
         if let Some(conv) = self.conversations.get(self.selected_conversation) {
-            if let Some(cached) = self.message_cache.get(&conv.public_id) {
+            let public_id = conv.public_id;
+            let contact_id = conv.id;
+
+            // Seed cache from storage if history hasn't been loaded yet.
+            // Uses a separate flag so that in-session messages (which create
+            // cache entries via cache_message()) don't prevent loading history.
+            if !self.history_loaded.contains(&public_id) {
+                self.history_loaded.insert(public_id);
+                match self.client.get_messages(contact_id, 50, None) {
+                    Ok(stored) => {
+                        let cache = self.message_cache.entry(public_id).or_default();
+                        let sender_name = self
+                            .contacts_by_id
+                            .get(&public_id)
+                            .cloned()
+                            .unwrap_or_default();
+                        // Prepend stored messages before any in-session messages
+                        let existing = std::mem::take(cache);
+                        for msg in &stored {
+                            if msg.content_type != "text" {
+                                continue;
+                            }
+                            let content = msg.body.clone().unwrap_or_default();
+                            let is_sent = msg.direction == reme_storage::MessageDirection::Sent;
+                            cache.push_back(Message {
+                                from_me: is_sent,
+                                sender_name: if is_sent {
+                                    "You".to_string()
+                                } else {
+                                    sender_name.clone()
+                                },
+                                content,
+                                timestamp: format_unix_timestamp(msg.created_at),
+                            });
+                        }
+                        // Re-append any in-session messages after the stored history
+                        cache.extend(existing);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to load message history for contact {contact_id}: {e}"
+                        );
+                    }
+                }
+            }
+
+            if let Some(cached) = self.message_cache.get(&public_id) {
                 self.messages = cached.iter().cloned().collect();
             }
         }
-        // TODO: Also load from storage when retrieval API is implemented
     }
 
     /// Handle key events when add contact popup is visible
@@ -1574,6 +1638,15 @@ fn utc_time_now() -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
+    format_unix_timestamp(secs.cast_signed())
+}
+
+/// Format a unix timestamp (seconds) as HH:MM UTC
+fn format_unix_timestamp(secs: i64) -> String {
+    if secs < 0 {
+        return "??:??".to_string();
+    }
+    let secs = secs.cast_unsigned();
     let hours = (secs % 86400) / 3600;
     let mins = (secs % 3600) / 60;
     format!("{hours:02}:{mins:02}")

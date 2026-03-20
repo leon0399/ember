@@ -275,6 +275,27 @@ impl<T: Transport> Client<T> {
             .collect())
     }
 
+    /// Retrieve messages for a contact, ordered chronologically (oldest first).
+    ///
+    /// Uses cursor-based pagination. Pass `before_id` from the oldest message's
+    /// `StoredMessage::id` to load earlier pages.
+    pub fn get_messages(
+        &self,
+        contact_id: i64,
+        limit: u32,
+        before_id: Option<i64>,
+    ) -> Result<Vec<reme_storage::StoredMessage>, ClientError> {
+        Ok(self.storage.get_messages(contact_id, limit, before_id)?)
+    }
+
+    /// Get the most recent text message body for each of the given contact IDs.
+    pub fn get_last_message_per_contact(
+        &self,
+        contact_ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, String>, ClientError> {
+        Ok(self.storage.get_last_message_per_contact(contact_ids)?)
+    }
+
     // ========================================
     // Conversation History Management
     // ========================================

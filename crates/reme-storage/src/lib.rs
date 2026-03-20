@@ -9,6 +9,7 @@ use reme_outbox::{
     OutboxStore, PendingMessage, TargetId, TieredDeliveryPhase, TransportAttempt,
 };
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use thiserror::Error;
@@ -16,6 +17,36 @@ use tracing::{debug, trace};
 
 // Re-export mailbox types for embedded node functionality
 pub use reme_node_core::{MailboxStore, PersistentStoreStats};
+
+/// Direction of a stored message
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageDirection {
+    Sent,
+    Received,
+}
+
+/// A message retrieved from storage
+#[derive(Debug, Clone)]
+pub struct StoredMessage {
+    /// Database row ID (used as cursor for pagination)
+    pub id: i64,
+    /// Wire message ID
+    pub message_id: MessageID,
+    /// Contact database ID
+    pub contact_id: i64,
+    /// Whether this message was sent or received
+    pub direction: MessageDirection,
+    /// Content type (e.g. "text", "receipt")
+    pub content_type: String,
+    /// Message body (None for some content types)
+    pub body: Option<String>,
+    /// Creation timestamp (unix seconds)
+    pub created_at: i64,
+    /// Delivery timestamp (unix seconds, None if not delivered)
+    pub delivered_at: Option<i64>,
+    /// Read timestamp (unix seconds, None if not read)
+    pub read_at: Option<i64>,
+}
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -110,6 +141,7 @@ impl Storage {
             );
 
             CREATE INDEX IF NOT EXISTS idx_messages_contact ON messages(contact_id);
+            CREATE INDEX IF NOT EXISTS idx_messages_contact_id_desc ON messages(contact_id, id DESC);
             CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
 
             -- Outbox for pending outgoing messages
@@ -525,6 +557,102 @@ impl Storage {
         Ok(())
     }
 
+    /// Retrieve messages for a contact in chronological order (oldest first).
+    ///
+    /// Uses cursor-based pagination: when `before_id` is `Some(id)`, only
+    /// messages with `id < before_id` are returned. When `None`, returns
+    /// the most recent messages.
+    ///
+    /// Internally queries `ORDER BY id DESC` for efficient cursor pagination,
+    /// then reverses to return chronological order. At most `limit` rows.
+    pub fn get_messages(
+        &self,
+        contact_id: i64,
+        limit: u32,
+        before_id: Option<i64>,
+    ) -> Result<Vec<StoredMessage>, StorageError> {
+        let conn = self.conn.lock().expect("mutex poisoned");
+
+        let mut messages = if let Some(cursor) = before_id {
+            let mut stmt = conn.prepare(
+                "SELECT id, message_id, contact_id, direction, content_type, body,
+                        created_at, delivered_at, read_at
+                 FROM messages
+                 WHERE contact_id = ? AND id < ?
+                 ORDER BY id DESC
+                 LIMIT ?",
+            )?;
+            let rows = stmt.query_map(params![contact_id, cursor, limit], map_stored_message)?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT id, message_id, contact_id, direction, content_type, body,
+                        created_at, delivered_at, read_at
+                 FROM messages
+                 WHERE contact_id = ?
+                 ORDER BY id DESC
+                 LIMIT ?",
+            )?;
+            let rows = stmt.query_map(params![contact_id, limit], map_stored_message)?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+
+        // Reverse so the caller gets chronological order (oldest first)
+        messages.reverse();
+        Ok(messages)
+    }
+
+    /// Get the most recent message for each of the given contact IDs.
+    ///
+    /// Returns a map from `contact_id` to the body of the latest text message.
+    /// Receipts and messages without a body are skipped.
+    /// `SQLite` bound variable limit (matches `reme-node-core`).
+    const SQLITE_MAX_BOUND_VARIABLES: usize = 999;
+
+    pub fn get_last_message_per_contact(
+        &self,
+        contact_ids: &[i64],
+    ) -> Result<HashMap<i64, String>, StorageError> {
+        if contact_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let conn = self.conn.lock().expect("mutex poisoned");
+        let mut result = HashMap::new();
+
+        // Chunk to stay within SQLite's bound-parameter limit
+        for chunk in contact_ids.chunks(Self::SQLITE_MAX_BOUND_VARIABLES) {
+            let placeholders: Vec<&str> = chunk.iter().map(|_| "?").collect();
+            let sql = format!(
+                "SELECT m.contact_id, m.body
+                 FROM messages m
+                 INNER JOIN (
+                     SELECT contact_id, MAX(id) AS max_id
+                     FROM messages
+                     WHERE contact_id IN ({})
+                       AND content_type = 'text'
+                       AND body IS NOT NULL
+                     GROUP BY contact_id
+                 ) latest ON m.id = latest.max_id",
+                placeholders.join(", ")
+            );
+
+            let mut stmt = conn.prepare(&sql)?;
+            let params_iter = rusqlite::params_from_iter(chunk.iter());
+            let rows = stmt.query_map(params_iter, |row| {
+                let cid: i64 = row.get(0)?;
+                let body: String = row.get(1)?;
+                Ok((cid, body))
+            })?;
+
+            for row in rows {
+                let (cid, body) = row?;
+                result.insert(cid, body);
+            }
+        }
+        Ok(result)
+    }
+
     // ============================================
     // Pending Ack operations (Tombstone V2)
     // ============================================
@@ -920,6 +1048,54 @@ impl Storage {
             tiered_phase,
         })
     }
+}
+
+/// Map a database row to a [`StoredMessage`].
+fn map_stored_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMessage> {
+    let id: i64 = row.get(0)?;
+    let message_id_bytes: Vec<u8> = row.get(1)?;
+    let contact_id: i64 = row.get(2)?;
+    let direction_str: String = row.get(3)?;
+    let content_type: String = row.get(4)?;
+    let body: Option<String> = row.get(5)?;
+    let created_at: i64 = row.get(6)?;
+    let delivered_at: Option<i64> = row.get(7)?;
+    let read_at: Option<i64> = row.get(8)?;
+
+    let message_id = if message_id_bytes.len() == 16 {
+        let arr: [u8; 16] = message_id_bytes.try_into().expect("checked length");
+        MessageID::from_bytes(arr)
+    } else {
+        return Err(rusqlite::Error::InvalidColumnType(
+            1,
+            "message_id".to_string(),
+            rusqlite::types::Type::Blob,
+        ));
+    };
+
+    let direction = match direction_str.as_str() {
+        "sent" => MessageDirection::Sent,
+        "received" => MessageDirection::Received,
+        _ => {
+            return Err(rusqlite::Error::InvalidColumnType(
+                3,
+                "direction".to_string(),
+                rusqlite::types::Type::Text,
+            ));
+        }
+    };
+
+    Ok(StoredMessage {
+        id,
+        message_id,
+        contact_id,
+        direction,
+        content_type,
+        body,
+        created_at,
+        delivered_at,
+        read_at,
+    })
 }
 
 fn content_type_name(content: &Content) -> &'static str {
@@ -1956,5 +2132,214 @@ mod tests {
         // Should get the second one
         let retrieved = storage.get_pending_ack(&message_id).unwrap();
         assert_eq!(retrieved, Some(ack_secret2));
+    }
+
+    /// Helper: store N text messages for a contact and return their `MessageID`s.
+    fn store_n_messages(storage: &Storage, contact_id: i64, n: usize) -> Vec<MessageID> {
+        let mut ids = Vec::with_capacity(n);
+        for i in 0..n {
+            let msg_id = MessageID::new();
+            let content = Content::Text(reme_message::TextContent {
+                body: format!("msg-{i}"),
+            });
+            if i % 2 == 0 {
+                storage
+                    .store_sent_message(contact_id, msg_id, &content)
+                    .unwrap();
+            } else {
+                storage
+                    .store_received_message(contact_id, msg_id, &content)
+                    .unwrap();
+            }
+            ids.push(msg_id);
+        }
+        ids
+    }
+
+    #[test]
+    fn test_get_messages_returns_chronological_order() {
+        let storage = Storage::in_memory().unwrap();
+        let contact = Identity::generate();
+        let contact_id = storage
+            .add_contact(contact.public_id(), Some("Alice"))
+            .unwrap();
+
+        store_n_messages(&storage, contact_id, 5);
+
+        let messages = storage.get_messages(contact_id, 50, None).unwrap();
+        assert_eq!(messages.len(), 5);
+
+        // Verify chronological order (ascending id)
+        for w in messages.windows(2) {
+            assert!(
+                w[0].id < w[1].id,
+                "messages should be in ascending id order"
+            );
+        }
+
+        // Verify content
+        assert_eq!(messages[0].body.as_deref(), Some("msg-0"));
+        assert_eq!(messages[4].body.as_deref(), Some("msg-4"));
+    }
+
+    #[test]
+    fn test_get_messages_limit() {
+        let storage = Storage::in_memory().unwrap();
+        let contact = Identity::generate();
+        let contact_id = storage
+            .add_contact(contact.public_id(), Some("Alice"))
+            .unwrap();
+
+        store_n_messages(&storage, contact_id, 10);
+
+        let messages = storage.get_messages(contact_id, 3, None).unwrap();
+        assert_eq!(messages.len(), 3);
+
+        // Should be the 3 most recent messages
+        assert_eq!(messages[0].body.as_deref(), Some("msg-7"));
+        assert_eq!(messages[2].body.as_deref(), Some("msg-9"));
+    }
+
+    #[test]
+    fn test_get_messages_cursor_pagination() {
+        let storage = Storage::in_memory().unwrap();
+        let contact = Identity::generate();
+        let contact_id = storage
+            .add_contact(contact.public_id(), Some("Alice"))
+            .unwrap();
+
+        store_n_messages(&storage, contact_id, 10);
+
+        // First page: most recent 3
+        let page1 = storage.get_messages(contact_id, 3, None).unwrap();
+        assert_eq!(page1.len(), 3);
+        assert_eq!(page1[2].body.as_deref(), Some("msg-9"));
+
+        // Second page: 3 before the oldest of page1
+        let cursor = page1[0].id;
+        let page2 = storage.get_messages(contact_id, 3, Some(cursor)).unwrap();
+        assert_eq!(page2.len(), 3);
+
+        // page2 should be older than page1
+        assert!(page2.last().unwrap().id < page1[0].id);
+
+        // Third page
+        let cursor2 = page2[0].id;
+        let page3 = storage.get_messages(contact_id, 3, Some(cursor2)).unwrap();
+        assert_eq!(page3.len(), 3);
+
+        // Fourth page: only 1 remaining
+        let cursor3 = page3[0].id;
+        let page4 = storage.get_messages(contact_id, 3, Some(cursor3)).unwrap();
+        assert_eq!(page4.len(), 1);
+        assert_eq!(page4[0].body.as_deref(), Some("msg-0"));
+    }
+
+    #[test]
+    fn test_get_messages_direction() {
+        let storage = Storage::in_memory().unwrap();
+        let contact = Identity::generate();
+        let contact_id = storage
+            .add_contact(contact.public_id(), Some("Alice"))
+            .unwrap();
+
+        store_n_messages(&storage, contact_id, 4);
+
+        let messages = storage.get_messages(contact_id, 50, None).unwrap();
+        // Even indices are sent, odd are received
+        assert_eq!(messages[0].direction, MessageDirection::Sent);
+        assert_eq!(messages[1].direction, MessageDirection::Received);
+        assert_eq!(messages[2].direction, MessageDirection::Sent);
+        assert_eq!(messages[3].direction, MessageDirection::Received);
+    }
+
+    #[test]
+    fn test_get_messages_empty_conversation() {
+        let storage = Storage::in_memory().unwrap();
+        let contact = Identity::generate();
+        let contact_id = storage
+            .add_contact(contact.public_id(), Some("Alice"))
+            .unwrap();
+
+        let messages = storage.get_messages(contact_id, 50, None).unwrap();
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn test_get_messages_isolates_contacts() {
+        let storage = Storage::in_memory().unwrap();
+        let alice = Identity::generate();
+        let bob = Identity::generate();
+        let alice_id = storage
+            .add_contact(alice.public_id(), Some("Alice"))
+            .unwrap();
+        let bob_id = storage.add_contact(bob.public_id(), Some("Bob")).unwrap();
+
+        store_n_messages(&storage, alice_id, 5);
+        store_n_messages(&storage, bob_id, 3);
+
+        let alice_msgs = storage.get_messages(alice_id, 50, None).unwrap();
+        let bob_msgs = storage.get_messages(bob_id, 50, None).unwrap();
+        assert_eq!(alice_msgs.len(), 5);
+        assert_eq!(bob_msgs.len(), 3);
+    }
+
+    #[test]
+    fn test_get_last_message_per_contact() {
+        let storage = Storage::in_memory().unwrap();
+        let alice = Identity::generate();
+        let bob = Identity::generate();
+        let alice_id = storage
+            .add_contact(alice.public_id(), Some("Alice"))
+            .unwrap();
+        let bob_id = storage.add_contact(bob.public_id(), Some("Bob")).unwrap();
+
+        store_n_messages(&storage, alice_id, 3);
+        store_n_messages(&storage, bob_id, 5);
+
+        let last = storage
+            .get_last_message_per_contact(&[alice_id, bob_id])
+            .unwrap();
+        assert_eq!(last.get(&alice_id).map(String::as_str), Some("msg-2"));
+        assert_eq!(last.get(&bob_id).map(String::as_str), Some("msg-4"));
+    }
+
+    #[test]
+    fn test_get_last_message_per_contact_empty() {
+        let storage = Storage::in_memory().unwrap();
+        let result = storage.get_last_message_per_contact(&[]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_get_last_message_skips_receipts() {
+        let storage = Storage::in_memory().unwrap();
+        let contact = Identity::generate();
+        let contact_id = storage
+            .add_contact(contact.public_id(), Some("Alice"))
+            .unwrap();
+
+        // Store a text message
+        let msg_id1 = MessageID::new();
+        let text = Content::Text(reme_message::TextContent {
+            body: "Hello".to_string(),
+        });
+        storage
+            .store_sent_message(contact_id, msg_id1, &text)
+            .unwrap();
+
+        // Store a receipt (should be skipped)
+        let msg_id2 = MessageID::new();
+        let receipt = Content::Receipt(reme_message::ReceiptContent {
+            kind: ReceiptKind::Delivered,
+            target_message_id: msg_id1,
+        });
+        storage
+            .store_received_message(contact_id, msg_id2, &receipt)
+            .unwrap();
+
+        let last = storage.get_last_message_per_contact(&[contact_id]).unwrap();
+        // Should return the text message, not the receipt
+        assert_eq!(last.get(&contact_id).map(String::as_str), Some("Hello"));
     }
 }
