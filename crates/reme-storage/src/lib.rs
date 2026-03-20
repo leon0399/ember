@@ -219,6 +219,15 @@ impl Storage {
             );
 
             CREATE INDEX IF NOT EXISTS idx_pending_acks_created ON pending_acks(created_at);
+
+            -- DAG state per contact for message ordering persistence
+            -- Survives client restarts so peers don't see gaps
+            CREATE TABLE IF NOT EXISTS dag_state (
+                contact_pubkey BLOB PRIMARY KEY NOT NULL,  -- PublicID bytes (32 bytes)
+                epoch INTEGER NOT NULL DEFAULT 0,          -- Conversation epoch (u16)
+                sender_head BLOB,                          -- Last ContentId we sent (8 bytes), NULL if none
+                peer_heads BLOB                            -- Serialized peer heads (Vec<ContentId>)
+            );
             "#,
         )?;
         Ok(())
@@ -307,6 +316,118 @@ impl Storage {
             let store = PersistentMailboxStore::in_memory(config)?;
             Ok(store)
         }
+    }
+
+    // ============================================
+    // DAG state persistence
+    // ============================================
+
+    /// Persist DAG state for a single contact.
+    ///
+    /// Stores the essential fields needed to resume message ordering
+    /// after a client restart: epoch, sender head, and peer heads.
+    pub fn save_dag_state(
+        &self,
+        contact_key: &[u8; 32],
+        epoch: u16,
+        sender_head: Option<ContentId>,
+        peer_heads: &[ContentId],
+    ) -> Result<(), StorageError> {
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+
+        let sender_head_blob: Option<Vec<u8>> = sender_head.map(|h| h.to_vec());
+        let peer_heads_blob: Vec<u8> = peer_heads.concat();
+
+        conn.execute(
+            "INSERT OR REPLACE INTO dag_state (contact_pubkey, epoch, sender_head, peer_heads)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                contact_key.as_slice(),
+                i64::from(epoch),
+                sender_head_blob,
+                if peer_heads_blob.is_empty() {
+                    None
+                } else {
+                    Some(peer_heads_blob)
+                },
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Load all persisted DAG states.
+    ///
+    /// Returns a map from contact public key bytes to (epoch, `sender_head`, `peer_heads`).
+    /// The caller is responsible for reconstructing `ConversationDag` from these fields.
+    #[allow(clippy::type_complexity)]
+    pub fn load_all_dag_states(
+        &self,
+    ) -> Result<HashMap<[u8; 32], (u16, Option<ContentId>, Vec<ContentId>)>, StorageError> {
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let mut stmt =
+            conn.prepare("SELECT contact_pubkey, epoch, sender_head, peer_heads FROM dag_state")?;
+
+        let rows = stmt.query_map([], |row| {
+            let pubkey_blob: Vec<u8> = row.get(0)?;
+            let epoch: i64 = row.get(1)?;
+            let sender_head_blob: Option<Vec<u8>> = row.get(2)?;
+            let peer_heads_blob: Option<Vec<u8>> = row.get(3)?;
+            Ok((pubkey_blob, epoch, sender_head_blob, peer_heads_blob))
+        })?;
+
+        let mut result = HashMap::new();
+        for row in rows {
+            let (pubkey_blob, epoch_i64, sender_head_blob, peer_heads_blob) = row?;
+
+            // Parse contact key (32 bytes)
+            let contact_key: [u8; 32] = pubkey_blob.as_slice().try_into().map_err(|_| {
+                StorageError::Serialization(format!(
+                    "invalid contact key length: {}",
+                    pubkey_blob.len()
+                ))
+            })?;
+
+            // Parse epoch (u16)
+            let epoch = u16::try_from(epoch_i64).map_err(|_| {
+                StorageError::Serialization(format!("invalid epoch value: {epoch_i64}"))
+            })?;
+
+            // Parse sender head (Option<ContentId> = Option<[u8; 8]>)
+            let sender_head: Option<ContentId> = sender_head_blob
+                .map(|blob| {
+                    blob.as_slice().try_into().map_err(|_| {
+                        StorageError::Serialization(format!(
+                            "invalid sender_head length: {}",
+                            blob.len()
+                        ))
+                    })
+                })
+                .transpose()?;
+
+            // Parse peer heads (Vec<ContentId>)
+            let peer_heads: Vec<ContentId> = match peer_heads_blob {
+                Some(blob) if !blob.is_empty() => {
+                    if blob.len() % 8 != 0 {
+                        return Err(StorageError::Serialization(format!(
+                            "invalid peer_heads length: {} (not multiple of 8)",
+                            blob.len()
+                        )));
+                    }
+                    blob.chunks_exact(8)
+                        .map(|chunk| {
+                            let mut arr: ContentId = [0u8; 8];
+                            arr.copy_from_slice(chunk);
+                            arr
+                        })
+                        .collect()
+                }
+                _ => Vec::new(),
+            };
+
+            result.insert(contact_key, (epoch, sender_head, peer_heads));
+        }
+
+        Ok(result)
     }
 
     // ============================================
@@ -2345,5 +2466,99 @@ mod tests {
         let last = storage.get_last_message_per_contact(&[contact_id]).unwrap();
         // Should return the text message, not the receipt
         assert_eq!(last.get(&contact_id).map(String::as_str), Some("Hello"));
+    }
+
+    #[test]
+    fn test_dag_state_save_and_load() {
+        let storage = Storage::in_memory().unwrap();
+
+        let contact_key: [u8; 32] = [1u8; 32];
+        let sender_head: ContentId = [10, 20, 30, 40, 50, 60, 70, 80];
+        let peer_head1: ContentId = [11, 21, 31, 41, 51, 61, 71, 81];
+        let peer_head2: ContentId = [12, 22, 32, 42, 52, 62, 72, 82];
+
+        // Save DAG state
+        storage
+            .save_dag_state(
+                &contact_key,
+                5,
+                Some(sender_head),
+                &[peer_head1, peer_head2],
+            )
+            .unwrap();
+
+        // Load and verify
+        let states = storage.load_all_dag_states().unwrap();
+        assert_eq!(states.len(), 1);
+
+        let (epoch, loaded_sender_head, loaded_peer_heads) = &states[&contact_key];
+        assert_eq!(*epoch, 5);
+        assert_eq!(*loaded_sender_head, Some(sender_head));
+        assert_eq!(loaded_peer_heads.len(), 2);
+        assert!(loaded_peer_heads.contains(&peer_head1));
+        assert!(loaded_peer_heads.contains(&peer_head2));
+    }
+
+    #[test]
+    fn test_dag_state_save_no_sender_head() {
+        let storage = Storage::in_memory().unwrap();
+
+        let contact_key: [u8; 32] = [2u8; 32];
+
+        // Save with no sender head and no peer heads
+        storage.save_dag_state(&contact_key, 0, None, &[]).unwrap();
+
+        let states = storage.load_all_dag_states().unwrap();
+        let (epoch, sender_head, peer_heads) = &states[&contact_key];
+        assert_eq!(*epoch, 0);
+        assert!(sender_head.is_none());
+        assert!(peer_heads.is_empty());
+    }
+
+    #[test]
+    fn test_dag_state_upsert() {
+        let storage = Storage::in_memory().unwrap();
+
+        let contact_key: [u8; 32] = [3u8; 32];
+        let head1: ContentId = [1, 2, 3, 4, 5, 6, 7, 8];
+        let head2: ContentId = [9, 10, 11, 12, 13, 14, 15, 16];
+
+        // Initial save
+        storage
+            .save_dag_state(&contact_key, 0, Some(head1), &[])
+            .unwrap();
+
+        // Upsert with new values
+        storage
+            .save_dag_state(&contact_key, 1, Some(head2), &[head1])
+            .unwrap();
+
+        let states = storage.load_all_dag_states().unwrap();
+        assert_eq!(states.len(), 1);
+
+        let (epoch, sender_head, peer_heads) = &states[&contact_key];
+        assert_eq!(*epoch, 1);
+        assert_eq!(*sender_head, Some(head2));
+        assert_eq!(peer_heads, &[head1]);
+    }
+
+    #[test]
+    fn test_dag_state_multiple_contacts() {
+        let storage = Storage::in_memory().unwrap();
+
+        let key1: [u8; 32] = [1u8; 32];
+        let key2: [u8; 32] = [2u8; 32];
+        let head_a: ContentId = [1, 2, 3, 4, 5, 6, 7, 8];
+        let head_b: ContentId = [9, 10, 11, 12, 13, 14, 15, 16];
+
+        storage.save_dag_state(&key1, 3, Some(head_a), &[]).unwrap();
+        storage
+            .save_dag_state(&key2, 7, Some(head_b), &[head_a])
+            .unwrap();
+
+        let states = storage.load_all_dag_states().unwrap();
+        assert_eq!(states.len(), 2);
+        assert_eq!(states[&key1].0, 3);
+        assert_eq!(states[&key2].0, 7);
     }
 }
