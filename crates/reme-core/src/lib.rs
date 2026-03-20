@@ -27,6 +27,7 @@ use thiserror::Error;
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ClientError {
     #[error("Transport error: {0}")]
     Transport(#[from] TransportError),
@@ -64,7 +65,7 @@ pub enum ClientError {
     #[error("Conflicting duplicate message ID: {0:?}")]
     ConflictingDuplicate(MessageID),
 
-    #[error("Internal lock poisoned")]
+    #[error("Lock poisoned")]
     LockPoisoned,
 }
 

@@ -49,6 +49,7 @@ pub struct StoredMessage {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum StorageError {
     #[error("Database error: {0}")]
     Database(#[from] rusqlite::Error),
@@ -68,7 +69,7 @@ pub enum StorageError {
     #[error("Node error: {0}")]
     Node(#[from] NodeError),
 
-    #[error("Internal lock poisoned")]
+    #[error("Lock poisoned")]
     LockPoisoned,
 }
 
