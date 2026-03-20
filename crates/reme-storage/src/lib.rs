@@ -336,12 +336,7 @@ impl Storage {
         let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
 
         let sender_head_blob: Option<Vec<u8>> = sender_head.map(|h| h.to_vec());
-        let peer_heads_blob: Vec<u8> = if peer_heads.is_empty() {
-            Vec::new()
-        } else {
-            // Simple serialization: concatenate 8-byte ContentIds
-            peer_heads.iter().flat_map(|h| h.iter().copied()).collect()
-        };
+        let peer_heads_blob: Vec<u8> = peer_heads.concat();
 
         conn.execute(
             "INSERT OR REPLACE INTO dag_state (contact_pubkey, epoch, sender_head, peer_heads)
@@ -420,8 +415,8 @@ impl Storage {
                     }
                     blob.chunks_exact(8)
                         .map(|chunk| {
-                            let arr: ContentId =
-                                chunk.try_into().expect("chunk is exactly 8 bytes");
+                            let mut arr: ContentId = [0u8; 8];
+                            arr.copy_from_slice(chunk);
                             arr
                         })
                         .collect()

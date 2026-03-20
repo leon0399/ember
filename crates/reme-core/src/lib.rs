@@ -196,11 +196,13 @@ impl<T: Transport> Client<T> {
         // Load persisted DAG state from storage
         let dag_state = match storage.load_all_dag_states() {
             Ok(persisted) => {
-                let mut map = HashMap::new();
-                for (contact_key, (epoch, sender_head, peer_heads)) in persisted {
-                    let dag = ConversationDag::from_persisted(epoch, sender_head, peer_heads);
-                    map.insert(contact_key, dag);
-                }
+                let map: HashMap<_, _> = persisted
+                    .into_iter()
+                    .map(|(contact_key, (epoch, sender_head, peer_heads))| {
+                        let dag = ConversationDag::from_persisted(epoch, sender_head, peer_heads);
+                        (contact_key, dag)
+                    })
+                    .collect();
                 if !map.is_empty() {
                     debug!("restored DAG state for {} contacts", map.len());
                 }
@@ -250,13 +252,21 @@ impl<T: Transport> Client<T> {
     /// Best-effort: logs a warning on failure rather than propagating the error,
     /// since DAG persistence is an optimization (avoids false gaps) not a
     /// correctness requirement.
-    fn persist_dag_state(&self, contact_key: &[u8; 32], dag: &ConversationDag) {
-        if let Err(e) = self.storage.save_dag_state(
-            contact_key,
-            dag.epoch,
-            dag.sender.head(),
-            &dag.observed_heads(),
-        ) {
+    ///
+    /// Callers should extract fields from the DAG while holding the lock,
+    /// drop the lock, then call this method to avoid holding the DAG mutex
+    /// across `SQLite` I/O.
+    fn persist_dag_state(
+        &self,
+        contact_key: &[u8; 32],
+        epoch: u16,
+        sender_head: Option<ContentId>,
+        peer_heads: &[ContentId],
+    ) {
+        if let Err(e) = self
+            .storage
+            .save_dag_state(contact_key, epoch, sender_head, peer_heads)
+        {
             warn!("failed to persist DAG state: {}", e);
         }
     }
@@ -353,14 +363,17 @@ impl<T: Transport> Client<T> {
     /// Use this when both parties agree to clear history.
     pub fn clear_conversation_dag(&self, contact: &PublicID) -> Result<u16, ClientError> {
         let contact_key = contact.to_bytes();
-        let mut dag_state = self
-            .dag_state
-            .lock()
-            .map_err(|_| ClientError::LockPoisoned)?;
-        let dag = dag_state.entry(contact_key).or_default();
-        dag.increment_epoch();
-        self.persist_dag_state(&contact_key, dag);
-        Ok(dag.epoch)
+        let (epoch, sender_head, peer_heads) = {
+            let mut dag_state = self
+                .dag_state
+                .lock()
+                .map_err(|_| ClientError::LockPoisoned)?;
+            let dag = dag_state.entry(contact_key).or_default();
+            dag.increment_epoch();
+            (dag.epoch, dag.sender.head(), dag.observed_heads())
+        };
+        self.persist_dag_state(&contact_key, epoch, sender_head, &peer_heads);
+        Ok(epoch)
     }
 
     /// Get the current epoch for a conversation.
@@ -515,13 +528,16 @@ impl<T: Transport> Client<T> {
 
         // Update DAG tracking (skip for detached)
         if !detached {
-            let mut dag_state = self
-                .dag_state
-                .lock()
-                .map_err(|_| ClientError::LockPoisoned)?;
-            let dag = dag_state.entry(contact_key).or_default();
-            dag.sender.on_send(content_id, prev_self);
-            self.persist_dag_state(&contact_key, dag);
+            let (epoch, sender_head, peer_heads) = {
+                let mut dag_state = self
+                    .dag_state
+                    .lock()
+                    .map_err(|_| ClientError::LockPoisoned)?;
+                let dag = dag_state.entry(contact_key).or_default();
+                dag.sender.on_send(content_id, prev_self);
+                (dag.epoch, dag.sender.head(), dag.observed_heads())
+            };
+            self.persist_dag_state(&contact_key, epoch, sender_head, &peer_heads);
         }
 
         // Serialize envelopes for outbox storage
@@ -732,7 +748,14 @@ impl<T: Transport> Client<T> {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        let (has_gaps, sender_state_reset, local_state_behind) = {
+        let (
+            has_gaps,
+            sender_state_reset,
+            local_state_behind,
+            persist_epoch,
+            persist_head,
+            persist_peers,
+        ) = {
             let mut dag_state = self
                 .dag_state
                 .lock()
@@ -775,9 +798,13 @@ impl<T: Transport> Client<T> {
                     dag.update_peer_heads(orphan_id, Some(orphan_prev_self));
                 }
             }
-            self.persist_dag_state(&contact_key, dag);
-            (gaps, sender_reset, local_behind)
+            // Extract fields for persistence outside the lock
+            let epoch = dag.epoch;
+            let head = dag.sender.head();
+            let peers = dag.observed_heads();
+            (gaps, sender_reset, local_behind, epoch, head, peers)
         };
+        self.persist_dag_state(&contact_key, persist_epoch, persist_head, &persist_peers);
 
         // Check for delivery confirmations in the peer's observed_heads
         // This is the DAG-based implicit ACK mechanism
@@ -2355,77 +2382,80 @@ mod tests {
 
     /// Test that DAG state persists across Client restarts.
     ///
-    /// Creates a Client, sends a message (establishing DAG state), then creates
-    /// a new Client with the same storage and verifies `prev_self` is preserved.
+    /// Uses a file-backed database so that a second Client can be created
+    /// from the same path, verifying true restart behavior: the second
+    /// client's `prepare_message` should produce a `prev_self` that links
+    /// back to the first session's message.
     #[tokio::test]
     async fn test_dag_state_persists_across_restart() {
-        let alice = Identity::generate();
+        let db_path = format!(
+            "{}/reme-test-dag-persist-{}-{}.db",
+            std::env::temp_dir().display(),
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        // Save key bytes so we can reconstruct Identity after drop
+        let alice_bytes = Identity::generate().to_bytes();
         let bob = Identity::generate();
+        let bob_pub = *bob.public_id();
 
-        // Create shared storage
-        let storage = Storage::in_memory().unwrap();
+        // --- Session 1: send a message to establish DAG state ---
+        let first_head = {
+            let alice = Identity::from_bytes(&alice_bytes);
+            let storage = Storage::open(&db_path).unwrap();
+            let transport = Arc::new(MockTransport::new());
+            let client = Client::new(alice, Arc::clone(&transport), storage);
 
-        // First client session: send a message to establish DAG state
-        let transport1 = Arc::new(MockTransport::new());
-        let client1 = Client::new(alice, Arc::clone(&transport1), storage);
+            client.add_contact(&bob_pub, Some("Bob")).unwrap();
+            client
+                .send_text(&bob_pub, "Hello from session 1")
+                .await
+                .unwrap();
 
-        // Add Bob as a contact
-        client1.add_contact(bob.public_id(), Some("Bob")).unwrap();
-
-        // Send a message - this establishes sender.head() in DAG state
-        client1
-            .send_text(bob.public_id(), "Hello from session 1")
-            .await
-            .unwrap();
-
-        // Verify DAG state has a sender head
-        {
-            let dag_state = client1
+            // Capture the sender head before dropping
+            let dag_state = client
                 .dag_state
                 .lock()
                 .map_err(|_| ClientError::LockPoisoned)
                 .unwrap();
-            let contact_key = bob.public_id().to_bytes();
+            let contact_key = bob_pub.to_bytes();
             let dag = dag_state.get(&contact_key).unwrap();
-            assert!(
-                dag.sender.head().is_some(),
-                "sender head should exist after send"
+            let head = dag.sender.head();
+            assert!(head.is_some(), "sender head should exist after send");
+            head
+            // client + storage dropped here, simulating shutdown
+        };
+
+        // --- Session 2: create a new Client from the same DB file ---
+        {
+            let alice = Identity::from_bytes(&alice_bytes);
+            let storage = Storage::open(&db_path).unwrap();
+            let transport = Arc::new(MockTransport::new());
+            let client = Client::new(alice, Arc::clone(&transport), storage);
+
+            // Verify the restored DAG state
+            let dag_state = client
+                .dag_state
+                .lock()
+                .map_err(|_| ClientError::LockPoisoned)
+                .unwrap();
+            let contact_key = bob_pub.to_bytes();
+            let dag = dag_state.get(&contact_key).unwrap();
+
+            assert_eq!(
+                dag.sender.head(),
+                first_head,
+                "restored DAG should have the same sender head from session 1"
             );
             assert_eq!(dag.epoch, 0);
         }
 
-        // Get the storage back from client1 (via Arc)
-        let storage_arc = Arc::clone(&client1.storage);
-
-        // Extract storage for client2 - we need to create a second client
-        // with the same underlying storage. Since we can't take ownership of the
-        // Arc'd storage, we verify persistence via the storage layer directly.
-
-        // Verify the DAG state was persisted to SQLite
-        let persisted = storage_arc.load_all_dag_states().unwrap();
-        let contact_key = bob.public_id().to_bytes();
-        assert!(
-            persisted.contains_key(&contact_key),
-            "DAG state should be persisted for contact"
-        );
-        let (epoch, sender_head, _peer_heads) = &persisted[&contact_key];
-        assert_eq!(*epoch, 0);
-        assert!(
-            sender_head.is_some(),
-            "persisted sender head should not be None"
-        );
-
-        // Simulate restart: create a new ConversationDag from persisted state
-        let (epoch, sender_head, peer_heads) = persisted[&contact_key].clone();
-        let restored_dag = ConversationDag::from_persisted(epoch, sender_head, peer_heads);
-
-        // Verify the restored DAG has the sender head (prev_self for next message)
-        assert_eq!(
-            restored_dag.sender.head(),
-            sender_head,
-            "restored DAG should have the same sender head"
-        );
-        assert_eq!(restored_dag.epoch, 0);
+        // Cleanup
+        let _ = std::fs::remove_file(&db_path);
     }
 
     /// Test that epoch changes are persisted.
