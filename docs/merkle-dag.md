@@ -15,19 +15,15 @@ Every linked message carries two DAG references embedded in the `InnerEnvelope`:
 
 Together, `prev_self` forms a singly-linked chain per sender direction, while `observed_heads` creates cross-links that enable implicit acknowledgments:
 
-```text
- Alice                          Bob
-   │                              │
-   ├─ A1 (prev_self=None)        │
-   │       ─────────────────────► │
-   │                              ├─ B1 (prev_self=None, observed=[A1])
-   │       ◄───────────────────── │
-   ├─ A2 (prev_self=A1,          │
-   │       observed=[B1])         │
-   │       ─────────────────────► │
-   │                              ├─ B2 (prev_self=B1, observed=[A2])
-   │       ◄───────────────────── │
-   │                              │
+```mermaid
+sequenceDiagram
+    participant Alice
+    participant Bob
+
+    Alice->>Bob: A1 (prev_self=None)
+    Bob->>Alice: B1 (prev_self=None, observed=[A1])
+    Alice->>Bob: A2 (prev_self=A1, observed=[B1])
+    Bob->>Alice: B2 (prev_self=B1, observed=[A2])
 ```
 
 This structure gives both parties enough information to:
@@ -65,21 +61,32 @@ When a message arrives:
 2. If `prev_self` points to a known complete message → mark **complete**.
 3. If `prev_self` points to an unknown message → mark as **orphan** and record the gap.
 
-```text
-Received: M3 (prev_self=M2)     ← M2 unknown → orphan
-Received: M2 (prev_self=M1)     ← M1 unknown → orphan
-Received: M1 (prev_self=None)   ← complete → auto-resolve M2 → auto-resolve M3
+```mermaid
+graph LR
+    M3["M3 (received 1st)"] -.->|prev_self| M2["M2 (received 2nd)"]
+    M2 -.->|prev_self| M1["M1 (received 3rd)"]
+
+    style M3 fill:#f96,stroke:#333
+    style M2 fill:#f96,stroke:#333
+    style M1 fill:#6f6,stroke:#333
 ```
+
+> **M3** and **M2** arrive as orphans. When **M1** arrives, the resolution chain fires: M1 complete → M2 resolves → M3 resolves.
 
 Orphan resolution uses an iterative work queue with a `waiting_on` index for O(1) lookups, avoiding stack overflow on long chains. When a message becomes complete, all orphans waiting on it are resolved transitively:
 
-```text
-try_resolve_orphans(M1):
-  work_queue = [M1]
-  pop M1 → waiting_on[M1] = [M2] → resolve M2, push M2
-  pop M2 → waiting_on[M2] = [M3] → resolve M3, push M3
-  pop M3 → no orphans waiting → done
-  result: [(M2, M1), (M3, M2)]
+```mermaid
+flowchart TD
+    Start["M1 becomes complete"] --> Q1["work_queue = [M1]"]
+    Q1 --> Pop1["pop M1"]
+    Pop1 --> Lookup1["waiting_on[M1] = [M2]"]
+    Lookup1 --> Resolve1["resolve M2 → push M2"]
+    Resolve1 --> Pop2["pop M2"]
+    Pop2 --> Lookup2["waiting_on[M2] = [M3]"]
+    Lookup2 --> Resolve2["resolve M3 → push M3"]
+    Resolve2 --> Pop3["pop M3"]
+    Pop3 --> Empty["no orphans waiting → done"]
+    Empty --> Result["result: M2, M1 + M3, M2"]
 ```
 
 The `missing_parents()` method returns the set of unknown parent `ContentId`s — suitable for requesting retransmission from the sender.
@@ -97,15 +104,20 @@ When we send a message, `on_send(content_id, prev_self)` records it and maintain
 
 This correctly handles **multi-head forks** (from multi-device or concurrent sends):
 
-```text
-          id1
-         /   \
-       id2   id3       ← two heads (multi-device fork)
+```mermaid
+graph BT
+    id2["id2 (head — phone)"] --> id1
+    id3["id3 (head — laptop)"] --> id1
 
-peer observed [id1] → missing: [id2, id3]
-peer observed [id2] → missing: [id3]       (id1 implied via ancestry)
-peer observed [id2, id3] → missing: []     (fully caught up)
+    style id2 fill:#ff9,stroke:#333
+    style id3 fill:#ff9,stroke:#333
 ```
+
+| Peer observed | Missing | Reason |
+|---|---|---|
+| `[id1]` | `[id2, id3]` | Both branches unseen |
+| `[id2]` | `[id3]` | id1 implied via ancestry of id2 |
+| `[id2, id3]` | `[]` | Fully caught up |
 
 ## Peer Head Tracking
 
@@ -124,11 +136,14 @@ The `observed_heads` field doubles as a delivery confirmation mechanism. When Bo
 
 On the receiving side, `Client::process_message()` feeds the peer's `observed_heads` into the outbox:
 
-```text
-on_peer_message_received(sender, observed_heads, received_content_id):
-  for each content_id in observed_heads:
-    if content_id matches a pending outbox entry for this sender:
-      mark entry as confirmed (DeliveryConfirmation::Dag)
+```mermaid
+flowchart TD
+    Recv["Receive message from peer"] --> Loop["For each content_id in observed_heads"]
+    Loop --> Match{"content_id matches\npending outbox entry?"}
+    Match -->|Yes| Confirm["Mark entry as confirmed\n(DeliveryConfirmation::Dag)"]
+    Match -->|No| Skip["Skip"]
+    Confirm --> Loop
+    Skip --> Loop
 ```
 
 This eliminates the need for explicit ACK messages — the DAG structure provides piggybacked confirmation on every message the peer sends.
@@ -137,12 +152,15 @@ This eliminates the need for explicit ACK messages — the DAG structure provide
 
 When the receiver detects gaps (orphan messages), the client also checks for unacknowledged outbox entries and schedules immediate retries:
 
-```text
-process_message():
-  gap_result = dag.receiver.on_receive(content_id, prev_self, now)
-  if gap_result is Gap:
-    unacked = outbox.find_unacked_messages(sender, observed_heads)
-    outbox.schedule_immediate_retry(unacked)
+```mermaid
+flowchart TD
+    Recv["Receive message"] --> GapCheck["dag.receiver.on_receive(content_id, prev_self)"]
+    GapCheck --> IsGap{"GapResult?"}
+    IsGap -->|Complete| Done["Update peer_heads\nResolve orphan chains"]
+    IsGap -->|Gap| FindUnacked["outbox.find_unacked_messages(sender, observed_heads)"]
+    FindUnacked --> HasUnacked{"Unacked messages?"}
+    HasUnacked -->|Yes| Retry["outbox.schedule_immediate_retry(unacked)"]
+    HasUnacked -->|No| Done2["No action needed"]
 ```
 
 The reasoning: if the peer's message creates a gap in our view, it's likely that our messages also have gaps in the peer's view. By proactively retrying unacknowledged messages, both sides converge faster.
@@ -220,12 +238,19 @@ Constrained transports (LoRa, BLE) cannot afford the bandwidth overhead of DAG f
 
 Detached messages can be interleaved freely with linked messages without disrupting the DAG:
 
-```text
-Alice → Bob: A1 (linked, prev_self=None)       ← complete
-Alice → Bob: D1 (detached, flags=DETACHED)      ← complete (no chain)
-Alice → Bob: A2 (linked, prev_self=A1)          ← complete (links to A1, skips D1)
-Alice → Bob: D2 (detached, flags=DETACHED)      ← complete (no chain)
+```mermaid
+graph LR
+    A1["A1 (linked)"] -->|prev_self| A2["A2 (linked)"]
+    D1["D1 (detached)"]
+    D2["D2 (detached)"]
+
+    style D1 fill:#ddd,stroke:#999,stroke-dasharray: 5 5
+    style D2 fill:#ddd,stroke:#999,stroke-dasharray: 5 5
+    style A1 fill:#6cf,stroke:#333
+    style A2 fill:#6cf,stroke:#333
 ```
+
+> A2 links to A1, skipping over the detached messages D1 and D2. All four messages are **complete** from the receiver's perspective.
 
 ## Persistence
 
