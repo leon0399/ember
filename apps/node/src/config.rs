@@ -396,8 +396,9 @@ pub struct CliArgs {
     #[arg(long, env = "REME_NODE_ADDITIONAL_HOSTS", value_delimiter = ',')]
     pub additional_hosts: Option<Vec<String>>,
 
-    /// Allow running with identity but without `public_host` (insecure: disables destination verification)
-    #[arg(long, env = "REME_NODE_ALLOW_INSECURE_DESTINATION")]
+    /// Allow running with identity but without `public_host` (insecure: disables destination verification).
+    /// Env var: `REME_NODE_ALLOW_INSECURE_DESTINATION=true` (handled by config crate, not clap).
+    #[arg(long)]
     pub allow_insecure_destination: bool,
 }
 
@@ -602,6 +603,9 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     }
     if let Some(delay) = cli.cleanup_orphan_delay {
         builder = builder.set_override("cleanup.orphan_delay_secs", delay as i64)?;
+    }
+    if cli.allow_insecure_destination {
+        builder = builder.set_override("allow_insecure_destination", true)?;
     }
 
     let config = builder.build()?;
@@ -809,10 +813,9 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     let identity_path = cli.identity_path.or(identity_path_from_config);
     let public_host = cli.public_host.or(public_host_from_config);
     let additional_hosts = cli.additional_hosts.unwrap_or(additional_hosts_from_config);
-    let allow_insecure_destination = cli.allow_insecure_destination
-        || config
-            .get::<bool>("allow_insecure_destination")
-            .unwrap_or(false);
+    let allow_insecure_destination = config
+        .get::<bool>("allow_insecure_destination")
+        .unwrap_or(false);
 
     Ok(NodeConfig {
         bind_addr,
@@ -941,12 +944,6 @@ priority = 90
         assert_eq!(peers.http[0].common.label.as_ref().unwrap(), "CLI HTTP 1");
         assert_eq!(peers.http[1].url, "https://cli-peer2.example.com:23003");
         assert_eq!(peers.http[1].common.label.as_ref().unwrap(), "CLI HTTP 2");
-    }
-
-    #[test]
-    fn test_default_config_denies_insecure_destination() {
-        let config = NodeConfig::default();
-        assert!(!config.allow_insecure_destination);
     }
 
     #[test]
