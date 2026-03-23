@@ -189,22 +189,28 @@ impl DiscoveryBackend for MdnsSdBackend {
     }
 
     async fn stop_advertising(&self) -> Result<(), DiscoveryError> {
-        // Extract state and start unregister while holding the lock, then drop
-        // the lock before awaiting to avoid holding a non-Send MutexGuard across
-        // an await point.
+        // Update state and start unregister atomically under a single lock
+        // acquisition. This prevents a TOCTOU race where `start_advertising`
+        // could succeed between the lock release and a deferred state update,
+        // only to have its `advertising = true` clobbered by a late
+        // `advertising = false` write.
         let receiver = {
-            let state = self.state.lock().unwrap();
+            let mut state = self.state.lock().unwrap();
             if !state.advertising {
                 return Err(DiscoveryError::NotAdvertising);
             }
 
-            // C1: Start the unregister if we have a registered fullname.
-            state.registered_fullname.as_ref().map(|fullname| {
+            // Clear state immediately — no second lock acquisition needed.
+            state.advertising = false;
+            let fullname = state.registered_fullname.take();
+
+            // C1: Start the unregister if we had a registered fullname.
+            fullname.map(|f| {
                 self.daemon
-                    .unregister(fullname)
+                    .unregister(&f)
                     .map_err(|e| DiscoveryError::BackendError(e.to_string()))
             })
-            // Lock dropped here
+            // Lock dropped here — state is already consistent.
         };
 
         // Await unregister confirmation outside the lock.
@@ -229,11 +235,6 @@ impl DiscoveryBackend for MdnsSdBackend {
                 }
             }
         }
-
-        // Re-acquire lock to update state.
-        let mut state = self.state.lock().unwrap();
-        state.advertising = false;
-        state.registered_fullname = None;
 
         Ok(())
     }
