@@ -1,0 +1,210 @@
+crates/reme-discovery/src/mdns_sd.rs
+  78e8030d4a063477 192-196,198,203-208,210,213
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "cfee7ba6696dfd5603845a6902375e6179a75cd7",
+  "prompts": {
+    "78e8030d4a063477": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c8993f43-8ecc-47d5-8e96-9d1db54ec960",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [
+        {
+          "type": "user",
+          "text": "Analyze and fix the BUG-M5 bug (GH issue #124) from the @/home/leon0399/Projects/reme/spec/analysis/review-2026-03-19.md file",
+          "timestamp": "2026-03-23T21:23:27.931Z"
+        },
+        {
+          "type": "assistant",
+          "text": "I'll start by looking at the relevant code and the GitHub issue.",
+          "timestamp": "2026-03-23T21:23:38.433Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/.claude/worktrees/fix-BUG-M5/crates/reme-discovery/src/mdns_sd.rs"
+          },
+          "timestamp": "2026-03-23T21:23:38.945Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Bash",
+          "input": {
+            "command": "gh issue view 124 --json title,body,labels,state",
+            "description": "Fetch GH issue #124 details"
+          },
+          "timestamp": "2026-03-23T21:23:40.343Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Now I see the race clearly. Let me check the `DiscoveryBackend` trait to understand the interface contract.",
+          "timestamp": "2026-03-23T21:24:47.875Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/.claude/worktrees/fix-BUG-M5/crates/reme-discovery/src/backend.rs"
+          },
+          "timestamp": "2026-03-23T21:24:48.989Z"
+        },
+        {
+          "type": "assistant",
+          "text": "The race in `stop_advertising` (lines 191-238):\n\n1. Lock acquired, `advertising == true` confirmed, `daemon.unregister()` initiated, **lock dropped** (line 208)\n2. Awaiting unregister confirmation (slow blocking recv via `spawn_blocking`)\n3. Meanwhile, a concurrent `stop_advertising` or `shutdown` could also set `advertising = false`\n4. Then `start_advertising` succeeds (sees `advertising == false`, registers new service, sets `advertising = true`)\n5. Original `stop_advertising` finally re-acquires lock at line 234 and **clobbers** `advertising = true` back to `false` + clears `registered_fullname`\n\n**Fix**: Update state atomically under the first lock acquisition — set `advertising = false` and take `registered_fullname` immediately, before awaiting. The unregister await is just cleanup.",
+          "timestamp": "2026-03-23T21:24:57.448Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Edit",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/.claude/worktrees/fix-BUG-M5/crates/reme-discovery/src/mdns_sd.rs",
+            "new_string": "    async fn stop_advertising(&self) -> Result<(), DiscoveryError> {\n        // Update state and start unregister atomically under a single lock\n        // acquisition. This prevents a TOCTOU race where `start_advertising`\n        // could succeed between the lock release and a deferred state update,\n        // only to have its `advertising = true` clobbered by a late\n        // `advertising = false` write.\n        let receiver = {\n            let mut state = self.state.lock().unwrap();\n            if !state.advertising {\n                return Err(DiscoveryError::NotAdvertising);\n            }\n\n            // Clear state immediately — no second lock acquisition needed.\n            state.advertising = false;\n            let fullname = state.registered_fullname.take();\n\n            // C1: Start the unregister if we had a registered fullname.\n            fullname.map(|f| {\n                self.daemon\n                    .unregister(&f)\n                    .map_err(|e| DiscoveryError::BackendError(e.to_string()))\n            })\n            // Lock dropped here — state is already consistent.\n        };\n\n        // Await unregister confirmation outside the lock.\n        if let Some(receiver_result) = receiver {\n            let receiver = receiver_result?;\n\n            // The receiver is a std sync mpsc — recv on it in a blocking spawn\n            // to avoid blocking the async runtime.\n            let recv_result = tokio::task::spawn_blocking(move || receiver.recv())\n                .await\n                .map_err(|e| DiscoveryError::BackendError(e.to_string()))?;\n\n            match recv_result {\n                Ok(mdns_sd::UnregisterStatus::OK) => {\n                    debug!(\"mDNS-SD: advertising stopped\");\n                }\n                Ok(mdns_sd::UnregisterStatus::NotFound) => {\n                    warn!(\"mDNS-SD: service was not found during unregister\");\n                }\n                Err(e) => {\n                    warn!(\"mDNS-SD: failed to receive unregister status: {e}\");\n                }\n            }\n        }\n\n        Ok(())\n    }",
+            "old_string": "    async fn stop_advertising(&self) -> Result<(), DiscoveryError> {\n        // Extract state and start unregister while holding the lock, then drop\n        // the lock before awaiting to avoid holding a non-Send MutexGuard across\n        // an await point.\n        let receiver = {\n            let state = self.state.lock().unwrap();\n            if !state.advertising {\n                return Err(DiscoveryError::NotAdvertising);\n            }\n\n            // C1: Start the unregister if we have a registered fullname.\n            state.registered_fullname.as_ref().map(|fullname| {\n                self.daemon\n                    .unregister(fullname)\n                    .map_err(|e| DiscoveryError::BackendError(e.to_string()))\n            })\n            // Lock dropped here\n        };\n\n        // Await unregister confirmation outside the lock.\n        if let Some(receiver_result) = receiver {\n            let receiver = receiver_result?;\n\n            // The receiver is a std sync mpsc — recv on it in a blocking spawn\n            // to avoid blocking the async runtime.\n            let recv_result = tokio::task::spawn_blocking(move || receiver.recv())\n                .await\n                .map_err(|e| DiscoveryError::BackendError(e.to_string()))?;\n\n            match recv_result {\n                Ok(mdns_sd::UnregisterStatus::OK) => {\n                    debug!(\"mDNS-SD: advertising stopped\");\n                }\n                Ok(mdns_sd::UnregisterStatus::NotFound) => {\n                    warn!(\"mDNS-SD: service was not found during unregister\");\n                }\n                Err(e) => {\n                    warn!(\"mDNS-SD: failed to receive unregister status: {e}\");\n                }\n            }\n        }\n\n        // Re-acquire lock to update state.\n        let mut state = self.state.lock().unwrap();\n        state.advertising = false;\n        state.registered_fullname = None;\n\n        Ok(())\n    }",
+            "replace_all": false
+          },
+          "timestamp": "2026-03-23T21:25:12.227Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Now let me verify the fix compiles and check if there are tests.",
+          "timestamp": "2026-03-23T21:25:24.611Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Bash",
+          "input": {
+            "command": "cargo check -p reme-discovery 2>&1",
+            "description": "Check reme-discovery compiles",
+            "timeout": 120000
+          },
+          "timestamp": "2026-03-23T21:25:26.083Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Grep",
+          "input": {
+            "path": "/home/leon0399/Projects/reme/.claude/worktrees/fix-BUG-M5/crates/reme-discovery",
+            "pattern": "#\\[cfg\\(test\\)\\]|#\\[test\\]"
+          },
+          "timestamp": "2026-03-23T21:25:27.182Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Compiles clean. No tests in `mdns_sd.rs` (noted in the review as a test gap — requires real multicast sockets). Let me also run the full workspace check to make sure nothing else breaks.",
+          "timestamp": "2026-03-23T21:26:22.770Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Bash",
+          "input": {
+            "command": "cargo check --workspace 2>&1",
+            "description": "Check full workspace compiles",
+            "timeout": 180000
+          },
+          "timestamp": "2026-03-23T21:26:23.716Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Full workspace compiles clean. Let me run tests too.",
+          "timestamp": "2026-03-23T21:29:08.100Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Bash",
+          "input": {
+            "command": "cargo test --workspace 2>&1",
+            "description": "Run all workspace tests",
+            "timeout": 300000
+          },
+          "timestamp": "2026-03-23T21:29:08.734Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskOutput",
+          "input": {
+            "block": true,
+            "task_id": "b5jdcev30",
+            "timeout": 300000
+          },
+          "timestamp": "2026-03-23T21:34:14.771Z"
+        },
+        {
+          "type": "assistant",
+          "text": "All 465 tests pass. Let me verify the final state of the fix.",
+          "timestamp": "2026-03-23T21:34:37.085Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/.claude/worktrees/fix-BUG-M5/crates/reme-discovery/src/mdns_sd.rs",
+            "limit": 50,
+            "offset": 191
+          },
+          "timestamp": "2026-03-23T21:34:38.656Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Here's what the fix does:\n\n**The race**: `stop_advertising` previously released the lock after initiating `daemon.unregister()`, then awaited the unregister confirmation, then re-acquired the lock to set `advertising = false`. During the await gap, a concurrent `stop` + `start` sequence could succeed, only to have the original `stop`'s delayed `advertising = false` clobber the new `start`'s state.\n\n**The fix**: Set `advertising = false` and take `registered_fullname` **immediately under the first lock acquisition**, before dropping the lock. The unregister await is now purely cleanup — state is already consistent when the lock drops. This eliminates the TOCTOU window entirely.\n\nKey properties preserved:\n- Lock is not held across the `await` point (avoids the non-Send `MutexGuard` issue)\n- `start_advertising` correctly sees `advertising = false` and can proceed while unregister is in-flight (safe because `daemon.register` and `daemon.unregister` operate on different service names via the internal channel)\n- `ensure_browsing` uses the same lock-release-before-IO pattern and is not affected",
+          "timestamp": "2026-03-23T21:34:48.710Z"
+        },
+        {
+          "type": "user",
+          "text": "<task-notification>\n<task-id>b5jdcev30</task-id>\n<tool-use-id>toolu_0111EQfLUnbyDifEoD9uXRNE</tool-use-id>\n<output-file>/tmp/claude-1000/-home-leon0399-Projects-reme--claude-worktrees-fix-BUG-M5/c8993f43-8ecc-47d5-8e96-9d1db54ec960/tasks/b5jdcev30.output</output-file>\n<status>completed</status>\n<summary>Background command \"Run all workspace tests\" completed (exit code 0)</summary>\n</task-notification>\nRead the output file to retrieve the result: /tmp/claude-1000/-home-leon0399-Projects-reme--claude-worktrees-fix-BUG-M5/c8993f43-8ecc-47d5-8e96-9d1db54ec960/tasks/b5jdcev30.output",
+          "timestamp": "2026-03-23T21:35:08.553Z"
+        },
+        {
+          "type": "assistant",
+          "text": "All done — the fix is in place, compiles clean, and all 465 tests pass. Ready for commit whenever you want.",
+          "timestamp": "2026-03-23T21:35:12.857Z"
+        },
+        {
+          "type": "user",
+          "text": "commit + push + create PR",
+          "timestamp": "2026-03-23T21:35:50.518Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Skill",
+          "input": {
+            "skill": "commit-commands:commit-push-pr"
+          },
+          "timestamp": "2026-03-23T21:35:54.103Z"
+        },
+        {
+          "type": "user",
+          "text": "## Context\r\n\r\n- Current git status: On branch work********G-M5\nYour branch is up to date with 'origin/master'.\n\nChanges not staged for commit:\n  (use \"git add <file>...\" to update what will be committed)\n  (use \"git restore <file>...\" to discard changes in working directory)\n\tmodified:   crates/reme-discovery/src/mdns_sd.rs\n\nno changes added to commit (use \"git add\" and/or \"git commit -a\")\r\n- Current git diff (staged and unstaged changes): diff --git a/crates/reme-discovery/src/mdns_sd.rs b/crates/reme-discovery/src/mdns_sd.rs\nindex 8e27892..6d408e1 100644\n--- a/crates/reme-discovery/src/mdns_sd.rs\n+++ b/crates/reme-discovery/src/mdns_sd.rs\n@@ -189,22 +189,28 @@ impl DiscoveryBackend for MdnsSdBackend {\n     }\n \n     async fn stop_advertising(&self) -> Result<(), DiscoveryError> {\n-        // Extract state and start unregister while holding the lock, then drop\n-        // the lock before awaiting to avoid holding a non-Send MutexGuard across\n-        // an await point.\n+        // Update state and start unregister atomically under a single lock\n+        // acquisition. This prevents a TOCTOU race where `start_advertising`\n+        // could succeed between the lock release and a deferred state update,\n+        // only to have its `advertising = true` clobbered by a late\n+        // `advertising = false` write.\n         let receiver = {\n-            let state = self.state.lock().unwrap();\n+            let mut state = self.state.lock().unwrap();\n             if !state.advertising {\n                 return Err(DiscoveryError::NotAdvertising);\n             }\n \n-            // C1: Start the unregister if we have a registered fullname.\n-            state.registered_fullname.as_ref().map(|fullname| {\n+            // Clear state immediately — no second lock acquisition needed.\n+            state.advertising = false;\n+            let fullname = state.registered_fullname.take();\n+\n+            // C1: Start the unregister if we had a registered fullname.\n+            fullname.map(|f| {\n                 self.daemon\n-                    .unregister(fullname)\n+                    .unregister(&f)\n                     .map_err(|e| DiscoveryError::BackendError(e.to_string()))\n             })\n-            // Lock dropped here\n+            // Lock dropped here — state is already consistent.\n         };\n \n         // Await unregister confirmation outside the lock.\n@@ -230,11 +236,6 @@ impl DiscoveryBackend for MdnsSdBackend {\n             }\n         }\n \n-        // Re-acquire lock to update state.\n-        let mut state = self.state.lock().unwrap();\n-        state.advertising = false;\n-        state.registered_fullname = None;\n-\n         Ok(())\n     }\r\n- Current branch: work********G-M5\r\n\r\n## Your task\r\n\r\nBased on the above changes:\r\n\r\n1. Create a new branch if on main\r\n2. Create a single commit with an appropriate message\r\n3. Push the branch to origin\r\n4. Create a pull request using `gh pr create`\r\n5. You have the capability to call multiple tools in a single response. You MUST do all of the above in a single message. Do not use any other tools or do anything else. Do not send any other text or messages besides these tool calls.\r\n",
+          "timestamp": "2026-03-23T21:36:20.001Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Bash",
+          "input": {
+            "command": "git checkout -b fix/stop-advertising-toctou-race",
+            "description": "Create feature branch"
+          },
+          "timestamp": "2026-03-23T21:36:25.336Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Bash",
+          "input": {
+            "command": "git add crates/reme-discovery/src/mdns_sd.rs && git commit -m \"$(cat <<'EOF'\nfix: eliminate TOCTOU race in mDNS stop_advertising\n\nMove state update (advertising=false, registered_fullname=None) into the\nfirst lock acquisition, before awaiting the unregister confirmation.\n\nPreviously, the lock was released after initiating daemon.unregister(),\nand re-acquired after the await to clear state. During that gap, a\nconcurrent stop+start sequence could succeed, only to have the original\nstop's delayed `advertising = false` clobber the new registration.\n\nCloses #124\n\nCo-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>\nEOF\n)\"",
+            "description": "Commit the fix"
+          },
+          "timestamp": "2026-03-23T21:36:33.761Z"
+        }
+      ],
+      "total_additions": 14,
+      "total_deletions": 13,
+      "accepted_lines": 14,
+      "overriden_lines": 0
+    }
+  }
+}
