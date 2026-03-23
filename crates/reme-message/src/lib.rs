@@ -110,7 +110,7 @@ pub struct Version {
 ///
 /// Note: `ack_hash` was added to `OuterEnvelope` in this version.
 /// No version bump needed since this is a `PoC` with no deployed clients.
-pub const CURRENT_VERSION: Version = Version { major: 0, minor: 0 };
+pub const CURRENT_VERSION: Version = Version { major: 0, minor: 1 };
 
 /// Outer envelope for MIK-only encryption (Session V1-style stateless)
 ///

@@ -24,7 +24,6 @@ reme-config = { workspace = true, features = ["http", "mqtt"] }
 
 # storage
 rusqlite = { workspace = true }
-bincode = { workspace = true }
 
 thiserror = { workspace = true }
 tracing = { workspace = true }

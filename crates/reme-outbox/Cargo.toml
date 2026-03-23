@@ -15,7 +15,6 @@ reme-transport = { workspace = true }
 derivative = { workspace = true }
 strum = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
-bincode = { workspace = true }
 rand = { workspace = true }
 
 [dev-dependencies]
