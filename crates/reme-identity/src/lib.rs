@@ -1,11 +1,8 @@
-use bincode::de::Decoder;
-use bincode::enc::Encoder;
-use bincode::error::{DecodeError, EncodeError};
-use bincode::{impl_borrow_decode, Decode, Encode};
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From};
 use getset::Getters;
 use rand_core::OsRng;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt::{self, Debug, Display};
 use thiserror::Error;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
@@ -221,7 +218,7 @@ impl PublicID {
 ///
 /// Derived from the first 16 bytes of a BLAKE3 hash of a `PublicID`.
 /// Used to address messages without revealing the full public key.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Encode, Decode, From, Deref, DerefMut)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, From, Deref, DerefMut)]
 pub struct RoutingKey(pub [u8; 16]);
 
 impl RoutingKey {
@@ -274,24 +271,21 @@ impl AsRef<X25519PublicKey> for PublicID {
     }
 }
 
-// Implement bincode Encode/Decode for PublicID (32 bytes on wire)
+// Custom serde Serialize/Deserialize for PublicID (32 bytes on wire)
 // Serializes only the X25519 public key
-// Note: Decode validates against low-order points (rejects invalid keys)
-impl Encode for PublicID {
-    fn encode<E: Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {
-        self.to_bytes().encode(encoder)
+// Note: Deserialize validates against low-order points (rejects invalid keys)
+impl Serialize for PublicID {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.to_bytes().serialize(serializer)
     }
 }
 
-impl<Context> Decode<Context> for PublicID {
-    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, DecodeError> {
-        let bytes: [u8; 32] = Decode::decode(decoder)?;
-        Self::try_from_bytes(&bytes)
-            .map_err(|_| DecodeError::OtherString("Invalid public key: low-order point".into()))
+impl<'de> Deserialize<'de> for PublicID {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let bytes = <[u8; 32]>::deserialize(deserializer)?;
+        Self::try_from_bytes(&bytes).map_err(serde::de::Error::custom)
     }
 }
-
-impl_borrow_decode!(PublicID);
 
 /// Helper for derivative Debug to redact sensitive fields.
 fn redact_secret<T>(_: &T, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {

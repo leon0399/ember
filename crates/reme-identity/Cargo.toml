@@ -24,7 +24,8 @@ sha2 = "0.10"
 xeddsa = { version = "1.0", features = ["xed25519"] }
 
 hex = "0.4.3"
-bincode = { workspace = true }
+postcard = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 
 # encrypted identity storage
 argon2 = { workspace = true }
