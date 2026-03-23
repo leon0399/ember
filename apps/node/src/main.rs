@@ -159,13 +159,15 @@ async fn main() {
         }
     } else if identity.is_some() {
         if config.allow_insecure_destination {
-            warn!("public_host not configured - signature destination verification DISABLED");
-            warn!("Signed requests will be accepted regardless of destination. This is insecure.");
+            warn!(
+                "public_host not configured — signature destination verification DISABLED. \
+                 Signed requests will be accepted regardless of destination."
+            );
         } else {
-            error!("Node has identity but public_host is not configured");
-            error!("Signature destination verification cannot work without public_host");
             error!(
-                "Set public_host in config/CLI/env, or set allow_insecure_destination = true to override"
+                "Node has identity but public_host is not configured. \
+                 Signature destination verification cannot work without it. \
+                 Set public_host in config/CLI/env, or set allow_insecure_destination = true to override."
             );
             std::process::exit(1);
         }
