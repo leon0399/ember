@@ -41,9 +41,11 @@ There are three viable approaches for reme's desktop GUI:
 
 ## Cross-Platform Rust GUI Frameworks
 
+> **Key insight**: No Rust GUI framework uses native OS widgets across all platforms. Every cross-platform Rust GUI either draws its own widgets (Iced, Slint, egui, GPUI) or wraps a toolkit that also draws its own (GTK). True native widgets require platform-specific UI code (SwiftUI on macOS, WinUI on Windows) with a shared Rust core.
+
 ### Iced
 
-- **Repository**: github.com/iced-rs/iced (~25k stars)
+- **Repository**: github.com/iced-rs/iced (~15k stars)
 - **Rendering**: Custom via wgpu (GPU) or tiny-skia (CPU fallback). NOT native OS widgets.
 - **Architecture**: Elm architecture — declarative, functional, message-driven
 - **Platforms**: Windows, macOS, Linux
@@ -63,10 +65,10 @@ There are three viable approaches for reme's desktop GUI:
 - **Platforms**: Windows, macOS, Linux, embedded (MCU)
 - **Maturity**: 1.x stable. Commercial company (SixtyFPS GmbH). Used by WesAudio (audio hardware), LibrePCB 2.0 (PCB design, migrating from Qt).
 - **Accessibility**: **Good.** Windows Narrator works. Provides `accessible-role`, `accessible-label` properties. Some issues with text input + NVDA ([#8732](https://github.com/slint-ui/slint/issues/8732)).
-- **License**: **GPLv3** (free) / Royalty-free (for open source) / Commercial (paid). The royalty-free tier may work for reme if it remains open source.
+- **License**: **Triple-licensed**: GPLv3 / Royalty-free (covers desktop, mobile, web — not just open source) / Commercial (required for embedded). The royalty-free tier covers reme's desktop use case regardless of license choice.
 
-**Pros**: Best accessibility among Rust GUI frameworks, production-ready, native-feel themes.
-**Cons**: GPL licensing constrains distribution, separate DSL to learn, no mobile.
+**Pros**: Best accessibility among Rust GUI frameworks, production-ready, native-feel themes, stable 1.x API, <300KiB runtime.
+**Cons**: Separate `.slint` DSL to learn, no mobile (desktop/embedded only).
 
 ### gtk4-rs
 
@@ -119,9 +121,25 @@ There are three viable approaches for reme's desktop GUI:
 
 ### egui
 
-- **Rendering**: Immediate-mode, custom-rendered
+- **Repository**: github.com/emilk/egui (~27k stars — largest Rust GUI community)
+- **Rendering**: Immediate-mode, custom-rendered (redraws every frame as textured triangles via wgpu)
+- **Platforms**: Windows, macOS, Linux, Web, Android
+- **Accessibility**: **Good** — AccessKit integration enabled by default in eframe, supports Windows and macOS screen readers.
+- **License**: MIT OR Apache-2.0
 - **Best for**: Debug UIs, tools, quick prototypes
-- **Verdict**: Wrong paradigm for a stateful messaging app.
+
+**Verdict**: Surprisingly good accessibility via AccessKit. However, immediate-mode rendering means constant redraws (higher power usage) and complex layouts/rich text editing are harder. Not ideal for a polished consumer messaging app, but could work for a quick prototype.
+
+### Makepad
+
+- **Repository**: github.com/makepad/makepad (~6k stars)
+- **Rendering**: Custom GPU (Metal, DX11, OpenGL, WebGL). Shader-based styling.
+- **Platforms**: macOS, Windows, Linux, iOS, tvOS, Android, WASM
+- **Maturity**: 1.0 released May 2025, but documentation is sparse.
+- **Accessibility**: **Poor** — Windows Narrator could not see content in 2025 survey.
+- **License**: MIT OR Apache-2.0
+
+**Verdict**: Broad platform support including mobile, but poor accessibility and documentation. Called "built for the Makepad team" by the 2025 survey.
 
 ---
 
@@ -225,7 +243,7 @@ WinUI 3 from Rust is blocked on `windows-rs` (#2153). Practical path today:
 | **Mobile path** | None | None | Natural (Swift/Kotlin) | Natural |
 | **Initial effort** | Low | Low-Medium | High | Medium |
 | **Maintenance effort** | Low | Low | High (3 UIs) | Medium |
-| **License risk** | None (MIT) | GPL concern | None | None |
+| **License risk** | None (MIT) | Low (royalty-free covers desktop) | None | None |
 | **Production validation** | COSMIC Desktop | WesAudio, LibrePCB | Firefox, Ghostty | JetBrains apps |
 | **OS integration** (tray, notifications) | Basic | Basic | Full | Full |
 
@@ -243,12 +261,13 @@ WinUI 3 from Rust is blocked on `windows-rs` (#2153). Practical path today:
 - Messenger UIs are inherently custom (chat bubbles, conversation lists, typing indicators) — native widgets matter less than in a file manager or settings app
 - Accessibility is the main weakness; monitor progress driven by COSMIC's dependency
 
-**Alternative: Slint** (if accessibility is a hard requirement now)
+**Strong alternative: Slint** (if accessibility is a priority)
 
-- Significantly better accessibility than Iced today
+- Significantly better accessibility than Iced today (Narrator works out of the box)
 - Native-feel themes approximate platform look
-- GPL licensing works if reme remains open source; evaluate royalty-free tier
-- Separate `.slint` DSL is a minor learning curve
+- Royalty-free license covers desktop use — licensing is not a blocker
+- Stable 1.x API (less churn than Iced's pre-1.0)
+- Separate `.slint` DSL is a minor learning curve but has good tooling (live preview, Figma import)
 
 ### When mobile support is needed:
 
@@ -276,6 +295,16 @@ This transition can be incremental: start with Iced desktop, add mobile via UniF
 - [1Password: Typeshare](https://1password.com/blog/typeshare-for-rust)
 - [Mullvad VPN Architecture](https://deepwiki.com/mullvad/mullvadvpn-app)
 - [COSMIC Desktop Launch](https://9to5linux.com/system76-launches-first-stable-release-of-cosmic-desktop-and-pop_os-24-04-lts)
+- [egui GitHub](https://github.com/emilk/egui)
+- [AccessKit GitHub](https://github.com/AccessKit/accesskit)
+- [GPUI Website](https://www.gpui.rs/)
+- [awesome-gpui](https://github.com/zed-industries/awesome-gpui)
+- [Floem GitHub](https://github.com/lapce/floem)
+- [Freya GitHub](https://github.com/marc2332/freya)
+- [Makepad GitHub](https://github.com/makepad/makepad)
+- [Gobley (UniFFI + Kotlin Multiplatform)](https://gobley.dev/)
+- [flutter_rust_bridge GitHub](https://github.com/fzyzcjy/flutter_rust_bridge)
+- [Rust in Production: 1Password Podcast](https://corrode.dev/podcast/s04e06-1password/)
 - [windows-rs WinUI 3 (Issue #2153)](https://github.com/microsoft/windows-rs/issues/2153)
 - [Compose Multiplatform 1.8.0](https://blog.jetbrains.com/kotlin/2025/05/compose-multiplatform-1-8-0-released/)
 - [Integrating Rust and SwiftUI](https://dfrojas.com/software/integrating-Rust-and-SwiftUI.html)
