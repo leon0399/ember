@@ -145,7 +145,10 @@ impl DiscoveryBackend for MdnsSdBackend {
         // M1: Hold the lock through the entire operation to avoid TOCTOU.
         // The work below (hostname lookup, ServiceInfo::new, daemon.register)
         // is fast in-process work, not blocking I/O.
-        let mut state = self.state.lock().unwrap();
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| DiscoveryError::LockPoisoned)?;
         if state.advertising {
             return Err(DiscoveryError::AlreadyAdvertising);
         }
@@ -195,7 +198,10 @@ impl DiscoveryBackend for MdnsSdBackend {
         // only to have its `advertising = true` clobbered by a late
         // `advertising = false` write.
         let receiver = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| DiscoveryError::LockPoisoned)?;
             if !state.advertising {
                 return Err(DiscoveryError::NotAdvertising);
             }
@@ -251,7 +257,10 @@ impl DiscoveryBackend for MdnsSdBackend {
     async fn shutdown(&self) -> Result<(), DiscoveryError> {
         // Take state values under lock.
         let (fullname, browse_handle) = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| DiscoveryError::LockPoisoned)?;
             state.advertising = false;
             state.browsing = false;
             (state.registered_fullname.take(), state.browse_handle.take())
