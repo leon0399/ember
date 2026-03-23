@@ -31,9 +31,13 @@ storage_path = "/var/lib/reme/messages.db"
 # Node identity for signed headers (auto-generated if not exists)
 identity_path = "/etc/reme/node-identity.key"
 
-# Public hostname for signature verification (required for secure mode)
+# Public hostname for signature verification (required when node has an identity)
+# Without this, the node refuses to start when an identity is present
+# (whether from identity_path or the default location).
+# Set allow_insecure_destination = true to override (NOT recommended for production).
 public_host = "node1.example.com:23003"
 additional_hosts = ["192.168.1.5:23003", "localhost:23003"]  # Optional: for multi-homed/dev
+# allow_insecure_destination = false
 
 # Authentication (for incoming requests)
 auth_username = "client"
