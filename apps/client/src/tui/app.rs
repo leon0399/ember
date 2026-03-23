@@ -1616,7 +1616,7 @@ impl App<'_> {
                 // Add to MQTT pool via registry (which shares the pool with coordinator)
                 self.registry
                     .mqtt_pool()
-                    .expect("MQTT pool always initialized")
+                    .ok_or("MQTT pool not initialized")?
                     .add_target(target);
 
                 // Register in metadata for display
