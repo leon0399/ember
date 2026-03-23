@@ -79,6 +79,10 @@ pub enum DiscoveryError {
     #[error("not currently advertising")]
     NotAdvertising,
 
+    /// An internal mutex was poisoned (another thread panicked while holding it).
+    #[error("lock poisoned")]
+    LockPoisoned,
+
     /// Catch-all for backend-specific failures.
     #[error("backend error: {0}")]
     BackendError(String),

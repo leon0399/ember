@@ -145,7 +145,10 @@ impl DiscoveryBackend for MdnsSdBackend {
         // M1: Hold the lock through the entire operation to avoid TOCTOU.
         // The work below (hostname lookup, ServiceInfo::new, daemon.register)
         // is fast in-process work, not blocking I/O.
-        let mut state = self.state.lock().unwrap();
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| DiscoveryError::LockPoisoned)?;
         if state.advertising {
             return Err(DiscoveryError::AlreadyAdvertising);
         }
@@ -189,22 +192,31 @@ impl DiscoveryBackend for MdnsSdBackend {
     }
 
     async fn stop_advertising(&self) -> Result<(), DiscoveryError> {
-        // Extract state and start unregister while holding the lock, then drop
-        // the lock before awaiting to avoid holding a non-Send MutexGuard across
-        // an await point.
+        // Update state and start unregister atomically under a single lock
+        // acquisition. This prevents a TOCTOU race where `start_advertising`
+        // could succeed between the lock release and a deferred state update,
+        // only to have its `advertising = true` clobbered by a late
+        // `advertising = false` write.
         let receiver = {
-            let state = self.state.lock().unwrap();
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| DiscoveryError::LockPoisoned)?;
             if !state.advertising {
                 return Err(DiscoveryError::NotAdvertising);
             }
 
-            // C1: Start the unregister if we have a registered fullname.
-            state.registered_fullname.as_ref().map(|fullname| {
+            // Clear state immediately — no second lock acquisition needed.
+            state.advertising = false;
+            let fullname = state.registered_fullname.take();
+
+            // C1: Start the unregister if we had a registered fullname.
+            fullname.map(|f| {
                 self.daemon
-                    .unregister(fullname)
+                    .unregister(&f)
                     .map_err(|e| DiscoveryError::BackendError(e.to_string()))
             })
-            // Lock dropped here
+            // Lock dropped here — state is already consistent.
         };
 
         // Await unregister confirmation outside the lock.
@@ -230,11 +242,6 @@ impl DiscoveryBackend for MdnsSdBackend {
             }
         }
 
-        // Re-acquire lock to update state.
-        let mut state = self.state.lock().unwrap();
-        state.advertising = false;
-        state.registered_fullname = None;
-
         Ok(())
     }
 
@@ -250,7 +257,10 @@ impl DiscoveryBackend for MdnsSdBackend {
     async fn shutdown(&self) -> Result<(), DiscoveryError> {
         // Take state values under lock.
         let (fullname, browse_handle) = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| DiscoveryError::LockPoisoned)?;
             state.advertising = false;
             state.browsing = false;
             (state.registered_fullname.take(), state.browse_handle.take())
@@ -314,5 +324,107 @@ impl DiscoveryBackend for MdnsSdBackend {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::backend::DiscoveryBackend;
+    use crate::types::AdvertisementSpec;
+
+    /// Try to create a backend; skip the test if the multicast socket is
+    /// unavailable (common in CI containers).
+    fn try_backend() -> Option<MdnsSdBackend> {
+        MdnsSdBackend::new().ok()
+    }
+
+    #[tokio::test]
+    async fn stop_start_cycle_is_consistent() {
+        let Some(backend) = try_backend() else {
+            eprintln!("skipping: mDNS daemon unavailable");
+            return;
+        };
+        let spec = AdvertisementSpec::new(19876);
+
+        // start → stop → start should succeed without state confusion.
+        backend.start_advertising(spec.clone()).await.unwrap();
+        backend.stop_advertising().await.unwrap();
+        backend.start_advertising(spec.clone()).await.unwrap();
+        backend.stop_advertising().await.unwrap();
+
+        // Double-stop must fail cleanly.
+        assert_eq!(
+            backend.stop_advertising().await,
+            Err(DiscoveryError::NotAdvertising),
+        );
+
+        backend.shutdown().await.unwrap();
+    }
+
+    /// Stress test: concurrent stop/start cycles must never leave the state
+    /// machine inconsistent. Before the TOCTOU fix, a `start_advertising` that
+    /// succeeded between the lock release and re-acquire in `stop_advertising`
+    /// could have its `advertising = true` clobbered by a late `false` write.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_stop_start_no_state_corruption() {
+        let Some(backend) = try_backend() else {
+            eprintln!("skipping: mDNS daemon unavailable");
+            return;
+        };
+        let backend = Arc::new(backend);
+
+        for _ in 0..20 {
+            let spec = AdvertisementSpec::new(19877);
+
+            // Ensure we start from a known state.
+            let _ = backend.stop_advertising().await;
+            backend.start_advertising(spec.clone()).await.unwrap();
+
+            // Race: stop and start from separate tasks.
+            let b1 = Arc::clone(&backend);
+            let b2 = Arc::clone(&backend);
+            let spec2 = spec.clone();
+
+            let stop_handle = tokio::spawn(async move { b1.stop_advertising().await });
+
+            let start_handle = tokio::spawn(async move { b2.start_advertising(spec2).await });
+
+            let stop_result = stop_handle.await.unwrap();
+            let start_result = start_handle.await.unwrap();
+
+            // Exactly one of these outcomes is valid per iteration:
+            // 1. stop wins the lock first → stop Ok, start Ok (or start
+            //    races and sees AlreadyAdvertising if stop hasn't cleared yet)
+            // 2. start sees AlreadyAdvertising because stop hasn't run yet
+            //
+            // The critical invariant: if start succeeded, a subsequent stop
+            // must also succeed — the state must not have been clobbered.
+            match (&stop_result, &start_result) {
+                (Ok(()), Ok(())) => {
+                    // Both succeeded: stop ran first, then start.
+                    // State should be advertising=true.
+                    backend.stop_advertising().await.unwrap();
+                }
+                (Ok(()), Err(DiscoveryError::AlreadyAdvertising)) => {
+                    // start raced before stop cleared state — it saw
+                    // advertising=true and returned AlreadyAdvertising.
+                    // After stop completed, advertising=false.
+                    // Nothing to clean up.
+                }
+                (Err(DiscoveryError::NotAdvertising), Ok(())) => {
+                    // start somehow ran before stop? Shouldn't happen since
+                    // we started advertising above, but handle defensively.
+                    backend.stop_advertising().await.unwrap();
+                }
+                (stop_r, start_r) => {
+                    panic!("unexpected result combination: stop={stop_r:?}, start={start_r:?}");
+                }
+            }
+        }
+
+        backend.shutdown().await.unwrap();
     }
 }
