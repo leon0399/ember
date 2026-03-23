@@ -541,9 +541,9 @@ impl<T: Transport> Client<T> {
         }
 
         // Serialize envelopes for outbox storage
-        let envelope_bytes = bincode::encode_to_vec(&outer, bincode::config::standard())
+        let envelope_bytes = postcard::to_allocvec(&outer)
             .map_err(|e| ClientError::Serialization(format!("envelope: {e}")))?;
-        let inner_bytes = bincode::encode_to_vec(&inner, bincode::config::standard())
+        let inner_bytes = postcard::to_allocvec(&inner)
             .map_err(|e| ClientError::Serialization(format!("inner: {e}")))?;
 
         // Enqueue to outbox
@@ -1025,10 +1025,8 @@ impl<T: Transport> Client<T> {
         let transport_id = self.transport_id();
 
         // Deserialize the outer envelope
-        let outer: OuterEnvelope =
-            bincode::decode_from_slice(&pending.envelope_bytes, bincode::config::standard())
-                .map(|(envelope, _)| envelope)
-                .map_err(|e| ClientError::Outbox(StorageError::Serialization(e.to_string())))?;
+        let outer: OuterEnvelope = postcard::from_bytes(&pending.envelope_bytes)
+            .map_err(|e| ClientError::Outbox(StorageError::Serialization(e.to_string())))?;
 
         // Attempt delivery
         let result = match self.transport.submit_message(outer).await {
@@ -1398,10 +1396,8 @@ impl Client<TransportCoordinator> {
         pending: &PendingMessage,
     ) -> Result<TieredDeliveryPhase, ClientError> {
         // Deserialize the outer envelope
-        let outer: OuterEnvelope =
-            bincode::decode_from_slice(&pending.envelope_bytes, bincode::config::standard())
-                .map(|(envelope, _)| envelope)
-                .map_err(|e| ClientError::Serialization(format!("envelope: {e}")))?;
+        let outer: OuterEnvelope = postcard::from_bytes(&pending.envelope_bytes)
+            .map_err(|e| ClientError::Serialization(format!("envelope: {e}")))?;
 
         // Try Direct tier first - recipient may be online now
         let direct_result = self
@@ -1520,10 +1516,8 @@ impl Client<TransportCoordinator> {
         pending: &PendingMessage,
     ) -> Result<(), ClientError> {
         // Deserialize the outer envelope
-        let outer: OuterEnvelope =
-            bincode::decode_from_slice(&pending.envelope_bytes, bincode::config::standard())
-                .map(|(envelope, _)| envelope)
-                .map_err(|e| ClientError::Serialization(format!("envelope: {e}")))?;
+        let outer: OuterEnvelope = postcard::from_bytes(&pending.envelope_bytes)
+            .map_err(|e| ClientError::Serialization(format!("envelope: {e}")))?;
 
         // Try Direct tier first - recipient may be online now
         let direct_result = self
