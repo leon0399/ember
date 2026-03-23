@@ -922,6 +922,7 @@ mod tests {
     fn test_default_config() {
         let config = CoordinatorConfig::default();
         assert_eq!(config.routing_strategy, RoutingStrategy::BroadcastAll);
+        assert_eq!(config.poll_interval, Duration::from_secs(5));
     }
 
     #[test]
