@@ -6,6 +6,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use derivative::Derivative;
@@ -21,8 +22,6 @@ use crate::delivery::{
 use crate::http_target::HttpTarget;
 use crate::pool::TransportPool;
 use crate::query::{HealthSummary, TargetSnapshot, TransportQuery};
-#[allow(deprecated)]
-use crate::receiver::ReceiverConfig;
 use crate::seen_cache::SharedSeenCache;
 use crate::target::{TargetId, TargetKind, TransportTarget};
 use crate::{EventReceiver, EventSender, Transport, TransportError, TransportEvent};
@@ -60,9 +59,9 @@ pub struct CoordinatorConfig {
     /// Default routing strategy for outgoing messages.
     pub routing_strategy: RoutingStrategy,
 
-    /// Configuration for polling (HTTP only).
-    #[allow(deprecated)]
-    pub receiver_config: ReceiverConfig,
+    /// How often to poll HTTP targets for new messages.
+    #[derivative(Default(value = "Duration::from_secs(5)"))]
+    pub poll_interval: Duration,
 }
 
 /// Handle to control a running coordinator subscription.
@@ -263,7 +262,6 @@ impl TransportCoordinator {
     }
 
     /// Spawn an HTTP polling receiver task.
-    #[allow(deprecated)]
     fn spawn_http_receiver(
         &self,
         pool: Arc<TransportPool<HttpTarget>>,
@@ -271,13 +269,13 @@ impl TransportCoordinator {
         tx: EventSender,
         cancel_token: CancellationToken,
     ) {
-        let config = self.config.receiver_config;
+        let poll_duration = self.config.poll_interval;
         let seen_cache = self.seen_cache.clone();
 
         tokio::spawn(async move {
             use tokio::time::{interval, MissedTickBehavior};
 
-            let mut poll_interval = interval(config.poll_interval);
+            let mut poll_interval = interval(poll_duration);
             poll_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
             debug!(
@@ -924,6 +922,7 @@ mod tests {
     fn test_default_config() {
         let config = CoordinatorConfig::default();
         assert_eq!(config.routing_strategy, RoutingStrategy::BroadcastAll);
+        assert_eq!(config.poll_interval, Duration::from_secs(5));
     }
 
     #[test]

@@ -595,7 +595,6 @@ fn default_config_path() -> Option<PathBuf> {
 }
 
 /// Intermediate config for deserializing from file
-#[allow(deprecated)] // Legacy fields for backward compatibility
 #[derive(Debug, Clone, Deserialize, Default)]
 struct RawConfig {
     /// Unified peer configuration (new format)
