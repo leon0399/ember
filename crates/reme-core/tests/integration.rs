@@ -3,8 +3,6 @@
 //! These tests spin up an in-process node server for self-contained testing.
 //! Uses MIK-only stateless encryption (no session establishment, no prekeys).
 
-#![allow(deprecated)]
-
 use reme_core::Client;
 use reme_encryption::{decrypt_with_mik, encrypt_to_mik, EncryptionError};
 use reme_identity::Identity;
@@ -15,7 +13,7 @@ use reme_outbox::{DeliveryState, OutboxConfig};
 use reme_storage::Storage;
 use reme_transport::http_target::HttpTarget;
 use reme_transport::pool::TransportPool;
-use reme_transport::{MessageReceiver, ReceiverConfig, TransportError, TransportEvent};
+use reme_transport::{CoordinatorConfig, TransportCoordinator, TransportError, TransportEvent};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -84,6 +82,16 @@ impl TestServer {
     fn url(&self) -> &str {
         &self.url
     }
+}
+
+/// Create a `TransportCoordinator` wired to the given HTTP pool with fast polling for tests.
+fn test_coordinator(transport: &Arc<TransportPool<HttpTarget>>) -> TransportCoordinator {
+    let mut coordinator = TransportCoordinator::new(CoordinatorConfig {
+        poll_interval: Duration::from_millis(50),
+        ..CoordinatorConfig::default()
+    });
+    coordinator.set_http_pool_arc(transport.clone());
+    coordinator
 }
 
 /// Test that the transport layer works correctly by sending raw encrypted data
@@ -291,10 +299,9 @@ async fn test_two_client_messaging() {
         .expect("Alice send_text failed");
     println!("Alice sent message: {msg_id:?}");
 
-    // Bob receives messages using push-based MessageReceiver
-    let receiver = MessageReceiver::new(transport.clone());
-    let config = ReceiverConfig::with_poll_interval(Duration::from_millis(50));
-    let (mut events, _handle) = receiver.subscribe(bob.routing_key(), config);
+    // Bob receives messages via TransportCoordinator
+    let coordinator = test_coordinator(&transport);
+    let (mut events, _handle) = coordinator.subscribe(bob.routing_key());
 
     // Wait for Bob's message
     let received = tokio::time::timeout(Duration::from_secs(2), async {
@@ -326,8 +333,8 @@ async fn test_two_client_messaging() {
         .expect("Bob send_text failed");
     println!("Bob sent reply: {reply_id:?}");
 
-    // Alice receives messages using push-based MessageReceiver
-    let (mut alice_events, _alice_handle) = receiver.subscribe(alice.routing_key(), config);
+    // Alice receives messages via TransportCoordinator
+    let (mut alice_events, _alice_handle) = coordinator.subscribe(alice.routing_key());
 
     // Wait for Alice's message
     let alice_received = tokio::time::timeout(Duration::from_secs(2), async {
@@ -586,10 +593,9 @@ async fn test_outbox_dag_confirmation() {
     let alice_entry_id = alice_pending[0].id;
     println!("Alice's message is pending, entry_id: {alice_entry_id:?}");
 
-    // Bob receives the message using push-based MessageReceiver
-    let receiver = MessageReceiver::new(transport.clone());
-    let config = ReceiverConfig::with_poll_interval(Duration::from_millis(50));
-    let (mut events, _handle) = receiver.subscribe(bob.routing_key(), config);
+    // Bob receives the message via TransportCoordinator
+    let coordinator = test_coordinator(&transport);
+    let (mut events, _handle) = coordinator.subscribe(bob.routing_key());
 
     let _received = tokio::time::timeout(Duration::from_secs(2), async {
         while let Some(event) = events.recv().await {
@@ -612,7 +618,7 @@ async fn test_outbox_dag_confirmation() {
     println!("Bob sent reply to Alice");
 
     // Alice receives Bob's reply
-    let (mut alice_events, _alice_handle) = receiver.subscribe(alice.routing_key(), config);
+    let (mut alice_events, _alice_handle) = coordinator.subscribe(alice.routing_key());
 
     let _alice_received = tokio::time::timeout(Duration::from_secs(2), async {
         while let Some(event) = alice_events.recv().await {
@@ -690,9 +696,8 @@ async fn test_outbox_cleanup() {
     println!("Alice's message is pending, entry_id: {entry_id:?}");
 
     // Bob receives and replies (confirms Alice's message)
-    let receiver = MessageReceiver::new(transport.clone());
-    let config = ReceiverConfig::with_poll_interval(Duration::from_millis(50));
-    let (mut events, _handle) = receiver.subscribe(bob.routing_key(), config);
+    let coordinator = test_coordinator(&transport);
+    let (mut events, _handle) = coordinator.subscribe(bob.routing_key());
 
     let _bob_received = tokio::time::timeout(Duration::from_secs(2), async {
         while let Some(event) = events.recv().await {
@@ -714,7 +719,7 @@ async fn test_outbox_cleanup() {
     println!("Bob sent reply to Alice");
 
     // Alice receives reply (triggers confirmation via DAG)
-    let (mut alice_events, _alice_handle) = receiver.subscribe(alice.routing_key(), config);
+    let (mut alice_events, _alice_handle) = coordinator.subscribe(alice.routing_key());
     let _alice_received = tokio::time::timeout(Duration::from_secs(2), async {
         while let Some(event) = alice_events.recv().await {
             if let TransportEvent::Message(envelope) = event {
@@ -971,7 +976,7 @@ async fn test_auto_tombstone_on_receive() {
         .expect("Alice send_text failed");
     println!("Alice sent message");
 
-    // Bob fetches and processes messages directly (simpler than using MessageReceiver)
+    // Bob fetches and processes messages directly (simpler than using TransportCoordinator)
     let messages = transport
         .fetch_once(&bob.routing_key())
         .await

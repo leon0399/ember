@@ -12,7 +12,6 @@ pub(crate) mod http_pagination;
 pub mod http_target;
 pub mod pool;
 pub mod query;
-pub mod receiver;
 pub mod registry;
 pub mod seen_cache;
 pub mod target;
@@ -41,8 +40,6 @@ pub use http::NodeSpec;
 pub use http_target::{HttpTarget, HttpTargetConfig};
 pub use pool::{PoolConfig, PoolStrategy, TransportPool};
 pub use query::{HealthSummary, TargetSnapshot, TransportQuery};
-#[allow(deprecated)]
-pub use receiver::{MessageReceiver, ReceiverConfig, ReceiverHandle};
 pub use registry::{EnrichedSnapshot, EphemeralMeta, TransportRegistry};
 pub use seen_cache::{SeenCache, SharedSeenCache};
 pub use target::{

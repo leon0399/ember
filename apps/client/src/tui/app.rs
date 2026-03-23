@@ -21,11 +21,9 @@ use reme_storage::Storage;
 use reme_transport::http_target::{HttpTarget, HttpTargetConfig};
 use reme_transport::pool::TransportPool;
 use reme_transport::target::TargetKind;
-#[allow(deprecated)]
 use reme_transport::{
-    CoordinatorConfig, CoordinatorHandle, DeliveryTier, MqttTarget, MqttTargetConfig,
-    ReceiverConfig, TargetId, TransportCoordinator, TransportEvent, TransportRegistry,
-    TransportTarget,
+    CoordinatorConfig, CoordinatorHandle, DeliveryTier, MqttTarget, MqttTargetConfig, TargetId,
+    TransportCoordinator, TransportEvent, TransportRegistry, TransportTarget,
 };
 use std::collections::{HashMap, VecDeque};
 use std::fs;
@@ -533,10 +531,9 @@ impl App<'_> {
             (None, None, None)
         };
 
-        // Build transport coordinator with 2s poll interval (matching old MessageReceiver)
-        #[allow(deprecated)]
+        // Build transport coordinator with 2s poll interval
         let coordinator_config = CoordinatorConfig {
-            receiver_config: ReceiverConfig::with_poll_interval(Duration::from_secs(2)),
+            poll_interval: Duration::from_secs(2),
             ..CoordinatorConfig::default()
         };
         let mut coordinator = TransportCoordinator::new(coordinator_config);
