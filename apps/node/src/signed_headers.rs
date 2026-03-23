@@ -711,8 +711,10 @@ mod tests {
         );
     }
 
+    /// Verifier with no `public_host` skips destination check.
+    /// Startup validation in main.rs is the enforcement layer — see `allow_insecure_destination`.
     #[test]
-    fn test_no_public_host_accepts_any_destination() {
+    fn test_no_public_host_skips_destination_check() {
         let identity = test_identity();
         let dest_host = "any.host.com:9999";
         let method = "POST";
@@ -729,7 +731,7 @@ mod tests {
             );
         }
 
-        // No public_host configured - should accept any destination
+        // No public_host — verifier accepts any destination (startup guards against this)
         let verifier = SignatureVerifier::new(None, &[]);
         let result = verifier.verify(&header_map, method, path, body);
         assert!(result.is_ok());

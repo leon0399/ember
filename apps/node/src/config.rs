@@ -395,6 +395,10 @@ pub struct CliArgs {
     /// For multi-homed servers, dev, or migration scenarios
     #[arg(long, env = "REME_NODE_ADDITIONAL_HOSTS", value_delimiter = ',')]
     pub additional_hosts: Option<Vec<String>>,
+
+    /// Allow running with identity but without `public_host` (insecure: disables destination verification)
+    #[arg(long, env = "REME_NODE_ALLOW_INSECURE_DESTINATION")]
+    pub allow_insecure_destination: bool,
 }
 
 /// Final resolved configuration
@@ -460,6 +464,10 @@ pub struct NodeConfig {
     /// Additional valid hostnames (for multi-homed servers, dev, migration)
     #[serde(default)]
     pub additional_hosts: Vec<String>,
+
+    /// Allow running with identity but without `public_host` (disables destination verification)
+    #[serde(default)]
+    pub allow_insecure_destination: bool,
 }
 
 impl Default for NodeConfig {
@@ -480,8 +488,9 @@ impl Default for NodeConfig {
             tls: TlsConfig::default(),
             mqtt: MqttBridgeConfig::default(),
             identity_path: None, // None means use default location
-            public_host: None,   // None means accept any (insecure mode)
+            public_host: None,
             additional_hosts: Vec::new(),
+            allow_insecure_destination: false,
         }
     }
 }
@@ -800,6 +809,10 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     let identity_path = cli.identity_path.or(identity_path_from_config);
     let public_host = cli.public_host.or(public_host_from_config);
     let additional_hosts = cli.additional_hosts.unwrap_or(additional_hosts_from_config);
+    let allow_insecure_destination = cli.allow_insecure_destination
+        || config
+            .get::<bool>("allow_insecure_destination")
+            .unwrap_or(false);
 
     Ok(NodeConfig {
         bind_addr,
@@ -818,6 +831,7 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         identity_path,
         public_host,
         additional_hosts,
+        allow_insecure_destination,
     })
 }
 
@@ -835,6 +849,9 @@ mod tests {
         assert!(!config.node_id.is_empty());
         assert!(config.peers.http.is_empty());
         assert!(config.peers.mqtt.is_empty());
+
+        // Security: insecure destination must be denied by default
+        assert!(!config.allow_insecure_destination);
 
         // Rate limit defaults must be non-zero (security-sensitive)
         assert_eq!(config.rate_limit.submit_ip_rps, 10);
@@ -924,5 +941,29 @@ priority = 90
         assert_eq!(peers.http[0].common.label.as_ref().unwrap(), "CLI HTTP 1");
         assert_eq!(peers.http[1].url, "https://cli-peer2.example.com:23003");
         assert_eq!(peers.http[1].common.label.as_ref().unwrap(), "CLI HTTP 2");
+    }
+
+    #[test]
+    fn test_default_config_denies_insecure_destination() {
+        let config = NodeConfig::default();
+        assert!(!config.allow_insecure_destination);
+    }
+
+    #[test]
+    #[allow(clippy::items_after_statements)]
+    fn test_allow_insecure_destination_deserialization() {
+        #[derive(serde::Deserialize)]
+        struct Partial {
+            #[serde(default)]
+            allow_insecure_destination: bool,
+        }
+
+        // Explicit true
+        let p: Partial = toml::from_str("allow_insecure_destination = true").unwrap();
+        assert!(p.allow_insecure_destination);
+
+        // Absent defaults to false
+        let p: Partial = toml::from_str("").unwrap();
+        assert!(!p.allow_insecure_destination);
     }
 }

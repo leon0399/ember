@@ -151,14 +151,24 @@ async fn main() {
         None
     };
 
-    // Log public host configuration for signature verification
+    // Enforce public_host when identity is present (destination binding)
     if let Some(ref host) = config.public_host {
         info!("Public host: {}", host);
         if !config.additional_hosts.is_empty() {
             info!("Additional hosts: {:?}", config.additional_hosts);
         }
     } else if identity.is_some() {
-        warn!("No public_host configured - signature destination verification disabled (insecure)");
+        if config.allow_insecure_destination {
+            warn!("public_host not configured - signature destination verification DISABLED");
+            warn!("Signed requests will be accepted regardless of destination. This is insecure.");
+        } else {
+            error!("Node has identity but public_host is not configured");
+            error!("Signature destination verification cannot work without public_host");
+            error!(
+                "Set public_host in config/CLI/env, or set allow_insecure_destination = true to override"
+            );
+            std::process::exit(1);
+        }
     }
 
     info!("Bind address: {}", config.bind_addr);
