@@ -20,7 +20,7 @@ use strum::{Display, EnumIter};
 
 use crate::wire::WireType;
 use crate::MessageID;
-use bincode::{Decode, Encode};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use subtle::ConstantTimeEq;
 use xeddsa::{xed25519, Sign, Verify};
 
@@ -38,6 +38,23 @@ pub const CLOCK_SKEW_ALLOWANCE_HOURS: u32 = 1;
 // ============================================
 // Tombstone V2: Signed Ack Tombstone
 // ============================================
+
+fn serialize_sig<S: Serializer>(sig: &[u8; 64], serializer: S) -> Result<S::Ok, S::Error> {
+    // Split into two [u8; 32] halves since serde only implements
+    // Serialize/Deserialize for arrays up to 32 elements.
+    let (left, right) = sig.split_at(32);
+    let left: &[u8; 32] = left.try_into().unwrap();
+    let right: &[u8; 32] = right.try_into().unwrap();
+    (left, right).serialize(serializer)
+}
+
+fn deserialize_sig<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 64], D::Error> {
+    let (left, right) = <([u8; 32], [u8; 32])>::deserialize(deserializer)?;
+    let mut sig = [0u8; 64];
+    sig[..32].copy_from_slice(&left);
+    sig[32..].copy_from_slice(&right);
+    Ok(sig)
+}
 
 /// Signed Ack Tombstone (V2) - 96 bytes total
 ///
@@ -60,7 +77,7 @@ pub const CLOCK_SKEW_ALLOWANCE_HOURS: u32 = 1;
 /// signature:   64 bytes (XEdDSA)
 /// Total:       96 bytes
 /// ```
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignedAckTombstone {
     /// ID of the message being acknowledged
     pub message_id: MessageID,
@@ -71,6 +88,7 @@ pub struct SignedAckTombstone {
 
     /// `XEdDSA` signature over (`message_id` || `ack_secret`)
     /// Signed by sender or recipient's X25519 private key
+    #[serde(serialize_with = "serialize_sig", deserialize_with = "deserialize_sig")]
     pub signature: [u8; 64],
 }
 
@@ -159,21 +177,18 @@ impl SignedAckTombstone {
     /// Serialize to bytes with wire type prefix (0x02)
     pub fn to_wire_bytes(&self) -> Vec<u8> {
         let mut bytes = vec![WireType::AckTombstone as u8];
-        bytes.extend(bincode::encode_to_vec(self, bincode::config::standard()).unwrap());
+        bytes.extend(postcard::to_allocvec(self).unwrap());
         bytes
     }
 
     /// Serialize to bytes without wire type prefix
     pub fn to_bytes(&self) -> Vec<u8> {
-        bincode::encode_to_vec(self, bincode::config::standard()).unwrap()
+        postcard::to_allocvec(self).unwrap()
     }
 
     /// Deserialize from bytes (without wire type prefix)
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
-        let (tombstone, _): (SignedAckTombstone, _) =
-            bincode::decode_from_slice(bytes, bincode::config::standard())
-                .map_err(|e| format!("Failed to decode ack tombstone: {e}"))?;
-        Ok(tombstone)
+        postcard::from_bytes(bytes).map_err(|e| format!("Failed to decode ack tombstone: {e}"))
     }
 }
 

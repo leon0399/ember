@@ -1,8 +1,6 @@
-use bincode::enc::Encoder;
-use bincode::error::EncodeError;
-use bincode::{impl_borrow_decode, Decode, Encode};
 use derive_more::From;
 pub use reme_identity::{PublicID, RoutingKey};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
 
 pub mod dag;
@@ -40,26 +38,6 @@ pub fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-// ============================================
-// Bincode configuration
-// ============================================
-
-/// Bincode configuration for message serialization.
-///
-/// Returns the standard bincode v2 config. Forward compatibility is built-in:
-/// - `decode_from_slice` returns `(T, bytes_consumed)`, ignoring trailing bytes
-/// - New fields can be added at the end of structs without breaking older clients
-/// - Older clients simply don't consume bytes they don't understand
-///
-/// # Example
-/// ```ignore
-/// let bytes = bincode::encode_to_vec(&envelope, bincode_config())?;
-/// let (decoded, _bytes_read) = bincode::decode_from_slice(&bytes, bincode_config())?;
-/// ```
-pub fn bincode_config() -> impl bincode::config::Config {
-    bincode::config::standard()
-}
-
 pub use tombstone::{
     // Tombstone V2 (signed ack)
     Attribution,
@@ -94,23 +72,18 @@ impl Default for MessageID {
     }
 }
 
-impl bincode::Encode for MessageID {
-    fn encode<E: Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {
-        self.0.as_bytes().encode(encoder)
+impl Serialize for MessageID {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.as_bytes().serialize(serializer)
     }
 }
 
-impl<C> bincode::Decode<C> for MessageID {
-    fn decode<D: bincode::de::Decoder>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        let bytes: [u8; 16] = Decode::decode(decoder)?;
-        let uuid = Uuid::from_bytes(bytes);
-        Ok(MessageID(uuid))
+impl<'de> Deserialize<'de> for MessageID {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let bytes = <[u8; 16]>::deserialize(deserializer)?;
+        Ok(MessageID(Uuid::from_bytes(bytes)))
     }
 }
-
-impl_borrow_decode!(MessageID);
 
 // ============================================
 // Content-addressed ID for Merkle DAG
@@ -126,7 +99,7 @@ impl_borrow_decode!(MessageID);
 /// truncation is safe and expected.
 pub type ContentId = [u8; 8];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Version {
     pub major: u8,
     pub minor: u8,
@@ -135,8 +108,8 @@ pub struct Version {
 /// Current protocol version (0.0 - `PoC`)
 /// Using u8 for major/minor: max version 255.255, saves 2 bytes per envelope
 ///
-/// Note: `ack_hash` was added to `OuterEnvelope` in this version.
-/// No version bump needed since this is a `PoC` with no deployed clients.
+/// Wire format uses postcard (serde) serialization since the bincode→postcard migration.
+/// No version bump during `PoC` phase — breaking changes are expected and no clients are deployed.
 pub const CURRENT_VERSION: Version = Version { major: 0, minor: 0 };
 
 /// Outer envelope for MIK-only encryption (Session V1-style stateless)
@@ -151,7 +124,7 @@ pub const CURRENT_VERSION: Version = Version { major: 0, minor: 0 };
 /// 1. Computes `shared_secret` = `X25519(mik_private`, `ephemeral_key`)
 /// 2. Derives same encryption key
 /// 3. Decrypts `InnerEnvelope`
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OuterEnvelope {
     pub version: Version,
 
@@ -210,11 +183,11 @@ impl OuterEnvelope {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        bincode::encode_to_vec(self, bincode::config::standard()).unwrap()
+        postcard::to_allocvec(self).expect("envelope serialization")
     }
 }
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InnerEnvelope {
     /// Sender's public identity (32 bytes)
     pub from: PublicID,
@@ -288,8 +261,7 @@ impl InnerEnvelope {
         hasher.update(&self.created_at_ms.to_le_bytes());
 
         // Content
-        let content_bytes = bincode::encode_to_vec(&self.content, bincode::config::standard())
-            .expect("content serialization");
+        let content_bytes = postcard::to_allocvec(&self.content).expect("content serialization");
         hasher.update(&content_bytes);
 
         // Truncate to 8 bytes - safe for BLAKE3 (XOF design)
@@ -315,26 +287,26 @@ impl InnerEnvelope {
     // the serialized InnerEnvelope bytes || outer_message_id.
 }
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum Content {
     Text(TextContent),
     Receipt(ReceiptContent),
 }
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextContent {
     /// UTF-8 encoded.
     pub body: String,
 }
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReceiptContent {
     pub target_message_id: MessageID,
     pub kind: ReceiptKind,
 }
 
-#[derive(Debug, Clone, Copy, Encode, Decode)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ReceiptKind {
     Delivered,
@@ -585,9 +557,8 @@ mod tests {
         };
 
         // Serialize and deserialize
-        let bytes = bincode::encode_to_vec(&inner, bincode::config::standard()).unwrap();
-        let (decoded, _): (InnerEnvelope, _) =
-            bincode::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+        let bytes = postcard::to_allocvec(&inner).unwrap();
+        let decoded: InnerEnvelope = postcard::from_bytes(&bytes).unwrap();
 
         assert_eq!(decoded.prev_self, Some(prev_id));
         assert_eq!(decoded.observed_heads, vec![observed]);

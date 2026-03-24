@@ -4,7 +4,7 @@ use chacha20poly1305::{
 };
 use rand_core::OsRng;
 use reme_identity::{is_low_order_point, PublicID};
-use reme_message::{bincode_config, InnerEnvelope, MessageID, ACK_HASH_DOMAIN};
+use reme_message::{InnerEnvelope, MessageID, ACK_HASH_DOMAIN};
 use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey, StaticSecret};
 use xeddsa::{xed25519, Sign, Verify};
 
@@ -19,9 +19,9 @@ pub enum EncryptionError {
     #[error("Invalid sender signature: message may be forged or tampered")]
     InvalidSenderSignature,
     #[error("Serialization error: {0}")]
-    SerializationError(#[from] bincode::error::EncodeError),
+    SerializationError(#[source] postcard::Error),
     #[error("Deserialization error: {0}")]
-    DeserializationError(#[from] bincode::error::DecodeError),
+    DeserializationError(#[source] postcard::Error),
 }
 
 /// Check if a shared secret is all zeros (indicates small-order input).
@@ -99,7 +99,8 @@ pub fn encrypt_to_mik(
     );
 
     // Serialize the inner envelope into a reusable buffer
-    let mut buffer = bincode::encode_to_vec(inner_envelope, bincode_config())?;
+    let mut buffer =
+        postcard::to_allocvec(inner_envelope).map_err(EncryptionError::SerializationError)?;
     let inner_bytes_len = buffer.len();
 
     // Sign: inner_bytes || outer_message_id (binding signature to outer envelope)
@@ -225,9 +226,8 @@ pub fn decrypt_with_mik(
         .try_into()
         .map_err(|_| EncryptionError::DecryptionFailed)?;
 
-    // Deserialize the inner envelope (bincode v2 decode_from_slice handles trailing bytes)
-    let (inner_envelope, _): (InnerEnvelope, _) =
-        bincode::decode_from_slice(inner_bytes, bincode_config())?;
+    let inner_envelope: InnerEnvelope =
+        postcard::from_bytes(inner_bytes).map_err(EncryptionError::DeserializationError)?;
 
     // Verify signature: inner_bytes || outer_message_id
     let mut signable = inner_bytes.to_vec();

@@ -521,7 +521,7 @@ fn parse_wire_payload(body: &Bytes) -> Result<(String, WirePayload), String> {
 
 /// Unified submit endpoint for messages and tombstones
 ///
-/// Accepts base64-encoded wire format: `[type: u8][payload: bincode bytes]`
+/// Accepts base64-encoded wire format: `[type: u8][payload: postcard bytes]`
 /// - type 0x00: Message (`OuterEnvelope`)
 /// - type 0x02: `AckTombstone` (`SignedAckTombstone`) - Tombstone V2
 ///

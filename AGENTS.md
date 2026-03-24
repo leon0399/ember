@@ -77,7 +77,7 @@ When `lan_discovery.enabled = true`, the client:
 - **Encryption**: Stateless sealed box — ephemeral X25519 + BLAKE3 KDF + ChaCha20Poly1305
 - **Signatures**: XEdDSA (X25519 key used for Ed25519-compatible signatures)
 - **No prekeys, no session state**: Zero-RTT first message, maximum DTN tolerance
-- **Serialization**: bincode v2 for wire formats
+- **Serialization**: postcard (serde) for wire formats
 
 ### Tombstones
 

@@ -6,14 +6,13 @@
 //! ## Design Decisions
 //!
 //! - **`SQLite` with WAL mode**: Enables fast writes and crash recovery
-//! - **Bincode serialization**: Compact binary format for envelopes
+//! - **Postcard serialization**: Compact binary format for envelopes
 //! - **Unix timestamps**: Portable, no `Instant` serialization issues
 //! - **Serialized access**: A `Mutex` ensures thread-safe access to the database connection
 //! - **Per-mailbox self-healing**: The `enqueue` operation performs lightweight cleanup
 //!   of expired messages for the target mailbox only, preventing unbounded growth even
 //!   if the background cleanup task is delayed.
 
-use bincode::config;
 use derivative::Derivative;
 use reme_message::{MessageID, OuterEnvelope, RoutingKey};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -249,16 +248,13 @@ impl PersistentMailboxStore {
 
     /// Serialize an `OuterEnvelope` to bytes
     fn serialize_envelope(envelope: &OuterEnvelope) -> Result<Vec<u8>, NodeError> {
-        let bincode_config = config::standard();
-        bincode::encode_to_vec(envelope, bincode_config)
-            .map_err(|e| NodeError::Serialization(e.to_string()))
+        postcard::to_allocvec(envelope).map_err(|e| NodeError::Serialization(e.to_string()))
     }
 
     /// Deserialize bytes to an `OuterEnvelope`
     fn deserialize_envelope(data: &[u8]) -> Result<OuterEnvelope, NodeError> {
-        let bincode_config = config::standard();
-        let (envelope, _): (OuterEnvelope, _) = bincode::decode_from_slice(data, bincode_config)
-            .map_err(|e| NodeError::Deserialization(e.to_string()))?;
+        let envelope: OuterEnvelope =
+            postcard::from_bytes(data).map_err(|e| NodeError::Deserialization(e.to_string()))?;
         Ok(envelope)
     }
 

@@ -17,7 +17,6 @@ derive_more = { workspace = true, features = ["display"] }
 strum = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
-bincode = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 base64 = "0.22"
 tracing = { workspace = true }

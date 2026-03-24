@@ -7,7 +7,7 @@
 //! # Wire Format
 //!
 //! ```text
-//! [type: u8][payload: bincode bytes]
+//! [type: u8][payload: postcard bytes]
 //! ```
 //!
 //! Type discriminators:
@@ -30,7 +30,7 @@ pub enum WireType {
 
 /// Unified wire payload for messages and tombstones
 ///
-/// Wire format: `[type: u8][payload: bincode bytes]`
+/// Wire format: `[type: u8][payload: postcard bytes]`
 /// - type 0x00: Message (`OuterEnvelope`)
 /// - type 0x02: `AckTombstone` (`SignedAckTombstone`)
 #[derive(Debug, Clone)]
@@ -52,15 +52,13 @@ impl WirePayload {
 
         match wire_type {
             WireType::Message => {
-                let (envelope, _): (OuterEnvelope, _) =
-                    bincode::decode_from_slice(&bytes[1..], bincode::config::standard())
-                        .map_err(|e| format!("Invalid message: {e}"))?;
+                let envelope: OuterEnvelope = postcard::from_bytes(&bytes[1..])
+                    .map_err(|e| format!("Invalid message: {e}"))?;
                 Ok(WirePayload::Message(envelope))
             }
             WireType::AckTombstone => {
-                let (tombstone, _): (SignedAckTombstone, _) =
-                    bincode::decode_from_slice(&bytes[1..], bincode::config::standard())
-                        .map_err(|e| format!("Invalid ack tombstone: {e}"))?;
+                let tombstone: SignedAckTombstone = postcard::from_bytes(&bytes[1..])
+                    .map_err(|e| format!("Invalid ack tombstone: {e}"))?;
                 Ok(WirePayload::AckTombstone(tombstone))
             }
         }
@@ -71,15 +69,12 @@ impl WirePayload {
         match self {
             WirePayload::Message(envelope) => {
                 let mut bytes = vec![WireType::Message as u8];
-                bytes
-                    .extend(bincode::encode_to_vec(envelope, bincode::config::standard()).unwrap());
+                bytes.extend(postcard::to_allocvec(envelope).unwrap());
                 bytes
             }
             WirePayload::AckTombstone(tombstone) => {
                 let mut bytes = vec![WireType::AckTombstone as u8];
-                bytes.extend(
-                    bincode::encode_to_vec(tombstone, bincode::config::standard()).unwrap(),
-                );
+                bytes.extend(postcard::to_allocvec(tombstone).unwrap());
                 bytes
             }
         }
