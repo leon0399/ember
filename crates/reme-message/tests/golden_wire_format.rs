@@ -274,7 +274,9 @@ const GOLDEN_TOMBSTONE: &[u8] = &[
 // Generator test — run with --nocapture to print golden bytes
 // ============================================
 
+/// Run with: `cargo test -p reme-message --test golden_wire_format golden_generate -- --ignored --nocapture`
 #[test]
+#[ignore = "generator helper — prints golden bytes, does not assert"]
 fn golden_generate() {
     println!("\n=== Golden byte generator (copy into constants above) ===\n");
 

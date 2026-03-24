@@ -19,9 +19,9 @@ pub enum EncryptionError {
     #[error("Invalid sender signature: message may be forged or tampered")]
     InvalidSenderSignature,
     #[error("Serialization error: {0}")]
-    SerializationError(postcard::Error),
+    SerializationError(#[source] postcard::Error),
     #[error("Deserialization error: {0}")]
-    DeserializationError(postcard::Error),
+    DeserializationError(#[source] postcard::Error),
 }
 
 /// Check if a shared secret is all zeros (indicates small-order input).
