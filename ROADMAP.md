@@ -143,7 +143,7 @@ Simplify serialization code and prepare for stable wire format.
 - [x] Replace `bincode` with `postcard` in all crates
 - [x] Convert `#[derive(Encode, Decode)]` to `#[derive(Serialize, Deserialize)]`
 - [x] Remove manual `impl Encode/Decode` blocks (use serde attributes)
-- [x] Bump wire format version to 0.1
+- [ ] Bump wire format version to 0.1 (deferred — PoC phase, no deployed clients)
 - [ ] Update WHITEPAPER.md references
 - [ ] Verify message sizes remain within LoRa MTU budget
 

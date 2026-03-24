@@ -108,9 +108,9 @@ pub struct Version {
 /// Current protocol version (0.0 - `PoC`)
 /// Using u8 for major/minor: max version 255.255, saves 2 bytes per envelope
 ///
-/// Note: `ack_hash` was added to `OuterEnvelope` in this version.
-/// No version bump needed since this is a `PoC` with no deployed clients.
-pub const CURRENT_VERSION: Version = Version { major: 0, minor: 1 };
+/// Wire format uses postcard (serde) serialization since the bincode→postcard migration.
+/// No version bump during PoC phase — breaking changes are expected and no clients are deployed.
+pub const CURRENT_VERSION: Version = Version { major: 0, minor: 0 };
 
 /// Outer envelope for MIK-only encryption (Session V1-style stateless)
 ///
