@@ -511,3 +511,142 @@ fn golden_sizes() {
     // = 93 bytes
     assert_eq!(GOLDEN_OUTER_ENVELOPE.len(), 93);
 }
+
+// ============================================
+// Compatibility scenarios
+//
+// These tests verify that field variants and edge cases
+// that a "stored" or "in-transit" message might use will
+// continue to decode correctly after code changes.
+// ============================================
+
+/// `OuterEnvelope` with `ttl_hours: None` — older clients or configs
+/// that don't set TTL should still decode.
+#[test]
+fn compat_outer_envelope_no_ttl() {
+    let outer = OuterEnvelope {
+        version: CURRENT_VERSION,
+        routing_key: RoutingKey::from(TEST_ROUTING_KEY),
+        timestamp_hours: 480_000,
+        ttl_hours: None,
+        message_id: MessageID::from_bytes(TEST_MESSAGE_ID),
+        ephemeral_key: TEST_EPHEMERAL_KEY,
+        ack_hash: TEST_ACK_HASH,
+        inner_ciphertext: vec![0xFF],
+    };
+
+    let bytes = postcard::to_allocvec(&outer).unwrap();
+    let decoded: OuterEnvelope = postcard::from_bytes(&bytes).unwrap();
+
+    assert_eq!(decoded.ttl_hours, None);
+    assert_eq!(decoded.inner_ciphertext, &[0xFF]);
+
+    // None encodes as 0x00 (1 byte) vs Some(168) as 0x01 0xA8 0x01 (3 bytes)
+    assert!(bytes.len() < GOLDEN_OUTER_ENVELOPE.len());
+}
+
+/// `ReceiptKind::Read` variant — the golden tests only cover `Delivered`.
+#[test]
+fn compat_receipt_read_variant() {
+    let inner = InnerEnvelope {
+        from: PublicID::from_bytes_unchecked(&TEST_PUBKEY),
+        created_at_ms: 1_700_000_000_000,
+        content: Content::Receipt(ReceiptContent {
+            target_message_id: MessageID::from_bytes(TEST_MESSAGE_ID),
+            kind: ReceiptKind::Read,
+        }),
+        prev_self: None,
+        observed_heads: Vec::new(),
+        epoch: 0,
+        flags: 0,
+    };
+
+    let bytes = postcard::to_allocvec(&inner).unwrap();
+    let decoded: InnerEnvelope = postcard::from_bytes(&bytes).unwrap();
+
+    match &decoded.content {
+        Content::Receipt(r) => {
+            assert!(matches!(r.kind, ReceiptKind::Read));
+            assert_eq!(*r.target_message_id.as_bytes(), TEST_MESSAGE_ID);
+        }
+        other => panic!("Expected Receipt, got {other:?}"),
+    }
+}
+
+/// Detached message (`FLAG_DETACHED`) — used on BLE/LoRa constrained transports.
+/// These have no DAG linkage but must still roundtrip.
+#[test]
+fn compat_detached_message() {
+    let inner = InnerEnvelope {
+        from: PublicID::from_bytes_unchecked(&TEST_PUBKEY),
+        created_at_ms: 1_700_000_000_000,
+        content: Content::Text(TextContent {
+            body: "ble".to_string(),
+        }),
+        prev_self: None,
+        observed_heads: Vec::new(),
+        epoch: 0,
+        flags: reme_message::FLAG_DETACHED,
+    };
+
+    let bytes = postcard::to_allocvec(&inner).unwrap();
+    let decoded: InnerEnvelope = postcard::from_bytes(&bytes).unwrap();
+
+    assert!(decoded.is_detached());
+    assert_eq!(decoded.flags, reme_message::FLAG_DETACHED);
+}
+
+/// Empty ciphertext — edge case for `OuterEnvelope` with zero-length payload.
+#[test]
+fn compat_empty_ciphertext() {
+    let outer = make_outer_envelope(&[]);
+    let bytes = postcard::to_allocvec(&outer).unwrap();
+    let decoded: OuterEnvelope = postcard::from_bytes(&bytes).unwrap();
+
+    assert!(decoded.inner_ciphertext.is_empty());
+}
+
+/// Large ciphertext — varint length encoding must handle multi-byte lengths.
+#[test]
+fn compat_large_ciphertext() {
+    let big_payload = vec![0xAB; 1024];
+    let outer = make_outer_envelope(&big_payload);
+    let bytes = postcard::to_allocvec(&outer).unwrap();
+    let decoded: OuterEnvelope = postcard::from_bytes(&bytes).unwrap();
+
+    assert_eq!(decoded.inner_ciphertext.len(), 1024);
+    assert_eq!(decoded.inner_ciphertext, big_payload);
+}
+
+/// `postcard::from_bytes` does NOT reject trailing bytes — it reads what
+/// it needs and ignores the rest. This is known postcard behavior.
+/// Wire-level framing (`WirePayload`) handles length boundaries instead.
+#[test]
+fn compat_from_bytes_ignores_trailing() {
+    let mut bytes = GOLDEN_OUTER_ENVELOPE.to_vec();
+    bytes.push(0x00); // append garbage
+
+    // postcard succeeds — it consumed only what it needed
+    let decoded: OuterEnvelope = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(*decoded.message_id.as_bytes(), TEST_MESSAGE_ID);
+}
+
+/// `WirePayload::decode` rejects unknown type discriminators.
+#[test]
+fn compat_rejects_unknown_wire_type() {
+    let mut bytes = vec![0x03]; // unknown discriminator
+    bytes.extend_from_slice(GOLDEN_TOMBSTONE);
+
+    let result = WirePayload::decode(&bytes);
+    assert!(result.is_err());
+}
+
+/// `WirePayload::decode` rejects the removed V1 tombstone type (0x01).
+#[test]
+fn compat_rejects_v1_tombstone_type() {
+    let mut bytes = vec![0x01]; // removed V1 type
+    bytes.extend_from_slice(GOLDEN_TOMBSTONE);
+
+    let result = WirePayload::decode(&bytes);
+    assert!(result.is_err());
+}
