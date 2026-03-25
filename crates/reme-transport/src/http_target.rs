@@ -457,7 +457,9 @@ impl TransportTarget for HttpTarget {
 
         // Encode as WirePayload
         let wire_payload = WirePayload::Message(envelope);
-        let wire_bytes = wire_payload.encode();
+        let wire_bytes = wire_payload
+            .encode()
+            .map_err(|e| TransportError::Serialization(e.to_string()))?;
         let payload_b64 = BASE64_STANDARD.encode(&wire_bytes);
 
         let result = self.submit_payload(&payload_b64).await;
@@ -493,7 +495,9 @@ impl TransportTarget for HttpTarget {
 
         // Encode as WirePayload
         let wire_payload = WirePayload::AckTombstone(tombstone);
-        let wire_bytes = wire_payload.encode();
+        let wire_bytes = wire_payload
+            .encode()
+            .map_err(|e| TransportError::Serialization(e.to_string()))?;
         let payload_b64 = BASE64_STANDARD.encode(&wire_bytes);
 
         let result = self.submit_payload(&payload_b64).await;
@@ -665,7 +669,7 @@ mod tests {
 
     fn encode_envelope_payload(env: &OuterEnvelope) -> String {
         let wire = WirePayload::Message(env.clone());
-        BASE64_STANDARD.encode(wire.encode())
+        BASE64_STANDARD.encode(wire.encode().unwrap())
     }
 
     #[derive(Debug, Deserialize)]

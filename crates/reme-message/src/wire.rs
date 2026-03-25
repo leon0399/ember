@@ -65,19 +65,18 @@ impl WirePayload {
     }
 
     /// Encode wire payload to bytes
-    pub fn encode(&self) -> Vec<u8> {
-        match self {
-            WirePayload::Message(envelope) => {
-                let mut bytes = vec![WireType::Message as u8];
-                bytes.extend(postcard::to_allocvec(envelope).unwrap());
-                bytes
-            }
+    pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
+        let (wire_type, payload) = match self {
+            WirePayload::Message(envelope) => (WireType::Message, postcard::to_allocvec(envelope)?),
             WirePayload::AckTombstone(tombstone) => {
-                let mut bytes = vec![WireType::AckTombstone as u8];
-                bytes.extend(postcard::to_allocvec(tombstone).unwrap());
-                bytes
+                (WireType::AckTombstone, postcard::to_allocvec(tombstone)?)
             }
-        }
+        };
+
+        let mut bytes = Vec::with_capacity(1 + payload.len());
+        bytes.push(wire_type as u8);
+        bytes.extend(payload);
+        Ok(bytes)
     }
 
     /// Get the routing key for this payload (only for Message)
@@ -129,7 +128,7 @@ mod tests {
         let tombstone = SignedAckTombstone::new(message_id, ack_secret, &priv_key);
         let payload = WirePayload::AckTombstone(tombstone.clone());
 
-        let bytes = payload.encode();
+        let bytes = payload.encode().unwrap();
         let decoded = WirePayload::decode(&bytes).unwrap();
 
         match decoded {

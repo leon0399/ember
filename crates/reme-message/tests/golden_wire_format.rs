@@ -448,7 +448,7 @@ fn golden_tombstone_decodes() {
 fn golden_wire_message_framing() {
     let outer = make_outer_envelope(&[0xDE, 0xAD, 0xBE, 0xEF]);
     let payload = WirePayload::Message(outer);
-    let wire_bytes = payload.encode();
+    let wire_bytes = payload.encode().unwrap();
 
     // First byte is the type discriminator
     assert_eq!(wire_bytes[0], WireType::Message as u8);
@@ -472,7 +472,7 @@ fn golden_wire_message_framing() {
 fn golden_wire_tombstone_framing() {
     let tombstone = make_tombstone();
     let payload = WirePayload::AckTombstone(tombstone);
-    let wire_bytes = payload.encode();
+    let wire_bytes = payload.encode().unwrap();
 
     // First byte is the type discriminator
     assert_eq!(wire_bytes[0], WireType::AckTombstone as u8);

@@ -141,7 +141,7 @@ fn create_encrypted_envelope(
 async fn submit_envelope(url: &str, envelope: OuterEnvelope) -> SubmitResponse {
     let client = reqwest::Client::new();
     let wire_payload = reme_message::WirePayload::Message(envelope);
-    let body = BASE64_STANDARD.encode(wire_payload.encode());
+    let body = BASE64_STANDARD.encode(wire_payload.encode().unwrap());
 
     let response = client
         .post(format!("{url}/api/v1/submit"))

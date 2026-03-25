@@ -655,7 +655,7 @@ mod tests {
         // Create envelope for us (with zeroed ephemeral key - no ack_secret)
         let envelope = create_test_envelope(our_routing_key);
         let wire_payload = WirePayload::Message(envelope);
-        let body = BASE64_STANDARD.encode(wire_payload.encode());
+        let body = BASE64_STANDARD.encode(wire_payload.encode().unwrap());
 
         let response = app
             .oneshot(
@@ -691,7 +691,7 @@ mod tests {
         // Create envelope for someone else
         let envelope = create_test_envelope(wrong_routing_key);
         let wire_payload = WirePayload::Message(envelope);
-        let body = BASE64_STANDARD.encode(wire_payload.encode());
+        let body = BASE64_STANDARD.encode(wire_payload.encode().unwrap());
 
         let response = app
             .oneshot(
@@ -733,7 +733,7 @@ mod tests {
             &signer.to_bytes(),
         );
         let wire_payload = WirePayload::AckTombstone(tombstone);
-        let body = BASE64_STANDARD.encode(wire_payload.encode());
+        let body = BASE64_STANDARD.encode(wire_payload.encode().unwrap());
 
         let response = app
             .oneshot(
@@ -797,7 +797,7 @@ mod tests {
         // Create envelope for us with a fixed message ID
         let envelope = create_test_envelope(our_routing_key);
         let wire_payload = WirePayload::Message(envelope);
-        let body = BASE64_STANDARD.encode(wire_payload.encode());
+        let body = BASE64_STANDARD.encode(wire_payload.encode().unwrap());
 
         // First submission should succeed
         let response1 = app
@@ -857,7 +857,7 @@ mod tests {
         let message_id = envelope.message_id;
 
         let wire_payload = WirePayload::Message(envelope);
-        let body = BASE64_STANDARD.encode(wire_payload.encode());
+        let body = BASE64_STANDARD.encode(wire_payload.encode().unwrap());
 
         // Submit message
         let response = app
@@ -955,7 +955,7 @@ mod tests {
         let envelope = create_test_envelope(our_routing_key); // Uses [0u8; 32] ephemeral key
         let message_id = envelope.message_id;
         let wire_payload = WirePayload::Message(envelope);
-        let body = BASE64_STANDARD.encode(wire_payload.encode());
+        let body = BASE64_STANDARD.encode(wire_payload.encode().unwrap());
 
         let response = app
             .oneshot(
@@ -1030,7 +1030,7 @@ mod tests {
         let sender = Identity::generate();
         let (envelope, _) = create_encrypted_envelope(&sender, &recipient_pubkey);
         let wire_payload = WirePayload::Message(envelope);
-        let body = BASE64_STANDARD.encode(wire_payload.encode());
+        let body = BASE64_STANDARD.encode(wire_payload.encode().unwrap());
 
         // First submission - should have ack_secret
         let response1 = app

@@ -175,15 +175,15 @@ impl SignedAckTombstone {
     }
 
     /// Serialize to bytes with wire type prefix (0x02)
-    pub fn to_wire_bytes(&self) -> Vec<u8> {
+    pub fn to_wire_bytes(&self) -> Result<Vec<u8>, postcard::Error> {
         let mut bytes = vec![WireType::AckTombstone as u8];
-        bytes.extend(postcard::to_allocvec(self).unwrap());
-        bytes
+        bytes.extend(postcard::to_allocvec(self)?);
+        Ok(bytes)
     }
 
     /// Serialize to bytes without wire type prefix
-    pub fn to_bytes(&self) -> Vec<u8> {
-        postcard::to_allocvec(self).unwrap()
+    pub fn to_bytes(&self) -> Result<Vec<u8>, postcard::Error> {
+        postcard::to_allocvec(self)
     }
 
     /// Deserialize from bytes (without wire type prefix)
@@ -327,7 +327,7 @@ mod tests {
 
         let original = SignedAckTombstone::new(message_id, ack_secret, &priv_key);
 
-        let bytes = original.to_wire_bytes();
+        let bytes = original.to_wire_bytes().unwrap();
         assert_eq!(bytes[0], 0x02, "Wire type should be AckTombstone (0x02)");
 
         let restored = SignedAckTombstone::from_bytes(&bytes[1..]).unwrap();
@@ -347,7 +347,7 @@ mod tests {
         let ack_secret: [u8; 16] = [0x42; 16];
 
         let tombstone = SignedAckTombstone::new(message_id, ack_secret, &priv_key);
-        let bytes = tombstone.to_bytes();
+        let bytes = tombstone.to_bytes().unwrap();
 
         // SignedAckTombstone should be 96 bytes
         assert_eq!(

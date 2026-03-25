@@ -495,7 +495,9 @@ impl Transport for HttpTransport {
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
         // Encode as WirePayload (includes type discriminator)
         let wire_payload = WirePayload::Message(envelope);
-        let wire_bytes = wire_payload.encode();
+        let wire_bytes = wire_payload
+            .encode()
+            .map_err(|e| TransportError::Serialization(e.to_string()))?;
 
         // Base64 encode
         let envelope_b64 = BASE64_STANDARD.encode(&wire_bytes);
@@ -547,7 +549,9 @@ impl Transport for HttpTransport {
     ) -> Result<(), TransportError> {
         // Encode as WirePayload (includes type discriminator)
         let wire_payload = WirePayload::AckTombstone(tombstone);
-        let wire_bytes = wire_payload.encode();
+        let wire_bytes = wire_payload
+            .encode()
+            .map_err(|e| TransportError::Serialization(e.to_string()))?;
 
         // Base64 encode
         let tombstone_b64 = BASE64_STANDARD.encode(&wire_bytes);
@@ -1059,7 +1063,7 @@ mod tests {
     /// Encode an envelope as a base64 wire payload string (for mock server responses).
     fn encode_envelope_payload(env: &OuterEnvelope) -> String {
         let wire = WirePayload::Message(env.clone());
-        BASE64_STANDARD.encode(wire.encode())
+        BASE64_STANDARD.encode(wire.encode().unwrap())
     }
 
     #[derive(Serialize)]
