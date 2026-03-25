@@ -66,18 +66,17 @@ impl WirePayload {
 
     /// Encode wire payload to bytes
     pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
-        match self {
-            WirePayload::Message(envelope) => {
-                let mut bytes = vec![WireType::Message as u8];
-                bytes.extend(postcard::to_allocvec(envelope)?);
-                Ok(bytes)
-            }
+        let (wire_type, payload) = match self {
+            WirePayload::Message(envelope) => (WireType::Message, postcard::to_allocvec(envelope)?),
             WirePayload::AckTombstone(tombstone) => {
-                let mut bytes = vec![WireType::AckTombstone as u8];
-                bytes.extend(postcard::to_allocvec(tombstone)?);
-                Ok(bytes)
+                (WireType::AckTombstone, postcard::to_allocvec(tombstone)?)
             }
-        }
+        };
+
+        let mut bytes = Vec::with_capacity(1 + payload.len());
+        bytes.push(wire_type as u8);
+        bytes.extend(payload);
+        Ok(bytes)
     }
 
     /// Get the routing key for this payload (only for Message)

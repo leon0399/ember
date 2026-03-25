@@ -367,8 +367,11 @@ fn build_fetch_response(page: FetchPage) -> Result<FetchResponse, String> {
     for (index, entry) in page.entries.into_iter().enumerate() {
         let previous_cursor = next_cursor.clone();
         let wire_payload = WirePayload::Message(entry.envelope);
-        let encoded =
-            BASE64_STANDARD.encode(wire_payload.encode().map_err(|e| format!("encode: {e}"))?);
+        let encoded = BASE64_STANDARD.encode(
+            wire_payload
+                .encode()
+                .map_err(|e| format!("Failed to encode wire payload: {e}"))?,
+        );
         payloads.push(encoded);
         next_cursor = Some(entry.row_id.to_string());
         let candidate_has_more = page.has_more || index + 1 < total_entries;
