@@ -6,6 +6,10 @@ on:
     paths:
       - '.github/workflows/fuzz.yml'
       - 'fuzz/**'
+  pull_request:
+    paths:
+      - '.github/workflows/fuzz.yml'
+      - 'fuzz/**'
   schedule:
     - cron: '42 3 * * 1'
 
