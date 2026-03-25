@@ -402,7 +402,9 @@ impl Transport for MqttTransport {
 
         let topic = self.topic_for_routing_key(&envelope.routing_key);
         let wire = WirePayload::Message(envelope.clone());
-        let bytes = wire.encode();
+        let bytes = wire
+            .encode()
+            .map_err(|e| TransportError::Serialization(e.to_string()))?;
 
         // Attempt to publish
         let result = self.publish_to_all(&topic, &bytes).await;
@@ -424,7 +426,9 @@ impl Transport for MqttTransport {
         // Since AckTombstone doesn't have routing_key, we use a broadcast topic
         let topic = format!("{}/ack-tombstones", self.topic_prefix);
         let wire = WirePayload::AckTombstone(tombstone);
-        let bytes = wire.encode();
+        let bytes = wire
+            .encode()
+            .map_err(|e| TransportError::Serialization(e.to_string()))?;
 
         self.publish_to_all(&topic, &bytes).await
     }

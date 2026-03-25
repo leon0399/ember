@@ -182,8 +182,8 @@ impl OuterEnvelope {
         }
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
-        postcard::to_allocvec(self).expect("envelope serialization")
+    pub fn to_bytes(&self) -> Result<Vec<u8>, postcard::Error> {
+        postcard::to_allocvec(self)
     }
 }
 

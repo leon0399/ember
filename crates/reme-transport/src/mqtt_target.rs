@@ -281,7 +281,9 @@ impl TransportTarget for MqttTarget {
 
         let topic = self.topic_for_routing_key(&envelope.routing_key);
         let wire = WirePayload::Message(envelope);
-        let bytes = wire.encode();
+        let bytes = wire
+            .encode()
+            .map_err(|e| TransportError::Serialization(e.to_string()))?;
 
         let result = self.publish(&topic, &bytes).await;
 
@@ -313,7 +315,9 @@ impl TransportTarget for MqttTarget {
         // Ack tombstones go to a broadcast topic
         let topic = format!("{}/ack-tombstones", self.topic_prefix());
         let wire = WirePayload::AckTombstone(tombstone);
-        let bytes = wire.encode();
+        let bytes = wire
+            .encode()
+            .map_err(|e| TransportError::Serialization(e.to_string()))?;
 
         let result = self.publish(&topic, &bytes).await;
 
