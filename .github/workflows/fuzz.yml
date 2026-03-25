@@ -3,6 +3,9 @@ name: Fuzz
 on:
   push:
     branches: [master]
+    paths:
+      - '.github/workflows/fuzz.yml'
+      - 'fuzz/**'
   schedule:
     - cron: '42 3 * * 1'
 
