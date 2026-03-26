@@ -717,19 +717,37 @@ impl MailboxStore for PersistentMailboxStore {
 
     fn cleanup_expired(&self) -> Result<usize, NodeError> {
         let now = now_secs();
+        let now_i64 = timestamp_to_i64(now);
 
         let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
 
         let deleted = conn.execute(
             "DELETE FROM mailbox_messages WHERE expires_at <= ?",
-            params![timestamp_to_i64(now)],
+            params![now_i64],
         )?;
 
         if deleted > 0 {
             debug!(deleted = deleted, "expired messages cleaned up");
         }
 
-        Ok(deleted)
+        // Clean up expired quarantined rows.
+        // Rows with original_expires_at use that value.
+        // Rows with NULL original_expires_at use quarantined_at + default_ttl as fallback.
+        let fallback_ttl = timestamp_to_i64(self.config.default_ttl_secs);
+        let quarantine_deleted = conn.execute(
+            "DELETE FROM quarantined_messages
+             WHERE COALESCE(original_expires_at, quarantined_at + ?) <= ?",
+            params![fallback_ttl, now_i64],
+        )?;
+
+        if quarantine_deleted > 0 {
+            debug!(
+                deleted = quarantine_deleted,
+                "expired quarantined rows cleaned up"
+            );
+        }
+
+        Ok(deleted + quarantine_deleted)
     }
 }
 
@@ -1311,5 +1329,40 @@ mod tests {
 
         let stats = store.stats().unwrap();
         assert_eq!(stats.quarantined_messages, 0);
+    }
+
+    #[test]
+    fn test_cleanup_removes_expired_quarantined_rows() {
+        let config = PersistentStoreConfig::default();
+        let store = PersistentMailboxStore::in_memory(config).unwrap();
+
+        // Insert a quarantined row with an already-expired timestamp
+        let past = timestamp_to_i64(now_secs().saturating_sub(3600));
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO quarantined_messages
+                 (original_id, routing_key, message_id, envelope_data, error,
+                  quarantined_at, original_expires_at, original_created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    1i64,
+                    &[1u8; 16][..],
+                    &[2u8; 16][..],
+                    &[0xFFu8][..],
+                    "test error",
+                    past,
+                    past,
+                    past,
+                ],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(store.stats().unwrap().quarantined_messages, 1);
+
+        store.cleanup_expired().unwrap();
+
+        assert_eq!(store.stats().unwrap().quarantined_messages, 0);
     }
 }
