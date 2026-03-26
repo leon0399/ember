@@ -15,7 +15,7 @@ use reme_transport::registry::TransportRegistry;
 use reme_transport::target::TargetId;
 use serde::Deserialize;
 use tokio::sync::{broadcast, mpsc};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -198,6 +198,70 @@ pub fn spawn(config: SpawnConfig) -> JoinHandle<()> {
     })
 }
 
+/// Perform identity challenge-response verification against a single peer.
+///
+/// Takes owned arguments so it can be used in spawned tasks.
+// FIXME(SEC-3): channel binding not implemented — responder IP:port not in signed data
+async fn verify_identity(
+    http_client: reqwest::Client,
+    base_url: String,
+    candidates: Vec<PublicID>,
+) -> Result<Option<PublicID>, reqwest::Error> {
+    let challenge: [u8; 32] = rand::random();
+    let challenge_b64 = BASE64_STANDARD.encode(challenge);
+    let challenge_encoded = percent_encode(challenge_b64.as_bytes(), NON_ALPHANUMERIC);
+
+    let url = format!(
+        "{}/api/v1/identity?challenge={}",
+        base_url.trim_end_matches('/'),
+        challenge_encoded
+    );
+
+    let mut resp = http_client.get(&url).send().await?;
+
+    if !resp.status().is_success() {
+        debug!(status = %resp.status(), "Identity challenge returned non-success");
+        return Ok(None);
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    let max = MAX_IDENTITY_RESPONSE_BYTES as usize;
+    let mut buf = Vec::with_capacity(max);
+    while let Some(chunk) = resp.chunk().await? {
+        if buf.len() + chunk.len() > max {
+            debug!(
+                size = buf.len() + chunk.len(),
+                "Identity response too large, skipping"
+            );
+            return Ok(None);
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    let Ok(body) = serde_json::from_slice::<IdentityResponse>(&buf) else {
+        debug!("Failed to parse identity response");
+        return Ok(None);
+    };
+
+    let Ok(sig_bytes) = BASE64_STANDARD.decode(&body.signature) else {
+        debug!("Failed to base64-decode identity signature");
+        return Ok(None);
+    };
+    let Ok(signature): Result<[u8; 64], _> = sig_bytes.try_into() else {
+        debug!("Identity signature has wrong length (expected 64 bytes)");
+        return Ok(None);
+    };
+
+    let mut matched: Option<PublicID> = None;
+    for candidate in &candidates {
+        let sign_data = build_identity_sign_data(&challenge, &candidate.to_bytes());
+        if candidate.verify_xeddsa(&sign_data, &signature) && matched.is_none() {
+            matched = Some(*candidate);
+        }
+    }
+
+    Ok(matched)
+}
+
 impl DiscoveryController {
     fn new(
         contacts: Vec<(PublicID, [u8; 16])>,
@@ -230,12 +294,11 @@ impl DiscoveryController {
         })
     }
 
-    /// Periodic refresh: re-verify every tracked peer. On failure, increment
-    /// the failure counter; at [`FAILURE_THRESHOLD`] consecutive failures,
-    /// remove the peer entirely (ephemeral circuit breaker). On success, reset
-    /// the counter.
+    /// Periodic refresh: re-verify every tracked peer concurrently using
+    /// [`JoinSet`]. On failure, increment the failure counter; at
+    /// [`FAILURE_THRESHOLD`] consecutive failures, remove the peer entirely
+    /// (ephemeral circuit breaker). On success, reset the counter.
     async fn refresh_all_peers(&mut self, coordinator: &TransportCoordinator) {
-        // Collect peer data first to avoid borrowing issues.
         let peers: Vec<(String, String, PublicID)> = self
             .peer_index
             .iter()
@@ -248,31 +311,39 @@ impl DiscoveryController {
 
         debug!(count = peers.len(), "Starting periodic peer refresh");
 
+        let mut set = JoinSet::new();
+        for (name, url, identity) in peers {
+            let client = self.http_client.clone();
+            set.spawn(async move { (name, verify_identity(client, url, vec![identity]).await) });
+        }
+
         let mut to_remove = Vec::new();
 
-        for (name, url, identity) in &peers {
-            let candidates = std::slice::from_ref(identity);
-            let ok = match self.verify_peer_identity(url, candidates).await {
-                Ok(Some(_)) => true,
-                Ok(None) | Err(_) => false,
-            };
-
-            if ok {
-                if let Some(entry) = self.peer_index.get_mut(name) {
-                    if entry.failure_count > 0 {
-                        debug!(instance = %name, "Peer refresh succeeded, resetting failure count");
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok((name, Ok(Some(_)))) => {
+                    if let Some(entry) = self.peer_index.get_mut(&name) {
+                        if entry.failure_count > 0 {
+                            debug!(instance = %name, "Peer refresh succeeded, resetting failure count");
+                        }
+                        entry.failure_count = 0;
                     }
-                    entry.failure_count = 0;
                 }
-            } else if let Some(entry) = self.peer_index.get_mut(name) {
-                entry.failure_count += 1;
-                debug!(
-                    instance = %name,
-                    failures = entry.failure_count,
-                    "Peer refresh verification failed"
-                );
-                if entry.failure_count >= FAILURE_THRESHOLD {
-                    to_remove.push(name.clone());
+                Ok((name, Ok(None) | Err(_))) => {
+                    if let Some(entry) = self.peer_index.get_mut(&name) {
+                        entry.failure_count += 1;
+                        debug!(
+                            instance = %name,
+                            failures = entry.failure_count,
+                            "Peer refresh verification failed"
+                        );
+                        if entry.failure_count >= FAILURE_THRESHOLD {
+                            to_remove.push(name);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Peer refresh task panicked: {e}");
                 }
             }
         }
@@ -621,71 +692,17 @@ impl DiscoveryController {
         matched
     }
 
-    // FIXME(SEC-3): channel binding not implemented — responder IP:port not in signed data
     async fn verify_peer_identity(
         &self,
         base_url: &str,
         candidates: &[PublicID],
     ) -> Result<Option<PublicID>, reqwest::Error> {
-        let challenge: [u8; 32] = rand::random();
-        let challenge_b64 = BASE64_STANDARD.encode(challenge);
-        let challenge_encoded = percent_encode(challenge_b64.as_bytes(), NON_ALPHANUMERIC);
-
-        let url = format!(
-            "{}/api/v1/identity?challenge={}",
-            base_url.trim_end_matches('/'),
-            challenge_encoded
-        );
-
-        let mut resp = self.http_client.get(&url).send().await?;
-
-        if !resp.status().is_success() {
-            debug!(status = %resp.status(), "Identity challenge returned non-success");
-            return Ok(None);
-        }
-
-        // Guard against oversized responses from malicious peers.
-        // Stream the body incrementally so we never allocate more than the cap.
-        // A malicious peer omitting Content-Length cannot force unbounded allocation.
-        // Safe: MAX_IDENTITY_RESPONSE_BYTES is 4096, well within usize on any target.
-        #[allow(clippy::cast_possible_truncation)]
-        let max = MAX_IDENTITY_RESPONSE_BYTES as usize;
-        let mut buf = Vec::with_capacity(max);
-        while let Some(chunk) = resp.chunk().await? {
-            if buf.len() + chunk.len() > max {
-                debug!(
-                    size = buf.len() + chunk.len(),
-                    "Identity response too large, skipping"
-                );
-                return Ok(None);
-            }
-            buf.extend_from_slice(&chunk);
-        }
-        let Ok(body) = serde_json::from_slice::<IdentityResponse>(&buf) else {
-            debug!("Failed to parse identity response");
-            return Ok(None);
-        };
-
-        let Ok(sig_bytes) = BASE64_STANDARD.decode(&body.signature) else {
-            debug!("Failed to base64-decode identity signature");
-            return Ok(None);
-        };
-        let Ok(signature): Result<[u8; 64], _> = sig_bytes.try_into() else {
-            debug!("Identity signature has wrong length (expected 64 bytes)");
-            return Ok(None);
-        };
-
-        // Iterate ALL candidates to prevent timing-based information leakage
-        // about which identity was matched or how many candidates exist.
-        let mut matched: Option<PublicID> = None;
-        for candidate in candidates {
-            let sign_data = build_identity_sign_data(&challenge, &candidate.to_bytes());
-            if candidate.verify_xeddsa(&sign_data, &signature) && matched.is_none() {
-                matched = Some(*candidate);
-            }
-        }
-
-        Ok(matched)
+        verify_identity(
+            self.http_client.clone(),
+            base_url.to_owned(),
+            candidates.to_vec(),
+        )
+        .await
     }
 }
 
