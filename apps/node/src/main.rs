@@ -60,6 +60,8 @@ use reme_node_core::{PersistentMailboxStore, PersistentStoreConfig};
 use replication::ReplicationClient;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
@@ -101,6 +103,38 @@ fn parse_log_level(level: &str) -> Level {
         "error" => Level::ERROR,
         _ => Level::INFO, // Default to INFO for unrecognized levels
     }
+}
+
+/// Wait for SIGINT or SIGTERM, then cancel the shared token.
+async fn shutdown_signal(cancel: CancellationToken) {
+    let signal_name = wait_for_signal().await;
+    info!("Received {signal_name}, shutting down...");
+    cancel.cancel();
+}
+
+/// Block until an OS termination signal arrives and return its name.
+#[cfg(unix)]
+async fn wait_for_signal() -> &'static str {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut sigterm = signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => {
+            result.expect("failed to listen for SIGINT");
+            "SIGINT"
+        }
+        _ = sigterm.recv() => "SIGTERM",
+    }
+}
+
+/// Block until an OS termination signal arrives and return its name.
+#[cfg(not(unix))]
+async fn wait_for_signal() -> &'static str {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to listen for Ctrl+C");
+    "Ctrl+C"
 }
 
 #[tokio::main]
@@ -235,11 +269,18 @@ async fn main() {
     // Log cleanup configuration
     config.cleanup.log_config();
 
+    // Create shared shutdown token
+    let cancel = CancellationToken::new();
+
+    // Spawn shutdown signal handler
+    tokio::spawn(shutdown_signal(cancel.clone()));
+
     // Spawn cleanup task
     let cleanup_store = Arc::clone(&store);
     let cleanup_config = config.cleanup.clone();
+    let cleanup_cancel = cancel.clone();
     tokio::spawn(async move {
-        run_cleanup_task(cleanup_store, cleanup_config).await;
+        run_cleanup_task(cleanup_store, cleanup_config, cleanup_cancel).await;
     });
 
     // Build auth credentials if both username and password are provided
@@ -310,7 +351,7 @@ async fn main() {
     });
 
     // Create router with rate limiting
-    let app = api::router(state, rate_limiters.as_ref());
+    let app = api::router(state.clone(), rate_limiters.as_ref());
 
     // Start server with connect info for IP extraction
     if config.tls.enabled {
@@ -347,7 +388,18 @@ async fn main() {
 
         info!("Node listening on https://{}", addr);
 
+        let handle = axum_server::Handle::new();
+
+        // Spawn task to trigger graceful shutdown on cancel
+        let tls_handle = handle.clone();
+        let tls_cancel = cancel.clone();
+        tokio::spawn(async move {
+            tls_cancel.cancelled().await;
+            tls_handle.graceful_shutdown(Some(Duration::from_secs(10)));
+        });
+
         if let Err(e) = axum_server::bind_rustls(addr, rustls_config)
+            .handle(handle)
             .serve(app.into_make_service_with_connect_info::<SocketAddr>())
             .await
         {
@@ -380,10 +432,18 @@ async fn main() {
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
+        .with_graceful_shutdown(cancel.cancelled_owned())
         .await
         {
             error!("Server failed: {}", e);
             std::process::exit(1);
         }
     }
+
+    // Post-shutdown finalization
+    info!("HTTP server stopped, running final cleanup...");
+    if let Err(e) = state.store.checkpoint() {
+        warn!("Final WAL checkpoint failed: {}", e);
+    }
+    info!("Node shut down cleanly");
 }
