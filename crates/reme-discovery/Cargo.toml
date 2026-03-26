@@ -7,7 +7,7 @@ edition = "2021"
 workspace = true
 
 [features]
-mdns-sd = ["dep:mdns-sd", "dep:hostname"]
+mdns-sd = ["dep:mdns-sd"]
 test-utils = []
 
 [dependencies]
@@ -16,7 +16,6 @@ tokio = { workspace = true, features = ["sync"] }
 thiserror = { workspace = true }
 hex = { workspace = true }
 tracing = { workspace = true }
-hostname = { version = "0.4", optional = true }
 mdns-sd = { version = "0.18", optional = true }
 
 [dev-dependencies]

@@ -146,7 +146,7 @@ mod tests {
     #[tokio::test]
     async fn advertising_state_machine() {
         let backend = FakeDiscoveryBackend::new();
-        let spec = AdvertisementSpec::new(8443);
+        let spec = AdvertisementSpec::new(8443, [0xAA; 16]);
 
         // Cannot stop before starting.
         assert_eq!(
@@ -188,7 +188,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_stops_advertising() {
         let backend = FakeDiscoveryBackend::new();
-        let spec = AdvertisementSpec::new(8443);
+        let spec = AdvertisementSpec::new(8443, [0xBB; 16]);
 
         backend.start_advertising(spec).await.unwrap();
         backend.shutdown().await.unwrap();

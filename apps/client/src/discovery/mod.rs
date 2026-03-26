@@ -120,7 +120,7 @@ pub async fn initialize(
         let txt = reme_discovery::encode_txt(&our_rk, port);
         let spec = reme_discovery::AdvertisementSpec {
             txt_records: txt,
-            ..reme_discovery::AdvertisementSpec::new(port)
+            ..reme_discovery::AdvertisementSpec::new(port, our_rk)
         };
 
         if let Err(e) = backend.start_advertising(spec).await {

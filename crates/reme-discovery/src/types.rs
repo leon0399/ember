@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Instant;
 
+use crate::txt::RoutingKey;
+
 /// A peer discovered via mDNS/DNS-SD or another discovery backend.
 #[derive(Debug, Clone)]
 pub struct RawDiscoveredPeer {
@@ -41,6 +43,11 @@ pub struct AdvertisementSpec {
     pub port: u16,
     /// TXT record key-value pairs to publish alongside the service.
     pub txt_records: HashMap<String, String>,
+    /// The 16-byte routing key identifying this node.
+    ///
+    /// Used by the mDNS backend to derive a privacy-preserving instance name
+    /// and host FQDN instead of leaking the machine hostname.
+    pub routing_key: RoutingKey,
 }
 
 /// Default service type for reme mDNS advertisements.
@@ -54,12 +61,13 @@ pub const DEFAULT_SERVICE_TYPE: &str = "_reme._tcp.local.";
 pub(crate) const DISCOVERY_CHANNEL_CAPACITY: usize = 128;
 
 impl AdvertisementSpec {
-    /// Create a new advertisement spec with the given port and default service type.
-    pub fn new(port: u16) -> Self {
+    /// Create a new advertisement spec with the given port, routing key, and default service type.
+    pub fn new(port: u16, routing_key: RoutingKey) -> Self {
         Self {
             service_type: DEFAULT_SERVICE_TYPE.to_owned(),
             port,
             txt_records: HashMap::new(),
+            routing_key,
         }
     }
 }

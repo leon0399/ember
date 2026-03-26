@@ -143,8 +143,8 @@ impl MdnsSdBackend {
 impl DiscoveryBackend for MdnsSdBackend {
     async fn start_advertising(&self, spec: AdvertisementSpec) -> Result<(), DiscoveryError> {
         // M1: Hold the lock through the entire operation to avoid TOCTOU.
-        // The work below (hostname lookup, ServiceInfo::new, daemon.register)
-        // is fast in-process work, not blocking I/O.
+        // The work below (ServiceInfo::new, daemon.register) is fast
+        // in-process work, not blocking I/O.
         let mut state = self
             .state
             .lock()
@@ -153,20 +153,15 @@ impl DiscoveryBackend for MdnsSdBackend {
             return Err(DiscoveryError::AlreadyAdvertising);
         }
 
-        let hostname = hostname::get()
-            .ok()
-            .and_then(|h| h.into_string().ok())
-            .unwrap_or_else(|| "reme-node".to_owned());
-
-        let instance_name = format!("{hostname}-{}", std::process::id());
+        let rk_hex = hex::encode(spec.routing_key);
+        let instance_name = format!("reme-{rk_hex}");
+        let host_fqdn = format!("reme-{rk_hex}.local.");
 
         let properties: Vec<(&str, &str)> = spec
             .txt_records
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
-
-        let host_fqdn = format!("{hostname}.local.");
         let service_info = mdns_sd::ServiceInfo::new(
             &spec.service_type,
             &instance_name,
@@ -347,7 +342,7 @@ mod tests {
             eprintln!("skipping: mDNS daemon unavailable");
             return;
         };
-        let spec = AdvertisementSpec::new(19876);
+        let spec = AdvertisementSpec::new(19876, [0xCC; 16]);
 
         // start → stop → start should succeed without state confusion.
         backend.start_advertising(spec.clone()).await.unwrap();
@@ -377,7 +372,7 @@ mod tests {
         let backend = Arc::new(backend);
 
         for _ in 0..20 {
-            let spec = AdvertisementSpec::new(19877);
+            let spec = AdvertisementSpec::new(19877, [0xDD; 16]);
 
             // Ensure we start from a known state.
             let _ = backend.stop_advertising().await;
