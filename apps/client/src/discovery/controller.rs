@@ -200,7 +200,7 @@ pub fn spawn(config: SpawnConfig) -> JoinHandle<()> {
 
 /// Perform identity challenge-response verification against a single peer.
 ///
-/// Standalone version that owns all data, suitable for use in spawned tasks.
+/// Takes owned arguments so it can be used in spawned tasks.
 // FIXME(SEC-3): channel binding not implemented — responder IP:port not in signed data
 async fn verify_identity(
     http_client: reqwest::Client,
@@ -314,10 +314,7 @@ impl DiscoveryController {
         let mut set = JoinSet::new();
         for (name, url, identity) in peers {
             let client = self.http_client.clone();
-            set.spawn(async move {
-                let result = verify_identity(client, url, vec![identity]).await;
-                (name, result)
-            });
+            set.spawn(async move { (name, verify_identity(client, url, vec![identity]).await) });
         }
 
         let mut to_remove = Vec::new();
