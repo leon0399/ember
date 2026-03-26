@@ -12,6 +12,7 @@ use reme_node_core::{MailboxStore, PersistentMailboxStore};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 /// 5 minutes - default cleanup interval
@@ -92,17 +93,23 @@ impl CleanupConfig {
 
 /// Run the background cleanup task
 ///
-/// This function runs indefinitely, periodically cleaning up expired data.
-/// It should be spawned as a background task using `tokio::spawn`.
+/// Periodically cleans up expired data until `cancel` is triggered.
+/// Should be spawned as a background task using `tokio::spawn`.
 ///
 /// # Example
 ///
 /// ```ignore
 /// let store = Arc::new(PersistentMailboxStore::open("mailbox.db", config)?);
 /// let config = CleanupConfig::default();
-/// tokio::spawn(run_cleanup_task(store, config));
+/// let cancel = CancellationToken::new();
+/// tokio::spawn(run_cleanup_task(store, config, cancel.clone()));
+/// // later: cancel.cancel();
 /// ```
-pub async fn run_cleanup_task(store: Arc<PersistentMailboxStore>, config: CleanupConfig) {
+pub async fn run_cleanup_task(
+    store: Arc<PersistentMailboxStore>,
+    config: CleanupConfig,
+    cancel: CancellationToken,
+) {
     if !config.enabled {
         info!("Cleanup task disabled, exiting");
         return;
@@ -115,7 +122,13 @@ pub async fn run_cleanup_task(store: Arc<PersistentMailboxStore>, config: Cleanu
     );
 
     loop {
-        tokio::time::sleep(interval).await;
+        tokio::select! {
+            () = tokio::time::sleep(interval) => {}
+            () = cancel.cancelled() => {
+                info!("Cleanup task received shutdown signal");
+                break;
+            }
+        }
 
         // Cleanup expired messages
         match store.cleanup_expired() {
@@ -129,6 +142,8 @@ pub async fn run_cleanup_task(store: Arc<PersistentMailboxStore>, config: Cleanu
             warn!("WAL checkpoint failed: {}", e);
         }
     }
+
+    info!("Cleanup task shut down");
 }
 
 #[cfg(test)]
@@ -143,6 +158,43 @@ mod tests {
         assert_eq!(config.tombstone_delay_secs, 3600);
         assert_eq!(config.orphan_delay_secs, 86400);
         assert_eq!(config.rate_limit_delay_secs, 3600);
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_task_stops_on_cancel() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let store_config = reme_node_core::PersistentStoreConfig {
+            max_messages_per_mailbox: 100,
+            default_ttl_secs: 3600,
+        };
+        let store = Arc::new(
+            reme_node_core::PersistentMailboxStore::open(db_path.to_str().unwrap(), store_config)
+                .unwrap(),
+        );
+
+        let config = CleanupConfig {
+            enabled: true,
+            interval_secs: 3600, // 1 hour — task must NOT wait this long
+            ..CleanupConfig::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        let handle = tokio::spawn(async move {
+            run_cleanup_task(store, config, cancel_clone).await;
+        });
+
+        // Cancel immediately
+        cancel.cancel();
+
+        // Task should exit within 1 second, not wait for the 3600s interval
+        let result = tokio::time::timeout(Duration::from_secs(1), handle).await;
+        assert!(
+            result.is_ok(),
+            "cleanup task did not stop promptly on cancel"
+        );
     }
 
     #[test]
