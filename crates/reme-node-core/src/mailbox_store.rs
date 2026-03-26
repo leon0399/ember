@@ -298,10 +298,11 @@ impl PersistentMailboxStore {
 
         let now = timestamp_to_i64(now_secs());
 
-        conn.execute_batch("BEGIN")?;
+        // unchecked_transaction takes &self (not &mut) and auto-rollbacks on drop
+        let tx = conn.unchecked_transaction()?;
 
         for row in rows {
-            let result = conn.execute(
+            let result = tx.execute(
                 "INSERT INTO quarantined_messages
                  (original_id, routing_key, message_id, envelope_data, error,
                   quarantined_at, original_expires_at, original_created_at)
@@ -327,10 +328,10 @@ impl PersistentMailboxStore {
                 );
             }
 
-            conn.execute("DELETE FROM mailbox_messages WHERE id = ?", params![row.id])?;
+            tx.execute("DELETE FROM mailbox_messages WHERE id = ?", params![row.id])?;
         }
 
-        conn.execute_batch("COMMIT")?;
+        tx.commit()?;
 
         Ok(())
     }
@@ -405,11 +406,16 @@ impl PersistentMailboxStore {
             Ok(envelope) => Ok(Some(envelope)),
             Err(e) => {
                 warn!(message_id = ?message_id, error = %e, "corrupt message found, quarantining");
-                let routing_key = RoutingKey::from_bytes(
-                    routing_key_bytes
-                        .try_into()
-                        .expect("routing_key column is always 16 bytes per schema"),
-                );
+                let routing_key: [u8; 16] = if let Ok(bytes) = routing_key_bytes.try_into() {
+                    bytes
+                } else {
+                    warn!(
+                        message_id = ?message_id,
+                        "routing_key has unexpected length, using zeroed key for quarantine"
+                    );
+                    [0u8; 16]
+                };
+                let routing_key = RoutingKey::from_bytes(routing_key);
                 let corrupt = CorruptRow {
                     id,
                     message_id: Some(message_id_bytes.to_vec()),
