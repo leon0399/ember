@@ -308,7 +308,16 @@ impl DiscoveryController {
         };
 
         let Some(candidates) = self.contact_index.get(&routing_key) else {
-            if self.stranger_cache.len() < self.max_peers {
+            // Allow updates for already-cached peers (refreshes address/TXT),
+            // only enforce cap for new inserts.
+            if self.stranger_cache.contains_key(&peer.instance_name) {
+                debug!(
+                    instance = %peer.instance_name,
+                    "Updating cached stranger (routing key not in contacts)"
+                );
+                self.stranger_cache
+                    .insert(peer.instance_name.clone(), (peer, routing_key));
+            } else if self.stranger_cache.len() < self.max_peers {
                 debug!(
                     instance = %peer.instance_name,
                     "Caching stranger (routing key not in contacts)"
@@ -600,18 +609,16 @@ impl DiscoveryController {
 
     /// Remove and return all cached strangers whose routing key matches `target_rk`.
     fn drain_matching_strangers(&mut self, target_rk: &[u8; 16]) -> Vec<RawDiscoveredPeer> {
-        let matching_keys: Vec<String> = self
-            .stranger_cache
-            .iter()
-            .filter(|(_, (_, rk))| rk == target_rk)
-            .map(|(name, _)| name.clone())
-            .collect();
-
-        matching_keys
-            .into_iter()
-            .filter_map(|name| self.stranger_cache.remove(&name))
-            .map(|(peer, _)| peer)
-            .collect()
+        let mut matched = Vec::new();
+        self.stranger_cache.retain(|_, (peer, rk)| {
+            if rk == target_rk {
+                matched.push(peer.clone());
+                false
+            } else {
+                true
+            }
+        });
+        matched
     }
 
     // FIXME(SEC-3): channel binding not implemented — responder IP:port not in signed data
@@ -913,6 +920,36 @@ mod tests {
         }
 
         assert_eq!(controller.stranger_cache.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn stranger_cache_allows_updates_when_full() {
+        let mut controller = DiscoveryController::new(vec![], 2, test_registry()).unwrap();
+        let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
+
+        // Fill cache to capacity.
+        let rk_a = [0xAAu8; 16];
+        let rk_b = [0xBBu8; 16];
+        let peer_a = make_stranger_peer("stranger-a", &rk_a);
+        let peer_b = make_stranger_peer("stranger-b", &rk_b);
+        controller.handle_discovered(peer_a, &coordinator).await;
+        controller.handle_discovered(peer_b, &coordinator).await;
+        assert_eq!(controller.stranger_cache.len(), 2);
+
+        // Update existing entry with new address — should succeed despite full cache.
+        let updated = RawDiscoveredPeer {
+            instance_name: "stranger-a".to_string(),
+            addresses: vec!["192.168.1.99".parse().unwrap()],
+            port: 9999,
+            txt_records: reme_discovery::encode_txt(&rk_a, 9999),
+            discovered_at: Instant::now(),
+        };
+        controller.handle_discovered(updated, &coordinator).await;
+        assert_eq!(controller.stranger_cache.len(), 2);
+
+        // Verify the cached entry was updated (new port in TXT).
+        let (cached_peer, _) = &controller.stranger_cache["stranger-a"];
+        assert_eq!(cached_peer.port, 9999);
     }
 
     #[test]
