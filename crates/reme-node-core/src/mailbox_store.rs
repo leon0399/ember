@@ -148,6 +148,16 @@ pub struct PersistentStoreStats {
     pub quarantined_messages: usize,
 }
 
+/// Metadata needed to quarantine a corrupt row from mailbox_messages.
+struct CorruptRow {
+    id: i64,
+    message_id: Option<Vec<u8>>,
+    envelope_data: Vec<u8>,
+    error: String,
+    expires_at: i64,
+    created_at: i64,
+}
+
 /// Persistent mailbox store backed by `SQLite`
 pub struct PersistentMailboxStore {
     conn: Mutex<Connection>,
@@ -286,6 +296,58 @@ impl PersistentMailboxStore {
             let params: Vec<&dyn rusqlite::ToSql> =
                 chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
             stmt.execute(params.as_slice())?;
+        }
+
+        Ok(())
+    }
+
+    /// Move corrupt rows to the quarantine table and delete from mailbox_messages.
+    ///
+    /// If the quarantine INSERT fails, falls back to deleting the row (pre-quarantine
+    /// behavior) and logs at error level.
+    fn quarantine_rows(
+        conn: &Connection,
+        routing_key: &RoutingKey,
+        rows: &[CorruptRow],
+    ) -> Result<(), NodeError> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        let now = timestamp_to_i64(now_secs());
+
+        for row in rows {
+            let result = conn.execute(
+                "INSERT INTO quarantined_messages
+                 (original_id, routing_key, message_id, envelope_data, error,
+                  quarantined_at, original_expires_at, original_created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    row.id,
+                    &routing_key[..],
+                    row.message_id.as_deref(),
+                    &row.envelope_data,
+                    &row.error,
+                    now,
+                    row.expires_at,
+                    row.created_at,
+                ],
+            );
+
+            match result {
+                Ok(_) => {
+                    conn.execute("DELETE FROM mailbox_messages WHERE id = ?", params![row.id])?;
+                }
+                Err(e) => {
+                    // Fallback: delete the corrupt row (pre-quarantine behavior).
+                    tracing::error!(
+                        id = row.id,
+                        error = %e,
+                        "failed to quarantine corrupt row, falling back to delete"
+                    );
+                    conn.execute("DELETE FROM mailbox_messages WHERE id = ?", params![row.id])?;
+                }
+            }
         }
 
         Ok(())
@@ -1121,6 +1183,70 @@ mod tests {
         // Fetch should also exclude expired messages
         let fetched = store.fetch(&routing_key).unwrap();
         assert!(fetched.is_empty());
+    }
+
+    #[test]
+    fn test_quarantine_rows_moves_to_quarantine_table() {
+        let config = PersistentStoreConfig::default();
+        let store = PersistentMailboxStore::in_memory(config).unwrap();
+        let routing_key = RoutingKey::from_bytes([23u8; 16]);
+
+        let message_id = MessageID::new();
+        let now = timestamp_to_i64(now_secs());
+        let expires = timestamp_to_i64(now_secs() + 3600);
+        let corrupt_data = vec![0xFFu8, 0x00, 0x01];
+
+        let original_id;
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO mailbox_messages
+                 (routing_key, message_id, envelope_data, expires_at, created_at)
+                 VALUES (?, ?, ?, ?, ?)",
+                params![
+                    &routing_key[..],
+                    &message_id.as_bytes()[..],
+                    &corrupt_data[..],
+                    expires,
+                    now
+                ],
+            )
+            .unwrap();
+            original_id = conn.last_insert_rowid();
+        }
+
+        {
+            let conn = store.conn.lock().unwrap();
+            let corrupt = CorruptRow {
+                id: original_id,
+                message_id: Some(message_id.as_bytes().to_vec()),
+                envelope_data: corrupt_data.clone(),
+                error: "test error".to_string(),
+                expires_at: expires,
+                created_at: now,
+            };
+            PersistentMailboxStore::quarantine_rows(&conn, &routing_key, &[corrupt]).unwrap();
+        }
+
+        // Original row should be gone
+        assert!(!store.has_message(&routing_key, &message_id).unwrap());
+
+        // Quarantine table should have the row
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.quarantined_messages, 1);
+
+        // Verify quarantine row contents
+        let conn = store.conn.lock().unwrap();
+        let (q_data, q_error, q_orig_id): (Vec<u8>, String, i64) = conn
+            .query_row(
+                "SELECT envelope_data, error, original_id FROM quarantined_messages LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(q_data, corrupt_data);
+        assert_eq!(q_error, "test error");
+        assert_eq!(q_orig_id, original_id);
     }
 
     #[test]
