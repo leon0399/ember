@@ -145,6 +145,7 @@ pub struct PersistentStoreStats {
     pub mailbox_count: usize,
     pub total_messages: usize,
     pub expired_pending_cleanup: usize,
+    pub quarantined_messages: usize,
 }
 
 /// Persistent mailbox store backed by `SQLite`
@@ -239,6 +240,21 @@ impl PersistentMailboxStore {
             );
 
             INSERT OR IGNORE INTO schema_version (version) VALUES (1);
+
+            CREATE TABLE IF NOT EXISTS quarantined_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                original_id INTEGER,
+                routing_key BLOB NOT NULL,
+                message_id BLOB,
+                envelope_data BLOB NOT NULL,
+                error TEXT NOT NULL,
+                quarantined_at INTEGER NOT NULL,
+                original_expires_at INTEGER,
+                original_created_at INTEGER
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_quarantine_expires
+                ON quarantined_messages(original_expires_at);
             ",
         )?;
 
@@ -380,10 +396,16 @@ impl PersistentMailboxStore {
             |row| row.get(0),
         )?;
 
+        let quarantined_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM quarantined_messages", [], |row| {
+                row.get(0)
+            })?;
+
         Ok(PersistentStoreStats {
             mailbox_count: mailbox_count as usize,
             total_messages: total_messages as usize,
             expired_pending_cleanup: expired_count as usize,
+            quarantined_messages: quarantined_count as usize,
         })
     }
 
@@ -1099,5 +1121,14 @@ mod tests {
         // Fetch should also exclude expired messages
         let fetched = store.fetch(&routing_key).unwrap();
         assert!(fetched.is_empty());
+    }
+
+    #[test]
+    fn test_stats_includes_quarantine_count() {
+        let config = PersistentStoreConfig::default();
+        let store = PersistentMailboxStore::in_memory(config).unwrap();
+
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.quarantined_messages, 0);
     }
 }
