@@ -102,7 +102,8 @@ impl CleanupConfig {
 /// let store = Arc::new(PersistentMailboxStore::open("mailbox.db", config)?);
 /// let config = CleanupConfig::default();
 /// let cancel = CancellationToken::new();
-/// tokio::spawn(run_cleanup_task(store, config, cancel));
+/// tokio::spawn(run_cleanup_task(store, config, cancel.clone()));
+/// // later: cancel.cancel();
 /// ```
 pub async fn run_cleanup_task(
     store: Arc<PersistentMailboxStore>,

@@ -459,11 +459,10 @@ async fn main() {
     info!("HTTP server stopped, running final cleanup...");
 
     // Wait for cleanup task to finish (with timeout)
-    if tokio::time::timeout(Duration::from_secs(5), cleanup_handle)
-        .await
-        .is_err()
-    {
-        warn!("Cleanup task did not finish within 5s, continuing shutdown");
+    match tokio::time::timeout(Duration::from_secs(5), cleanup_handle).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => warn!("Cleanup task panicked: {e}"),
+        Err(_) => warn!("Cleanup task did not finish within 5s, continuing shutdown"),
     }
 
     if let Err(e) = state.store.checkpoint() {
