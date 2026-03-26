@@ -179,8 +179,8 @@ impl MqttBridge {
     /// Run the MQTT subscriber.
     ///
     /// This task subscribes to all messages (`{topic_prefix}/messages/#`) and
-    /// stores received messages in the local store. It runs until the store
-    /// is dropped or an unrecoverable error occurs.
+    /// stores received messages in the local store. It runs until `cancel`
+    /// is triggered, the event channel closes, or an unrecoverable error occurs.
     ///
     /// Messages are deduplicated via the shared seen cache to prevent loops.
     pub async fn run_subscriber(

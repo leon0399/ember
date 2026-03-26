@@ -93,8 +93,8 @@ impl CleanupConfig {
 
 /// Run the background cleanup task
 ///
-/// This function runs indefinitely, periodically cleaning up expired data.
-/// It should be spawned as a background task using `tokio::spawn`.
+/// Periodically cleans up expired data until `cancel` is triggered.
+/// Should be spawned as a background task using `tokio::spawn`.
 ///
 /// # Example
 ///

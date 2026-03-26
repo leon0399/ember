@@ -279,7 +279,7 @@ async fn main() {
     let cleanup_store = Arc::clone(&store);
     let cleanup_config = config.cleanup.clone();
     let cleanup_cancel = cancel.clone();
-    let cleanup_handle = tokio::spawn(run_cleanup_task(
+    let mut cleanup_handle = tokio::spawn(run_cleanup_task(
         cleanup_store,
         cleanup_config,
         cleanup_cancel,
@@ -459,11 +459,14 @@ async fn main() {
     // Post-shutdown finalization
     info!("HTTP server stopped, running final cleanup...");
 
-    // Wait for cleanup task to finish (with timeout)
-    match tokio::time::timeout(Duration::from_secs(5), cleanup_handle).await {
+    // Wait for cleanup task to finish (with timeout); abort if it hangs
+    match tokio::time::timeout(Duration::from_secs(5), &mut cleanup_handle).await {
         Ok(Ok(())) => {}
         Ok(Err(e)) => warn!("Cleanup task panicked: {e}"),
-        Err(_) => warn!("Cleanup task did not finish within 5s, continuing shutdown"),
+        Err(_) => {
+            warn!("Cleanup task did not finish within 5s, aborting");
+            cleanup_handle.abort();
+        }
     }
 
     if let Err(e) = state.store.checkpoint() {
