@@ -145,7 +145,7 @@ pub struct PersistentStoreStats {
     pub quarantined_messages: usize,
 }
 
-/// Metadata needed to quarantine a corrupt row from mailbox_messages.
+/// Metadata needed to quarantine a corrupt row from `mailbox_messages`.
 struct CorruptRow {
     id: i64,
     message_id: Option<Vec<u8>>,
@@ -281,7 +281,7 @@ impl PersistentMailboxStore {
         Ok(envelope)
     }
 
-    /// Move corrupt rows to the quarantine table and delete from mailbox_messages.
+    /// Move corrupt rows to the quarantine table and delete from `mailbox_messages`.
     ///
     /// If the quarantine INSERT fails, falls back to deleting the row (pre-quarantine
     /// behavior) and logs at error level.
@@ -370,6 +370,7 @@ impl PersistentMailboxStore {
     ///
     /// If the stored envelope fails deserialization, the corrupt row is quarantined
     /// and `Ok(None)` is returned.
+    #[allow(clippy::type_complexity)]
     pub fn get_message(&self, message_id: &MessageID) -> Result<Option<OuterEnvelope>, NodeError> {
         let now = now_secs();
         let message_id_bytes = message_id.as_bytes();
