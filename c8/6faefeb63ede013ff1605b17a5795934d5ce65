@@ -1,0 +1,23 @@
+apps/client/src/discovery/controller.rs
+  8b3dd29e01f6e591 8,38-41,164-177,194,223,311-318,320-322,324,578,601-616,691,833-917
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "c86faefeb63ede013ff1605b17a5795934d5ce65",
+  "prompts": {
+    "8b3dd29e01f6e591": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8eb7cca4-57f5-4a28-af60-039ee6164052",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 175,
+      "total_deletions": 42,
+      "accepted_lines": 136,
+      "overriden_lines": 0
+    }
+  }
+}
