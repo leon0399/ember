@@ -331,8 +331,9 @@ async fn main() {
     if let Some(ref bridge) = mqtt_bridge {
         let bridge = bridge.clone();
         let subscriber_store = Arc::clone(&store);
+        let mqtt_cancel = cancel.clone();
         tokio::spawn(async move {
-            if let Err(e) = bridge.run_subscriber(subscriber_store).await {
+            if let Err(e) = bridge.run_subscriber(subscriber_store, mqtt_cancel).await {
                 error!("MQTT subscriber error: {}", e);
             }
         });

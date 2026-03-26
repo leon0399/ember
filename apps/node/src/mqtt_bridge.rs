@@ -25,6 +25,7 @@ use reme_transport::{
 };
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 /// Errors that can occur in the MQTT bridge
@@ -185,6 +186,7 @@ impl MqttBridge {
     pub async fn run_subscriber(
         &self,
         store: Arc<PersistentMailboxStore>,
+        cancel: CancellationToken,
     ) -> Result<(), MqttBridgeError> {
         info!(
             "Starting MQTT subscriber for {}/messages/#",
@@ -204,31 +206,40 @@ impl MqttBridge {
         info!("MQTT subscriber active, waiting for messages...");
 
         // Process events
-        while let Some(event) = events.recv().await {
-            match event {
-                TransportEvent::Message(envelope) => {
-                    // Seen cache is already checked by the receiver,
-                    // so this message is new to us
-                    debug!(
-                        "Received message from MQTT: {:?} (routing_key: {:?})",
-                        envelope.message_id, envelope.routing_key
-                    );
+        loop {
+            tokio::select! {
+                event = events.recv() => {
+                    let Some(event) = event else { break };
+                    match event {
+                        TransportEvent::Message(envelope) => {
+                            // Seen cache is already checked by the receiver,
+                            // so this message is new to us
+                            debug!(
+                                "Received message from MQTT: {:?} (routing_key: {:?})",
+                                envelope.message_id, envelope.routing_key
+                            );
 
-                    // Store in local mailbox
-                    let routing_key = envelope.routing_key;
-                    if let Err(e) = store.enqueue(routing_key, envelope) {
-                        error!("Failed to store MQTT message: {}", e);
-                        // Continue processing other messages
+                            // Store in local mailbox
+                            let routing_key = envelope.routing_key;
+                            if let Err(e) = store.enqueue(routing_key, envelope) {
+                                error!("Failed to store MQTT message: {}", e);
+                                // Continue processing other messages
+                            }
+                        }
+                        TransportEvent::Error(e) => {
+                            warn!("MQTT receiver error: {}", e);
+                            // Continue - the receiver will handle reconnection
+                        }
                     }
                 }
-                TransportEvent::Error(e) => {
-                    warn!("MQTT receiver error: {}", e);
-                    // Continue - the receiver will handle reconnection
+                () = cancel.cancelled() => {
+                    info!("MQTT subscriber received shutdown signal");
+                    break;
                 }
             }
         }
 
-        info!("MQTT subscriber event channel closed");
+        info!("MQTT subscriber shut down");
         Ok(())
     }
 
