@@ -15,7 +15,7 @@ use reme_transport::registry::TransportRegistry;
 use reme_transport::target::TargetId;
 use serde::Deserialize;
 use tokio::sync::{broadcast, mpsc};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -294,12 +294,11 @@ impl DiscoveryController {
         })
     }
 
-    /// Periodic refresh: re-verify every tracked peer. On failure, increment
-    /// the failure counter; at [`FAILURE_THRESHOLD`] consecutive failures,
-    /// remove the peer entirely (ephemeral circuit breaker). On success, reset
-    /// the counter.
+    /// Periodic refresh: re-verify every tracked peer concurrently using
+    /// [`JoinSet`]. On failure, increment the failure counter; at
+    /// [`FAILURE_THRESHOLD`] consecutive failures, remove the peer entirely
+    /// (ephemeral circuit breaker). On success, reset the counter.
     async fn refresh_all_peers(&mut self, coordinator: &TransportCoordinator) {
-        // Collect peer data first to avoid borrowing issues.
         let peers: Vec<(String, String, PublicID)> = self
             .peer_index
             .iter()
@@ -312,31 +311,42 @@ impl DiscoveryController {
 
         debug!(count = peers.len(), "Starting periodic peer refresh");
 
+        let mut set = JoinSet::new();
+        for (name, url, identity) in peers {
+            let client = self.http_client.clone();
+            set.spawn(async move {
+                let result = verify_identity(client, url, vec![identity]).await;
+                (name, result)
+            });
+        }
+
         let mut to_remove = Vec::new();
 
-        for (name, url, identity) in &peers {
-            let candidates = std::slice::from_ref(identity);
-            let ok = match self.verify_peer_identity(url, candidates).await {
-                Ok(Some(_)) => true,
-                Ok(None) | Err(_) => false,
-            };
-
-            if ok {
-                if let Some(entry) = self.peer_index.get_mut(name) {
-                    if entry.failure_count > 0 {
-                        debug!(instance = %name, "Peer refresh succeeded, resetting failure count");
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok((name, Ok(Some(_)))) => {
+                    if let Some(entry) = self.peer_index.get_mut(&name) {
+                        if entry.failure_count > 0 {
+                            debug!(instance = %name, "Peer refresh succeeded, resetting failure count");
+                        }
+                        entry.failure_count = 0;
                     }
-                    entry.failure_count = 0;
                 }
-            } else if let Some(entry) = self.peer_index.get_mut(name) {
-                entry.failure_count += 1;
-                debug!(
-                    instance = %name,
-                    failures = entry.failure_count,
-                    "Peer refresh verification failed"
-                );
-                if entry.failure_count >= FAILURE_THRESHOLD {
-                    to_remove.push(name.clone());
+                Ok((name, Ok(None) | Err(_))) => {
+                    if let Some(entry) = self.peer_index.get_mut(&name) {
+                        entry.failure_count += 1;
+                        debug!(
+                            instance = %name,
+                            failures = entry.failure_count,
+                            "Peer refresh verification failed"
+                        );
+                        if entry.failure_count >= FAILURE_THRESHOLD {
+                            to_remove.push(name);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Peer refresh task panicked: {e}");
                 }
             }
         }
