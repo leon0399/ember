@@ -41,7 +41,8 @@ serde_json = { workspace = true }
 
 # async
 async-trait = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
+tokio-util = { workspace = true }
 
 # web
 axum = { workspace = true }
