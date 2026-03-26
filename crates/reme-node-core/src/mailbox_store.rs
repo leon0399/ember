@@ -132,7 +132,9 @@ pub trait MailboxStore: Send + Sync {
     /// doesn't exist or has expired.
     fn get_ack_hash(&self, message_id: &MessageID) -> Result<Option<[u8; 16]>, NodeError>;
 
-    /// Remove expired messages
+    /// Remove expired messages and expired quarantined rows.
+    ///
+    /// Returns the total number of rows removed (mailbox + quarantine).
     fn cleanup_expired(&self) -> Result<usize, NodeError>;
 }
 
@@ -296,6 +298,8 @@ impl PersistentMailboxStore {
 
         let now = timestamp_to_i64(now_secs());
 
+        conn.execute_batch("BEGIN")?;
+
         for row in rows {
             let result = conn.execute(
                 "INSERT INTO quarantined_messages
@@ -314,21 +318,19 @@ impl PersistentMailboxStore {
                 ],
             );
 
-            match result {
-                Ok(_) => {
-                    conn.execute("DELETE FROM mailbox_messages WHERE id = ?", params![row.id])?;
-                }
-                Err(e) => {
-                    // Fallback: delete the corrupt row (pre-quarantine behavior).
-                    tracing::error!(
-                        id = row.id,
-                        error = %e,
-                        "failed to quarantine corrupt row, falling back to delete"
-                    );
-                    conn.execute("DELETE FROM mailbox_messages WHERE id = ?", params![row.id])?;
-                }
+            if let Err(e) = result {
+                // Fallback: still delete the corrupt row (pre-quarantine behavior).
+                tracing::error!(
+                    id = row.id,
+                    error = %e,
+                    "failed to quarantine corrupt row, falling back to delete"
+                );
             }
+
+            conn.execute("DELETE FROM mailbox_messages WHERE id = ?", params![row.id])?;
         }
+
+        conn.execute_batch("COMMIT")?;
 
         Ok(())
     }
@@ -370,13 +372,13 @@ impl PersistentMailboxStore {
     ///
     /// If the stored envelope fails deserialization, the corrupt row is quarantined
     /// and `Ok(None)` is returned.
-    #[allow(clippy::type_complexity)]
     pub fn get_message(&self, message_id: &MessageID) -> Result<Option<OuterEnvelope>, NodeError> {
         let now = now_secs();
         let message_id_bytes = message_id.as_bytes();
 
         let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
 
+        #[allow(clippy::type_complexity)]
         let result: Option<(i64, Vec<u8>, Vec<u8>, i64, i64)> = conn
             .query_row(
                 "SELECT id, envelope_data, routing_key, expires_at, created_at
@@ -403,8 +405,11 @@ impl PersistentMailboxStore {
             Ok(envelope) => Ok(Some(envelope)),
             Err(e) => {
                 warn!(message_id = ?message_id, error = %e, "corrupt message found, quarantining");
-                let routing_key =
-                    RoutingKey::from_bytes(routing_key_bytes.try_into().unwrap_or([0u8; 16]));
+                let routing_key = RoutingKey::from_bytes(
+                    routing_key_bytes
+                        .try_into()
+                        .expect("routing_key column is always 16 bytes per schema"),
+                );
                 let corrupt = CorruptRow {
                     id,
                     message_id: Some(message_id_bytes.to_vec()),
@@ -948,7 +953,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fetch_deletes_invalid_rows_in_batches() {
+    fn test_fetch_quarantines_invalid_rows_in_batches() {
         let config = PersistentStoreConfig::default();
         let store = PersistentMailboxStore::in_memory(config).unwrap();
         let routing_key = RoutingKey::from_bytes([9u8; 16]);
@@ -978,6 +983,10 @@ mod tests {
         let fetched = store.fetch(&routing_key).unwrap();
         assert!(fetched.is_empty());
         assert!(store.get_message_ids(&routing_key).unwrap().is_empty());
+
+        // All 1000 corrupt rows should be quarantined, not deleted
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.quarantined_messages, 1000);
     }
 
     #[test]
