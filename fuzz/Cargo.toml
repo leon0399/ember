@@ -1,0 +1,36 @@
+[package]
+name = "reme-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+reme-message = { path = "../crates/reme-message" }
+postcard = { version = "1.1", features = ["alloc"] }
+
+# Prevent this from interfering with workspaces
+[workspace]
+
+[[bin]]
+name = "fuzz_wire_payload"
+path = "fuzz_targets/fuzz_wire_payload.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_outer_envelope"
+path = "fuzz_targets/fuzz_outer_envelope.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_inner_envelope"
+path = "fuzz_targets/fuzz_inner_envelope.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_tombstone"
+path = "fuzz_targets/fuzz_tombstone.rs"
+doc = false

@@ -1,0 +1,36 @@
+name: Fuzz
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - '.github/workflows/fuzz.yml'
+      - 'fuzz/**'
+  pull_request:
+    paths:
+      - '.github/workflows/fuzz.yml'
+      - 'fuzz/**'
+  schedule:
+    - cron: '42 3 * * 1'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        target: [fuzz_wire_payload, fuzz_outer_envelope, fuzz_inner_envelope, fuzz_tombstone]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-fuzz --locked
+      - run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=60
