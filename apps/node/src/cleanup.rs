@@ -142,12 +142,6 @@ pub async fn run_cleanup_task(
         }
     }
 
-    // Final WAL checkpoint before exit
-    if let Err(e) = store.checkpoint() {
-        warn!("Final WAL checkpoint failed: {}", e);
-    } else {
-        info!("Final WAL checkpoint completed");
-    }
     info!("Cleanup task shut down");
 }
 
@@ -167,8 +161,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_cleanup_task_stops_on_cancel() {
-        use tokio_util::sync::CancellationToken;
-
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
         let store_config = reme_node_core::PersistentStoreConfig {

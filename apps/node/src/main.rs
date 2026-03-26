@@ -275,13 +275,15 @@ async fn main() {
     // Spawn shutdown signal handler
     tokio::spawn(shutdown_signal(cancel.clone()));
 
-    // Spawn cleanup task
+    // Spawn cleanup task (retain handle for ordered shutdown)
     let cleanup_store = Arc::clone(&store);
     let cleanup_config = config.cleanup.clone();
     let cleanup_cancel = cancel.clone();
-    tokio::spawn(async move {
-        run_cleanup_task(cleanup_store, cleanup_config, cleanup_cancel).await;
-    });
+    let cleanup_handle = tokio::spawn(run_cleanup_task(
+        cleanup_store,
+        cleanup_config,
+        cleanup_cancel,
+    ));
 
     // Build auth credentials if both username and password are provided
     let auth = match (&config.auth_username, &config.auth_password) {
@@ -351,6 +353,7 @@ async fn main() {
     });
 
     // Create router with rate limiting
+    // (clone: state is used after server shutdown for final WAL checkpoint)
     let app = api::router(state.clone(), rate_limiters.as_ref());
 
     // Start server with connect info for IP extraction
@@ -428,20 +431,41 @@ async fn main() {
         });
         info!("Node listening on http://{}", local_addr);
 
-        if let Err(e) = axum::serve(
+        let timeout_cancel = cancel.clone();
+        let server = axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
-        .with_graceful_shutdown(cancel.cancelled_owned())
-        .await
-        {
-            error!("Server failed: {}", e);
-            std::process::exit(1);
+        .with_graceful_shutdown(cancel.cancelled_owned());
+
+        // Enforce 10s shutdown timeout to match TLS mode behavior
+        tokio::select! {
+            result = server => {
+                if let Err(e) = result {
+                    error!("Server failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+            () = async {
+                timeout_cancel.cancelled().await;
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            } => {
+                warn!("Graceful shutdown timeout exceeded, forcing exit");
+            }
         }
     }
 
     // Post-shutdown finalization
     info!("HTTP server stopped, running final cleanup...");
+
+    // Wait for cleanup task to finish (with timeout)
+    if tokio::time::timeout(Duration::from_secs(5), cleanup_handle)
+        .await
+        .is_err()
+    {
+        warn!("Cleanup task did not finish within 5s, continuing shutdown");
+    }
+
     if let Err(e) = state.store.checkpoint() {
         warn!("Final WAL checkpoint failed: {}", e);
     }
