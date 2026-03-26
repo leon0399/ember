@@ -1,0 +1,17 @@
+crates/reme-discovery/src/fake.rs
+  80f5782c2f04a3f6 149,191
+apps/client/src/discovery/mod.rs
+  80f5782c2f04a3f6 123
+crates/reme-discovery/Cargo.toml
+  80f5782c2f04a3f6 10
+crates/reme-discovery/src/mdns_sd.rs
+  80f5782c2f04a3f6 147,156-158,345,375
+crates/reme-discovery/src/types.rs
+  80f5782c2f04a3f6 5-6,46-50,64-65,70
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "44aacd4ef2fc2cd214c7f98438e4286179b5c7d6",
+  "prompts": {}
+}
