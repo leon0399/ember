@@ -367,24 +367,54 @@ impl PersistentMailboxStore {
     }
 
     /// Get a specific message by ID (for sync protocol)
+    ///
+    /// If the stored envelope fails deserialization, the corrupt row is quarantined
+    /// and `Ok(None)` is returned.
     pub fn get_message(&self, message_id: &MessageID) -> Result<Option<OuterEnvelope>, NodeError> {
         let now = now_secs();
         let message_id_bytes = message_id.as_bytes();
 
         let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
 
-        let result: Option<Vec<u8>> = conn
+        let result: Option<(i64, Vec<u8>, Vec<u8>, i64, i64)> = conn
             .query_row(
-                "SELECT envelope_data FROM mailbox_messages
+                "SELECT id, envelope_data, routing_key, expires_at, created_at
+                 FROM mailbox_messages
                  WHERE message_id = ? AND expires_at > ?",
                 params![&message_id_bytes[..], timestamp_to_i64(now)],
-                |row| row.get(0),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .optional()?;
 
-        match result {
-            Some(data) => Ok(Some(Self::deserialize_envelope(&data)?)),
-            None => Ok(None),
+        let Some((id, data, routing_key_bytes, expires_at, created_at)) = result else {
+            return Ok(None);
+        };
+
+        match Self::deserialize_envelope(&data) {
+            Ok(envelope) => Ok(Some(envelope)),
+            Err(e) => {
+                warn!(message_id = ?message_id, error = %e, "corrupt message found, quarantining");
+                let routing_key =
+                    RoutingKey::from_bytes(routing_key_bytes.try_into().unwrap_or([0u8; 16]));
+                let corrupt = CorruptRow {
+                    id,
+                    message_id: Some(message_id_bytes.to_vec()),
+                    envelope_data: data,
+                    error: e.to_string(),
+                    expires_at,
+                    created_at,
+                };
+                Self::quarantine_rows(&conn, &routing_key, &[corrupt])?;
+                Ok(None)
+            }
         }
     }
 
@@ -1189,6 +1219,25 @@ mod tests {
         // Fetch should also exclude expired messages
         let fetched = store.fetch(&routing_key).unwrap();
         assert!(fetched.is_empty());
+    }
+
+    #[test]
+    fn test_get_message_quarantines_corrupt_row() {
+        let config = PersistentStoreConfig::default();
+        let store = PersistentMailboxStore::in_memory(config).unwrap();
+        let routing_key = RoutingKey::from_bytes([24u8; 16]);
+        let message_id = insert_invalid_row(&store, routing_key);
+
+        // get_message should return None (message is effectively gone)
+        let result = store.get_message(&message_id);
+        assert!(result.unwrap().is_none());
+
+        // Row should be quarantined
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.quarantined_messages, 1);
+
+        // Original row should be gone
+        assert!(!store.has_message(&routing_key, &message_id).unwrap());
     }
 
     #[test]
