@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use base64::prelude::*;
 use percent_encoding::{percent_encode, NON_ALPHANUMERIC};
-use reme_discovery::{decode_txt, DiscoveryEvent};
+use reme_discovery::{decode_txt, DiscoveryEvent, RawDiscoveredPeer};
 use reme_encryption::build_identity_sign_data;
 use reme_identity::PublicID;
 use reme_transport::coordinator::TransportCoordinator;
@@ -35,6 +35,10 @@ pub struct DiscoveryController {
     verified_peer_index: HashMap<PublicID, Vec<String>>,
     /// Maps `routing_key` to candidate public keys for quick contact lookup.
     contact_index: HashMap<[u8; 16], Vec<PublicID>>,
+    /// Caches peers whose routing key didn't match any contact at discovery time.
+    /// Keyed by mDNS instance name (consistent with `peer_index`).
+    /// Stores the decoded routing key alongside the peer to avoid re-parsing TXT records.
+    stranger_cache: HashMap<String, (RawDiscoveredPeer, [u8; 16])>,
     max_peers: usize,
     http_client: reqwest::Client,
     /// Registry for tracking ephemeral target metadata (tier, labels).
@@ -157,6 +161,20 @@ pub fn spawn(config: SpawnConfig) -> JoinHandle<()> {
                         pubkey = %hex::encode(pubkey.to_bytes()),
                         "Added new contact to discovery controller"
                     );
+
+                    // Re-process any cached strangers whose routing key matches
+                    // the newly added contact. Peers that fail verification are
+                    // silently dropped (not re-cached) — they will be caught on
+                    // the next mDNS re-announcement.
+                    let cached_peers = controller.drain_matching_strangers(&routing_key);
+                    for peer in cached_peers {
+                        debug!(
+                            instance = %peer.instance_name,
+                            "Re-processing cached stranger for new contact"
+                        );
+                        controller.handle_discovered(peer, &coordinator).await;
+                    }
+                    peer_count.store(controller.peer_index.len(), Ordering::Relaxed);
                 }
                 _ = refresh_timer.tick() => {
                     controller.refresh_all_peers(&coordinator).await;
@@ -173,6 +191,7 @@ pub fn spawn(config: SpawnConfig) -> JoinHandle<()> {
             debug!(instance = %name, "Deregistered peer on shutdown");
         }
         controller.verified_peer_index.clear();
+        controller.stranger_cache.clear();
         peer_count.store(0, Ordering::Relaxed);
 
         info!("Discovery controller stopped");
@@ -201,6 +220,7 @@ impl DiscoveryController {
             peer_index: HashMap::new(),
             verified_peer_index: HashMap::new(),
             contact_index,
+            stranger_cache: HashMap::new(),
             max_peers,
             http_client: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(2))
@@ -288,10 +308,20 @@ impl DiscoveryController {
         };
 
         let Some(candidates) = self.contact_index.get(&routing_key) else {
-            debug!(
-                instance = %peer.instance_name,
-                "Ignoring stranger (routing key not in contacts)"
-            );
+            if self.stranger_cache.len() < self.max_peers {
+                debug!(
+                    instance = %peer.instance_name,
+                    "Caching stranger (routing key not in contacts)"
+                );
+                self.stranger_cache
+                    .insert(peer.instance_name.clone(), (peer, routing_key));
+            } else {
+                debug!(
+                    instance = %peer.instance_name,
+                    max = self.max_peers,
+                    "Stranger cache full, dropping peer"
+                );
+            }
             return;
         };
 
@@ -545,6 +575,7 @@ impl DiscoveryController {
     }
 
     fn handle_lost(&mut self, instance_name: &str, coordinator: &TransportCoordinator) {
+        self.stranger_cache.remove(instance_name);
         self.remove_peer(instance_name, coordinator);
     }
 
@@ -565,6 +596,22 @@ impl DiscoveryController {
 
             info!(instance = %instance_name, "Removed peer");
         }
+    }
+
+    /// Remove and return all cached strangers whose routing key matches `target_rk`.
+    fn drain_matching_strangers(&mut self, target_rk: &[u8; 16]) -> Vec<RawDiscoveredPeer> {
+        let matching_keys: Vec<String> = self
+            .stranger_cache
+            .iter()
+            .filter(|(_, (_, rk))| rk == target_rk)
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        matching_keys
+            .into_iter()
+            .filter_map(|name| self.stranger_cache.remove(&name))
+            .map(|(peer, _)| peer)
+            .collect()
     }
 
     // FIXME(SEC-3): channel binding not implemented — responder IP:port not in signed data
@@ -641,6 +688,7 @@ mod tests {
     use reme_identity::Identity;
     use reme_transport::coordinator::CoordinatorConfig;
     use std::net::IpAddr;
+    use std::time::Instant;
 
     fn test_registry() -> Arc<TransportRegistry> {
         Arc::new(TransportRegistry::new())
@@ -780,6 +828,91 @@ mod tests {
 
         assert!(controller.peer_index.is_empty());
         assert!(controller.verified_peer_index.is_empty());
+    }
+
+    fn make_stranger_peer(instance_name: &str, rk: &[u8; 16]) -> RawDiscoveredPeer {
+        RawDiscoveredPeer {
+            instance_name: instance_name.to_string(),
+            addresses: vec!["192.168.1.50".parse().unwrap()],
+            port: 23003,
+            txt_records: reme_discovery::encode_txt(rk, 23003),
+            discovered_at: Instant::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_discovered_caches_stranger() {
+        let mut controller = DiscoveryController::new(vec![], 256, test_registry()).unwrap();
+        let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
+
+        let rk = [0xAAu8; 16];
+        let peer = make_stranger_peer("stranger-peer", &rk);
+
+        controller.handle_discovered(peer, &coordinator).await;
+
+        assert_eq!(controller.stranger_cache.len(), 1);
+        assert!(controller.stranger_cache.contains_key("stranger-peer"));
+        assert!(controller.peer_index.is_empty());
+    }
+
+    #[tokio::test]
+    async fn peer_lost_cleans_stranger_cache() {
+        let mut controller = DiscoveryController::new(vec![], 256, test_registry()).unwrap();
+        let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
+
+        let rk = [0xAAu8; 16];
+        let peer = make_stranger_peer("will-be-lost", &rk);
+
+        controller.handle_discovered(peer, &coordinator).await;
+        assert_eq!(controller.stranger_cache.len(), 1);
+
+        controller.handle_lost("will-be-lost", &coordinator);
+        assert!(controller.stranger_cache.is_empty());
+    }
+
+    #[test]
+    fn drain_matching_strangers_returns_matches() {
+        let mut controller = DiscoveryController::new(vec![], 256, test_registry()).unwrap();
+
+        let rk = [0xBBu8; 16];
+        let peer = make_stranger_peer("cached-stranger", &rk);
+        let name = peer.instance_name.clone();
+        controller.stranger_cache.insert(name, (peer, rk));
+
+        let matches = controller.drain_matching_strangers(&rk);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].instance_name, "cached-stranger");
+        assert!(controller.stranger_cache.is_empty());
+    }
+
+    #[test]
+    fn drain_matching_strangers_ignores_non_matches() {
+        let mut controller = DiscoveryController::new(vec![], 256, test_registry()).unwrap();
+
+        let rk_a = [0xAAu8; 16];
+        let rk_b = [0xBBu8; 16];
+        let peer = make_stranger_peer("other-stranger", &rk_a);
+        let name = peer.instance_name.clone();
+        controller.stranger_cache.insert(name, (peer, rk_a));
+
+        let matches = controller.drain_matching_strangers(&rk_b);
+        assert!(matches.is_empty());
+        assert_eq!(controller.stranger_cache.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stranger_cache_respects_max_peers() {
+        let mut controller = DiscoveryController::new(vec![], 2, test_registry()).unwrap();
+        let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
+
+        for i in 0..3u8 {
+            let mut rk = [0u8; 16];
+            rk[0] = i;
+            let peer = make_stranger_peer(&format!("stranger-{i}"), &rk);
+            controller.handle_discovered(peer, &coordinator).await;
+        }
+
+        assert_eq!(controller.stranger_cache.len(), 2);
     }
 
     #[test]
