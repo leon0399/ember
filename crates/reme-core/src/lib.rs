@@ -143,15 +143,15 @@ pub struct Client<T: Transport> {
 ///
 /// This struct contains everything needed to send a message via any transport
 /// mechanism. The message has been encrypted and stored locally.
-struct PreparedMessage {
+pub struct PreparedMessage {
     /// The outer envelope ready for transmission
-    outer: OuterEnvelope,
+    pub outer: OuterEnvelope,
     /// Content ID for DAG tracking
-    content_id: ContentId,
+    pub content_id: ContentId,
     /// Message/outbox entry ID (unified identity)
     ///
     /// This is both the wire message ID and the outbox entry key.
-    entry_id: OutboxEntryId,
+    pub entry_id: OutboxEntryId,
 }
 
 impl<T: Transport> Client<T> {
@@ -458,7 +458,7 @@ impl<T: Transport> Client<T> {
     /// After calling this, use the returned `PreparedMessage` with either
     /// legacy single-target delivery or tiered delivery.
     #[allow(clippy::needless_pass_by_value)] // Content is cloned into envelope, ref wouldn't save alloc
-    fn prepare_message(
+    pub fn prepare_message(
         &self,
         to: &PublicID,
         content: Content,
@@ -1256,6 +1256,53 @@ impl Client<TransportCoordinator> {
             body: text.to_string(),
         });
         self.send_message_tiered_internal(to, content, true).await
+    }
+
+    /// Submit a previously prepared message via tiered delivery and record the result.
+    ///
+    /// This is the async half of the prepare/submit split. Call `prepare_message()` first
+    /// (synchronous), then spawn this method in a background task.
+    pub async fn submit_prepared_tiered(
+        &self,
+        prepared: &PreparedMessage,
+    ) -> Result<TieredDeliveryPhase, ClientError> {
+        let result = self
+            .transport
+            .submit_tiered(&prepared.outer, &self.tiered_config)
+            .await;
+
+        let phase = self
+            .outbox
+            .record_tiered_delivery_result(prepared.entry_id, &result, &self.tiered_config)
+            .map_err(ClientError::Outbox)?;
+
+        match &phase {
+            TieredDeliveryPhase::Urgent => {
+                warn!(
+                    message_id = ?prepared.entry_id,
+                    content_id = ?prepared.content_id,
+                    success_count = result.success_count(),
+                    "Message quorum not reached, will retry"
+                );
+            }
+            TieredDeliveryPhase::Distributed { confidence, .. } => {
+                if confidence.is_direct() {
+                    info!(
+                        message_id = ?prepared.entry_id,
+                        "Message delivered directly (Direct tier)"
+                    );
+                } else {
+                    debug!(
+                        message_id = ?prepared.entry_id,
+                        success_count = result.success_count(),
+                        "Message distributed, awaiting ACK"
+                    );
+                }
+            }
+            TieredDeliveryPhase::Confirmed { .. } => {}
+        }
+
+        Ok(phase)
     }
 
     /// Send a message with tiered delivery and record results in outbox.
