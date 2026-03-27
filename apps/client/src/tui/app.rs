@@ -879,7 +879,13 @@ impl App<'_> {
 
     /// Spawn all background tasks that feed results into the action channel.
     fn spawn_background_tasks(&mut self) {
-        // --- Coordinator event drainer ---
+        self.spawn_coordinator_drainer();
+        self.spawn_node_drainer();
+        self.spawn_outbox_tick();
+    }
+
+    /// Spawn the coordinator event drainer task.
+    fn spawn_coordinator_drainer(&mut self) {
         let client = self.client.clone();
         let tx = self.action_tx.clone();
         let mut coordinator_events =
@@ -887,111 +893,47 @@ impl App<'_> {
         tokio::spawn(async move {
             while let Some(event) = coordinator_events.recv().await {
                 if let TransportEvent::Message(envelope) = event {
-                    match client.process_message_local(&envelope) {
-                        Ok(processed) => {
-                            // Notify UI immediately — message is decrypted and stored
-                            if tx
-                                .send(Action::MessageProcessed {
-                                    result: Ok(processed.received),
-                                    source: MessageSource::Coordinator,
-                                })
-                                .is_err()
-                            {
-                                break;
-                            }
-                            // Fire-and-forget tombstone
-                            if let Some(tombstone) = processed.pending_tombstone {
-                                let client = client.clone();
-                                let msg_id = envelope.message_id;
-                                tokio::spawn(async move {
-                                    if let Err(e) = client.send_tombstone(msg_id, tombstone).await {
-                                        warn!(
-                                            message_id = ?msg_id,
-                                            error = %e,
-                                            "Tombstone send failed"
-                                        );
-                                    }
-                                });
-                            }
+                    if process_and_notify(&client, &tx, &envelope, MessageSource::Coordinator)
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    /// Spawn the embedded node event drainer task.
+    fn spawn_node_drainer(&mut self) {
+        let Some(mut node_rx) = self.node_event_rx.take() else {
+            return;
+        };
+        let client = self.client.clone();
+        let tx = self.action_tx.clone();
+        tokio::spawn(async move {
+            while let Some(event) = node_rx.recv().await {
+                match event {
+                    NodeEvent::MessageReceived(envelope) => {
+                        debug!("Received message from embedded node");
+                        if process_and_notify(&client, &tx, &envelope, MessageSource::EmbeddedNode)
+                            .is_err()
+                        {
+                            break;
                         }
-                        Err(e) => {
-                            if tx
-                                .send(Action::MessageProcessed {
-                                    result: Err(e.to_string()),
-                                    source: MessageSource::Coordinator,
-                                })
-                                .is_err()
-                            {
-                                break;
-                            }
+                    }
+                    NodeEvent::Error(e) => {
+                        tracing::error!("Embedded node error: {}", e);
+                        if tx.send(Action::NodeError(e)).is_err() {
+                            break;
                         }
                     }
                 }
             }
         });
+    }
 
-        // --- Node event drainer ---
-        if let Some(mut node_rx) = self.node_event_rx.take() {
-            let client = self.client.clone();
-            let tx = self.action_tx.clone();
-            tokio::spawn(async move {
-                while let Some(event) = node_rx.recv().await {
-                    match event {
-                        NodeEvent::MessageReceived(envelope) => {
-                            debug!("Received message from embedded node");
-                            match client.process_message_local(&envelope) {
-                                Ok(processed) => {
-                                    // Notify UI immediately — message is decrypted and stored
-                                    if tx
-                                        .send(Action::MessageProcessed {
-                                            result: Ok(processed.received),
-                                            source: MessageSource::EmbeddedNode,
-                                        })
-                                        .is_err()
-                                    {
-                                        break;
-                                    }
-                                    // Fire-and-forget tombstone
-                                    if let Some(tombstone) = processed.pending_tombstone {
-                                        let client = client.clone();
-                                        let msg_id = envelope.message_id;
-                                        tokio::spawn(async move {
-                                            if let Err(e) =
-                                                client.send_tombstone(msg_id, tombstone).await
-                                            {
-                                                warn!(
-                                                    message_id = ?msg_id,
-                                                    error = %e,
-                                                    "Tombstone send failed"
-                                                );
-                                            }
-                                        });
-                                    }
-                                }
-                                Err(e) => {
-                                    if tx
-                                        .send(Action::MessageProcessed {
-                                            result: Err(e.to_string()),
-                                            source: MessageSource::EmbeddedNode,
-                                        })
-                                        .is_err()
-                                    {
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        NodeEvent::Error(e) => {
-                            tracing::error!("Embedded node error: {}", e);
-                            if tx.send(Action::NodeError(e)).is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-            });
-        }
-
+    /// Spawn the periodic outbox tick task.
+    fn spawn_outbox_tick(&self) {
         // --- Outbox tick ---
         let outbox_client = self.client.clone();
         let outbox_interval = self.outbox_tick_interval;
@@ -1852,6 +1794,42 @@ impl App<'_> {
         self.registry.register_ephemeral(id, None, tier);
         info!(url = %url, "Added ephemeral HTTP upstream");
         Ok(())
+    }
+}
+
+/// Process an incoming envelope locally and notify the UI, then fire-and-forget the tombstone.
+///
+/// Returns `Err(())` if the action channel is closed (caller should break the loop).
+fn process_and_notify(
+    client: &Arc<Client<TransportCoordinator>>,
+    tx: &mpsc::UnboundedSender<Action>,
+    envelope: &reme_message::OuterEnvelope,
+    source: MessageSource,
+) -> Result<(), ()> {
+    match client.process_message_local(envelope) {
+        Ok(processed) => {
+            tx.send(Action::MessageProcessed {
+                result: Ok(processed.received),
+                source,
+            })
+            .map_err(|_| ())?;
+            if let Some(tombstone) = processed.pending_tombstone {
+                let client = client.clone();
+                let msg_id = envelope.message_id;
+                tokio::spawn(async move {
+                    if let Err(e) = client.send_tombstone(msg_id, tombstone).await {
+                        warn!(message_id = ?msg_id, error = %e, "Tombstone send failed");
+                    }
+                });
+            }
+            Ok(())
+        }
+        Err(e) => tx
+            .send(Action::MessageProcessed {
+                result: Err(e.to_string()),
+                source,
+            })
+            .map_err(|_| ()),
     }
 }
 
