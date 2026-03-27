@@ -49,11 +49,11 @@ impl<W: Write> BundleWriter<W> {
     pub fn finish(mut self) -> Result<(), BundleError> {
         let mut hasher = blake3::Hasher::new();
 
-        let frame_count =
-            u32::try_from(self.frames.len()).map_err(|_| BundleError::FrameTooLarge {
-                size: u32::MAX,
-                max: u32::MAX,
-            })?;
+        // Frames are individually validated to fit in u32 by write_frame, so
+        // their count also fits in u32 unless Vec itself somehow holds >4B items,
+        // which is not a realistic condition.
+        let frame_count = u32::try_from(self.frames.len())
+            .expect("frame count overflows u32; more than 4 billion frames were buffered");
 
         // Write header
         let header = Self::build_header(frame_count);
@@ -62,8 +62,10 @@ impl<W: Write> BundleWriter<W> {
 
         // Write frames
         for frame in &self.frames {
-            #[allow(clippy::cast_possible_truncation)] // len was validated ≤ MAX_FRAME_SIZE (u32)
-            let len_bytes = (frame.len() as u32).to_le_bytes();
+            // len was validated ≤ MAX_FRAME_SIZE (u32) in write_frame
+            let len_bytes = u32::try_from(frame.len())
+                .expect("frame len no longer fits in u32 after validation")
+                .to_le_bytes();
             hasher.update(&len_bytes);
             self.inner.write_all(&len_bytes)?;
             hasher.update(frame);
