@@ -146,17 +146,20 @@ pub struct HttpTarget {
 
 #[derive(Debug, Deserialize)]
 struct SubmitResponse {
-    #[allow(dead_code)]
-    status: String,
-
-    /// Base64-encoded 16-byte `ack_secret` (optional).
-    ack_secret: Option<String>,
-
-    /// Base64-encoded 64-byte `XEdDSA` signature (optional).
-    signature: Option<String>,
+    results: Vec<FrameResultResponse>,
 }
 
-impl SubmitResponse {
+#[derive(Debug, Deserialize)]
+struct FrameResultResponse {
+    #[allow(dead_code)]
+    status: String,
+    ack_secret: Option<String>,
+    signature: Option<String>,
+    #[allow(dead_code)]
+    error: Option<String>,
+}
+
+impl FrameResultResponse {
     /// Parse the response into a `RawReceipt`.
     fn into_raw_receipt(self) -> RawReceipt {
         let ack_secret = self.ack_secret.and_then(|s| {
@@ -235,15 +238,17 @@ impl HttpTarget {
     /// Submit a wire payload to this target.
     ///
     /// Returns the raw receipt data from the node (if any).
-    async fn submit_payload(&self, payload_b64: &str) -> Result<RawReceipt, TransportError> {
+    async fn submit_payload(&self, wire_bytes: &[u8]) -> Result<RawReceipt, TransportError> {
         let url = format!("{}/api/v1/submit", self.sanitized_url.trim_end_matches('/'));
+
+        let bundle_body = reme_bundle::encode_body(&[wire_bytes]);
 
         let mut request = self
             .client
             .post(&url)
-            .header("Content-Type", "text/plain")
+            .header("Content-Type", "application/vnd.reme.bundle")
             .timeout(self.config.base.request_timeout)
-            .body(payload_b64.to_string());
+            .body(bundle_body);
 
         // Priority 1: Explicit auth from config
         // Priority 2: URL-embedded auth (legacy/backward compat)
@@ -279,7 +284,11 @@ impl HttpTarget {
             .await
             .map_err(|e| TransportError::Serialization(e.to_string()))?;
 
-        Ok(result.into_raw_receipt())
+        let frame = result.results.into_iter().next().ok_or_else(|| {
+            TransportError::ServerError("empty results in submit response".to_string())
+        })?;
+
+        Ok(frame.into_raw_receipt())
     }
 
     /// Get a display label for logging.
@@ -460,9 +469,8 @@ impl TransportTarget for HttpTarget {
         let wire_bytes = wire_payload
             .encode()
             .map_err(|e| TransportError::Serialization(e.to_string()))?;
-        let payload_b64 = BASE64_STANDARD.encode(&wire_bytes);
 
-        let result = self.submit_payload(&payload_b64).await;
+        let result = self.submit_payload(&wire_bytes).await;
 
         match &result {
             Ok(receipt) => {
@@ -498,9 +506,8 @@ impl TransportTarget for HttpTarget {
         let wire_bytes = wire_payload
             .encode()
             .map_err(|e| TransportError::Serialization(e.to_string()))?;
-        let payload_b64 = BASE64_STANDARD.encode(&wire_bytes);
 
-        let result = self.submit_payload(&payload_b64).await;
+        let result = self.submit_payload(&wire_bytes).await;
 
         match &result {
             Ok(_receipt) => {
