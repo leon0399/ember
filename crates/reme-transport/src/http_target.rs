@@ -15,7 +15,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
-use crate::http_pagination::validate_next_cursor;
+use crate::http_pagination::{decode_fetch_payloads, validate_next_cursor};
 use crate::target::{
     HealthData, HealthState, RawReceipt, TargetConfig, TargetHealth, TargetId, TargetKind,
     TransportTarget,
@@ -305,11 +305,11 @@ impl HttpTarget {
 
     /// Get a display label for logging.
     fn display_label(&self) -> String {
-        if let Some(ref label) = self.config.base.label {
-            label.clone()
-        } else {
-            sanitize_url_for_log(&self.config.url)
-        }
+        self.config
+            .base
+            .label
+            .clone()
+            .unwrap_or_else(|| sanitize_url_for_log(&self.config.url))
     }
 
     /// Fetch messages once from this target.
@@ -400,24 +400,6 @@ impl HttpTarget {
             .map_err(|e| TransportError::Serialization(e.to_string()))
     }
 
-    fn decode_fetch_payloads(payloads: Vec<String>) -> Result<Vec<OuterEnvelope>, TransportError> {
-        let mut envelopes = Vec::new();
-        for blob in payloads {
-            let wire_bytes = BASE64_STANDARD
-                .decode(&blob)
-                .map_err(|e| TransportError::Serialization(format!("base64 decode: {e}")))?;
-
-            let payload = WirePayload::decode(&wire_bytes)
-                .map_err(|e| TransportError::Serialization(format!("wire decode: {e}")))?;
-
-            if let WirePayload::Message(envelope) = payload {
-                envelopes.push(envelope);
-            }
-        }
-
-        Ok(envelopes)
-    }
-
     async fn fetch_from_endpoint(
         &self,
         routing_key_b64: &str,
@@ -430,7 +412,7 @@ impl HttpTarget {
             let page = self
                 .fetch_page_from_endpoint(routing_key_b64, after.as_deref())
                 .await?;
-            envelopes.extend(Self::decode_fetch_payloads(page.payloads)?);
+            envelopes.extend(decode_fetch_payloads(page.payloads)?);
 
             if !page.has_more {
                 break;
@@ -586,11 +568,9 @@ fn build_target_client(config: &HttpTargetConfig) -> Result<Client, TransportErr
             )
         })?;
 
-        // Create pins map with single entry
-        let mut pins = std::collections::HashMap::new();
-        if let Some(ref pin) = config.cert_pin {
-            pins.insert(hostname, pin.clone());
-        }
+        // has_pin already verified cert_pin is Some
+        let pin = config.cert_pin.as_ref().expect("has_pin requires cert_pin");
+        let pins = std::collections::HashMap::from([(hostname, pin.clone())]);
 
         // Create pinning verifier
         let verifier =

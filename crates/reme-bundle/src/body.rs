@@ -23,6 +23,9 @@ pub enum BodyParseError {
         declared: u32,
         available: usize,
     },
+
+    #[error("frame {index} too large: {size} bytes (max {max})")]
+    FrameTooLarge { index: u32, size: u32, max: u32 },
 }
 
 /// Encode frames into the bundle body wire format.
@@ -50,7 +53,7 @@ pub fn parse_body(bytes: &[u8], max_frames: u32) -> Result<Vec<Vec<u8>>, BodyPar
         return Err(BodyParseError::TooShort);
     }
 
-    let count = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    let count = u32::from_le_bytes(bytes[..4].try_into().expect("slice is exactly 4 bytes"));
     if count == 0 {
         return Err(BodyParseError::EmptyBundle);
     }
@@ -72,13 +75,20 @@ pub fn parse_body(bytes: &[u8], max_frames: u32) -> Result<Vec<Vec<u8>>, BodyPar
                 available: bytes.len().saturating_sub(offset),
             });
         }
-        let frame_len = u32::from_le_bytes([
-            bytes[offset],
-            bytes[offset + 1],
-            bytes[offset + 2],
-            bytes[offset + 3],
-        ]);
+        let frame_len = u32::from_le_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .expect("slice is exactly 4 bytes"),
+        );
         offset += 4;
+
+        if frame_len > crate::MAX_FRAME_SIZE {
+            return Err(BodyParseError::FrameTooLarge {
+                index: i,
+                size: frame_len,
+                max: crate::MAX_FRAME_SIZE,
+            });
+        }
 
         let frame_len_usize = frame_len as usize;
         if offset + frame_len_usize > bytes.len() {

@@ -33,8 +33,7 @@ use reme_encryption::{build_identity_sign_data, build_receipt_sign_data, derive_
 use reme_identity::PublicID;
 use reme_message::{OuterEnvelope, RoutingKey, WirePayload};
 use reme_node_core::{FetchPage, MailboxStore, PersistentMailboxStore};
-use serde::Deserialize;
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use tracing::{debug, error, warn};
@@ -340,36 +339,21 @@ fn parse_fetch_query(query: &FetchQuery) -> Result<(usize, Option<i64>), String>
     Ok((limit, after))
 }
 
-struct FetchResponseRef<'a> {
-    payloads: &'a [String],
-    next_cursor: Option<&'a str>,
-    has_more: bool,
-}
-
-impl Serialize for FetchResponseRef<'_> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        use serde::ser::SerializeStruct;
-
-        let field_count = if self.next_cursor.is_some() { 3 } else { 2 };
-        let mut state = serializer.serialize_struct("FetchResponse", field_count)?;
-        state.serialize_field("payloads", self.payloads)?;
-        if let Some(next_cursor) = self.next_cursor {
-            state.serialize_field("next_cursor", next_cursor)?;
-        }
-        state.serialize_field("has_more", &self.has_more)?;
-        state.end()
-    }
-}
-
 fn fetch_response_size(
     payloads: &[String],
     next_cursor: Option<&str>,
     has_more: bool,
 ) -> Result<usize, String> {
-    serde_json::to_vec(&FetchResponseRef {
+    // Borrow FetchResponse fields temporarily to measure serialized size without cloning.
+    // next_cursor is &str here to avoid an allocation just for size estimation.
+    #[derive(Serialize)]
+    struct Probe<'a> {
+        payloads: &'a [String],
+        #[serde(skip_serializing_if = "Option::is_none")]
+        next_cursor: Option<&'a str>,
+        has_more: bool,
+    }
+    serde_json::to_vec(&Probe {
         payloads,
         next_cursor,
         has_more,

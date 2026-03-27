@@ -281,8 +281,10 @@ async fn submit_handler(
     State(state): State<Arc<HttpServerState>>,
     body: Bytes,
 ) -> Result<Json<SubmitResponse>, ApiError> {
-    // Parse the bundle body — max 10 frames for the embedded node
-    let frames = parse_body(&body, 10).map_err(|e| {
+    // Embedded node is a P2P endpoint, not a mailbox server — small batch limit.
+    const MAX_EMBEDDED_BATCH_FRAMES: u32 = 10;
+
+    let frames = parse_body(&body, MAX_EMBEDDED_BATCH_FRAMES).map_err(|e| {
         warn!(error = %e, "Received invalid bundle body");
         ApiError::BadRequest(format!("Invalid bundle body: {e}"))
     })?;

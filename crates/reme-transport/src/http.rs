@@ -16,7 +16,7 @@ use url::Url;
 
 use reme_encryption::build_identity_sign_data;
 
-use crate::http_pagination::validate_next_cursor;
+use crate::http_pagination::{decode_fetch_payloads, validate_next_cursor};
 use crate::tls::{CertPin, PinningVerifier};
 use crate::url_auth::parse_url_with_auth;
 use crate::{Transport, TransportError};
@@ -378,24 +378,6 @@ impl HttpTransport {
             .map_err(|e| TransportError::Serialization(e.to_string()))
     }
 
-    fn decode_fetch_payloads(payloads: Vec<String>) -> Result<Vec<OuterEnvelope>, TransportError> {
-        let mut envelopes = Vec::new();
-        for blob in payloads {
-            let wire_bytes = BASE64_STANDARD
-                .decode(&blob)
-                .map_err(|e| TransportError::Serialization(format!("base64 decode: {e}")))?;
-
-            let payload = WirePayload::decode(&wire_bytes)
-                .map_err(|e| TransportError::Serialization(format!("wire decode: {e}")))?;
-
-            if let WirePayload::Message(envelope) = payload {
-                envelopes.push(envelope);
-            }
-        }
-
-        Ok(envelopes)
-    }
-
     async fn fetch_from_node(
         &self,
         base_url: &str,
@@ -409,7 +391,7 @@ impl HttpTransport {
             let page = self
                 .fetch_page_from_node(base_url, routing_key_b64, after.as_deref())
                 .await?;
-            envelopes.extend(Self::decode_fetch_payloads(page.payloads)?);
+            envelopes.extend(decode_fetch_payloads(page.payloads)?);
 
             if !page.has_more {
                 break;
