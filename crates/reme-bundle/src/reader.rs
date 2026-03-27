@@ -9,14 +9,13 @@ use crate::{BundleError, FORMAT_VERSION, MAGIC, MAX_FRAME_SIZE};
 /// [`BundleReader::next_frame`], and finally call [`BundleReader::verify_checksum`]
 /// to confirm the BLAKE3 integrity hash.
 pub struct BundleReader<R: Read> {
-    // Note: blake3::Hasher does not implement Debug, so we cannot derive Debug for this struct.
     inner: R,
+    // blake3::Hasher does not implement Debug, so Debug is implemented manually below.
     hasher: blake3::Hasher,
     frame_count: u32,
     frames_read: u32,
 }
 
-// blake3::Hasher does not implement Debug, so we provide a manual impl.
 impl<R: Read + fmt::Debug> fmt::Debug for BundleReader<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BundleReader")
@@ -95,10 +94,17 @@ impl<R: Read> BundleReader<R> {
 
     /// Verify the BLAKE3 checksum after all frames have been read.
     ///
-    /// Reads the trailing 32-byte checksum from the bundle and compares it against
-    /// the hash accumulated over the header and all frames. Returns
-    /// [`BundleError::ChecksumMismatch`] if they differ.
+    /// All frames must be consumed via [`next_frame`](Self::next_frame) before calling
+    /// this method. Returns [`BundleError::IncompleteRead`] if frames remain unconsumed,
+    /// or [`BundleError::ChecksumMismatch`] if the checksum does not match.
     pub fn verify_checksum(mut self) -> Result<(), BundleError> {
+        if self.frames_read != self.frame_count {
+            return Err(BundleError::IncompleteRead {
+                read: self.frames_read,
+                total: self.frame_count,
+            });
+        }
+
         let mut stored_checksum = [0u8; 32];
         self.inner.read_exact(&mut stored_checksum)?;
 
@@ -186,6 +192,18 @@ mod tests {
         let _frame = reader.next_frame().unwrap();
         let err = reader.verify_checksum().unwrap_err();
         assert!(matches!(err, BundleError::ChecksumMismatch));
+    }
+
+    #[test]
+    fn verify_checksum_before_all_frames_consumed() {
+        let data = make_bundle(&[b"aaa", b"bbb"]);
+        let mut reader = BundleReader::open(&data[..]).unwrap();
+        let _frame = reader.next_frame().unwrap(); // read only 1 of 2
+        let err = reader.verify_checksum().unwrap_err();
+        assert!(matches!(
+            err,
+            BundleError::IncompleteRead { read: 1, total: 2 }
+        ));
     }
 
     #[test]

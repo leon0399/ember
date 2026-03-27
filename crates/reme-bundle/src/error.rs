@@ -13,14 +13,11 @@ pub enum BundleError {
     #[error("checksum mismatch")]
     ChecksumMismatch,
 
-    #[error("no more frames (read {read} of {total})")]
-    UnexpectedEnd { read: u32, total: u32 },
+    #[error("incomplete read: consumed {read} of {total} frames before verifying checksum")]
+    IncompleteRead { read: u32, total: u32 },
 
     #[error("frame too large: {size} bytes (max {max})")]
     FrameTooLarge { size: u32, max: u32 },
-
-    #[error("bundle already finalized")]
-    AlreadyFinalized,
 
     #[error(transparent)]
     Io(#[from] io::Error),
