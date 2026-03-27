@@ -9,7 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use ratatui::prelude::*;
 use reme_config::{ParsedHttpPeer, ParsedMqttPeer};
-use reme_core::Client;
+use reme_core::{Client, ReceivedMessage};
 use reme_discovery::DiscoveryBackend as _;
 use reme_identity::{Identity, PublicID};
 use reme_message::Content;
@@ -290,6 +290,66 @@ pub struct Conversation {
     pub unread_count: u32,
 }
 
+/// Delivery status for sent messages. Displayed as a visual indicator in the TUI.
+/// This is a UI-only type — not persisted or sent over the wire.
+#[derive(Debug, Clone, Default)]
+pub enum DeliveryStatus {
+    /// No status to display (received messages, history)
+    #[default]
+    None,
+    /// Optimistic display — send task is in flight
+    Sending,
+    /// Delivery succeeded — carries human-readable phase description
+    Sent(String),
+    /// All delivery tiers failed — carries error description
+    Failed(String),
+}
+
+/// Source of an incoming message (for logging/debugging).
+#[derive(Debug, Clone, Copy)]
+pub enum MessageSource {
+    Coordinator,
+    EmbeddedNode,
+}
+
+/// All events that can affect application state.
+///
+/// This is the single integration point for the TUI. Background tasks,
+/// UI events, and spawned I/O all communicate through this type.
+pub enum Action {
+    /// Keyboard input
+    Key(KeyEvent),
+    /// Periodic tick (drives UI refresh)
+    Tick,
+    /// Terminal resize
+    Resize(u16, u16),
+
+    /// A spawned send task completed
+    SendComplete {
+        send_id: u64,
+        result: Result<TieredDeliveryPhase, String>,
+    },
+
+    /// A background drainer processed an incoming message
+    MessageProcessed {
+        result: Result<ReceivedMessage, String>,
+        source: MessageSource,
+    },
+
+    /// Periodic outbox tick completed
+    OutboxTick(Result<(usize, usize, u64), String>),
+
+    /// Embedded node error
+    NodeError(String),
+
+    /// MQTT upstream connection completed
+    UpstreamAdded {
+        url: String,
+        transport_type: UpstreamType,
+        result: Result<(), String>,
+    },
+}
+
 /// A message in the conversation
 #[derive(Debug, Clone)]
 pub struct Message {
@@ -297,6 +357,7 @@ pub struct Message {
     pub sender_name: String,
     pub content: String,
     pub timestamp: String,
+    pub status: DeliveryStatus,
 }
 
 /// Application state
@@ -1056,6 +1117,7 @@ impl App<'_> {
             sender_name,
             content: content.clone(),
             timestamp: utc_time_now(),
+            status: DeliveryStatus::None,
         };
 
         // Cache message
@@ -1273,6 +1335,7 @@ impl App<'_> {
                                 sender_name: "You".to_string(),
                                 content: text,
                                 timestamp: utc_time_now(),
+                                status: DeliveryStatus::None,
                             };
 
                             // Cache the message
@@ -1351,6 +1414,7 @@ impl App<'_> {
                                 },
                                 content,
                                 timestamp: format_unix_timestamp(msg.created_at),
+                                status: DeliveryStatus::None,
                             });
                         }
                         // Re-append any in-session messages after the stored history
