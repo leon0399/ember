@@ -422,6 +422,12 @@ pub struct App<'a> {
     pub lan_peer_count: Arc<AtomicUsize>,
     /// Whether LAN discovery is enabled in config (for status bar display).
     pub lan_discovery_enabled: bool,
+    /// Action sender — cloned into background tasks for result delivery.
+    action_tx: mpsc::UnboundedSender<Action>,
+    /// Action receiver — drained in the main loop.
+    action_rx: mpsc::UnboundedReceiver<Action>,
+    /// Monotonic counter for correlating send results to optimistic messages.
+    next_send_id: u64,
 }
 
 impl App<'_> {
@@ -803,6 +809,9 @@ impl App<'_> {
         // Store tick interval from config
         let outbox_tick_interval = Duration::from_secs(config.outbox.tick_interval_secs);
 
+        // Create action channel for background task result delivery
+        let (action_tx, action_rx) = mpsc::unbounded_channel();
+
         // Create input area
         let mut input = TextArea::default();
         input.set_placeholder_text("Type a message...");
@@ -838,6 +847,9 @@ impl App<'_> {
             discovery,
             lan_peer_count,
             lan_discovery_enabled,
+            action_tx,
+            action_rx,
+            next_send_id: 0,
         };
 
         // Surface mDNS init failure in TUI status bar (M14)
@@ -850,6 +862,81 @@ impl App<'_> {
         app.load_conversation_messages();
 
         Ok(app)
+    }
+
+    /// Spawn all background tasks that feed results into the action channel.
+    fn spawn_background_tasks(&mut self) {
+        // --- Coordinator event drainer ---
+        let client = self.client.clone();
+        let tx = self.action_tx.clone();
+        let mut coordinator_events =
+            std::mem::replace(&mut self.coordinator_events, mpsc::unbounded_channel().1);
+        tokio::spawn(async move {
+            while let Some(event) = coordinator_events.recv().await {
+                if let TransportEvent::Message(envelope) = event {
+                    let result = client.process_message(&envelope).await;
+                    if tx
+                        .send(Action::MessageProcessed {
+                            result: result.map_err(|e| e.to_string()),
+                            source: MessageSource::Coordinator,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        });
+
+        // --- Node event drainer ---
+        if let Some(mut node_rx) = self.node_event_rx.take() {
+            let client = self.client.clone();
+            let tx = self.action_tx.clone();
+            tokio::spawn(async move {
+                while let Some(event) = node_rx.recv().await {
+                    match event {
+                        NodeEvent::MessageReceived(envelope) => {
+                            debug!("Received message from embedded node");
+                            let result = client.process_message(&envelope).await;
+                            if tx
+                                .send(Action::MessageProcessed {
+                                    result: result.map_err(|e| e.to_string()),
+                                    source: MessageSource::EmbeddedNode,
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        NodeEvent::Error(e) => {
+                            tracing::error!("Embedded node error: {}", e);
+                            if tx.send(Action::NodeError(e)).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // --- Outbox tick ---
+        let outbox_client = self.client.clone();
+        let outbox_interval = self.outbox_tick_interval;
+        let tx = self.action_tx.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(outbox_interval);
+            interval.tick().await; // skip first immediate tick
+            loop {
+                interval.tick().await;
+                let result = outbox_client.tiered_outbox_tick().await;
+                if tx
+                    .send(Action::OutboxTick(result.map_err(|e| e.to_string())))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
     }
 
     /// Load contacts from storage, including the most recent message preview
