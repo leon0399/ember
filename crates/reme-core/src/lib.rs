@@ -102,6 +102,7 @@ pub struct ReceivedMessage {
 
 /// Result of local message processing (decrypt + store + DAG).
 /// Contains the decrypted message for display and an optional tombstone to send.
+#[derive(Debug, Clone)]
 pub struct ProcessedMessage {
     /// The decrypted message ready for display
     pub received: ReceivedMessage,
@@ -152,6 +153,7 @@ pub struct Client<T: Transport> {
 ///
 /// This struct contains everything needed to send a message via any transport
 /// mechanism. The message has been encrypted and stored locally.
+#[derive(Debug, Clone)]
 pub struct PreparedMessage {
     /// The outer envelope ready for transmission
     pub outer: OuterEnvelope,
@@ -874,11 +876,8 @@ impl<T: Transport> Client<T> {
     ///
     /// On success, removes the stored `pending_ack`. On failure, the
     /// `ack_secret` remains stored for retry via `acknowledge_received()`.
-    pub async fn send_tombstone(
-        &self,
-        message_id: MessageID,
-        tombstone: SignedAckTombstone,
-    ) -> Result<(), ClientError> {
+    pub async fn send_tombstone(&self, tombstone: SignedAckTombstone) -> Result<(), ClientError> {
+        let message_id = tombstone.message_id;
         self.transport
             .submit_ack_tombstone(tombstone)
             .await
@@ -898,17 +897,18 @@ impl<T: Transport> Client<T> {
     ///
     /// This is a convenience wrapper around [`process_message_local`](Self::process_message_local)
     /// and [`send_tombstone`](Self::send_tombstone) that preserves the original
-    /// behavior: decrypt, store, send tombstone (fire-and-forget), return message.
+    /// behavior: decrypt, store, attempt to send tombstone (awaited, errors logged),
+    /// then return the decrypted message.
     ///
     /// For non-blocking UI updates, prefer calling `process_message_local` directly
-    /// and sending the tombstone asynchronously.
+    /// and scheduling the tombstone send on a separate task.
     pub async fn process_message(
         &self,
         outer: &OuterEnvelope,
     ) -> Result<ReceivedMessage, ClientError> {
         let processed = self.process_message_local(outer)?;
         if let Some(tombstone) = processed.pending_tombstone {
-            if let Err(e) = self.send_tombstone(outer.message_id, tombstone).await {
+            if let Err(e) = self.send_tombstone(tombstone).await {
                 warn!(
                     message_id = ?outer.message_id,
                     error = %e,

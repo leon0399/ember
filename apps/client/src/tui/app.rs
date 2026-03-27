@@ -301,7 +301,6 @@ pub struct Conversation {
 /// Delivery status for sent messages. Displayed as a visual indicator in the TUI.
 /// This is a UI-only type — not persisted or sent over the wire.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)] // Sent/Failed are scaffolding for per-message delivery indicators (not yet rendered)
 pub enum DeliveryStatus {
     /// No status to display (received messages, history)
     #[default]
@@ -1030,9 +1029,12 @@ impl App<'_> {
                 }
             }
 
-            // Drain any additional queued actions
-            while let Ok(action) = self.action_rx.try_recv() {
-                self.update(action);
+            // Drain any additional queued actions (stop if shutdown requested)
+            while self.running {
+                match self.action_rx.try_recv() {
+                    Ok(action) => self.update(action),
+                    Err(_) => break,
+                }
             }
 
             terminal.draw(|frame| ui::render(frame, self))?;
@@ -1069,7 +1071,9 @@ impl App<'_> {
                 self.status = match &status {
                     DeliveryStatus::Sent(s) => s.clone(),
                     DeliveryStatus::Failed(e) => format!("Send failed: {e}"),
-                    _ => String::new(),
+                    DeliveryStatus::None | DeliveryStatus::Sending => {
+                        unreachable!("SendComplete always produces Sent or Failed")
+                    }
                 };
 
                 // Update the optimistic message in visible messages
@@ -1815,10 +1819,9 @@ fn process_and_notify(
             .map_err(|_| ())?;
             if let Some(tombstone) = processed.pending_tombstone {
                 let client = client.clone();
-                let msg_id = envelope.message_id;
                 tokio::spawn(async move {
-                    if let Err(e) = client.send_tombstone(msg_id, tombstone).await {
-                        warn!(message_id = ?msg_id, error = %e, "Tombstone send failed");
+                    if let Err(e) = client.send_tombstone(tombstone).await {
+                        warn!(error = %e, "Tombstone send failed");
                     }
                 });
             }
