@@ -887,15 +887,44 @@ impl App<'_> {
         tokio::spawn(async move {
             while let Some(event) = coordinator_events.recv().await {
                 if let TransportEvent::Message(envelope) = event {
-                    let result = client.process_message(&envelope).await;
-                    if tx
-                        .send(Action::MessageProcessed {
-                            result: result.map_err(|e| e.to_string()),
-                            source: MessageSource::Coordinator,
-                        })
-                        .is_err()
-                    {
-                        break;
+                    match client.process_message_local(&envelope) {
+                        Ok(processed) => {
+                            // Notify UI immediately — message is decrypted and stored
+                            if tx
+                                .send(Action::MessageProcessed {
+                                    result: Ok(processed.received),
+                                    source: MessageSource::Coordinator,
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
+                            // Fire-and-forget tombstone
+                            if let Some(tombstone) = processed.pending_tombstone {
+                                let client = client.clone();
+                                let msg_id = envelope.message_id;
+                                tokio::spawn(async move {
+                                    if let Err(e) = client.send_tombstone(msg_id, tombstone).await {
+                                        warn!(
+                                            message_id = ?msg_id,
+                                            error = %e,
+                                            "Tombstone send failed"
+                                        );
+                                    }
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            if tx
+                                .send(Action::MessageProcessed {
+                                    result: Err(e.to_string()),
+                                    source: MessageSource::Coordinator,
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -910,15 +939,46 @@ impl App<'_> {
                     match event {
                         NodeEvent::MessageReceived(envelope) => {
                             debug!("Received message from embedded node");
-                            let result = client.process_message(&envelope).await;
-                            if tx
-                                .send(Action::MessageProcessed {
-                                    result: result.map_err(|e| e.to_string()),
-                                    source: MessageSource::EmbeddedNode,
-                                })
-                                .is_err()
-                            {
-                                break;
+                            match client.process_message_local(&envelope) {
+                                Ok(processed) => {
+                                    // Notify UI immediately — message is decrypted and stored
+                                    if tx
+                                        .send(Action::MessageProcessed {
+                                            result: Ok(processed.received),
+                                            source: MessageSource::EmbeddedNode,
+                                        })
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                    // Fire-and-forget tombstone
+                                    if let Some(tombstone) = processed.pending_tombstone {
+                                        let client = client.clone();
+                                        let msg_id = envelope.message_id;
+                                        tokio::spawn(async move {
+                                            if let Err(e) =
+                                                client.send_tombstone(msg_id, tombstone).await
+                                            {
+                                                warn!(
+                                                    message_id = ?msg_id,
+                                                    error = %e,
+                                                    "Tombstone send failed"
+                                                );
+                                            }
+                                        });
+                                    }
+                                }
+                                Err(e) => {
+                                    if tx
+                                        .send(Action::MessageProcessed {
+                                            result: Err(e.to_string()),
+                                            source: MessageSource::EmbeddedNode,
+                                        })
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
                             }
                         }
                         NodeEvent::Error(e) => {
