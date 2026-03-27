@@ -1,0 +1,27 @@
+crates/reme-transport/src/http_target.rs
+  31a52504c02f1b6b 149-153,158-159,162,241,244-245,249,251,288,290-291,473,510
+crates/reme-transport/src/http.rs
+  31a52504c02f1b6b 56-60,278,286-287,291-292,514,565
+crates/reme-transport/Cargo.toml
+  31a52504c02f1b6b 10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "e7d2d7722e89c711495a342971931b75eabddd3f",
+  "prompts": {
+    "31a52504c02f1b6b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6968c33-0db9-4942-b7da-866d5c00cc80",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 36,
+      "total_deletions": 24,
+      "accepted_lines": 32,
+      "overriden_lines": 2
+    }
+  }
+}
