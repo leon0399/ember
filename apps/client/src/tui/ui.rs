@@ -13,7 +13,7 @@ use ratatui::{
     Frame,
 };
 
-use super::app::{AddContactField, AddUpstreamField, App, Focus, UpstreamType};
+use super::app::{AddContactField, AddUpstreamField, App, DeliveryStatus, Focus, UpstreamType};
 use reme_transport::DeliveryTier;
 
 /// Render the entire UI
@@ -171,6 +171,33 @@ fn render_messages(frame: &mut Frame, app: &App, area: Rect) {
             // Message content
             let content_style = Style::default().fg(Color::White);
             lines.push(Line::from(Span::styled(&msg.content, content_style)));
+
+            // Delivery status indicator (sent messages only)
+            if msg.from_me {
+                match &msg.status {
+                    DeliveryStatus::None => {}
+                    DeliveryStatus::Sending => {
+                        lines.push(Line::from(Span::styled(
+                            "  sending...",
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::ITALIC),
+                        )));
+                    }
+                    DeliveryStatus::Sent(phase) => {
+                        lines.push(Line::from(Span::styled(
+                            format!("  \u{2713} {phase}"),
+                            Style::default().fg(Color::DarkGray),
+                        )));
+                    }
+                    DeliveryStatus::Failed(err) => {
+                        lines.push(Line::from(Span::styled(
+                            format!("  ! Failed: {err}"),
+                            Style::default().fg(Color::Red),
+                        )));
+                    }
+                }
+            }
 
             // Empty line between messages
             lines.push(Line::from(""));
