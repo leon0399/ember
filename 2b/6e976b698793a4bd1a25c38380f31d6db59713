@@ -1,0 +1,33 @@
+crates/reme-bundle/Cargo.toml
+  31a52504c02f1b6b 1-11
+crates/reme-bundle/src/error.rs
+  31a52504c02f1b6b 1-27
+crates/reme-bundle/src/reader.rs
+  31a52504c02f1b6b 1-2
+crates/reme-bundle/src/writer.rs
+  31a52504c02f1b6b 1-2
+crates/reme-bundle/src/lib.rs
+  31a52504c02f1b6b 1-31
+Cargo.toml
+  31a52504c02f1b6b 20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "2b6e976b698793a4bd1a25c38380f31d6db59713",
+  "prompts": {
+    "31a52504c02f1b6b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6968c33-0db9-4942-b7da-866d5c00cc80",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 74,
+      "total_deletions": 0,
+      "accepted_lines": 74,
+      "overriden_lines": 0
+    }
+  }
+}
