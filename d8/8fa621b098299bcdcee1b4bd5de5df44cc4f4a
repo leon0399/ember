@@ -1,0 +1,23 @@
+crates/reme-bundle/src/reader.rs
+  31a52504c02f1b6b 1-57,59-83,85-203
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "d88fa621b098299bcdcee1b4bd5de5df44cc4f4a",
+  "prompts": {
+    "31a52504c02f1b6b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6968c33-0db9-4942-b7da-866d5c00cc80",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 193,
+      "total_deletions": 3,
+      "accepted_lines": 201,
+      "overriden_lines": 2
+    }
+  }
+}
