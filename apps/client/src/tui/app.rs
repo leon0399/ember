@@ -85,6 +85,14 @@ impl UpstreamType {
             UpstreamType::Mqtt => UpstreamType::Http,
         };
     }
+
+    /// Display label for status messages
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UpstreamType::Http => "HTTP",
+            UpstreamType::Mqtt => "MQTT",
+        }
+    }
 }
 
 /// Which field is focused in the add upstream popup
@@ -293,6 +301,7 @@ pub struct Conversation {
 /// Delivery status for sent messages. Displayed as a visual indicator in the TUI.
 /// This is a UI-only type — not persisted or sent over the wire.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)] // Sent/Failed are scaffolding for per-message delivery indicators (not yet rendered)
 pub enum DeliveryStatus {
     /// No status to display (received messages, history)
     #[default]
@@ -316,6 +325,7 @@ pub enum MessageSource {
 ///
 /// This is the single integration point for the TUI. Background tasks,
 /// UI events, and spawned I/O all communicate through this type.
+#[allow(dead_code)] // Variant fields (e.g. Resize dimensions, send_id) are API surface, not all are consumed yet
 pub enum Action {
     /// Keyboard input
     Key(KeyEvent),
@@ -326,6 +336,7 @@ pub enum Action {
 
     /// A spawned send task completed
     SendComplete {
+        /// Reserved for per-message delivery status correlation (not yet wired to UI)
         send_id: u64,
         result: Result<TieredDeliveryPhase, String>,
     },
@@ -358,6 +369,8 @@ pub struct Message {
     pub content: String,
     pub timestamp: String,
     pub status: DeliveryStatus,
+    /// Monotonic ID for correlating with background send results. None for received messages.
+    pub send_id: Option<u64>,
 }
 
 /// Application state
@@ -1044,14 +1057,37 @@ impl App<'_> {
             Action::Tick | Action::Resize(_, _) => {
                 // No-op: render happens after update; ratatui handles resize
             }
-            Action::SendComplete { send_id: _, result } => match result {
-                Ok(phase) => {
-                    self.status = format_delivery_status(&phase);
+            Action::SendComplete { send_id, result } => {
+                let status = match &result {
+                    Ok(phase) => DeliveryStatus::Sent(format_delivery_status(phase)),
+                    Err(e) => DeliveryStatus::Failed(e.clone()),
+                };
+
+                // Update status bar
+                self.status = match &status {
+                    DeliveryStatus::Sent(s) => s.clone(),
+                    DeliveryStatus::Failed(e) => format!("Send failed: {e}"),
+                    _ => String::new(),
+                };
+
+                // Update the optimistic message in visible messages
+                for msg in &mut self.messages {
+                    if msg.send_id == Some(send_id) {
+                        msg.status = status.clone();
+                        break;
+                    }
                 }
-                Err(e) => {
-                    self.status = format!("Send failed: {e}");
+
+                // Also update in cache (so switching conversations preserves status)
+                for cache in self.message_cache.values_mut() {
+                    for msg in cache.iter_mut() {
+                        if msg.send_id == Some(send_id) {
+                            msg.status = status;
+                            return;
+                        }
+                    }
                 }
-            },
+            }
             Action::MessageProcessed { result, source } => match result {
                 Ok(msg) => {
                     let content = match &msg.content {
@@ -1093,14 +1129,7 @@ impl App<'_> {
                 Ok(()) => {
                     self.show_add_upstream_popup = false;
                     self.add_upstream_popup.reset();
-                    self.status = format!(
-                        "Added {} upstream: {}",
-                        match transport_type {
-                            UpstreamType::Http => "HTTP",
-                            UpstreamType::Mqtt => "MQTT",
-                        },
-                        url
-                    );
+                    self.status = format!("Added {} upstream: {}", transport_type.as_str(), url);
                 }
                 Err(e) => {
                     self.add_upstream_popup.error = Some(e);
@@ -1204,6 +1233,7 @@ impl App<'_> {
             content: content.clone(),
             timestamp: utc_time_now(),
             status: DeliveryStatus::None,
+            send_id: None,
         };
 
         // Cache message
@@ -1417,12 +1447,16 @@ impl App<'_> {
 
                     match self.client.prepare_message(&public_id, content, false) {
                         Ok(prepared) => {
+                            let send_id = self.next_send_id;
+                            self.next_send_id += 1;
+
                             let message = Message {
                                 from_me: true,
                                 sender_name: "You".to_string(),
                                 content: text,
                                 timestamp: utc_time_now(),
                                 status: DeliveryStatus::Sending,
+                                send_id: Some(send_id),
                             };
 
                             self.cache_message(public_id, message.clone());
@@ -1433,8 +1467,6 @@ impl App<'_> {
 
                             let client = self.client.clone();
                             let tx = self.action_tx.clone();
-                            let send_id = self.next_send_id;
-                            self.next_send_id += 1;
                             tokio::spawn(async move {
                                 let result = client.submit_prepared_tiered(&prepared).await;
                                 let _ = tx.send(Action::SendComplete {
@@ -1509,6 +1541,7 @@ impl App<'_> {
                                 content,
                                 timestamp: format_unix_timestamp(msg.created_at),
                                 status: DeliveryStatus::None,
+                                send_id: None,
                             });
                         }
                         // Re-append any in-session messages after the stored history
@@ -1717,28 +1750,11 @@ impl App<'_> {
                                 let tier = self.add_upstream_popup.tier;
                                 let registry = self.registry.clone();
                                 let tx = self.action_tx.clone();
-                                let url_clone = url.clone();
                                 self.status = "Connecting to MQTT...".to_string();
                                 tokio::spawn(async move {
-                                    let result = async {
-                                        let mqtt_config = MqttTargetConfig::new(&url_clone);
-                                        let target = MqttTarget::connect(mqtt_config)
-                                            .await
-                                            .map_err(|e| {
-                                                format!("Failed to connect to MQTT broker: {e}")
-                                            })?;
-                                        let id = target.id().clone();
-                                        let pool = registry.mqtt_pool().ok_or_else(|| {
-                                            "MQTT pool not initialized".to_string()
-                                        })?;
-                                        pool.add_target(target);
-                                        registry.register_ephemeral(id, None, tier);
-                                        info!(url = %url_clone, "Added ephemeral MQTT upstream");
-                                        Ok(())
-                                    }
-                                    .await;
+                                    let result = connect_mqtt_upstream(&url, tier, &registry).await;
                                     let _ = tx.send(Action::UpstreamAdded {
-                                        url: url_clone,
+                                        url,
                                         transport_type: UpstreamType::Mqtt,
                                         result,
                                     });
@@ -1777,6 +1793,27 @@ impl App<'_> {
         info!(url = %url, "Added ephemeral HTTP upstream");
         Ok(())
     }
+}
+
+/// Connect to an MQTT broker and register it as an ephemeral upstream.
+///
+/// Extracted from the spawn closure in `handle_add_upstream_popup_key_event` to
+/// avoid the `async { ... }.await` block and enable `?` propagation cleanly.
+async fn connect_mqtt_upstream(
+    url: &str,
+    tier: DeliveryTier,
+    registry: &TransportRegistry,
+) -> Result<(), String> {
+    let mqtt_config = MqttTargetConfig::new(url);
+    let target = MqttTarget::connect(mqtt_config)
+        .await
+        .map_err(|e| format!("Failed to connect to MQTT broker: {e}"))?;
+    let id = target.id().clone();
+    let pool = registry.mqtt_pool().ok_or("MQTT pool not initialized")?;
+    pool.add_target(target);
+    registry.register_ephemeral(id, None, tier);
+    info!(url = %url, "Added ephemeral MQTT upstream");
+    Ok(())
 }
 
 /// Get current UTC time as HH:MM string (avoids chrono dependency)
