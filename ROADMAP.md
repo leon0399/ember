@@ -39,7 +39,6 @@ flowchart LR
     end
 
     v10["v1.0<br/>Forward Secrecy"]
-
     v03 --> v04 --> PC --> v05 --> v06 --> v07 --> v08 --> v09 --> v010 --> v10
 ```
 
