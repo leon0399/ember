@@ -998,92 +998,115 @@ impl App<'_> {
     /// Run the application main loop
     pub async fn run(&mut self, terminal: &mut Terminal<impl Backend>) -> AppResult<()> {
         let mut event_handler = EventHandler::new(100);
-
-        // Spawn outbox tick as a background task so HTTP timeouts don't block the UI.
-        let (outbox_result_tx, mut outbox_result_rx) =
-            tokio::sync::mpsc::channel::<Result<(usize, usize, u64), reme_core::ClientError>>(1);
-        let outbox_client = self.client.clone();
-        let outbox_interval = self.outbox_tick_interval;
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(outbox_interval);
-            interval.tick().await; // skip first immediate tick
-            loop {
-                interval.tick().await;
-                let result = outbox_client.tiered_outbox_tick().await;
-                if outbox_result_tx.send(result).await.is_err() {
-                    break; // receiver dropped, app shutting down
-                }
-            }
-        });
+        self.spawn_background_tasks();
 
         while self.running {
-            // Draw UI
+            tokio::select! {
+                event = event_handler.next() => {
+                    let action = match event? {
+                        Event::Key(k) => Action::Key(k),
+                        Event::Tick => Action::Tick,
+                        Event::Resize(w, h) => Action::Resize(w, h),
+                    };
+                    self.update(action);
+                }
+                Some(action) = self.action_rx.recv() => {
+                    self.update(action);
+                }
+            }
+
+            // Drain any additional queued actions
+            while let Ok(action) = self.action_rx.try_recv() {
+                self.update(action);
+            }
+
             terminal.draw(|frame| ui::render(frame, self))?;
-
-            // Check for incoming messages from coordinator (non-blocking)
-            while let Ok(event) = self.coordinator_events.try_recv() {
-                if let TransportEvent::Message(envelope) = event {
-                    self.process_incoming_envelope(&envelope, "coordinator")
-                        .await;
-                }
-            }
-
-            // Check for incoming messages from embedded node (non-blocking)
-            // Collect events first to avoid borrow conflicts
-            let node_events: Vec<NodeEvent> = if let Some(ref mut event_rx) = self.node_event_rx {
-                let mut events = Vec::new();
-                while let Ok(event) = event_rx.try_recv() {
-                    events.push(event);
-                }
-                events
-            } else {
-                Vec::new()
-            };
-
-            for event in node_events {
-                match event {
-                    NodeEvent::MessageReceived(envelope) => {
-                        debug!("Received message from embedded node");
-                        self.process_incoming_envelope(&envelope, "embedded node")
-                            .await;
-                    }
-                    NodeEvent::Error(e) => {
-                        tracing::error!("Embedded node error: {}", e);
-                        self.status = format!("Node error: {e}");
-                    }
-                }
-            }
-
-            // Collect outbox tick results (non-blocking)
-            while let Ok(result) = outbox_result_rx.try_recv() {
-                match result {
-                    Ok((retried, maintenance, expired)) => {
-                        if retried > 0 || maintenance > 0 || expired > 0 {
-                            info!(retried, maintenance, expired, "Outbox tick completed");
-                        } else {
-                            debug!("Outbox tick: no pending messages");
-                        }
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "Outbox tick failed");
-                    }
-                }
-            }
-
-            // Handle UI events
-            match event_handler.next().await? {
-                Event::Key(key_event) => self.handle_key_event(key_event).await?,
-                Event::Tick | Event::Resize(_, _) => {} // UI refresh handled by loop iteration
-            }
         }
 
-        // Graceful shutdown of discovery
         self.shutdown_discovery().await;
-
-        // Graceful shutdown of embedded node
         self.shutdown_embedded_node().await;
 
         Ok(())
+    }
+
+    /// Process a single action, updating application state.
+    ///
+    /// This method is intentionally synchronous — all I/O happens in
+    /// spawned tasks that send results back as [`Action`] variants.
+    #[allow(clippy::too_many_lines)] // Action handling has many cases
+    fn update(&mut self, action: Action) {
+        match action {
+            Action::Key(key_event) => {
+                if let Err(e) = self.handle_key_event(key_event) {
+                    self.status = format!("Error: {e}");
+                }
+            }
+            Action::Tick | Action::Resize(_, _) => {
+                // No-op: render happens after update; ratatui handles resize
+            }
+            Action::SendComplete { send_id: _, result } => match result {
+                Ok(phase) => {
+                    self.status = format_delivery_status(&phase);
+                }
+                Err(e) => {
+                    self.status = format!("Send failed: {e}");
+                }
+            },
+            Action::MessageProcessed { result, source } => match result {
+                Ok(msg) => {
+                    let content = match &msg.content {
+                        Content::Text(t) => t.body.clone(),
+                        Content::Receipt(r) => format!("[Receipt: {:?}]", r.kind),
+                        _ => "[Unknown content]".to_string(),
+                    };
+                    self.handle_incoming_message(msg.from, content);
+                }
+                Err(e) => {
+                    let label = match source {
+                        MessageSource::Coordinator => "coordinator",
+                        MessageSource::EmbeddedNode => "embedded node",
+                    };
+                    warn!("Failed to process {} message: {}", label, e);
+                    self.status = format!("Message decrypt failed: {e}");
+                }
+            },
+            Action::OutboxTick(result) => match result {
+                Ok((retried, maintenance, expired)) => {
+                    if retried > 0 || maintenance > 0 || expired > 0 {
+                        info!(retried, maintenance, expired, "Outbox tick completed");
+                    } else {
+                        debug!("Outbox tick: no pending messages");
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, "Outbox tick failed");
+                }
+            },
+            Action::NodeError(e) => {
+                self.status = format!("Node error: {e}");
+            }
+            Action::UpstreamAdded {
+                url,
+                transport_type,
+                result,
+            } => match result {
+                Ok(()) => {
+                    self.show_add_upstream_popup = false;
+                    self.add_upstream_popup.reset();
+                    self.status = format!(
+                        "Added {} upstream: {}",
+                        match transport_type {
+                            UpstreamType::Http => "HTTP",
+                            UpstreamType::Mqtt => "MQTT",
+                        },
+                        url
+                    );
+                }
+                Err(e) => {
+                    self.add_upstream_popup.error = Some(e);
+                }
+            },
+        }
     }
 
     /// Shutdown the discovery subsystem gracefully.
@@ -1130,30 +1153,6 @@ impl App<'_> {
                 warn!(error = %e, "Embedded node task panicked during shutdown");
             } else {
                 info!("Embedded node shutdown complete");
-            }
-        }
-    }
-
-    /// Process an incoming envelope from any transport source.
-    ///
-    /// Decrypts the message, extracts content, and updates the UI.
-    async fn process_incoming_envelope(
-        &mut self,
-        envelope: &reme_message::OuterEnvelope,
-        source: &str,
-    ) {
-        match self.client.process_message(envelope).await {
-            Ok(msg) => {
-                let content = match &msg.content {
-                    Content::Text(t) => t.body.clone(),
-                    Content::Receipt(r) => format!("[Receipt: {:?}]", r.kind),
-                    _ => "[Unknown content]".to_string(),
-                };
-                self.handle_incoming_message(msg.from, content);
-            }
-            Err(e) => {
-                warn!("Failed to process {} message: {}", source, e);
-                self.status = format!("Message decrypt failed: {e}");
             }
         }
     }
@@ -1228,7 +1227,7 @@ impl App<'_> {
 
     /// Handle key events
     #[allow(clippy::too_many_lines)] // Event handling has many cases
-    async fn handle_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
+    fn handle_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
         // Handle popups first if visible
         if self.show_add_contact_popup {
             return self.handle_popup_key_event(key);
@@ -1237,7 +1236,7 @@ impl App<'_> {
             return self.handle_my_id_popup_key_event(key);
         }
         if self.show_add_upstream_popup {
-            return self.handle_add_upstream_popup_key_event(key).await;
+            return self.handle_add_upstream_popup_key_event(key);
         }
         if self.show_upstreams_popup {
             return self.handle_upstreams_popup_key_event(key);
@@ -1343,9 +1342,9 @@ impl App<'_> {
                 };
             }
             _ => match self.focus {
-                Focus::Conversations => self.handle_conversation_key(key).await?,
+                Focus::Conversations => self.handle_conversation_key(key)?,
                 Focus::Messages => self.handle_message_key(key),
-                Focus::Input => self.handle_input_key(key).await?,
+                Focus::Input => self.handle_input_key(key)?,
             },
         }
 
@@ -1353,8 +1352,8 @@ impl App<'_> {
     }
 
     /// Handle key events in conversation list
-    #[allow(clippy::unused_async)] // Async for interface consistency with other handlers
-    async fn handle_conversation_key(&mut self, key: KeyEvent) -> AppResult<()> {
+    #[allow(clippy::unnecessary_wraps)] // Returns Result for consistency with other handlers
+    fn handle_conversation_key(&mut self, key: KeyEvent) -> AppResult<()> {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.selected_conversation > 0 {
@@ -1407,33 +1406,42 @@ impl App<'_> {
     }
 
     /// Handle key events in input area
-    async fn handle_input_key(&mut self, key: KeyEvent) -> AppResult<()> {
+    #[allow(clippy::unnecessary_wraps)] // Returns Result for consistency with other handlers
+    fn handle_input_key(&mut self, key: KeyEvent) -> AppResult<()> {
         if key.code == KeyCode::Enter {
-            // Send message
             let text = self.input.lines().join("\n");
             if !text.trim().is_empty() {
                 if let Some(conv) = self.conversations.get(self.selected_conversation) {
                     let public_id = conv.public_id;
-                    match self.client.send_text_tiered(&public_id, &text).await {
-                        Ok((_msg_id, phase)) => {
-                            // Create message object
+                    let content = Content::Text(reme_message::TextContent { body: text.clone() });
+
+                    match self.client.prepare_message(&public_id, content, false) {
+                        Ok(prepared) => {
                             let message = Message {
                                 from_me: true,
                                 sender_name: "You".to_string(),
                                 content: text,
                                 timestamp: utc_time_now(),
-                                status: DeliveryStatus::None,
+                                status: DeliveryStatus::Sending,
                             };
 
-                            // Cache the message
                             self.cache_message(public_id, message.clone());
-
-                            // Add to visible messages
                             self.messages.push(message);
-
                             self.input = TextArea::default();
                             self.input.set_placeholder_text("Type a message...");
-                            self.status = format_delivery_status(&phase);
+                            self.status = "Sending...".to_string();
+
+                            let client = self.client.clone();
+                            let tx = self.action_tx.clone();
+                            let send_id = self.next_send_id;
+                            self.next_send_id += 1;
+                            tokio::spawn(async move {
+                                let result = client.submit_prepared_tiered(&prepared).await;
+                                let _ = tx.send(Action::SendComplete {
+                                    send_id,
+                                    result: result.map_err(|e| e.to_string()),
+                                });
+                            });
                         }
                         Err(e) => {
                             self.status = format!("Send failed: {e}");
@@ -1442,7 +1450,6 @@ impl App<'_> {
                 }
             }
         } else {
-            // Forward to textarea
             let input = Input::from(key);
             self.input.input(input);
         }
@@ -1650,7 +1657,8 @@ impl App<'_> {
     }
 
     /// Handle key events when add upstream popup is visible
-    async fn handle_add_upstream_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
+    #[allow(clippy::unnecessary_wraps)] // Returns Result for consistency with other handlers
+    fn handle_add_upstream_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
         match key.code {
             KeyCode::Esc => {
                 // Cancel
@@ -1692,23 +1700,49 @@ impl App<'_> {
                 // Try to add the upstream
                 match self.add_upstream_popup.validate_url() {
                     Ok(url) => {
-                        let result = self.add_upstream(&url).await;
-                        match result {
-                            Ok(()) => {
-                                let transport_type = self.add_upstream_popup.transport_type;
-                                self.show_add_upstream_popup = false;
-                                self.add_upstream_popup.reset();
-                                self.status = format!(
-                                    "Added {} upstream: {}",
-                                    match transport_type {
-                                        UpstreamType::Http => "HTTP",
-                                        UpstreamType::Mqtt => "MQTT",
-                                    },
-                                    url
-                                );
-                            }
-                            Err(e) => {
-                                self.add_upstream_popup.error = Some(e);
+                        let transport_type = self.add_upstream_popup.transport_type;
+                        match transport_type {
+                            UpstreamType::Http => match self.add_upstream_http(&url) {
+                                Ok(()) => {
+                                    self.show_add_upstream_popup = false;
+                                    self.add_upstream_popup.reset();
+                                    self.status = format!("Added HTTP upstream: {url}");
+                                }
+                                Err(e) => {
+                                    self.add_upstream_popup.error = Some(e);
+                                }
+                            },
+                            UpstreamType::Mqtt => {
+                                // MQTT connect is async — spawn and send result back
+                                let tier = self.add_upstream_popup.tier;
+                                let registry = self.registry.clone();
+                                let tx = self.action_tx.clone();
+                                let url_clone = url.clone();
+                                self.status = "Connecting to MQTT...".to_string();
+                                tokio::spawn(async move {
+                                    let result = async {
+                                        let mqtt_config = MqttTargetConfig::new(&url_clone);
+                                        let target = MqttTarget::connect(mqtt_config)
+                                            .await
+                                            .map_err(|e| {
+                                                format!("Failed to connect to MQTT broker: {e}")
+                                            })?;
+                                        let id = target.id().clone();
+                                        let pool = registry.mqtt_pool().ok_or_else(|| {
+                                            "MQTT pool not initialized".to_string()
+                                        })?;
+                                        pool.add_target(target);
+                                        registry.register_ephemeral(id, None, tier);
+                                        info!(url = %url_clone, "Added ephemeral MQTT upstream");
+                                        Ok(())
+                                    }
+                                    .await;
+                                    let _ = tx.send(Action::UpstreamAdded {
+                                        url: url_clone,
+                                        transport_type: UpstreamType::Mqtt,
+                                        result,
+                                    });
+                                });
                             }
                         }
                     }
@@ -1728,52 +1762,19 @@ impl App<'_> {
         Ok(())
     }
 
-    /// Add an upstream transport at runtime
-    async fn add_upstream(&mut self, url: &str) -> Result<(), String> {
-        let transport_type = self.add_upstream_popup.transport_type;
+    /// Add an HTTP upstream synchronously (no network I/O required).
+    fn add_upstream_http(&mut self, url: &str) -> Result<(), String> {
         let tier = self.add_upstream_popup.tier;
-
-        match transport_type {
-            UpstreamType::Http => {
-                // TODO: Add UI fields for username/password when adding ephemeral HTTP upstreams
-                // TODO: Create stable (FETCH + QUORUM_CREDIT) targets when user selects Quorum tier,
-                // not always ephemeral (SEND-only) — currently tier selection is cosmetic
-                let config =
-                    HttpTargetConfig::ephemeral(url).with_request_timeout(Duration::from_secs(10));
-                let target = HttpTarget::new(config)
-                    .map_err(|e| format!("Failed to create HTTP transport: {e}"))?;
-                let id = target.id().clone();
-
-                // Add to coordinator's HTTP pool
-                self.coordinator.add_http_target(target);
-
-                // Register in metadata for display
-                self.registry.register_ephemeral(id, None, tier);
-
-                info!(url = %url, "Added ephemeral HTTP upstream");
-            }
-            UpstreamType::Mqtt => {
-                // TODO: Add UI fields for username/password when adding ephemeral MQTT upstreams
-                let mqtt_config = MqttTargetConfig::new(url);
-                let target = MqttTarget::connect(mqtt_config)
-                    .await
-                    .map_err(|e| format!("Failed to connect to MQTT broker: {e}"))?;
-
-                let id = target.id().clone();
-
-                // Add to MQTT pool via registry (which shares the pool with coordinator)
-                self.registry
-                    .mqtt_pool()
-                    .ok_or("MQTT pool not initialized")?
-                    .add_target(target);
-
-                // Register in metadata for display
-                self.registry.register_ephemeral(id, None, tier);
-
-                info!(url = %url, "Added ephemeral MQTT upstream");
-            }
-        }
-
+        // TODO: Add UI fields for username/password when adding ephemeral HTTP upstreams
+        // TODO: Create stable (FETCH + QUORUM_CREDIT) targets when user selects Quorum tier,
+        // not always ephemeral (SEND-only) — currently tier selection is cosmetic
+        let config = HttpTargetConfig::ephemeral(url).with_request_timeout(Duration::from_secs(10));
+        let target =
+            HttpTarget::new(config).map_err(|e| format!("Failed to create HTTP transport: {e}"))?;
+        let id = target.id().clone();
+        self.coordinator.add_http_target(target);
+        self.registry.register_ephemeral(id, None, tier);
+        info!(url = %url, "Added ephemeral HTTP upstream");
         Ok(())
     }
 }
