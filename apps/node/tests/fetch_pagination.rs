@@ -39,6 +39,7 @@ async fn start_test_node(store: Arc<PersistentMailboxStore>) -> (String, JoinHan
         identity: None,
         public_host: None,
         additional_hosts: vec![],
+        config: node::config::NodeConfig::default(),
     });
     let app = api::router(state, None);
 

@@ -71,6 +71,7 @@ async fn start_test_node(
         identity,
         public_host: None,
         additional_hosts: vec![],
+        config: node::config::NodeConfig::default(),
     });
     let app = api::router(state, None);
 

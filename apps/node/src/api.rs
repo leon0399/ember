@@ -11,6 +11,7 @@
 //! - `GET  /api/v1/fetch/{routing_key}` — Fetch messages for a routing key
 //! - `GET  /api/v1/stats` — Mailbox statistics
 
+use crate::config::NodeConfig;
 use crate::mqtt_bridge::MqttBridge;
 use crate::node_identity::NodeIdentity;
 use crate::rate_limit::{KeyedLimiter, RateLimiters};
@@ -55,12 +56,10 @@ pub struct AppState {
     pub public_host: Option<String>,
     /// Additional acceptable hostnames (for multi-homed, dev, migration)
     pub additional_hosts: Vec<String>,
+    /// Node configuration (for per-request limits etc.)
+    pub config: NodeConfig,
 }
 
-/// Maximum request body size (256 KiB)
-/// Prevents memory exhaustion from oversized payloads.
-/// Typical `OuterEnvelope` is ~2 KiB; 256 KiB provides ample headroom.
-const MAX_BODY_SIZE: usize = 256 * 1024;
 const DEFAULT_FETCH_PAGE_SIZE: usize = 100;
 const MAX_FETCH_PAGE_SIZE: usize = 100;
 const MAX_FETCH_RESPONSE_BYTES: usize = 64 * 1024;
@@ -102,7 +101,7 @@ pub fn router(state: Arc<AppState>, rate_limiters: Option<&RateLimiters>) -> Rou
         .merge(submit_route)
         .merge(fetch_route)
         .route("/api/v1/stats", get(get_stats))
-        .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
+        .layer(DefaultBodyLimit::max(state.config.max_body_size))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             check_basic_auth,

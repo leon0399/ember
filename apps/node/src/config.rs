@@ -400,6 +400,14 @@ pub struct CliArgs {
     /// Env var: `REME_NODE_ALLOW_INSECURE_DESTINATION=true` (handled by config crate, not clap).
     #[arg(long)]
     pub allow_insecure_destination: bool,
+
+    /// Maximum request body size in bytes
+    #[arg(long, env = "REME_NODE_MAX_BODY_SIZE")]
+    pub max_body_size: Option<usize>,
+
+    /// Maximum frames per submit request
+    #[arg(long, env = "REME_NODE_MAX_BATCH_SIZE")]
+    pub max_batch_size: Option<u32>,
 }
 
 /// Final resolved configuration
@@ -469,6 +477,14 @@ pub struct NodeConfig {
     /// Allow running with identity but without `public_host` (disables destination verification)
     #[serde(default)]
     pub allow_insecure_destination: bool,
+
+    /// Maximum request body size in bytes (default: 2 MiB)
+    #[serde(default)]
+    pub max_body_size: usize,
+
+    /// Maximum frames per submit request (default: 100)
+    #[serde(default)]
+    pub max_batch_size: u32,
 }
 
 impl Default for NodeConfig {
@@ -492,6 +508,8 @@ impl Default for NodeConfig {
             public_host: None,
             additional_hosts: Vec::new(),
             allow_insecure_destination: false,
+            max_body_size: 2 * 1024 * 1024, // 2 MiB
+            max_batch_size: 100,
         }
     }
 }
@@ -553,7 +571,9 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         .set_default("cleanup.interval_secs", defaults.cleanup.interval_secs as i64)?
         .set_default("cleanup.tombstone_delay_secs", defaults.cleanup.tombstone_delay_secs as i64)?
         .set_default("cleanup.orphan_delay_secs", defaults.cleanup.orphan_delay_secs as i64)?
-        .set_default("cleanup.rate_limit_delay_secs", defaults.cleanup.rate_limit_delay_secs as i64)?;
+        .set_default("cleanup.rate_limit_delay_secs", defaults.cleanup.rate_limit_delay_secs as i64)?
+        .set_default("max_body_size", defaults.max_body_size as i64)?
+        .set_default("max_batch_size", i64::from(defaults.max_batch_size))?;
 
     // Layer 2: Config file
     let config_path = cli.config.clone().or_else(default_config_path);
@@ -606,6 +626,12 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     }
     if cli.allow_insecure_destination {
         builder = builder.set_override("allow_insecure_destination", true)?;
+    }
+    if let Some(v) = cli.max_body_size {
+        builder = builder.set_override("max_body_size", v as i64)?;
+    }
+    if let Some(v) = cli.max_batch_size {
+        builder = builder.set_override("max_batch_size", i64::from(v))?;
     }
 
     let config = builder.build()?;
@@ -817,6 +843,16 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         .get::<bool>("allow_insecure_destination")
         .unwrap_or(false);
 
+    let max_body_size: usize = config
+        .get::<i64>("max_body_size")
+        .map(i64_to_usize_clamped)
+        .unwrap_or(defaults.max_body_size);
+
+    let max_batch_size: u32 = config
+        .get::<i64>("max_batch_size")
+        .map(i64_to_u32_clamped)
+        .unwrap_or(defaults.max_batch_size);
+
     Ok(NodeConfig {
         bind_addr,
         max_messages,
@@ -835,6 +871,8 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         public_host,
         additional_hosts,
         allow_insecure_destination,
+        max_body_size,
+        max_batch_size,
     })
 }
 
