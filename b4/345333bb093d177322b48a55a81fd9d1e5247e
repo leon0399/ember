@@ -1,0 +1,27 @@
+crates/reme-bundle/src/error.rs
+  31a52504c02f1b6b 22-24
+crates/reme-bundle/src/writer.rs
+  31a52504c02f1b6b 8-13,16-18,45,57-60,67-69
+crates/reme-bundle/src/reader.rs
+  31a52504c02f1b6b 99-100,117-122,204-212
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "b4345333bb093d177322b48a55a81fd9d1e5247e",
+  "prompts": {
+    "31a52504c02f1b6b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6968c33-0db9-4942-b7da-866d5c00cc80",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 39,
+      "total_deletions": 19,
+      "accepted_lines": 38,
+      "overriden_lines": 0
+    }
+  }
+}
