@@ -40,12 +40,12 @@ Attack scenarios, mitigations, and residual risks for the reme messaging system.
 **Attack**: Mallory floods the network with thousands of mDNS advertisements, each with a different routing key, attempting to exhaust the discovery controller's resources.
 
 **Mitigation**:
-- The controller enforces a hard cap of 256 tracked peers
-- Only peers whose routing key matches a known contact are processed (strangers are ignored)
-- Identity verification adds latency per peer, but the 256 cap bounds total work
+- The controller enforces a hard cap of 256 tracked peers (verified + stranger cache, both bounded by `max_peers`)
+- Only peers whose routing key matches a known contact are verified and registered; strangers are cached (not verified) for later matching when new contacts are added
+- Identity verification is concurrent (JoinSet) with 2s connect / 5s total HTTP timeouts, bounding total refresh time
 - The mDNS-SD backend uses `broadcast` channels that drop events on lag rather than growing unboundedly
 
-**Residual risk**: An attacker who knows a contact's routing key (16 bytes, derived from their public key via BLAKE3) could trigger verification attempts. The configurable peer cap (default: 256, via `LanDiscoveryConfig.max_peers`) and the discovery controller's reqwest client timeouts (2s connect, 5s total) bound the amplification.
+**Residual risk**: An attacker who knows a contact's routing key (16 bytes, derived from their public key via BLAKE3) could trigger verification attempts. The configurable peer cap (default: 256, via `LanDiscoveryConfig.max_peers`) and the HTTP timeouts bound the amplification. Strangers are cached without verification — a flooding attacker can fill the stranger cache with fake entries, but the cache is bounded by `max_peers` and entries are never used for message delivery (only for triggering verification when a contact is later added).
 
 ### 4. Stale peer targets after network change
 
