@@ -26,7 +26,7 @@ flowchart LR
     subgraph "Direct transports"
         v03["v0.3 ✅<br/>Tiered Delivery"]
         v04["v0.4 ✅<br/>mDNS Discovery"]
-        PC["Postcard<br/>(internal)"]
+        PC["Postcard ✅<br/>(internal)"]
         v05["v0.5<br/>Sneakernet Export"]
         v06["v0.6<br/>LAN Relay"]
         v07["v0.7<br/>BLE Direct"]
@@ -45,15 +45,15 @@ flowchart LR
 
 ---
 
-## Current status (v0.3)
+## Current status (v0.4)
 
 ### Core foundation
 
 | Component            | Status     |
 |----------------------|------------|
 | **Cryptography**     | ✅ Complete |
-| **Wire Protocol**    | ✅ Complete |
-| **DAG Ordering**     | ✅ Complete |
+| **Wire Protocol**    | ✅ Complete (postcard) |
+| **DAG Ordering**     | ✅ Complete (persisted) |
 | **Tiered Delivery**  | ✅ Complete |
 | **HTTP Transport**   | ✅ Complete |
 | **MQTT Transport**   | ✅ Complete |
@@ -63,8 +63,10 @@ flowchart LR
 | **Node Server**      | ✅ Complete |
 | **Embedded Relay**   | ✅ Complete |
 | **Receipt Signing**  | ✅ Complete |
+| **LAN Discovery**    | ✅ Complete |
+| **Identity Verification** | ✅ Complete |
 
-**Test coverage:** 385 tests across workspace, all passing.
+**Test coverage:** 614 tests across workspace, all passing.
 
 ---
 
@@ -104,7 +106,7 @@ Automatic peer discovery and verified P2P messaging on local networks.
 - [x] Challenge-response verification in discovery flow
 - [x] Background identity refresh task
 - [x] Refresh triggers (periodic, failure-based circuit breaker)
-- [ ] Refresh trigger: network change detection
+- [ ] Refresh trigger: network change detection (deferred — periodic concurrent refresh covers this)
 - [x] Configuration options for refresh interval (`refresh_interval_secs`)
 
 **Success criteria:**
@@ -143,12 +145,14 @@ Simplify serialization code and prepare for stable wire format.
 - [x] Replace `bincode` with `postcard` in all crates
 - [x] Convert `#[derive(Encode, Decode)]` to `#[derive(Serialize, Deserialize)]`
 - [x] Remove manual `impl Encode/Decode` blocks (use serde attributes)
+- [x] Quarantine corrupt mailbox rows instead of deleting (SEC-L11)
+- [x] Make all encode paths return `Result` (BUG-M1/M2/M4)
+- [x] Add fuzz harnesses for wire format parsing
 - [ ] Bump wire format version to 0.1 (deferred — PoC phase, no deployed clients)
-- [ ] Update WHITEPAPER.md references
 - [ ] Verify message sizes remain within LoRa MTU budget
 
 **Success criteria:**
-- All 385+ tests pass
+- All 614+ tests pass
 - Wire format size delta < 5%
 - No manual serialization impl blocks remaining
 
