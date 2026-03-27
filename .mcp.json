@@ -12,15 +12,7 @@
       "command": "pnpx",
       "args": ["repomix@latest", "--mcp"]
     },
-    "zen": {
-      "command": "uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/BeehiveInnovations/zen-mcp-server.git",
-        "zen-mcp-server"
-      ]
-    },
-    "grep": {
+    "gh_grep": {
       "type": "http",
       "url": "https://mcp.grep.app"
     }

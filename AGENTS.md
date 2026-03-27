@@ -1,4 +1,4 @@
-# AGENTS.md
+# Agents instruction for `reme`
 
 This file provides guidance to AI coding agents when working with code in this repository.
 
@@ -9,13 +9,13 @@ Resilient Messenger (reme) is an outage-resilient, end-to-end encrypted messagin
 ## Build Commands
 
 ```bash
-cargo build                                      # Build all crates and apps
-cargo build --release                            # Build release binaries
-cargo test                                       # Run all tests
-cargo test -p reme-core                          # Run tests for a specific crate
-cargo test -p reme-core test_two_client_messaging # Run a single test
-cargo test -p reme-core --test integration       # Run integration tests only
-cargo fmt --all -- --check                       # Check formatting
+cargo build                                               # Build all crates and apps
+cargo build --release                                     # Build release binaries
+cargo test                                                # Run all tests
+cargo test -p reme-core                                   # Run tests for a specific crate
+cargo test -p reme-core test_two_client_messaging         # Run a single test
+cargo test -p reme-core --test integration                # Run integration tests only
+cargo fmt --all -- --check                                # Check formatting
 cargo clippy --all-targets --all-features -- -D warnings  # Lint
 ```
 
@@ -58,6 +58,7 @@ apps/
 ### LAN Discovery
 
 When `lan_discovery.enabled = true`, the client:
+
 1. Creates an mDNS-SD backend browsing for `_reme._tcp.local.` services
 2. Advertises own presence if embedded HTTP server is bound (`embedded_node.http_bind`)
 3. If `auto_direct_known_contacts = true` (default): spawns a discovery controller that matches peers by routing key against contacts, verifies identity via HTTP challenge-response, and registers verified peers as ephemeral HTTP targets (SEND-only, no FETCH)
@@ -82,6 +83,7 @@ When `lan_discovery.enabled = true`, the client:
 ### Tombstones
 
 After receiving a message, clients send tombstones for cache clearing and delivery receipts:
+
 - **V2 (current)**: ack_secret-based authorization (derived from ECDH shared secret)
 - Includes optional encrypted receipt for sender
 - Enables cache clearing on relay nodes and delivery/read receipts
@@ -89,11 +91,13 @@ After receiving a message, clients send tombstones for cache clearing and delive
 ### Tiered Delivery
 
 Messages flow through three delivery tiers with configurable quorum requirements:
+
 - **Tier 1 (Direct)**: Race all ephemeral targets (mDNS, DHT, Iroh), exit on ANY success
 - **Tier 2 (Quorum)**: Broadcast to all stable targets (HTTP, MQTT), require configurable quorum
 - **Tier 3 (BestEffort)**: Fire-and-forget (future: BLE mesh, LoRa/Meshtastic)
 
 Three-phase state machine:
+
 - **Phase 1 (Urgent)**: Aggressive retry with exponential backoff until quorum reached
 - **Phase 2 (Distributed)**: Periodic maintenance refresh (every 4h) until recipient ACKs
 - **Phase 3 (Confirmed)**: Cleanup after DAG acknowledgment or tombstone receipt
@@ -101,6 +105,7 @@ Three-phase state machine:
 ### Merkle DAG
 
 Messages include DAG fields for ordering and gap detection:
+
 - `prev_self`: ContentId of sender's previous message
 - `observed_heads`: ContentIds of latest messages seen from peer(s)
 - `epoch`: Increments on history clear
@@ -142,12 +147,27 @@ let transport = HttpTransport::new(server.url());
 
 Research/prototype stage — no external users. Breaking changes and public API restructuring are encouraged when they improve the architecture.
 
+## Key Documentation
+
+- `WHITEPAPER.md` — Protocol specification (encryption, wire format, transport design)
+- `ROADMAP.md` — Release timeline and feature planning (v0.4 → v1.0)
+- `docs/threat-model.md` — Attack scenarios and mitigations
+- `docs/tiered-delivery.md` — Three-tier delivery system design
+- `docs/lan-discovery.md` — mDNS/LAN peer discovery design
+
 ## Security Model
 
 - **No forward secrecy (V1)**: MIK compromise exposes all messages. Acceptable for DTN-first design.
 - **DTN tolerance**: No prekeys, no session state — message loss/reordering has no impact.
 - **Sender authentication**: XEdDSA signature binds sender identity to message content.
 - **Threat model**: See `docs/threat-model.md` for attack scenarios and mitigations. Review and update when adding new transport mechanisms or discovery features.
+
+## Development Workflow
+
+When writing or reviewing Rust code, consult these skills:
+
+- `/rust-best-practices` — borrowing vs cloning, error handling, clippy, testing conventions
+- `/rust-async-patterns` — Tokio patterns, CancellationToken, channels, graceful shutdown
 
 ## Pre-commit Checklist
 
