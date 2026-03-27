@@ -8,7 +8,7 @@
 //! - Only accepts messages with matching `routing_key` (derived from our `PublicID`)
 //! - Rejects tombstones (tombstones are for quorum nodes, not P2P)
 //! - Rejects duplicate messages (idempotent operation)
-//! - Body size limited to 256 KiB
+//! - Body size limited to 512 KiB
 //! - No relay support (deferred to future phase)
 //!
 //! # Receipt Signatures
@@ -21,6 +21,7 @@
 //! can decrypt it. Both are base64-encoded. Duplicate submissions return neither field.
 
 use axum::{
+    body::Bytes,
     extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Json, Response},
@@ -28,6 +29,7 @@ use axum::{
     Router,
 };
 use base64::prelude::*;
+use reme_bundle::parse_body;
 use reme_encryption::{build_identity_sign_data, build_receipt_sign_data, derive_ack_secret};
 use reme_identity::{is_low_order_point, Identity};
 use reme_message::{MessageID, OuterEnvelope, RoutingKey, WirePayload};
@@ -60,7 +62,7 @@ pub enum HttpServerError {
 /// Implements `IntoResponse` for clean error-to-HTTP-response conversion.
 #[derive(Debug)]
 enum ApiError {
-    /// Invalid request format (base64, wire format, etc.)
+    /// Invalid request format (bundle format, wire format, etc.)
     BadRequest(String),
     /// Message not intended for this recipient
     Forbidden,
@@ -205,21 +207,42 @@ struct Receipt {
     signature: String,
 }
 
-/// Response for successful submission.
-#[derive(Serialize)]
+/// Response for batch submission — one result per frame.
+#[derive(Debug, Serialize)]
 struct SubmitResponse {
-    status: &'static str,
-    /// Ack secret proving the node can decrypt this message.
-    /// Present only if ECDH derivation succeeds.
-    /// Base64-encoded 16-byte secret.
+    results: Vec<FrameResult>,
+}
+
+/// Per-frame result within a batch submission response.
+#[derive(Debug, Serialize)]
+struct FrameResult {
+    status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     ack_secret: Option<String>,
-    /// `XEdDSA` signature proving node received the message.
-    /// Signed data: `"reme-receipt-v1:" || signer_pubkey || message_id`
-    /// Present on first successful submission. Not returned for duplicates.
-    /// Base64-encoded 64-byte signature.
     #[serde(skip_serializing_if = "Option::is_none")]
     signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+impl FrameResult {
+    fn ok(ack_secret: Option<String>, signature: Option<String>) -> Self {
+        Self {
+            status: "ok".to_string(),
+            ack_secret,
+            signature,
+            error: None,
+        }
+    }
+
+    fn error(msg: impl Into<String>) -> Self {
+        Self {
+            status: "error".to_string(),
+            ack_secret: None,
+            signature: None,
+            error: Some(msg.into()),
+        }
+    }
 }
 
 /// Response for errors.
@@ -252,115 +275,113 @@ struct IdentityQuery {
     challenge: String,
 }
 
-/// POST /api/v1/submit - Accept messages from LAN peers
+/// POST /api/v1/submit - Accept messages from LAN peers (binary bundle format)
 async fn submit_handler(
     State(state): State<Arc<HttpServerState>>,
-    body: String,
+    body: Bytes,
 ) -> Result<Json<SubmitResponse>, ApiError> {
-    // Decode base64 payload
-    let wire_bytes = BASE64_STANDARD.decode(body.trim()).map_err(|e| {
-        warn!(error = %e, "Received invalid base64 payload");
-        ApiError::BadRequest("Invalid base64 encoding".to_string())
+    // Parse the bundle body — max 10 frames for the embedded node
+    let frames = parse_body(&body, 10).map_err(|e| {
+        warn!(error = %e, "Received invalid bundle body");
+        ApiError::BadRequest(format!("Invalid bundle body: {e}"))
     })?;
 
-    // Parse WirePayload
-    let payload = WirePayload::decode(&wire_bytes).map_err(|e| {
-        warn!(error = %e, "Received invalid wire payload");
-        ApiError::BadRequest("Invalid message format".to_string())
-    })?;
+    let mut results = Vec::with_capacity(frames.len());
 
-    // Extract OuterEnvelope (reject tombstones from peers)
-    let envelope = match payload {
-        WirePayload::Message(env) => env,
-        WirePayload::AckTombstone(_) => {
-            debug!("Rejected tombstone from LAN peer");
-            return Err(ApiError::BadRequest(
-                "Tombstones not accepted via direct peer API".to_string(),
-            ));
-        }
-    };
+    for frame in &frames {
+        // Parse WirePayload from frame bytes
+        let payload = match WirePayload::decode(frame) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(error = %e, "Frame contains invalid wire payload");
+                results.push(FrameResult::error("Invalid message format"));
+                continue;
+            }
+        };
 
-    let message_id = envelope.message_id;
+        // Extract OuterEnvelope — tombstones are not accepted via direct peer API
+        let envelope = match payload {
+            WirePayload::Message(env) => env,
+            WirePayload::AckTombstone(_) => {
+                debug!("Rejected tombstone from LAN peer");
+                results.push(FrameResult::error(
+                    "Tombstones not accepted via direct peer API",
+                ));
+                continue;
+            }
+        };
 
-    // === ROUTING KEY VALIDATION ===
-    // Only accept messages addressed to us. Reject messages for other recipients
-    // to prevent storage pollution and provide fail-fast behavior.
-    if !state.is_for_us(&envelope.routing_key) {
-        warn!(
-            message_id = ?message_id,
-            expected = %hex::encode(state.our_routing_key().as_bytes()),
-            received = %hex::encode(envelope.routing_key.as_bytes()),
-            "Rejecting message: routing key mismatch"
-        );
-        return Err(ApiError::Forbidden);
-    }
+        let message_id = envelope.message_id;
 
-    // === DUPLICATE CHECK ===
-    // Idempotent operation: return success if already stored (but no receipt for duplicates)
-    match state.is_duplicate(&envelope) {
-        Ok(true) => {
-            debug!(message_id = ?message_id, "Duplicate message, already stored");
-            return Ok(Json(SubmitResponse {
-                status: "ok",
-                ack_secret: None, // No ack_secret for duplicates
-                signature: None,
-            }));
-        }
-        Ok(false) => {
-            // Not a duplicate, proceed to store
-        }
-        Err(e) => {
-            // Database error during duplicate check - log but try to store anyway
-            // This handles potential transient issues while maintaining availability
+        // === ROUTING KEY VALIDATION ===
+        // Only accept messages addressed to us.
+        if !state.is_for_us(&envelope.routing_key) {
             warn!(
                 message_id = ?message_id,
-                error = %e,
-                "Duplicate check failed, attempting store anyway"
+                expected = %hex::encode(state.our_routing_key().as_bytes()),
+                received = %hex::encode(envelope.routing_key.as_bytes()),
+                "Rejecting frame: routing key mismatch"
             );
+            results.push(FrameResult::error("Routing key mismatch"));
+            continue;
         }
-    }
 
-    // Generate signed receipt BEFORE storing (signature always, ack_secret only if ECDH succeeds)
-    // This proves we received the message
-    let Some(receipt) = state.generate_receipt(&envelope).await else {
-        error!(
-            message_id = ?message_id,
-            "Failed to generate receipt, crypto task may have panicked"
-        );
-        return Err(ApiError::Internal("Failed to generate receipt".to_string()));
-    };
+        // === DUPLICATE CHECK ===
+        // Idempotent: return ok with no receipt fields for duplicates.
+        match state.is_duplicate(&envelope) {
+            Ok(true) => {
+                debug!(message_id = ?message_id, "Duplicate message, already stored");
+                results.push(FrameResult::ok(None, None));
+                continue;
+            }
+            Ok(false) => {
+                // Not a duplicate, proceed to store
+            }
+            Err(e) => {
+                // Database error during duplicate check - log but try to store anyway
+                warn!(
+                    message_id = ?message_id,
+                    error = %e,
+                    "Duplicate check failed, attempting store anyway"
+                );
+            }
+        }
 
-    // Store and notify client
-    // Handle race condition: if store fails, check if it's now a duplicate
-    if let Err(e) = state.store_message(envelope.clone()) {
-        // Check if the message was stored by a concurrent request (race condition)
-        // If so, treat as success but no receipt (duplicate)
-        if is_duplicate_after_store_failure(&state, &message_id, &e) {
-            debug!(
+        // Generate signed receipt BEFORE storing
+        let Some(receipt) = state.generate_receipt(&envelope).await else {
+            error!(
                 message_id = ?message_id,
-                "Store failed but message exists (concurrent insert), treating as success"
+                "Failed to generate receipt, crypto task may have panicked"
             );
-            return Ok(Json(SubmitResponse {
-                status: "ok",
-                ack_secret: None, // No ack_secret for duplicates
-                signature: None,
-            }));
+            results.push(FrameResult::error("Failed to generate receipt"));
+            continue;
+        };
+
+        // Store and notify client — handle concurrent insert race condition
+        if let Err(e) = state.store_message(envelope.clone()) {
+            if is_duplicate_after_store_failure(&state, &message_id, &e) {
+                debug!(
+                    message_id = ?message_id,
+                    "Store failed but message exists (concurrent insert), treating as success"
+                );
+                results.push(FrameResult::ok(None, None));
+                continue;
+            }
+
+            error!(
+                message_id = ?message_id,
+                error = %e,
+                "Failed to store message from LAN peer"
+            );
+            results.push(FrameResult::error("Failed to store message"));
+            continue;
         }
 
-        error!(
-            message_id = ?message_id,
-            error = %e,
-            "Failed to store message from LAN peer"
-        );
-        return Err(ApiError::Internal("Failed to store message".to_string()));
+        info!(message_id = ?message_id, "Message from LAN peer stored successfully");
+        results.push(FrameResult::ok(receipt.ack_secret, Some(receipt.signature)));
     }
 
-    info!(message_id = ?message_id, "Message from LAN peer stored successfully");
-    Ok(Json(SubmitResponse {
-        status: "ok",
-        ack_secret: receipt.ack_secret,
-        signature: Some(receipt.signature),
-    }))
+    Ok(Json(SubmitResponse { results }))
 }
 
 /// Check if a store failure was due to a concurrent duplicate insert (race condition).
@@ -483,7 +504,7 @@ pub fn build_router(state: Arc<HttpServerState>) -> Router {
         .route("/api/v1/submit", post(submit_handler))
         .route("/api/v1/identity", axum::routing::get(get_identity))
         .route("/health", axum::routing::get(health_handler))
-        .layer(RequestBodyLimitLayer::new(256 * 1024)) // 256 KiB max
+        .layer(RequestBodyLimitLayer::new(512 * 1024)) // 512 KiB max
         .with_state(state)
 }
 
