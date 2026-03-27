@@ -1,0 +1,35 @@
+crates/reme-transport/tests/http_auth_test.rs
+  31a52504c02f1b6b 65,99,133,168,202
+apps/node/src/replication.rs
+  31a52504c02f1b6b 74,82
+apps/node/tests/receipt_on_submit.rs
+  31a52504c02f1b6b 18,21-25,29-30,149,152-153,157-158,164-170,434-503,505-518
+crates/reme-core/tests/integration.rs
+  31a52504c02f1b6b 58,424,458
+crates/reme-transport/src/http_target.rs
+  31a52504c02f1b6b 291-302
+apps/client/src/tui/http_server.rs
+  31a52504c02f1b6b 64,680-681,688-689,717-718,725-726,732-746,775-776,783-784,790-801,852-853,862-863,876-877,913-914,922-923,938-939,942,945,967,970,1014-1015,1022-1023,1038-1039,1042,1048,1051,1092-1093,1102-1103,1116,1126-1127,1139,1141
+apps/node/src/api.rs
+  31a52504c02f1b6b 665,726
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "423ebebae9793fe5858eec09c7b26604c3fa358e",
+  "prompts": {
+    "31a52504c02f1b6b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6968c33-0db9-4942-b7da-866d5c00cc80",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 202,
+      "total_deletions": 50,
+      "accepted_lines": 202,
+      "overriden_lines": 1
+    }
+  }
+}
