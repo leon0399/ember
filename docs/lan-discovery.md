@@ -115,7 +115,7 @@ The mDNS-SD backend emits three event types:
 - **`PeerLost`** — a service was removed (TTL expiry or goodbye packet)
 
 `PeerDiscovered` is effectively one-shot per session: the mDNS daemon caches resolved services and won't re-announce
-them until the TTL expires (~56 minutes at default 4500s TTL).
+them until the TTL expires (75 minutes at default 4500s TTL).
 
 ### 2. Contact matching
 
