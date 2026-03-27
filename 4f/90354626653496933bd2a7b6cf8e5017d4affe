@@ -1,0 +1,25 @@
+apps/client/Cargo.toml
+  31a52504c02f1b6b 18
+apps/client/src/tui/http_server.rs
+  31a52504c02f1b6b 11,24,32,65,210-211,213-219,224-245,278,281,283-286,289,291-298,300,302,307,310,315,321-323,325-326,329-330,334-335,341-347,356-357,359-371,373-374,376-377,380-381,384,507
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "4f90354626653496933bd2a7b6cf8e5017d4affe",
+  "prompts": {
+    "31a52504c02f1b6b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6968c33-0db9-4942-b7da-866d5c00cc80",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 128,
+      "total_deletions": 106,
+      "accepted_lines": 99,
+      "overriden_lines": 0
+    }
+  }
+}
