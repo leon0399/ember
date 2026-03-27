@@ -342,7 +342,7 @@ The outer envelope contains routing metadata visible to relay nodes:
 | ephemeral_key | 32 bytes | Per-message X25519 public key |
 | inner_ciphertext | variable | Encrypted InnerEnvelope + Poly1305 tag |
 
-> **Wire format note:** Field sizes and encoding are subject to change. The current implementation uses bincode; a migration to Postcard is planned before v0.5, with Protobuf at v1.0. See Appendix B for current size estimates.
+> **Wire format note:** Field sizes and encoding are subject to change. The current implementation uses Postcard (serde-based, varint encoding). A migration to Protobuf is planned for v1.0. See Appendix B for current size estimates.
 
 ### 8.2 InnerEnvelope
 
@@ -763,19 +763,19 @@ The tradeoff is explicit: reme prioritizes resilience and DTN tolerance over the
 
 ### B. Wire format sizes
 
-> **WIP:** These sizes reflect the current bincode encoding. A migration to Postcard is planned before v0.5; wire sizes may change by up to ~5%. The v1.0 Protobuf migration will change the encoding entirely.
+> **WIP:** These sizes reflect the current Postcard encoding (serde-based, varint). The v1.0 Protobuf migration will change the encoding entirely.
 
-| Component              | Size                         |
-|------------------------|------------------------------|
-| PublicID               | 32 bytes                     |
-| RoutingKey             | 16 bytes                     |
-| MessageID              | 16 bytes                     |
-| ContentId              | 8 bytes                      |
-| Signature              | 64 bytes                     |
-| Poly1305 tag           | 16 bytes                     |
-| OuterEnvelope overhead | ~73 bytes (bincode)          |
-| InnerEnvelope minimum  | ~107 bytes (with signature)  |
-| Tombstone (V2)         | 96 bytes (fixed)             |
+| Component              | Size                          |
+|------------------------|-------------------------------|
+| PublicID               | 32 bytes                      |
+| RoutingKey             | 16 bytes                      |
+| MessageID              | 16 bytes                      |
+| ContentId              | 8 bytes                       |
+| Signature              | 64 bytes                      |
+| Poly1305 tag           | 16 bytes                      |
+| OuterEnvelope overhead | ~73 bytes (postcard)          |
+| InnerEnvelope minimum  | ~107 bytes (with signature)   |
+| Tombstone (V2)         | 96 bytes (fixed)              |
 
 ### C. References
 
