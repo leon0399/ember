@@ -96,7 +96,8 @@ impl<R: Read> BundleReader<R> {
     ///
     /// All frames must be consumed via [`next_frame`](Self::next_frame) before calling
     /// this method. Returns [`BundleError::IncompleteRead`] if frames remain unconsumed,
-    /// or [`BundleError::ChecksumMismatch`] if the checksum does not match.
+    /// [`BundleError::ChecksumMismatch`] if the hash does not match, or
+    /// [`BundleError::TrailingData`] if extra bytes follow the checksum.
     pub fn verify_checksum(mut self) -> Result<(), BundleError> {
         if self.frames_read != self.frame_count {
             return Err(BundleError::IncompleteRead {
@@ -113,7 +114,12 @@ impl<R: Read> BundleReader<R> {
             return Err(BundleError::ChecksumMismatch);
         }
 
-        Ok(())
+        // Reject trailing data — a valid bundle must end exactly after the checksum.
+        let mut probe = [0u8; 1];
+        match self.inner.read(&mut probe) {
+            Ok(0) | Err(_) => Ok(()),
+            Ok(_) => Err(BundleError::TrailingData),
+        }
     }
 }
 
@@ -192,6 +198,16 @@ mod tests {
         let _frame = reader.next_frame().unwrap();
         let err = reader.verify_checksum().unwrap_err();
         assert!(matches!(err, BundleError::ChecksumMismatch));
+    }
+
+    #[test]
+    fn trailing_data_rejected() {
+        let mut data = make_bundle(&[b"hello"]);
+        data.push(0xFF); // append junk after checksum
+        let mut reader = BundleReader::open(&data[..]).unwrap();
+        let _frame = reader.next_frame().unwrap();
+        let err = reader.verify_checksum().unwrap_err();
+        assert!(matches!(err, BundleError::TrailingData));
     }
 
     #[test]

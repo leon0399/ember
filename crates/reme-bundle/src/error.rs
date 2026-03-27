@@ -19,6 +19,9 @@ pub enum BundleError {
     #[error("frame too large: {size} bytes (max {max})")]
     FrameTooLarge { size: u32, max: u32 },
 
+    #[error("unexpected trailing data after checksum")]
+    TrailingData,
+
     #[error(transparent)]
     Io(#[from] io::Error),
 }
