@@ -1,0 +1,35 @@
+apps/node/tests/fetch_pagination.rs
+  31a52504c02f1b6b 42
+apps/node/src/api.rs
+  31a52504c02f1b6b 14,59-60,104
+apps/node/src/config.rs
+  31a52504c02f1b6b 403-410,480-487,511-512,575-576,630-635,846-855,874-875
+apps/node/tests/signed_replication.rs
+  31a52504c02f1b6b 91
+apps/node/tests/identity_endpoint.rs
+  31a52504c02f1b6b 74
+apps/node/tests/receipt_on_submit.rs
+  31a52504c02f1b6b 72
+apps/node/src/main.rs
+  31a52504c02f1b6b 262-264,357
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "782027c69a282e776feabcb0e96f6e91661414c2",
+  "prompts": {
+    "31a52504c02f1b6b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6968c33-0db9-4942-b7da-866d5c00cc80",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 77,
+      "total_deletions": 32,
+      "accepted_lines": 51,
+      "overriden_lines": 0
+    }
+  }
+}
