@@ -37,8 +37,8 @@ mod tests {
 
     #[test]
     fn round_trip_varied_frame_sizes() {
-        let frames: Vec<Vec<u8>> = (0..100)
-            .map(|i| vec![i as u8; (i * 10 + 1) as usize])
+        let frames: Vec<Vec<u8>> = (0_u8..100)
+            .map(|i| vec![i; usize::from(i) * 10 + 1])
             .collect();
 
         let mut buf = Vec::new();
