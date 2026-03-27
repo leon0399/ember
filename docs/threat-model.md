@@ -40,7 +40,7 @@ Attack scenarios, mitigations, and residual risks for the reme messaging system.
 **Attack**: Mallory floods the network with thousands of mDNS advertisements, each with a different routing key, attempting to exhaust the discovery controller's resources.
 
 **Mitigation**:
-- The controller enforces a hard cap of 256 tracked peers (verified + stranger cache, both bounded by `max_peers`)
+- The controller enforces `max_peers` (default 256) independently on verified peers and the stranger cache, bounding total tracked entries at ~2x `max_peers`
 - Only peers whose routing key matches a known contact are verified and registered; strangers are cached (not verified) for later matching when new contacts are added
 - Identity verification is concurrent (JoinSet) with 2s connect / 5s total HTTP timeouts, bounding total refresh time
 - The mDNS-SD backend uses `broadcast` channels that drop events on lag rather than growing unboundedly

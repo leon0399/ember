@@ -174,7 +174,7 @@ The stranger cache solves this: when a discovered peer's routing key doesn't mat
 cache is scanned for matching routing keys. Matches are removed from the cache and fed through the standard identity
 verification flow.
 
-- **Size cap:** bounded by `max_peers` (default 256)
+- **Size cap:** bounded independently by `max_peers` (default 256), separate from the verified peer cap
 - **Updates:** already-cached strangers are updated on `PeerUpdated` even when the cache is full
 - **Cleanup:** entries are removed on `PeerLost` events and on controller shutdown
 - **Failed re-processing:** strangers that fail verification after contact-add are silently dropped (not re-cached);
@@ -207,7 +207,8 @@ enabled = true
 # no peer verification, no target registration.
 auto_direct_known_contacts = true
 
-# Maximum number of tracked peers (verified + stranger cache).
+# Maximum tracked entries per index (verified peers and stranger cache
+# are capped independently, so total tracked entries can reach ~2x this value).
 # Default: 256
 max_peers = 256
 
@@ -278,7 +279,7 @@ For the full threat analysis, see [threat-model.md](threat-model.md).
 
 ```
 crates/reme-discovery/
-├── backend.rs       # DiscoveryBackend trait (start_advertising, subscribe, shutdown)
+├── backend.rs       # DiscoveryBackend trait (start_advertising, stop_advertising, subscribe, shutdown)
 ├── types.rs         # RawDiscoveredPeer, DiscoveryEvent, AdvertisementSpec
 ├── txt.rs           # TXT record encode/decode (v, rk, port)
 ├── mdns_sd.rs       # MdnsSdBackend — production implementation using mdns-sd crate
