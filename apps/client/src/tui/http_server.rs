@@ -61,6 +61,7 @@ pub enum HttpServerError {
 ///
 /// Implements `IntoResponse` for clean error-to-HTTP-response conversion.
 #[derive(Debug)]
+#[allow(dead_code)] // Variants kept for API completeness; per-frame errors use FrameResult
 enum ApiError {
     /// Invalid request format (bundle format, wire format, etc.)
     BadRequest(String),
@@ -676,15 +677,16 @@ mod tests {
         // Create envelope for us (with zeroed ephemeral key - no ack_secret)
         let envelope = create_test_envelope(our_routing_key);
         let wire_payload = WirePayload::Message(envelope);
-        let body = BASE64_STANDARD.encode(wire_payload.encode().unwrap());
+        let wire_bytes = wire_payload.encode().unwrap();
+        let bundle_body = reme_bundle::encode_body(&[&wire_bytes]);
 
         let response = app
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/submit")
-                    .header("content-type", "text/plain")
-                    .body(Body::from(body))
+                    .header("content-type", "application/vnd.reme.bundle")
+                    .body(Body::from(bundle_body))
                     .unwrap(),
             )
             .await
@@ -712,21 +714,37 @@ mod tests {
         // Create envelope for someone else
         let envelope = create_test_envelope(wrong_routing_key);
         let wire_payload = WirePayload::Message(envelope);
-        let body = BASE64_STANDARD.encode(wire_payload.encode().unwrap());
+        let wire_bytes = wire_payload.encode().unwrap();
+        let bundle_body = reme_bundle::encode_body(&[&wire_bytes]);
 
         let response = app
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/submit")
-                    .header("content-type", "text/plain")
-                    .body(Body::from(body))
+                    .header("content-type", "application/vnd.reme.bundle")
+                    .body(Body::from(bundle_body))
                     .unwrap(),
             )
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        // The handler now returns 200 with per-frame errors in results
+        // since routing key mismatch is a per-frame error, not a top-level HTTP error
+        // Actually, let me check - the old test expected FORBIDDEN
+        // With batch format, wrong routing key is still rejected per-frame but HTTP status is OK
+        assert_eq!(response.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let response_json: serde_json::Value =
+            serde_json::from_slice(&body_bytes).expect("Invalid JSON response");
+        let results = response_json["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(
+            results[0]["error"].as_str().is_some(),
+            "Wrong routing key should produce an error"
+        );
     }
 
     #[tokio::test]
@@ -754,21 +772,34 @@ mod tests {
             &signer.to_bytes(),
         );
         let wire_payload = WirePayload::AckTombstone(tombstone);
-        let body = BASE64_STANDARD.encode(wire_payload.encode().unwrap());
+        let wire_bytes = wire_payload.encode().unwrap();
+        let bundle_body = reme_bundle::encode_body(&[&wire_bytes]);
 
         let response = app
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/submit")
-                    .header("content-type", "text/plain")
-                    .body(Body::from(body))
+                    .header("content-type", "application/vnd.reme.bundle")
+                    .body(Body::from(bundle_body))
                     .unwrap(),
             )
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        // Tombstones are rejected per-frame; HTTP status is still OK with batch format
+        assert_eq!(response.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let response_json: serde_json::Value =
+            serde_json::from_slice(&body_bytes).expect("Invalid JSON response");
+        let results = response_json["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(
+            results[0]["error"].as_str().is_some(),
+            "Tombstone should produce an error"
+        );
     }
 
     #[tokio::test]
@@ -818,7 +849,8 @@ mod tests {
         // Create envelope for us with a fixed message ID
         let envelope = create_test_envelope(our_routing_key);
         let wire_payload = WirePayload::Message(envelope);
-        let body = BASE64_STANDARD.encode(wire_payload.encode().unwrap());
+        let wire_bytes = wire_payload.encode().unwrap();
+        let bundle_body = reme_bundle::encode_body(&[&wire_bytes]);
 
         // First submission should succeed
         let response1 = app
@@ -827,8 +859,8 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/submit")
-                    .header("content-type", "text/plain")
-                    .body(Body::from(body.clone()))
+                    .header("content-type", "application/vnd.reme.bundle")
+                    .body(Body::from(bundle_body.clone()))
                     .unwrap(),
             )
             .await
@@ -841,8 +873,8 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/submit")
-                    .header("content-type", "text/plain")
-                    .body(Body::from(body))
+                    .header("content-type", "application/vnd.reme.bundle")
+                    .body(Body::from(bundle_body))
                     .unwrap(),
             )
             .await
@@ -878,7 +910,8 @@ mod tests {
         let message_id = envelope.message_id;
 
         let wire_payload = WirePayload::Message(envelope);
-        let body = BASE64_STANDARD.encode(wire_payload.encode().unwrap());
+        let wire_bytes = wire_payload.encode().unwrap();
+        let bundle_body = reme_bundle::encode_body(&[&wire_bytes]);
 
         // Submit message
         let response = app
@@ -886,8 +919,8 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/submit")
-                    .header("content-type", "text/plain")
-                    .body(Body::from(body))
+                    .header("content-type", "application/vnd.reme.bundle")
+                    .body(Body::from(bundle_body))
                     .unwrap(),
             )
             .await
@@ -902,12 +935,14 @@ mod tests {
         let response_json: serde_json::Value =
             serde_json::from_slice(&body_bytes).expect("Invalid JSON response");
 
+        let result = &response_json["results"][0];
+
         // Should have ack_secret
         assert!(
-            response_json.get("ack_secret").is_some(),
+            result.get("ack_secret").is_some(),
             "Response should contain ack_secret"
         );
-        let returned_ack_secret_b64 = response_json["ack_secret"].as_str().unwrap();
+        let returned_ack_secret_b64 = result["ack_secret"].as_str().unwrap();
         let returned_ack_secret: [u8; 16] = BASE64_STANDARD
             .decode(returned_ack_secret_b64)
             .expect("Invalid base64")
@@ -929,10 +964,10 @@ mod tests {
 
         // Should also have signature
         assert!(
-            response_json.get("signature").is_some(),
+            result.get("signature").is_some(),
             "Response should contain signature"
         );
-        let signature_b64 = response_json["signature"].as_str().unwrap();
+        let signature_b64 = result["signature"].as_str().unwrap();
         let signature: [u8; 64] = BASE64_STANDARD
             .decode(signature_b64)
             .expect("Invalid signature base64")
@@ -976,15 +1011,16 @@ mod tests {
         let envelope = create_test_envelope(our_routing_key); // Uses [0u8; 32] ephemeral key
         let message_id = envelope.message_id;
         let wire_payload = WirePayload::Message(envelope);
-        let body = BASE64_STANDARD.encode(wire_payload.encode().unwrap());
+        let wire_bytes = wire_payload.encode().unwrap();
+        let bundle_body = reme_bundle::encode_body(&[&wire_bytes]);
 
         let response = app
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/submit")
-                    .header("content-type", "text/plain")
-                    .body(Body::from(body))
+                    .header("content-type", "application/vnd.reme.bundle")
+                    .body(Body::from(bundle_body))
                     .unwrap(),
             )
             .await
@@ -999,18 +1035,20 @@ mod tests {
         let response_json: serde_json::Value =
             serde_json::from_slice(&body_bytes).expect("Invalid JSON response");
 
+        let result = &response_json["results"][0];
+
         // Should NOT have ack_secret (low-order point rejected)
         assert!(
-            response_json.get("ack_secret").is_none() || response_json["ack_secret"].is_null(),
+            result.get("ack_secret").is_none() || result["ack_secret"].is_null(),
             "Low-order ephemeral key should NOT produce ack_secret"
         );
 
         // Should still have signature (signature is always returned)
         assert!(
-            response_json.get("signature").is_some(),
+            result.get("signature").is_some(),
             "Should still return signature even without ack_secret"
         );
-        let signature_b64 = response_json["signature"].as_str().unwrap();
+        let signature_b64 = result["signature"].as_str().unwrap();
         let signature: [u8; 64] = BASE64_STANDARD
             .decode(signature_b64)
             .expect("Invalid signature base64")
@@ -1051,7 +1089,8 @@ mod tests {
         let sender = Identity::generate();
         let (envelope, _) = create_encrypted_envelope(&sender, &recipient_pubkey);
         let wire_payload = WirePayload::Message(envelope);
-        let body = BASE64_STANDARD.encode(wire_payload.encode().unwrap());
+        let wire_bytes = wire_payload.encode().unwrap();
+        let bundle_body = reme_bundle::encode_body(&[&wire_bytes]);
 
         // First submission - should have ack_secret
         let response1 = app
@@ -1060,8 +1099,8 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/submit")
-                    .header("content-type", "text/plain")
-                    .body(Body::from(body.clone()))
+                    .header("content-type", "application/vnd.reme.bundle")
+                    .body(Body::from(bundle_body.clone()))
                     .unwrap(),
             )
             .await
@@ -1074,7 +1113,7 @@ mod tests {
         let response_json1: serde_json::Value =
             serde_json::from_slice(&body_bytes1).expect("Invalid JSON");
         assert!(
-            response_json1.get("ack_secret").is_some(),
+            response_json1["results"][0].get("ack_secret").is_some(),
             "First submit should return ack_secret"
         );
 
@@ -1084,8 +1123,8 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/submit")
-                    .header("content-type", "text/plain")
-                    .body(Body::from(body))
+                    .header("content-type", "application/vnd.reme.bundle")
+                    .body(Body::from(bundle_body))
                     .unwrap(),
             )
             .await
@@ -1097,8 +1136,9 @@ mod tests {
             .unwrap();
         let response_json2: serde_json::Value =
             serde_json::from_slice(&body_bytes2).expect("Invalid JSON");
+        let result2 = &response_json2["results"][0];
         assert!(
-            response_json2.get("ack_secret").is_none() || response_json2["ack_secret"].is_null(),
+            result2.get("ack_secret").is_none() || result2["ack_secret"].is_null(),
             "Duplicate submit should NOT return ack_secret"
         );
     }

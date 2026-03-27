@@ -62,7 +62,7 @@ async fn test_explicit_auth_applied() {
             "Basic dXNlcjpwYXNzd29yZA==", // base64("user:password")
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "status": "ok"
+            "results": [{"status": "ok"}]
         })))
         .expect(1)
         .mount(&mock_server)
@@ -96,7 +96,7 @@ async fn test_url_embedded_auth_works() {
             "Basic dXJsX3VzZXI6dXJsX3Bhc3M=", // base64("url_user:url_pass")
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "status": "ok"
+            "results": [{"status": "ok"}]
         })))
         .expect(1)
         .mount(&mock_server)
@@ -130,7 +130,7 @@ async fn test_explicit_auth_takes_precedence() {
             "Basic Y29uZmlnX3VzZXI6Y29uZmlnX3Bhc3M=", // base64("config_user:config_pass")
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "status": "ok"
+            "results": [{"status": "ok"}]
         })))
         .expect(1)
         .mount(&mock_server)
@@ -165,7 +165,7 @@ async fn test_no_auth_no_header() {
         .and(NoAuthHeader)
         .and(path("/api/v1/submit"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "status": "ok"
+            "results": [{"status": "ok"}]
         })))
         .expect(1)
         .mount(&mock_server)
@@ -199,7 +199,7 @@ async fn test_tombstone_uses_explicit_auth() {
             "Basic dG9tYl91c2VyOnRvbWJfcGFzcw==", // base64("tomb_user:tomb_pass")
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "status": "ok"
+            "results": [{"status": "ok"}]
         })))
         .expect(1)
         .mount(&mock_server)

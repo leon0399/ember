@@ -71,7 +71,7 @@ impl ReplicationClient {
     /// Supports URL-embedded credentials for per-peer authentication.
     pub fn replicate_payload(
         self: &Arc<Self>,
-        wire_payload_bytes: Vec<u8>,
+        wire_payload_bytes: &[u8],
         from_node: Option<String>,
     ) {
         if self.peer_configs.is_empty() {
@@ -79,7 +79,7 @@ impl ReplicationClient {
         }
 
         // Encode as a count=1 bundle body before spawning
-        let bundle_body = encode_body(&[&wire_payload_bytes]);
+        let bundle_body = encode_body(&[wire_payload_bytes]);
 
         let this = Arc::clone(self);
         tokio::spawn(async move {

@@ -288,6 +288,18 @@ impl HttpTarget {
             TransportError::ServerError("empty results in submit response".to_string())
         })?;
 
+        // Check for per-frame errors
+        if let Some(ref error) = frame.error {
+            let err_lower = error.to_lowercase();
+            if err_lower.contains("not found") {
+                return Err(TransportError::NotFound);
+            }
+            if err_lower.contains("invalid ack_secret") || err_lower.contains("authorization") {
+                return Err(TransportError::ServerError(format!("403: {error}")));
+            }
+            return Err(TransportError::ServerError(error.clone()));
+        }
+
         Ok(frame.into_raw_receipt())
     }
 

@@ -662,7 +662,7 @@ async fn handle_message(
             // Trigger replication to peers (fire-and-forget)
             state
                 .replication
-                .replicate_payload(wire_frame_bytes.to_vec(), from_node);
+                .replicate_payload(wire_frame_bytes, from_node);
 
             // Publish to MQTT brokers if bridge is configured (fire-and-forget)
             if let Some(ref bridge) = state.mqtt_bridge {
@@ -723,7 +723,7 @@ fn handle_tombstone(
             // Replicate tombstone to peer nodes (fire-and-forget)
             state
                 .replication
-                .replicate_payload(wire_frame_bytes.to_vec(), from_node);
+                .replicate_payload(wire_frame_bytes, from_node);
 
             FrameResult::ok(None, None)
         }
