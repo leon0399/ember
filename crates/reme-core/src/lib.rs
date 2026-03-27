@@ -100,6 +100,15 @@ pub struct ReceivedMessage {
     pub local_state_behind: bool,
 }
 
+/// Result of local message processing (decrypt + store + DAG).
+/// Contains the decrypted message for display and an optional tombstone to send.
+pub struct ProcessedMessage {
+    /// The decrypted message ready for display
+    pub received: ReceivedMessage,
+    /// Tombstone to fire-and-forget (None for detached messages)
+    pub pending_tombstone: Option<SignedAckTombstone>,
+}
+
 /// The main client for Resilient Messenger (MIK-only stateless encryption)
 ///
 /// Provides high-level API for:
@@ -616,22 +625,22 @@ impl<T: Transport> Client<T> {
     // Receiving Messages (MIK-only, stateless)
     // ========================================
 
-    /// Process a raw envelope into a decrypted message
+    /// Process a raw envelope into a decrypted message (sync: decrypt, store, DAG).
     ///
-    /// With MIK-only encryption, each message is decrypted using:
-    /// 1. The ephemeral public key from the envelope
-    /// 2. Our MIK private key
+    /// This performs all local processing without any network I/O:
+    /// 1. Routing key verification
+    /// 2. MIK decryption + signature verification
+    /// 3. Pending ack storage
+    /// 4. Contact, message storage, dedup
+    /// 5. DAG tracking and outbox confirmations
     ///
-    /// After decryption, the sender signature is verified to prevent impersonation.
-    /// No session state is needed - each message is independently decryptable.
-    ///
-    /// The recipient binding is verified both explicitly (routing key check) and
-    /// cryptographically (sealed box ECDH binds to recipient).
+    /// Returns a [`ProcessedMessage`] containing the decrypted message and an
+    /// optional tombstone to send via [`send_tombstone`](Self::send_tombstone).
     #[allow(clippy::too_many_lines, clippy::cast_possible_truncation)] // Message processing has many steps
-    pub async fn process_message(
+    pub fn process_message_local(
         &self,
         outer: &OuterEnvelope,
-    ) -> Result<ReceivedMessage, ClientError> {
+    ) -> Result<ProcessedMessage, ClientError> {
         // Defense in depth: verify routing key matches our identity before decryption.
         // This catches misrouted messages early without wasting crypto operations.
         // The cryptographic binding (ECDH) is the actual security guarantee.
@@ -709,37 +718,19 @@ impl<T: Transport> Client<T> {
                 Err(e) => return Err(e.into()),
             };
 
-        // NOW send auto-tombstone (fire-and-forget) AFTER successful message storage.
-        // This ensures we never lose the message: if storage fails, we don't send tombstone.
-        // If tombstone fails, the message is safely stored and ack_secret is persisted for retry.
-        if should_tombstone {
-            let tombstone =
-                SignedAckTombstone::new(outer.message_id, ack_secret, &self.private_key());
-            if let Err(e) = self.transport.submit_ack_tombstone(tombstone).await {
-                // Log failure but don't fail message processing - the message was
-                // successfully stored locally. The relay node will eventually
-                // expire the message or ack_secret can be used to retry later via
-                // acknowledge_received().
-                warn!(
-                    message_id = ?outer.message_id,
-                    error = %e,
-                    "Failed to send auto-tombstone (ack_secret stored for retry)"
-                );
-            } else {
-                // Tombstone succeeded - remove stored ack_secret (no longer needed)
-                if let Err(e) = self.storage.remove_pending_ack(&outer.message_id) {
-                    warn!(
-                        message_id = ?outer.message_id,
-                        error = %e,
-                        "Failed to remove pending_ack after successful tombstone"
-                    );
-                }
-                debug!(
-                    message_id = ?outer.message_id,
-                    "Auto-tombstone sent successfully"
-                );
-            }
-        }
+        // Build tombstone for caller to send asynchronously (fire-and-forget).
+        // This ensures we never lose the message: if storage fails above, we never
+        // reach here. If the caller fails to send the tombstone, the ack_secret is
+        // persisted for retry via acknowledge_received().
+        let pending_tombstone = if should_tombstone {
+            Some(SignedAckTombstone::new(
+                outer.message_id,
+                ack_secret,
+                &self.private_key(),
+            ))
+        } else {
+            None
+        };
 
         // Update DAG tracking and detect state anomalies
         let contact_key = sender_id.to_bytes();
@@ -864,16 +855,68 @@ impl<T: Transport> Client<T> {
             content_id, is_duplicate, has_gaps, sender_state_reset, local_state_behind
         );
 
-        Ok(ReceivedMessage {
-            message_id: outer.message_id,
-            from: inner.from,
-            content: inner.content,
-            created_at_ms: inner.created_at_ms,
-            content_id,
-            has_gaps,
-            sender_state_reset,
-            local_state_behind,
+        Ok(ProcessedMessage {
+            received: ReceivedMessage {
+                message_id: outer.message_id,
+                from: inner.from,
+                content: inner.content,
+                created_at_ms: inner.created_at_ms,
+                content_id,
+                has_gaps,
+                sender_state_reset,
+                local_state_behind,
+            },
+            pending_tombstone,
         })
+    }
+
+    /// Send an auto-tombstone for a processed message.
+    ///
+    /// On success, removes the stored `pending_ack`. On failure, the
+    /// `ack_secret` remains stored for retry via `acknowledge_received()`.
+    pub async fn send_tombstone(
+        &self,
+        message_id: MessageID,
+        tombstone: SignedAckTombstone,
+    ) -> Result<(), ClientError> {
+        self.transport
+            .submit_ack_tombstone(tombstone)
+            .await
+            .map_err(ClientError::Transport)?;
+        if let Err(e) = self.storage.remove_pending_ack(&message_id) {
+            warn!(
+                message_id = ?message_id,
+                error = %e,
+                "Failed to remove pending_ack after successful tombstone"
+            );
+        }
+        debug!(message_id = ?message_id, "Auto-tombstone sent successfully");
+        Ok(())
+    }
+
+    /// Process a raw envelope into a decrypted message
+    ///
+    /// This is a convenience wrapper around [`process_message_local`](Self::process_message_local)
+    /// and [`send_tombstone`](Self::send_tombstone) that preserves the original
+    /// behavior: decrypt, store, send tombstone (fire-and-forget), return message.
+    ///
+    /// For non-blocking UI updates, prefer calling `process_message_local` directly
+    /// and sending the tombstone asynchronously.
+    pub async fn process_message(
+        &self,
+        outer: &OuterEnvelope,
+    ) -> Result<ReceivedMessage, ClientError> {
+        let processed = self.process_message_local(outer)?;
+        if let Some(tombstone) = processed.pending_tombstone {
+            if let Err(e) = self.send_tombstone(outer.message_id, tombstone).await {
+                warn!(
+                    message_id = ?outer.message_id,
+                    error = %e,
+                    "Failed to send auto-tombstone (ack_secret stored for retry)"
+                );
+            }
+        }
+        Ok(processed.received)
     }
 
     /// Process a delivery receipt
@@ -1276,31 +1319,7 @@ impl Client<TransportCoordinator> {
             .record_tiered_delivery_result(prepared.entry_id, &result, &self.tiered_config)
             .map_err(ClientError::Outbox)?;
 
-        match &phase {
-            TieredDeliveryPhase::Urgent => {
-                warn!(
-                    message_id = ?prepared.entry_id,
-                    content_id = ?prepared.content_id,
-                    success_count = result.success_count(),
-                    "Message quorum not reached, will retry"
-                );
-            }
-            TieredDeliveryPhase::Distributed { confidence, .. } => {
-                if confidence.is_direct() {
-                    info!(
-                        message_id = ?prepared.entry_id,
-                        "Message delivered directly (Direct tier)"
-                    );
-                } else {
-                    debug!(
-                        message_id = ?prepared.entry_id,
-                        success_count = result.success_count(),
-                        "Message distributed, awaiting ACK"
-                    );
-                }
-            }
-            TieredDeliveryPhase::Confirmed { .. } => {}
-        }
+        log_tiered_delivery_phase(prepared.entry_id, prepared.content_id, &result, &phase);
 
         Ok(phase)
     }
@@ -1327,34 +1346,7 @@ impl Client<TransportCoordinator> {
             .record_tiered_delivery_result(prepared.entry_id, &result, &self.tiered_config)
             .map_err(ClientError::Outbox)?;
 
-        // Log result based on phase
-        match &phase {
-            TieredDeliveryPhase::Urgent => {
-                warn!(
-                    message_id = ?prepared.entry_id,
-                    content_id = ?prepared.content_id,
-                    success_count = result.success_count(),
-                    "Message quorum not reached, will retry"
-                );
-            }
-            TieredDeliveryPhase::Distributed { confidence, .. } => {
-                if confidence.is_direct() {
-                    info!(
-                        message_id = ?prepared.entry_id,
-                        "Message delivered directly (Direct tier)"
-                    );
-                } else {
-                    debug!(
-                        message_id = ?prepared.entry_id,
-                        success_count = result.success_count(),
-                        "Message distributed, awaiting ACK"
-                    );
-                }
-            }
-            TieredDeliveryPhase::Confirmed { .. } => {
-                // Shouldn't happen on initial send
-            }
-        }
+        log_tiered_delivery_phase(prepared.entry_id, prepared.content_id, &result, &phase);
 
         Ok((prepared.entry_id, phase))
     }
@@ -1658,6 +1650,40 @@ impl Client<TransportCoordinator> {
         let maintenance_count = self.process_maintenance().await?;
 
         Ok((urgent_results.len(), maintenance_count, expired))
+    }
+}
+
+/// Log a tracing message describing the outcome of a tiered delivery attempt.
+fn log_tiered_delivery_phase(
+    entry_id: OutboxEntryId,
+    content_id: ContentId,
+    result: &DeliveryResult,
+    phase: &TieredDeliveryPhase,
+) {
+    match phase {
+        TieredDeliveryPhase::Urgent => {
+            warn!(
+                message_id = ?entry_id,
+                content_id = ?content_id,
+                success_count = result.success_count(),
+                "Message quorum not reached, will retry"
+            );
+        }
+        TieredDeliveryPhase::Distributed { confidence, .. } => {
+            if confidence.is_direct() {
+                info!(
+                    message_id = ?entry_id,
+                    "Message delivered directly (Direct tier)"
+                );
+            } else {
+                debug!(
+                    message_id = ?entry_id,
+                    success_count = result.success_count(),
+                    "Message distributed, awaiting ACK"
+                );
+            }
+        }
+        TieredDeliveryPhase::Confirmed { .. } => {}
     }
 }
 
