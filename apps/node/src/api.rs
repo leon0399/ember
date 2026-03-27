@@ -660,10 +660,9 @@ async fn handle_message(
             debug!("Message enqueued for {:?}", &routing_key[..4]);
 
             // Trigger replication to peers (fire-and-forget)
-            // Replication still expects base64-encoded payload; encode wire frame bytes for now.
-            // TODO(task-4): Change replication to send raw binary bundle bodies.
-            let payload_b64 = BASE64_STANDARD.encode(wire_frame_bytes);
-            state.replication.replicate_payload(payload_b64, from_node);
+            state
+                .replication
+                .replicate_payload(wire_frame_bytes.to_vec(), from_node);
 
             // Publish to MQTT brokers if bridge is configured (fire-and-forget)
             if let Some(ref bridge) = state.mqtt_bridge {
@@ -722,9 +721,9 @@ fn handle_tombstone(
             debug!(?tombstone.message_id, "Message deleted via AckTombstone");
 
             // Replicate tombstone to peer nodes (fire-and-forget)
-            // TODO(task-4): Change replication to send raw binary bundle bodies.
-            let payload_b64 = BASE64_STANDARD.encode(wire_frame_bytes);
-            state.replication.replicate_payload(payload_b64, from_node);
+            state
+                .replication
+                .replicate_payload(wire_frame_bytes.to_vec(), from_node);
 
             FrameResult::ok(None, None)
         }
