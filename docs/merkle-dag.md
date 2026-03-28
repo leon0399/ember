@@ -38,7 +38,12 @@ This structure gives both parties enough information to:
 Each message gets a deterministic 8-byte identifier computed as a truncated BLAKE3 hash:
 
 ```text
-ContentId = BLAKE3("reme-content-id-v1" || sender_pubkey || timestamp_ms || content)[0..8]
+ContentId = BLAKE3(
+    "reme-content-id-v1"
+    || InnerEnvelope.from.to_bytes()          // PublicID as 32 raw bytes
+    || InnerEnvelope.created_at_ms.to_le()    // u64 little-endian
+    || postcard::to_allocvec(content)          // postcard-serialized Content
+)[0..8]
 ```
 
 Key design choices:
@@ -86,7 +91,7 @@ flowchart TD
     Lookup2 --> Resolve2["resolve M3 → push M3"]
     Resolve2 --> Pop3["pop M3"]
     Pop3 --> Empty["no orphans waiting → done"]
-    Empty --> Result["result: M2, M1 + M3, M2"]
+    Empty --> Result["resolved: (M2, parent=M1), (M3, parent=M2)"]
 ```
 
 The `missing_parents()` method returns the set of unknown parent `ContentId`s — suitable for requesting retransmission from the sender.
@@ -150,14 +155,18 @@ This eliminates the need for explicit ACK messages — the DAG structure provide
 
 ## Automatic Resend Triggering
 
-When the receiver detects gaps (orphan messages), the client also checks for unacknowledged outbox entries and schedules immediate retries:
+When the receiver detects gaps (orphan messages), the client also checks for unacknowledged outbox entries and schedules immediate retries.
+
+**Important caveat:** both implicit ACK confirmation and resend triggering are gated on `observed_heads` being non-empty. Messages with empty `observed_heads` (detached messages, or the peer's very first message) will not trigger this path. Gap recovery for those cases relies solely on the outbox's own retry schedule.
 
 ```mermaid
 flowchart TD
     Recv["Receive message"] --> GapCheck["dag.receiver.on_receive(content_id, prev_self)"]
     GapCheck --> IsGap{"GapResult?"}
     IsGap -->|Complete| Done["Update peer_heads\nResolve orphan chains"]
-    IsGap -->|Gap| FindUnacked["outbox.find_unacked_messages(sender, observed_heads)"]
+    IsGap -->|Gap| HasObs{"observed_heads\nnon-empty?"}
+    HasObs -->|No| FallBack["Rely on outbox retry schedule"]
+    HasObs -->|Yes| FindUnacked["outbox.find_unacked_messages(sender, observed_heads)"]
     FindUnacked --> HasUnacked{"Unacked messages?"}
     HasUnacked -->|Yes| Retry["outbox.schedule_immediate_retry(unacked)"]
     HasUnacked -->|No| Done2["No action needed"]
@@ -201,7 +210,7 @@ This means the peer has seen messages from us that we have no record of sending 
 
 ## Epochs: Intentional History Clears
 
-The `epoch` field (u16, max 65,535 clears) allows cleanly breaking the DAG when history is intentionally deleted.
+The `epoch` field (`u16`, 65,536 distinct values 0..=65,535) allows cleanly breaking the DAG when history is intentionally deleted.
 
 ### Local Clear
 
@@ -276,7 +285,7 @@ CREATE TABLE dag_state (
 ### What Is NOT Persisted
 
 - **Full sender chain**: Only the head is stored. The full `sent` map in `SenderGapDetector` is not restored. On restart, `find_missing()` will be less precise until the in-memory state rebuilds from new sends.
-- **Receiver gap detector**: Complete set and orphan tracking are not restored. Messages that arrived before restart are assumed complete. This avoids expensive state reconstruction and is safe because relay nodes expire messages anyway.
+- **Receiver gap detector**: Complete set and orphan tracking are not restored. After restart, the detector starts empty — previously received messages are simply unknown, so re-delivered messages are processed without prior gap context. This avoids expensive state reconstruction and is acceptable because relay nodes expire messages via TTL anyway.
 
 ### Persistence Strategy
 
@@ -322,4 +331,4 @@ At 8 bytes, the birthday bound is ~4 billion messages per conversation. While su
 
 ### Epoch Overflow
 
-The `epoch` field uses wrapping addition (`wrapping_add`). At u16, this allows 65,535 history clears before wrapping. Wrapping is handled gracefully but could theoretically cause confusion if both peers are at distant epoch values.
+The `epoch` field uses wrapping addition (`wrapping_add`). A `u16` supports 65,536 distinct epoch values (0–65,535), so after 65,535 increments the next one wraps to 0 and previously used epoch values begin to repeat. Wrapping is handled gracefully but could theoretically cause confusion if both peers are at distant epoch values.
