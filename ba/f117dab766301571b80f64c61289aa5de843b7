@@ -1,0 +1,37 @@
+Cargo.toml
+  3afd932167fef56a 40
+crates/reme-outbox/src/lib.rs
+  3afd932167fef56a 627-643
+crates/reme-outbox/src/store.rs
+  3afd932167fef56a 41-51,195-205
+apps/client/Cargo.toml
+  3afd932167fef56a 31,46
+apps/client/src/main.rs
+  3afd932167fef56a 14,48
+apps/client/src/config.rs
+  3afd932167fef56a 168-187,1403-1446
+apps/client/src/export.rs
+  3afd932167fef56a 1-339
+crates/reme-storage/src/lib.rs
+  3afd932167fef56a 1176-1237,1493-1519
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "baf117dab766301571b80f64c61289aa5de843b7",
+  "prompts": {
+    "3afd932167fef56a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "03f30216-bf11-4896-ba61-28ed420ab886",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 671,
+      "total_deletions": 132,
+      "accepted_lines": 537,
+      "overriden_lines": 0
+    }
+  }
+}
