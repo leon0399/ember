@@ -668,9 +668,10 @@ struct RawDeliveryConfig {
 
 /// Load configuration from pre-parsed CLI args.
 ///
-/// `tui_args` should be `Some` when running the TUI subcommand (or no
-/// subcommand, which implies TUI). When `None`, TUI-specific CLI overrides
-/// (transport URLs, outbox tuning, embedded node flags) are skipped.
+/// `tui_args` should be `Some` only when running the `tui` subcommand.
+/// When `None` (including bare `reme` with no subcommand), TUI-specific
+/// CLI overrides (transport URLs, outbox tuning, embedded node flags) are
+/// skipped — config file and env vars still apply.
 ///
 /// Priority (highest to lowest):
 /// 1. CLI arguments

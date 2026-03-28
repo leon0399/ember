@@ -44,19 +44,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             tui::run(config).await
         }
-        Some(Commands::Export(ref args)) => {
-            eprintln!(
-                "Export not yet implemented. Would export to: {}",
-                args.file.display()
-            );
-            Ok(())
-        }
-        Some(Commands::Import(ref args)) => {
-            eprintln!(
-                "Import not yet implemented. Would import from: {}",
-                args.file.display()
-            );
-            Ok(())
-        }
+        Some(Commands::Export(ref args)) => Err(format!(
+            "Export not yet implemented. Would export to: {}",
+            args.file.display()
+        )
+        .into()),
+        Some(Commands::Import(ref args)) => Err(format!(
+            "Import not yet implemented. Would import from: {}",
+            args.file.display()
+        )
+        .into()),
     }
 }
