@@ -26,10 +26,21 @@ pub enum BodyParseError {
 
     #[error("frame {index} too large: {size} bytes (max {max})")]
     FrameTooLarge { index: u32, size: u32, max: u32 },
+
+    #[error("trailing data: {extra} bytes after last frame")]
+    TrailingData { extra: usize },
 }
 
 /// Encode frames into the bundle body wire format.
+///
+/// # Panics
+///
+/// Panics if `frames` is empty. Use at least one frame.
 pub fn encode_body(frames: &[&[u8]]) -> Vec<u8> {
+    assert!(
+        !frames.is_empty(),
+        "encode_body requires at least one frame"
+    );
     let total_size = 4 + frames.iter().map(|f| 4 + f.len()).sum::<usize>();
     let mut buf = Vec::with_capacity(total_size);
 
@@ -100,6 +111,12 @@ pub fn parse_body(bytes: &[u8], max_frames: u32) -> Result<Vec<Vec<u8>>, BodyPar
         }
         frames.push(bytes[offset..offset + frame_len_usize].to_vec());
         offset += frame_len_usize;
+    }
+
+    if offset != bytes.len() {
+        return Err(BodyParseError::TrailingData {
+            extra: bytes.len() - offset,
+        });
     }
 
     Ok(frames)

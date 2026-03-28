@@ -572,7 +572,7 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         .set_default("cleanup.tombstone_delay_secs", defaults.cleanup.tombstone_delay_secs as i64)?
         .set_default("cleanup.orphan_delay_secs", defaults.cleanup.orphan_delay_secs as i64)?
         .set_default("cleanup.rate_limit_delay_secs", defaults.cleanup.rate_limit_delay_secs as i64)?
-        .set_default("max_body_size", defaults.max_body_size as i64)?
+        .set_default("max_body_size", i64::try_from(defaults.max_body_size).unwrap_or(i64::MAX))?
         .set_default("max_batch_size", i64::from(defaults.max_batch_size))?;
 
     // Layer 2: Config file
@@ -628,7 +628,7 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         builder = builder.set_override("allow_insecure_destination", true)?;
     }
     if let Some(v) = cli.max_body_size {
-        builder = builder.set_override("max_body_size", v as i64)?;
+        builder = builder.set_override("max_body_size", i64::try_from(v).unwrap_or(i64::MAX))?;
     }
     if let Some(v) = cli.max_batch_size {
         builder = builder.set_override("max_batch_size", i64::from(v))?;

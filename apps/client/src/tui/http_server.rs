@@ -731,10 +731,8 @@ mod tests {
             .await
             .unwrap();
 
-        // The handler now returns 200 with per-frame errors in results
-        // since routing key mismatch is a per-frame error, not a top-level HTTP error
-        // Actually, let me check - the old test expected FORBIDDEN
-        // With batch format, wrong routing key is still rejected per-frame but HTTP status is OK
+        // Wrong routing key is a per-frame error in the batch format,
+        // so HTTP status is 200 and the error appears in results[0].
         assert_eq!(response.status(), StatusCode::OK);
         let body_bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
