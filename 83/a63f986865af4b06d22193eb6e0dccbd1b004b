@@ -1,0 +1,27 @@
+crates/reme-bundle/src/reader.rs
+  3afd932167fef56a 95-107
+apps/client/src/import.rs
+  3afd932167fef56a 82-83
+apps/node/src/import.rs
+  3afd932167fef56a 101-102
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "83a63f986865af4b06d22193eb6e0dccbd1b004b",
+  "prompts": {
+    "3afd932167fef56a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "03f30216-bf11-4896-ba61-28ed420ab886",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 17,
+      "total_deletions": 16,
+      "accepted_lines": 156,
+      "overriden_lines": 0
+    }
+  }
+}
