@@ -2,8 +2,8 @@
 
 ## A Delay-Tolerant, End-to-End Encrypted Messaging Protocol
 
-**Version 0.3 (Tiered Delivery)**
-**January 2026**
+**Version 0.5 (Sneakernet Export)**
+**March 2026**
 
 ---
 
@@ -532,9 +532,11 @@ Primary transport for reliable connectivity:
 - Acts as both relay ingress and egress (see §11.5)
 - RSSI-informed relay timing: randomized backoff with RSSI as a scheduling hint (weaker-signal nodes bias toward earlier rebroadcast). BLE at 2.4 GHz has high RSSI variance indoors (multipath, body absorption), so RSSI cannot be used as a deterministic timer — unlike LoRa where Meshtastic uses this approach more reliably at lower frequencies.
 
-**Sneakernet:**
-- QR code or file-based message transfer
-- Complete offline operation
+**Sneakernet (implemented in v0.5):**
+- `.reme` bundle files containing length-prefixed WirePayload frames with BLAKE3 checksum
+- Client export/import: offline outbox export, encrypted message import with dedup
+- Node export/import: opaque envelope storage, tombstone processing
+- Complete offline operation — no network required
 
 ### 11.4 Mailbox node
 
@@ -845,9 +847,9 @@ The tradeoff is explicit: reme prioritizes resilience and DTN tolerance over the
 
 ### Planned features (see ROADMAP.md)
 
-**v0.5:**
-- Sneakernet export/import (archive files, QR codes)
-- Air-gapped message transfer
+**v0.5 (complete):**
+- Sneakernet export/import via `.reme` bundle files
+- Client and node CLI subcommands for offline message transfer
 
 **v0.6:**
 - Store-and-forward relay queue with pluggable ingress/egress
