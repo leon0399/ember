@@ -1,0 +1,23 @@
+apps/client/AGENTS.md
+  3afd932167fef56a 5-31,35-36,38-39,46-47,93
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "dd3060da671bacc7682e82235a327f56cc7d6301",
+  "prompts": {
+    "3afd932167fef56a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "03f30216-bf11-4896-ba61-28ed420ab886",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 34,
+      "total_deletions": 5,
+      "accepted_lines": 573,
+      "overriden_lines": 0
+    }
+  }
+}
