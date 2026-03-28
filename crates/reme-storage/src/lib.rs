@@ -1173,6 +1173,68 @@ impl Storage {
             tiered_phase,
         })
     }
+
+    /// Query outbox rows with the full 11-column projection (including `expired_at_ms`).
+    ///
+    /// Shared implementation for `outbox_get_all` and `outbox_get_all_for_recipient`.
+    fn query_outbox_full(
+        &self,
+        sql: &str,
+        query_params: &[&dyn rusqlite::types::ToSql],
+    ) -> Result<Vec<PendingMessage>, StorageError> {
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let mut stmt = conn.prepare(sql)?;
+
+        let rows = stmt.query_map(query_params, |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,          // message_id
+                row.get::<_, Vec<u8>>(1)?,          // recipient_id
+                row.get::<_, Vec<u8>>(2)?,          // content_id
+                row.get::<_, Vec<u8>>(3)?,          // envelope_bytes
+                row.get::<_, Vec<u8>>(4)?,          // inner_bytes
+                row.get::<_, u64>(5)?,              // created_at_ms
+                row.get::<_, Option<u64>>(6)?,      // expires_at_ms
+                row.get::<_, Option<u64>>(7)?,      // expired_at_ms
+                row.get::<_, Option<u64>>(8)?,      // next_retry_at_ms
+                row.get::<_, Option<String>>(9)?,   // confirmation_type
+                row.get::<_, Option<Vec<u8>>>(10)?, // confirmation_data
+            ))
+        })?;
+
+        let mut messages = Vec::new();
+        for row in rows {
+            let (
+                message_id,
+                recipient_id,
+                content_id,
+                envelope_bytes,
+                inner_bytes,
+                created_at_ms,
+                expires_at_ms,
+                expired_at_ms,
+                next_retry_at_ms,
+                confirmation_type,
+                confirmation_data,
+            ) = row?;
+
+            messages.push(Self::load_pending_message(
+                &conn,
+                message_id,
+                recipient_id,
+                content_id,
+                envelope_bytes,
+                inner_bytes,
+                created_at_ms,
+                expires_at_ms,
+                expired_at_ms,
+                next_retry_at_ms,
+                confirmation_type,
+                confirmation_data,
+            )?);
+        }
+
+        Ok(messages)
+    }
 }
 
 /// Map a database row to a [`StoredMessage`].
@@ -1426,6 +1488,33 @@ impl OutboxStore for Storage {
         }
 
         Ok(messages)
+    }
+
+    fn outbox_get_all(&self) -> Result<Vec<PendingMessage>, Self::Error> {
+        self.query_outbox_full(
+            "SELECT message_id, recipient_id, content_id, envelope_bytes, inner_bytes,
+                    created_at_ms, expires_at_ms, expired_at_ms, next_retry_at_ms,
+                    confirmation_type, confirmation_data
+             FROM outbox
+             ORDER BY created_at_ms ASC",
+            &[],
+        )
+    }
+
+    fn outbox_get_all_for_recipient(
+        &self,
+        recipient: &PublicID,
+    ) -> Result<Vec<PendingMessage>, Self::Error> {
+        let recipient_bytes = recipient.to_bytes();
+        self.query_outbox_full(
+            "SELECT message_id, recipient_id, content_id, envelope_bytes, inner_bytes,
+                    created_at_ms, expires_at_ms, expired_at_ms, next_retry_at_ms,
+                    confirmation_type, confirmation_data
+             FROM outbox
+             WHERE recipient_id = ?
+             ORDER BY created_at_ms ASC",
+            &[&recipient_bytes.as_ref() as &dyn rusqlite::types::ToSql],
+        )
     }
 
     fn outbox_get_due_for_retry(&self, now_ms: u64) -> Result<Vec<PendingMessage>, Self::Error> {

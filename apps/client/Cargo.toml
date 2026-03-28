@@ -28,6 +28,7 @@ derivative = { workspace = true }
 
 # serialization
 hex = { workspace = true }
+postcard = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
@@ -42,6 +43,7 @@ percent-encoding = "2"
 
 # config
 clap = { workspace = true }
+humantime = { workspace = true }
 config = { workspace = true }
 toml = { workspace = true }
 directories = { workspace = true }
