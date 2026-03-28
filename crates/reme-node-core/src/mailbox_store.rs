@@ -493,6 +493,66 @@ impl PersistentMailboxStore {
         })
     }
 
+    /// Export messages with optional filters. Used by `reme-node export`.
+    ///
+    /// Returns non-expired envelopes matching the given filters, ordered by
+    /// creation time (ascending).
+    pub fn export_messages(
+        &self,
+        routing_key: Option<&RoutingKey>,
+        since_secs: Option<i64>,
+        limit: Option<usize>,
+    ) -> Result<Vec<OuterEnvelope>, NodeError> {
+        use std::fmt::Write;
+
+        let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
+        let now = timestamp_to_i64(now_secs());
+
+        let mut sql =
+            String::from("SELECT envelope_data FROM mailbox_messages WHERE expires_at > ?1");
+        let mut param_count = 1;
+
+        if routing_key.is_some() {
+            param_count += 1;
+            let _ = write!(sql, " AND routing_key = ?{param_count}");
+        }
+        if since_secs.is_some() {
+            param_count += 1;
+            let _ = write!(sql, " AND created_at >= ?{param_count}");
+        }
+        sql.push_str(" ORDER BY created_at ASC");
+        if let Some(lim) = limit {
+            let _ = write!(sql, " LIMIT {lim}");
+        }
+
+        let mut stmt = conn.prepare(&sql)?;
+
+        // Build positional params dynamically
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(now)];
+        if let Some(rk) = routing_key {
+            params.push(Box::new(rk.0.to_vec()));
+        }
+        if let Some(since) = since_secs {
+            params.push(Box::new(since));
+        }
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(AsRef::as_ref).collect();
+
+        let rows = stmt.query_map(param_refs.as_slice(), |row| row.get::<_, Vec<u8>>(0))?;
+
+        let mut envelopes = Vec::new();
+        for row in rows {
+            let data = row?;
+            match Self::deserialize_envelope(&data) {
+                Ok(env) => envelopes.push(env),
+                Err(e) => {
+                    warn!("Skipping corrupt envelope in export: {e}");
+                }
+            }
+        }
+        Ok(envelopes)
+    }
+
     /// Checkpoint WAL to main database file
     pub fn checkpoint(&self) -> Result<(), NodeError> {
         let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;

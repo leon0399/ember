@@ -64,6 +64,7 @@ governor = "0.10"
 
 # CLI / config
 clap = { workspace = true }
+humantime = { workspace = true }
 config = { workspace = true }
 toml = { workspace = true }
 directories = { workspace = true }
