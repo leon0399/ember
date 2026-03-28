@@ -42,7 +42,7 @@
 //! Prefer `[[peers.http]]` and `[[peers.mqtt]]` for current configs.
 //! Legacy examples may still appear in older templates while migration work is completed.
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use config::{Config, Environment, File, FileFormat};
 use derivative::Derivative;
 use directories::ProjectDirs;
@@ -53,16 +53,55 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tracing::warn;
 
-/// CLI arguments for the client
-#[derive(Parser, Debug, Clone, Serialize)]
-#[command(name = "reme-client")]
-#[command(author, version, about = "Branch Messenger Client")]
-pub struct CliArgs {
+/// Top-level CLI parser with optional subcommand
+#[derive(Parser, Debug, Clone)]
+#[command(name = "reme")]
+#[command(author, version, about = "Resilient Messenger")]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+
+    /// Directory for storing identity, keys, and messages
+    #[arg(short = 'd', long, env = "REME_DATA_DIR")]
+    pub data_dir: Option<PathBuf>,
+
+    /// Path to config file (default: ~/.config/reme/config.toml)
+    #[arg(short = 'c', long, env = "REME_CONFIG")]
+    pub config: Option<PathBuf>,
+
+    /// Log level (trace, debug, info, warn, error)
+    #[arg(short = 'l', long, env = "REME_LOG_LEVEL")]
+    pub log_level: Option<String>,
+}
+
+impl Cli {
+    /// Returns the TUI args if the command is `Tui` (or `None` when no subcommand).
+    pub fn tui_args(&self) -> Option<&TuiArgs> {
+        match &self.command {
+            Some(Commands::Tui(args)) => Some(args),
+            _ => None,
+        }
+    }
+}
+
+/// Available subcommands
+#[derive(Subcommand, Debug, Clone)]
+pub enum Commands {
+    /// Launch the interactive TUI (default when no subcommand given)
+    Tui(TuiArgs),
+    /// Export pending messages to a .reme bundle file
+    Export(ExportArgs),
+    /// Import messages from a .reme bundle file
+    Import(ImportArgs),
+}
+
+/// TUI-specific CLI arguments
+#[derive(Parser, Debug, Clone)]
+pub struct TuiArgs {
     /// HTTP endpoint URLs (pair with --http-cert-pin by order)
     ///
     /// Example: --http-url https://node1:23003,https://node2:23003
     #[arg(long, value_delimiter = ',')]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub http_url: Option<Vec<String>>,
 
     /// Certificate pins for HTTP endpoints (pair with --http-url by order)
@@ -70,61 +109,38 @@ pub struct CliArgs {
     /// Format: spki//sha256/<base64> or cert//sha256/<base64>
     /// Example: --http-cert-pin spki//sha256/aaa=,spki//sha256/bbb=
     #[arg(long, value_delimiter = ',')]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub http_cert_pin: Option<Vec<String>>,
 
     /// MQTT broker URLs (pair with --mqtt-client-id by order)
     ///
     /// Example: --mqtt-url mqtts://broker1:8883,mqtts://broker2:8883
     #[arg(long, value_delimiter = ',')]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub mqtt_url: Option<Vec<String>>,
 
     /// Client IDs for MQTT brokers (pair with --mqtt-url by order)
     ///
     /// If not specified, random client IDs will be generated
     #[arg(long, value_delimiter = ',')]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub mqtt_client_id: Option<Vec<String>>,
-
-    /// Directory for storing identity, keys, and messages
-    #[arg(short = 'd', long, env = "REME_DATA_DIR")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data_dir: Option<PathBuf>,
-
-    /// Path to config file (default: ~/.config/reme/config.toml)
-    #[arg(short = 'c', long, env = "REME_CONFIG")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub config: Option<PathBuf>,
-
-    /// Log level (trace, debug, info, warn, error)
-    #[arg(short = 'l', long, env = "REME_LOG_LEVEL")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub log_level: Option<String>,
 
     /// Outbox retry check interval in seconds
     #[arg(long, env = "REME_OUTBOX_TICK_INTERVAL")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub outbox_tick_interval: Option<u64>,
 
     /// Message TTL in days (0 = never expire)
     #[arg(long, env = "REME_OUTBOX_TTL_DAYS")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub outbox_ttl_days: Option<u64>,
 
     /// Attempt timeout in seconds (how long before retry)
     #[arg(long, env = "REME_OUTBOX_ATTEMPT_TIMEOUT")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub outbox_attempt_timeout: Option<u64>,
 
     /// Initial retry delay in seconds
     #[arg(long, env = "REME_OUTBOX_RETRY_INITIAL_DELAY")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub outbox_retry_initial_delay: Option<u64>,
 
     /// Maximum retry delay in seconds
     #[arg(long, env = "REME_OUTBOX_RETRY_MAX_DELAY")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub outbox_retry_max_delay: Option<u64>,
 
     /// Enable the embedded node for LAN P2P messaging
@@ -141,8 +157,21 @@ pub struct CliArgs {
     ///
     /// Example: --embedded-http-bind 0.0.0.0:23004
     #[arg(long, env = "REME_EMBEDDED_HTTP_BIND")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub embedded_http_bind: Option<String>,
+}
+
+/// Arguments for the export subcommand
+#[derive(Parser, Debug, Clone)]
+pub struct ExportArgs {
+    /// Output path for the .reme bundle
+    pub file: PathBuf,
+}
+
+/// Arguments for the import subcommand
+#[derive(Parser, Debug, Clone)]
+pub struct ImportArgs {
+    /// Path to a .reme bundle file to import
+    pub file: PathBuf,
 }
 
 // =============================================================================
@@ -637,7 +666,11 @@ struct RawDeliveryConfig {
     quorum_tier_timeout_secs: Option<u64>,
 }
 
-/// Load configuration from all sources with proper layering
+/// Load configuration from pre-parsed CLI args.
+///
+/// `tui_args` should be `Some` when running the TUI subcommand (or no
+/// subcommand, which implies TUI). When `None`, TUI-specific CLI overrides
+/// (transport URLs, outbox tuning, embedded node flags) are skipped.
 ///
 /// Priority (highest to lowest):
 /// 1. CLI arguments
@@ -645,9 +678,10 @@ struct RawDeliveryConfig {
 /// 3. Config file
 /// 4. Built-in defaults
 #[allow(clippy::too_many_lines)] // Config loading requires many steps
-pub fn load_config() -> Result<AppConfig, config::ConfigError> {
-    let cli = CliArgs::parse();
-
+pub fn load_config_from(
+    cli: &Cli,
+    tui_args: Option<&TuiArgs>,
+) -> Result<AppConfig, config::ConfigError> {
     // Start with defaults
     let defaults = AppConfig::default();
 
@@ -714,33 +748,36 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
         default_peers()
     };
 
-    // Apply CLI arguments on top of all other sources
-    // Handle HTTP URLs with cert pins
-    if let Some(urls) = &cli.http_url {
-        // TODO: Add --http-username and --http-password CLI flags for HTTP authentication
-        // Currently only config-based HTTP peers support authentication
-        let cert_pins = cli.http_cert_pin.as_deref();
-        let (http_peers, warnings) = HttpPeerConfig::from_cli_urls(urls, cert_pins, None, None);
+    // Apply TUI-specific CLI arguments on top of all other sources
+    if let Some(tui) = tui_args {
+        // Handle HTTP URLs with cert pins
+        if let Some(urls) = &tui.http_url {
+            // TODO: Add --http-username and --http-password CLI flags for HTTP authentication
+            // Currently only config-based HTTP peers support authentication
+            let cert_pins = tui.http_cert_pin.as_deref();
+            let (http_peers, warnings) = HttpPeerConfig::from_cli_urls(urls, cert_pins, None, None);
 
-        for warning in warnings {
-            warn!("{}", warning);
+            for warning in warnings {
+                warn!("{}", warning);
+            }
+
+            peers.http.extend(http_peers);
         }
 
-        peers.http.extend(http_peers);
-    }
+        // Handle MQTT URLs with client IDs
+        if let Some(urls) = &tui.mqtt_url {
+            // TODO: Add --mqtt-username and --mqtt-password CLI flags for MQTT authentication
+            // Currently only config-based MQTT peers support authentication
+            let client_ids = tui.mqtt_client_id.as_deref();
+            let (mqtt_peers, warnings) =
+                MqttPeerConfig::from_cli_urls(urls, client_ids, None, None);
 
-    // Handle MQTT URLs with client IDs
-    if let Some(urls) = &cli.mqtt_url {
-        // TODO: Add --mqtt-username and --mqtt-password CLI flags for MQTT authentication
-        // Currently only config-based MQTT peers support authentication
-        let client_ids = cli.mqtt_client_id.as_deref();
-        let (mqtt_peers, warnings) = MqttPeerConfig::from_cli_urls(urls, client_ids, None, None);
+            for warning in warnings {
+                warn!("{}", warning);
+            }
 
-        for warning in warnings {
-            warn!("{}", warning);
+            peers.mqtt.extend(mqtt_peers);
         }
-
-        peers.mqtt.extend(mqtt_peers);
     }
 
     // Expand ~ in data_dir path
@@ -748,24 +785,24 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
 
     // Build outbox config with priority: CLI > config file > defaults
     let outbox = OutboxAppConfig {
-        tick_interval_secs: cli
-            .outbox_tick_interval
+        tick_interval_secs: tui_args
+            .and_then(|t| t.outbox_tick_interval)
             .or(raw.outbox.tick_interval_secs)
             .unwrap_or_else(default_outbox_tick_interval),
-        ttl_days: cli
-            .outbox_ttl_days
+        ttl_days: tui_args
+            .and_then(|t| t.outbox_ttl_days)
             .or(raw.outbox.ttl_days)
             .unwrap_or_else(default_outbox_ttl_days),
-        attempt_timeout_secs: cli
-            .outbox_attempt_timeout
+        attempt_timeout_secs: tui_args
+            .and_then(|t| t.outbox_attempt_timeout)
             .or(raw.outbox.attempt_timeout_secs)
             .unwrap_or_else(default_outbox_attempt_timeout),
-        retry_initial_delay_secs: cli
-            .outbox_retry_initial_delay
+        retry_initial_delay_secs: tui_args
+            .and_then(|t| t.outbox_retry_initial_delay)
             .or(raw.outbox.retry_initial_delay_secs)
             .unwrap_or_else(default_outbox_retry_initial_delay),
-        retry_max_delay_secs: cli
-            .outbox_retry_max_delay
+        retry_max_delay_secs: tui_args
+            .and_then(|t| t.outbox_retry_max_delay)
             .or(raw.outbox.retry_max_delay_secs)
             .unwrap_or_else(default_outbox_retry_max_delay),
     };
@@ -805,16 +842,23 @@ pub fn load_config() -> Result<AppConfig, config::ConfigError> {
 
     // Resolve embedded node config with priority: CLI > config file > defaults
     let embedded_node_file = raw.embedded_node.unwrap_or_default();
-    let embedded_node = EmbeddedNodeConfig {
-        // CLI flags take priority: --embedded-node enables, --no-embedded-node disables
-        enabled: match (cli.embedded_node, cli.no_embedded_node) {
-            (true, _) => true,
-            (_, true) => false,
-            _ => embedded_node_file.enabled,
-        },
-        http_bind: cli.embedded_http_bind.or(embedded_node_file.http_bind),
-        max_messages: embedded_node_file.max_messages,
-        default_ttl_secs: embedded_node_file.default_ttl_secs,
+    let embedded_node = if let Some(tui) = tui_args {
+        EmbeddedNodeConfig {
+            // CLI flags take priority: --embedded-node enables, --no-embedded-node disables
+            enabled: match (tui.embedded_node, tui.no_embedded_node) {
+                (true, _) => true,
+                (_, true) => false,
+                _ => embedded_node_file.enabled,
+            },
+            http_bind: tui
+                .embedded_http_bind
+                .clone()
+                .or(embedded_node_file.http_bind),
+            max_messages: embedded_node_file.max_messages,
+            default_ttl_secs: embedded_node_file.default_ttl_secs,
+        }
+    } else {
+        embedded_node_file
     };
 
     // Resolve direct peers from config file > defaults (empty)
@@ -1309,5 +1353,98 @@ mod tests {
         assert!(!config.auto_direct_known_contacts);
         assert_eq!(config.max_peers, 64);
         assert_eq!(config.refresh_interval_secs, 120);
+    }
+
+    #[test]
+    fn test_cli_no_subcommand_defaults_to_none() {
+        let cli = Cli::try_parse_from(["reme"]).unwrap();
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn test_cli_tui_subcommand() {
+        let cli = Cli::try_parse_from(["reme", "tui"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Tui(_))));
+    }
+
+    #[test]
+    fn test_cli_export_subcommand_stub() {
+        let cli = Cli::try_parse_from(["reme", "export", "out.reme"]).unwrap();
+        match cli.command {
+            Some(Commands::Export(ref args)) => {
+                assert_eq!(args.file, PathBuf::from("out.reme"));
+            }
+            _ => panic!("Expected Export subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_cli_import_subcommand_stub() {
+        let cli = Cli::try_parse_from(["reme", "import", "in.reme"]).unwrap();
+        match cli.command {
+            Some(Commands::Import(ref args)) => {
+                assert_eq!(args.file, PathBuf::from("in.reme"));
+            }
+            _ => panic!("Expected Import subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_cli_global_args_with_subcommand() {
+        let cli = Cli::try_parse_from([
+            "reme",
+            "--data-dir",
+            "/tmp/test",
+            "--log-level",
+            "debug",
+            "tui",
+        ])
+        .unwrap();
+        assert_eq!(cli.data_dir, Some(PathBuf::from("/tmp/test")));
+        assert_eq!(cli.log_level, Some("debug".to_string()));
+        assert!(matches!(cli.command, Some(Commands::Tui(_))));
+    }
+
+    #[test]
+    fn test_cli_global_args_without_subcommand() {
+        let cli = Cli::try_parse_from(["reme", "--data-dir", "/tmp/test"]).unwrap();
+        assert_eq!(cli.data_dir, Some(PathBuf::from("/tmp/test")));
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn test_cli_tui_specific_args() {
+        let cli = Cli::try_parse_from([
+            "reme",
+            "tui",
+            "--http-url",
+            "https://node:23003",
+            "--embedded-node",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Tui(ref args)) => {
+                assert_eq!(args.http_url, Some(vec!["https://node:23003".to_string()]));
+                assert!(args.embedded_node);
+            }
+            _ => panic!("Expected Tui subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_load_config_from_global_only() {
+        let cli = Cli::try_parse_from(["reme", "--data-dir", "/tmp/reme-test"]).unwrap();
+        let config = load_config_from(&cli, None).unwrap();
+        assert_eq!(config.data_dir, PathBuf::from("/tmp/reme-test"));
+    }
+
+    #[test]
+    fn test_load_config_from_with_tui_args() {
+        let cli = Cli::try_parse_from(["reme", "tui", "--embedded-node"]).unwrap();
+        let Some(Commands::Tui(ref tui_args)) = &cli.command else {
+            panic!("Expected Tui")
+        };
+        let config = load_config_from(&cli, Some(tui_args)).unwrap();
+        assert!(config.embedded_node.enabled);
     }
 }
