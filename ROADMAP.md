@@ -1,6 +1,6 @@
 # Resilient Messenger Roadmap
 
-**Current Version:** v0.4 (LAN Discovery)
+**Current Version:** v0.5 (Sneakernet Export)
 **Target Version:** v1.0 (Production Ready)
 
 ---
@@ -27,7 +27,7 @@ flowchart LR
         v03["v0.3 ✅<br/>Tiered Delivery"]
         v04["v0.4 ✅<br/>mDNS Discovery"]
         PC["Postcard ✅<br/>(internal)"]
-        v05["v0.5<br/>Sneakernet Export"]
+        v05["v0.5 ✅<br/>Sneakernet Export"]
         v06["v0.6<br/>LAN Relay"]
         v07["v0.7<br/>BLE Direct"]
         v08["v0.8<br/>Meshtastic Direct"]
@@ -44,7 +44,7 @@ flowchart LR
 
 ---
 
-## Current status (v0.4)
+## Current status (v0.5)
 
 ### Core foundation
 
@@ -64,8 +64,11 @@ flowchart LR
 | **Receipt Signing**  | ✅ Complete |
 | **LAN Discovery**    | ✅ Complete |
 | **Identity Verification** | ✅ Complete |
+| **Bundle Format**    | ✅ Complete (reme-bundle crate) |
+| **Sneakernet Export/Import** | ✅ Complete (client + node) |
+| **CLI Subcommands**  | ✅ Complete (client + node) |
 
-**Test coverage:** 614 tests across workspace, all passing.
+**Test coverage:** 670 tests across workspace, all passing.
 
 ---
 
@@ -116,7 +119,7 @@ Automatic peer discovery and verified P2P messaging on local networks.
 
 ---
 
-## Internal: Postcard migration (Pre-v0.5)
+## Internal: Postcard migration (Pre-v0.5) ✅
 
 Simplify serialization code and prepare for stable wire format.
 
@@ -159,7 +162,7 @@ Simplify serialization code and prepare for stable wire format.
 
 ---
 
-## v0.5: Sneakernet export
+## v0.5: Sneakernet export ✅
 
 Air-gapped messaging via file transfer.
 
@@ -168,28 +171,35 @@ Air-gapped messaging via file transfer.
 **Problem:** Sometimes there's no network at all, not even BLE range. Need a way to physically transport encrypted messages between air-gapped systems.
 
 **Solution:**
-- Export pending outbox messages to encrypted archive file
-- Import received archives and process as normal messages
-- QR code generation for small messages (single text messages)
+- Export pending outbox messages to `.reme` bundle file
+- Import received bundles and process as normal messages
+- Bundle format: versioned header, length-prefixed WirePayload frames, BLAKE3 checksum
 - Archive format reusable by future transports (BLE, LoRa)
 
 **Deliverables:**
-- [ ] Archive format specification (versioned, extensible)
-- [ ] Export command in CLI (`reme export --to alice --file msg.reme`)
-- [ ] Import command in CLI (`reme import msg.reme`)
-- [ ] QR code generation for single messages
-- [ ] QR code scanning (camera or image file)
-- [ ] TUI integration for export/import flows
+- [x] `reme-bundle` crate — archive format implementation (PR #181)
+- [x] Client CLI subcommands — `reme tui`, `reme export`, `reme import` (PR #185)
+- [x] Client export — offline outbox export with `--to`, `--since`, `--limit`, `--force`, `--include-sent` (PR #189)
+- [x] Client import — decrypt and store self-addressed messages, idempotent (PR #190)
+- [x] Shared identity module — extracted from TUI for CLI reuse (PR #190)
+- [x] Node CLI subcommands — `reme-node serve`, `reme-node export`, `reme-node import` (PR #191)
+- [x] Node export/import — opaque envelope storage, tombstone processing (PR #191)
+- [x] Sneakernet round-trip integration tests — 7 tests covering full workflow (PR #201)
+- [ ] Archive format specification document — deferred (format not yet finalized)
+
+**Deferred:**
+- QR code generation/scanning — requires native app with camera access
+- TUI integration for export/import flows — CLI commands sufficient for now
 
 **Success criteria:**
-- Round-trip export→USB→import works correctly
-- QR codes work for messages up to ~500 bytes
-- Archive format documented for interoperability
-- No data loss or corruption in transfer
+- ✅ Round-trip export→USB→import works correctly
+- QR codes — deferred to native apps
+- Archive format documentation — pending format finalization
+- ✅ No data loss or corruption in transfer (verified by integration tests)
 
 **What this enables:**
 
-Send encrypted messages across an air gap: USB drive, printed QR code, or carrier pigeon. The simplest possible offline transport, and foundation for all others.
+Send encrypted messages across an air gap: USB drive or carrier pigeon. The simplest possible offline transport, and foundation for all others.
 
 ---
 
@@ -534,10 +544,10 @@ Implements DTN-safe forward secrecy without prekey servers.
 - Wire format size delta < 5%
 - No manual serialization impl blocks
 
-### v0.5
-- Successful export→transfer→import round-trip
-- QR codes for small messages
-- Archive format documented
+### v0.5 ✅
+- ✅ Successful export→transfer→import round-trip (7 integration tests)
+- QR codes — deferred to native apps
+- Archive format documentation — pending format finalization
 
 ### v0.6
 - LAN relay works during partial Internet outages
