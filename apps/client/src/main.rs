@@ -3,58 +3,56 @@
 //! A terminal-based messenger client with a Telegram/WhatsApp-style interface.
 //! Uses MIK-only stateless encryption (no session establishment needed).
 //!
-//! ## Configuration
+//! ## Subcommands
 //!
-//! Configuration is loaded from multiple sources with the following priority
-//! (highest to lowest):
-//!
-//! 1. **CLI arguments** - `--node-url`, `--data-dir`, etc.
-//! 2. **Environment variables** - `REME_NODE_URL`, `REME_DATA_DIR`, etc.
-//! 3. **Config file** - `~/.config/reme/config.toml`
-//! 4. **Built-in defaults**
-//!
-//! See `--help` for all CLI options.
-//!
-//! ## Keyboard Shortcuts
-//!
-//! - `Tab` / `Shift+Tab` - Switch between panels
-//! - `j` / `k` or Arrow keys - Navigate
-//! - `Enter` - Select conversation / Send message
-//! - `h` - Show help
-//! - `Esc` / `Ctrl+C` - Quit
+//! - `reme` or `reme tui` -- Launch the interactive TUI (default)
+//! - `reme export <FILE>` -- Export pending messages to a .reme bundle
+//! - `reme import <FILE>` -- Import messages from a .reme bundle
 
 mod config;
 mod discovery;
 mod tui;
 
-use crate::config::load_config;
+use crate::config::{load_config_from, Cli, Commands};
+use clap::Parser;
 use std::fs::{self, File};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Load configuration
-    let config = load_config().unwrap_or_else(|e| {
+    let cli = Cli::parse();
+
+    let config = load_config_from(&cli, cli.tui_args()).unwrap_or_else(|e| {
         eprintln!("Failed to load configuration: {e}");
         eprintln!("Using default configuration...");
         config::AppConfig::default()
     });
 
-    // Ensure data directory exists for log file
-    fs::create_dir_all(&config.data_dir)?;
+    match cli.command {
+        None | Some(Commands::Tui(_)) => {
+            fs::create_dir_all(&config.data_dir)?;
+            let env_filter = EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new(&config.log_level));
+            let log_file = File::create(config.data_dir.join("client.log"))?;
+            let subscriber = tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .with_writer(log_file)
+                .with_ansi(false)
+                .finish();
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("setting default subscriber failed");
 
-    // Initialize tracing - write to file to avoid breaking TUI.
-    // RUST_LOG env var takes precedence; falls back to config file level.
-    let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level));
-    let log_file = File::create(config.data_dir.join("client.log"))?;
-    let subscriber = tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .with_writer(log_file)
-        .with_ansi(false)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
-
-    // Run TUI
-    tui::run(config).await
+            tui::run(config).await
+        }
+        Some(Commands::Export(ref args)) => Err(format!(
+            "Export not yet implemented. Would export to: {}",
+            args.file.display()
+        )
+        .into()),
+        Some(Commands::Import(ref args)) => Err(format!(
+            "Import not yet implemented. Would import from: {}",
+            args.file.display()
+        )
+        .into()),
+    }
 }

@@ -2,20 +2,49 @@
 
 Terminal-based messenger with Telegram/WhatsApp-style interface. Built on ratatui + crossterm. Includes an embedded HTTP relay for LAN P2P messaging.
 
+## CLI Structure
+
+The binary uses clap subcommands. Bare `reme` defaults to the TUI.
+
+```
+reme [OPTIONS] [SUBCOMMAND]
+
+Global options (available to all subcommands):
+  -d, --data-dir <PATH>    Data directory (env: REME_DATA_DIR)
+  -c, --config <PATH>      Config file path (env: REME_CONFIG)
+  -l, --log-level <LEVEL>  Log level (env: REME_LOG_LEVEL)
+
+Subcommands:
+  tui       Launch the interactive TUI (default when no subcommand)
+  export    Export pending messages to a .reme bundle file (stub)
+  import    Import messages from a .reme bundle file (stub)
+```
+
+TUI-specific flags (`--http-url`, `--mqtt-url`, `--outbox-*`, `--embedded-*`) are only available under the `tui` subcommand.
+
+### Key types in `config.rs`
+
+- `Cli` — top-level parser with `Option<Commands>` and global args
+- `Commands` — enum: `Tui(TuiArgs)`, `Export(ExportArgs)`, `Import(ImportArgs)`
+- `TuiArgs` — transport URLs, outbox tuning, embedded node flags
+- `load_config_from(cli, tui_args)` — config loading; pass `cli.tui_args()` for TUI path, `None` for non-TUI subcommands
+
 ## Running
 
 ```bash
-cargo run --bin client                                    # Default config
-cargo run --bin client -- --http-url https://node:23003   # Custom node
+cargo run --bin client                                                  # TUI with defaults
+cargo run --bin client -- tui --http-url https://node:23003             # TUI with custom node
 cargo run --bin client -- --data-dir data/clients/alice --config data/clients/alice/config.toml  # Named local instance
+cargo run --bin client -- export out.reme                               # Export (stub)
+cargo run --bin client -- import bundle.reme                            # Import (stub)
 ```
 
 ## Module Map
 
 | File                      | Purpose                                                                            |
 |---------------------------|------------------------------------------------------------------------------------|
-| `main.rs`                 | Entry point, config loading, log-to-file setup                                     |
-| `config.rs`               | CLI args (clap), env vars (`REME_*`), TOML config, layered merge                   |
+| `main.rs`                 | Entry point, CLI parsing, subcommand dispatch                                      |
+| `config.rs`               | `Cli`/`Commands`/`TuiArgs` structs, env vars (`REME_*`), TOML config, layered merge |
 | `tui/app.rs`              | Main app state, event loop, keyboard handling                                      |
 | `tui/ui.rs`               | Ratatui widget rendering (conversations, messages, popups)                         |
 | `tui/event.rs`            | Crossterm event polling, background tick timer                                     |
@@ -61,7 +90,7 @@ Env prefix: `REME_*` (e.g., `REME_PEERS`).
 
 ## Non-obvious Patterns
 
-- **Logging goes to file**: TUI occupies stdout, so tracing writes to `{data_dir}/client.log`. `RUST_LOG` env var overrides config level.
+- **Logging goes to file (TUI only)**: TUI occupies stdout, so tracing writes to `{data_dir}/client.log`. Non-TUI subcommands don't initialize logging yet (stubs). `RUST_LOG` env var overrides config level.
 - **Embedded relay**: The client runs an Axum HTTP server (`tui/http_server.rs`) for receiving LAN P2P messages. Bound address from `embedded_node.http_bind` config.
 - **Discovery controller**: When `lan_discovery.auto_direct_known_contacts = true`, discovered mDNS peers are matched against contacts by routing key, verified via challenge-response, and registered as ephemeral Direct-tier targets (SEND-only, no FETCH).
 - **Ephemeral circuit breaker**: Peers failing identity verification twice consecutively are removed. `refresh_interval_secs` (default 300) controls re-verification.
