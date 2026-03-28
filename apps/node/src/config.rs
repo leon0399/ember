@@ -79,7 +79,7 @@
 //!
 
 use crate::cleanup::CleanupConfig;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use config::{Config, Environment, File, FileFormat};
 use derivative::Derivative;
 use directories::ProjectDirs;
@@ -254,11 +254,52 @@ impl RateLimitConfig {
     }
 }
 
-/// CLI arguments for the node
+/// Top-level CLI parser with optional subcommand
 #[derive(Parser, Debug, Clone)]
 #[command(name = "reme-node")]
 #[command(author, version, about = "Branch Messenger Mailbox Node")]
-pub struct CliArgs {
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+
+    /// Path to config file (default: ~/.config/reme/node.toml)
+    #[arg(short = 'c', long, env = "REME_NODE_CONFIG")]
+    pub config: Option<PathBuf>,
+
+    /// Log level (trace, debug, info, warn, error)
+    #[arg(short = 'l', long, env = "REME_NODE_LOG_LEVEL")]
+    pub log_level: Option<String>,
+
+    /// Path to `SQLite` database file (default: :memory:)
+    /// Use ":memory:" for in-memory storage, or a file path for persistence
+    #[arg(long, env = "REME_NODE_STORAGE_PATH")]
+    pub storage_path: Option<String>,
+}
+
+impl Cli {
+    /// Returns the serve args if the command is `Serve` (or `None` when no subcommand).
+    pub fn serve_args(&self) -> Option<&ServeArgs> {
+        match &self.command {
+            Some(Commands::Serve(args)) => Some(args.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+/// Available subcommands
+#[derive(Subcommand, Debug, Clone)]
+pub enum Commands {
+    /// Start the mailbox server (default when no subcommand given)
+    Serve(Box<ServeArgs>),
+    /// Export messages to a .reme bundle file
+    Export(ExportArgs),
+    /// Import messages from a .reme bundle file
+    Import(ImportArgs),
+}
+
+/// Server-specific CLI arguments
+#[derive(Parser, Debug, Clone)]
+pub struct ServeArgs {
     /// Address to bind HTTP server (e.g., "0.0.0.0:23003")
     #[arg(short = 'b', long, env = "REME_NODE_BIND_ADDR")]
     pub bind_addr: Option<String>,
@@ -274,14 +315,6 @@ pub struct CliArgs {
     /// Default message TTL in seconds
     #[arg(short = 't', long, env = "REME_NODE_DEFAULT_TTL")]
     pub default_ttl: Option<u32>,
-
-    /// Path to config file (default: ~/.config/reme/node.toml)
-    #[arg(short = 'c', long, env = "REME_NODE_CONFIG")]
-    pub config: Option<PathBuf>,
-
-    /// Log level (trace, debug, info, warn, error)
-    #[arg(short = 'l', long, env = "REME_NODE_LOG_LEVEL")]
-    pub log_level: Option<String>,
 
     /// Unique node ID for replication (defaults to random UUID)
     #[arg(long, env = "REME_NODE_ID")]
@@ -308,11 +341,6 @@ pub struct CliArgs {
     /// Orphan tombstone cleanup delay in seconds (default: 86400)
     #[arg(long, env = "REME_NODE_CLEANUP_ORPHAN_DELAY")]
     pub cleanup_orphan_delay: Option<u64>,
-
-    /// Path to `SQLite` database file (default: :memory:)
-    /// Use ":memory:" for in-memory storage, or a file path for persistence
-    #[arg(long, env = "REME_NODE_STORAGE_PATH")]
-    pub storage_path: Option<String>,
 
     /// Username for HTTP Basic Auth (optional)
     /// If set along with `auth_password`, incoming requests must authenticate
@@ -408,6 +436,36 @@ pub struct CliArgs {
     /// Maximum frames per submit request
     #[arg(long, env = "REME_NODE_MAX_BATCH_SIZE")]
     pub max_batch_size: Option<u32>,
+}
+
+/// Arguments for the export subcommand
+#[derive(Parser, Debug, Clone)]
+pub struct ExportArgs {
+    /// Output path for the .reme bundle
+    pub file: PathBuf,
+
+    /// Export only messages for this routing key (hex-encoded, 32 hex chars = 16 bytes)
+    #[arg(long)]
+    pub routing_key: Option<String>,
+
+    /// Overwrite existing output file
+    #[arg(long)]
+    pub force: bool,
+
+    /// Export at most N messages
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Only export messages created within this duration (e.g. 24h, 7d)
+    #[arg(long)]
+    pub since: Option<String>,
+}
+
+/// Arguments for the import subcommand
+#[derive(Parser, Debug, Clone)]
+pub struct ImportArgs {
+    /// Path to a .reme bundle file to import
+    pub file: PathBuf,
 }
 
 /// Final resolved configuration
@@ -552,9 +610,10 @@ fn i64_to_usize_clamped(v: i64) -> usize {
 /// 3. Config file
 /// 4. Built-in defaults
 #[allow(clippy::cast_possible_wrap, clippy::too_many_lines)] // Config loading requires many steps
-pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
-    let cli = CliArgs::parse();
-
+pub fn load_config_from(
+    cli: &Cli,
+    serve_args: Option<&ServeArgs>,
+) -> Result<NodeConfig, config::ConfigError> {
     // Start with defaults
     let defaults = NodeConfig::default();
 
@@ -590,48 +649,56 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
             .try_parsing(true),
     );
 
-    // Layer 4: CLI arguments (highest priority)
-    if let Some(ref bind_addr) = cli.bind_addr {
-        builder = builder.set_override("bind_addr", bind_addr.clone())?;
-    }
-    // Port is a shorthand for bind_addr
-    if let Some(port) = cli.port {
-        builder = builder.set_override("bind_addr", format!("0.0.0.0:{port}"))?;
-    }
-    if let Some(max_messages) = cli.max_messages {
-        builder = builder.set_override("max_messages", max_messages as i64)?;
-    }
-    if let Some(default_ttl) = cli.default_ttl {
-        builder = builder.set_override("default_ttl", i64::from(default_ttl))?;
-    }
+    // Layer 4: Global CLI arguments (highest priority)
     if let Some(ref log_level) = cli.log_level {
         builder = builder.set_override("log_level", log_level.clone())?;
     }
-    if let Some(ref node_id) = cli.node_id {
-        builder = builder.set_override("node_id", node_id.clone())?;
+    if let Some(ref storage_path) = cli.storage_path {
+        builder = builder.set_override("storage_path", storage_path.clone())?;
     }
-    // Note: CLI peers are applied after extraction (complex type incompatible with config crate)
-    // Cleanup CLI overrides
-    if cli.cleanup_disabled {
-        builder = builder.set_override("cleanup.enabled", false)?;
-    }
-    if let Some(interval) = cli.cleanup_interval {
-        builder = builder.set_override("cleanup.interval_secs", interval as i64)?;
-    }
-    if let Some(delay) = cli.cleanup_tombstone_delay {
-        builder = builder.set_override("cleanup.tombstone_delay_secs", delay as i64)?;
-    }
-    if let Some(delay) = cli.cleanup_orphan_delay {
-        builder = builder.set_override("cleanup.orphan_delay_secs", delay as i64)?;
-    }
-    if cli.allow_insecure_destination {
-        builder = builder.set_override("allow_insecure_destination", true)?;
-    }
-    if let Some(v) = cli.max_body_size {
-        builder = builder.set_override("max_body_size", i64::try_from(v).unwrap_or(i64::MAX))?;
-    }
-    if let Some(v) = cli.max_batch_size {
-        builder = builder.set_override("max_batch_size", i64::from(v))?;
+
+    // Layer 4b: Serve-specific CLI arguments (only when running in serve mode)
+    if let Some(serve) = serve_args {
+        if let Some(ref bind_addr) = serve.bind_addr {
+            builder = builder.set_override("bind_addr", bind_addr.clone())?;
+        }
+        // Port is a shorthand for bind_addr
+        if let Some(port) = serve.port {
+            builder = builder.set_override("bind_addr", format!("0.0.0.0:{port}"))?;
+        }
+        if let Some(max_messages) = serve.max_messages {
+            builder = builder.set_override("max_messages", max_messages as i64)?;
+        }
+        if let Some(default_ttl) = serve.default_ttl {
+            builder = builder.set_override("default_ttl", i64::from(default_ttl))?;
+        }
+        if let Some(ref node_id) = serve.node_id {
+            builder = builder.set_override("node_id", node_id.clone())?;
+        }
+        // Note: CLI peers are applied after extraction (complex type incompatible with config crate)
+        // Cleanup CLI overrides
+        if serve.cleanup_disabled {
+            builder = builder.set_override("cleanup.enabled", false)?;
+        }
+        if let Some(interval) = serve.cleanup_interval {
+            builder = builder.set_override("cleanup.interval_secs", interval as i64)?;
+        }
+        if let Some(delay) = serve.cleanup_tombstone_delay {
+            builder = builder.set_override("cleanup.tombstone_delay_secs", delay as i64)?;
+        }
+        if let Some(delay) = serve.cleanup_orphan_delay {
+            builder = builder.set_override("cleanup.orphan_delay_secs", delay as i64)?;
+        }
+        if serve.allow_insecure_destination {
+            builder = builder.set_override("allow_insecure_destination", true)?;
+        }
+        if let Some(v) = serve.max_body_size {
+            builder =
+                builder.set_override("max_body_size", i64::try_from(v).unwrap_or(i64::MAX))?;
+        }
+        if let Some(v) = serve.max_batch_size {
+            builder = builder.set_override("max_batch_size", i64::from(v))?;
+        }
     }
 
     let config = builder.build()?;
@@ -653,7 +720,7 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     let mut peers: PeersConfig = config.get::<PeersConfig>("peers").unwrap_or(defaults.peers);
 
     // Apply CLI peer overrides (URL-only shorthand, not full peer-config parity)
-    if let Some(ref peer_urls) = cli.peers {
+    if let Some(peer_urls) = serve_args.and_then(|s| s.peers.as_ref()) {
         // CLI peers override all file/env config
         let (http_peers, _warnings) = HttpPeerConfig::from_cli_urls(peer_urls, None, None, None);
 
@@ -686,19 +753,20 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
             .unwrap_or(defaults.cleanup.rate_limit_delay_secs),
     };
 
-    // Extract storage config
+    // Extract storage config (CLI override already applied via builder)
     let storage_path: Option<String> = config.get("storage_path").ok();
-
-    // Override from CLI if provided
-    let storage_path = cli.storage_path.or(storage_path);
 
     // Extract auth config
     let auth_username: Option<String> = config.get("auth_username").ok();
     let auth_password: Option<String> = config.get("auth_password").ok();
 
     // Override from CLI if provided
-    let auth_username = cli.auth_username.or(auth_username);
-    let auth_password = cli.auth_password.or(auth_password);
+    let auth_username = serve_args
+        .and_then(|s| s.auth_username.clone())
+        .or(auth_username);
+    let auth_password = serve_args
+        .and_then(|s| s.auth_password.clone())
+        .or(auth_password);
 
     // Extract rate limit config (clamp negative values to 0)
     let mut rate_limit = RateLimitConfig {
@@ -737,29 +805,31 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     };
 
     // Apply CLI overrides for rate limiting
-    if let Some(v) = cli.rate_limit_submit_ip_rps {
-        rate_limit.submit_ip_rps = v;
-    }
-    if let Some(v) = cli.rate_limit_submit_ip_burst {
-        rate_limit.submit_ip_burst = v;
-    }
-    if let Some(v) = cli.rate_limit_submit_key_rps {
-        rate_limit.submit_key_rps = v;
-    }
-    if let Some(v) = cli.rate_limit_submit_key_burst {
-        rate_limit.submit_key_burst = v;
-    }
-    if let Some(v) = cli.rate_limit_fetch_ip_rps {
-        rate_limit.fetch_ip_rps = v;
-    }
-    if let Some(v) = cli.rate_limit_fetch_ip_burst {
-        rate_limit.fetch_ip_burst = v;
-    }
-    if let Some(v) = cli.rate_limit_fetch_key_rps {
-        rate_limit.fetch_key_rps = v;
-    }
-    if let Some(v) = cli.rate_limit_fetch_key_burst {
-        rate_limit.fetch_key_burst = v;
+    if let Some(serve) = serve_args {
+        if let Some(v) = serve.rate_limit_submit_ip_rps {
+            rate_limit.submit_ip_rps = v;
+        }
+        if let Some(v) = serve.rate_limit_submit_ip_burst {
+            rate_limit.submit_ip_burst = v;
+        }
+        if let Some(v) = serve.rate_limit_submit_key_rps {
+            rate_limit.submit_key_rps = v;
+        }
+        if let Some(v) = serve.rate_limit_submit_key_burst {
+            rate_limit.submit_key_burst = v;
+        }
+        if let Some(v) = serve.rate_limit_fetch_ip_rps {
+            rate_limit.fetch_ip_rps = v;
+        }
+        if let Some(v) = serve.rate_limit_fetch_ip_burst {
+            rate_limit.fetch_ip_burst = v;
+        }
+        if let Some(v) = serve.rate_limit_fetch_key_rps {
+            rate_limit.fetch_key_rps = v;
+        }
+        if let Some(v) = serve.rate_limit_fetch_key_burst {
+            rate_limit.fetch_key_burst = v;
+        }
     }
 
     // Extract TLS config
@@ -775,14 +845,16 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     };
 
     // Apply CLI overrides for TLS
-    if let Some(v) = cli.tls_enabled {
-        tls.enabled = v;
-    }
-    if let Some(ref path) = cli.tls_cert {
-        tls.cert_path = Some(path.clone());
-    }
-    if let Some(ref path) = cli.tls_key {
-        tls.key_path = Some(path.clone());
+    if let Some(serve) = serve_args {
+        if let Some(v) = serve.tls_enabled {
+            tls.enabled = v;
+        }
+        if let Some(ref path) = serve.tls_cert {
+            tls.cert_path = Some(path.clone());
+        }
+        if let Some(ref path) = serve.tls_key {
+            tls.key_path = Some(path.clone());
+        }
     }
 
     // Extract MQTT bridge config from file/env
@@ -792,9 +864,11 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
     let mqtt_topic_prefix_from_config: Option<String> = config.get("mqtt.topic_prefix").ok();
 
     // Build MQTT config, applying CLI overrides
-    let mqtt = if let Some(ref broker_urls) = cli.mqtt_broker {
+    let mqtt = if let Some(broker_urls) = serve_args.and_then(|s| s.mqtt_broker.as_ref()) {
         // CLI brokers override file config entirely
-        let client_ids = cli.mqtt_client_id.clone().unwrap_or_default();
+        let client_ids = serve_args
+            .and_then(|s| s.mqtt_client_id.clone())
+            .unwrap_or_default();
         let brokers: Vec<MqttBrokerConfig> = broker_urls
             .iter()
             .enumerate()
@@ -809,18 +883,16 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
             .collect();
         MqttBridgeConfig {
             brokers,
-            topic_prefix: cli
-                .mqtt_topic_prefix
-                .clone()
+            topic_prefix: serve_args
+                .and_then(|s| s.mqtt_topic_prefix.clone())
                 .or(mqtt_topic_prefix_from_config),
         }
     } else {
         // Use file/env config
         MqttBridgeConfig {
             brokers: mqtt_brokers_from_config,
-            topic_prefix: cli
-                .mqtt_topic_prefix
-                .clone()
+            topic_prefix: serve_args
+                .and_then(|s| s.mqtt_topic_prefix.clone())
                 .or(mqtt_topic_prefix_from_config),
         }
     };
@@ -836,9 +908,15 @@ pub fn load_config() -> Result<NodeConfig, config::ConfigError> {
         .unwrap_or_default();
 
     // Apply CLI overrides for identity
-    let identity_path = cli.identity_path.or(identity_path_from_config);
-    let public_host = cli.public_host.or(public_host_from_config);
-    let additional_hosts = cli.additional_hosts.unwrap_or(additional_hosts_from_config);
+    let identity_path = serve_args
+        .and_then(|s| s.identity_path.clone())
+        .or(identity_path_from_config);
+    let public_host = serve_args
+        .and_then(|s| s.public_host.clone())
+        .or(public_host_from_config);
+    let additional_hosts = serve_args
+        .and_then(|s| s.additional_hosts.clone())
+        .unwrap_or(additional_hosts_from_config);
     let allow_insecure_destination = config
         .get::<bool>("allow_insecure_destination")
         .unwrap_or(false);

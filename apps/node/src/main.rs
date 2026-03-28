@@ -43,6 +43,8 @@
 mod api;
 mod cleanup;
 mod config;
+mod export;
+mod import;
 mod mqtt_bridge;
 mod node_identity;
 mod rate_limit;
@@ -50,8 +52,9 @@ mod replication;
 mod signed_headers;
 
 use api::AppState;
+use clap::Parser;
 use cleanup::run_cleanup_task;
-use config::{default_identity_path, load_config};
+use config::{default_identity_path, load_config_from, Cli, Commands};
 use mqtt_bridge::MqttBridge;
 use node_identity::NodeIdentity;
 use rate_limit::RateLimiters;
@@ -137,13 +140,56 @@ async fn wait_for_signal() -> &'static str {
     "Ctrl+C"
 }
 
+/// Open the persistent mailbox store from the current configuration.
+///
+/// Used by both the server startup and export/import subcommands.
+fn open_store(config: &config::NodeConfig) -> PersistentMailboxStore {
+    let storage_path = config
+        .storage_path
+        .clone()
+        .unwrap_or_else(|| ":memory:".to_string());
+
+    if storage_path == ":memory:" {
+        info!("Using in-memory storage (data will not persist across restarts)");
+    } else {
+        // Create parent directory if needed for file-based storage
+        if let Some(parent) = std::path::Path::new(&storage_path).parent() {
+            if !parent.as_os_str().is_empty() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    error!("Failed to create storage directory: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        info!("Using persistent storage: {}", storage_path);
+    }
+
+    let store_config = PersistentStoreConfig {
+        max_messages_per_mailbox: config.max_messages,
+        default_ttl_secs: u64::from(config.default_ttl),
+    };
+
+    match PersistentMailboxStore::open(&storage_path, store_config) {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Failed to create storage: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
 #[tokio::main]
 #[allow(clippy::too_many_lines)] // Entry point, refactoring would reduce clarity
 async fn main() {
+    let cli = Cli::parse();
+
+    // Extract serve args for config loading
+    let serve_args = cli.serve_args();
+
     // Load configuration from all sources
     // Configuration errors are fatal - we don't fall back to defaults as that
     // could result in unexpected security settings or behavior.
-    let config = match load_config() {
+    let config = match load_config_from(&cli, serve_args) {
         Ok(config) => config,
         Err(e) => {
             eprintln!("ERROR: Failed to load configuration: {e}");
@@ -159,6 +205,28 @@ async fn main() {
     let log_level = parse_log_level(&config.log_level);
     let subscriber = FmtSubscriber::builder().with_max_level(log_level).finish();
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+
+    // Dispatch export/import subcommands (these don't need the full server setup)
+    match &cli.command {
+        Some(Commands::Export(args)) => {
+            let store = open_store(&config);
+            if let Err(e) = export::run_export(&config, &store, args) {
+                eprintln!("Export failed: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        Some(Commands::Import(args)) => {
+            let store = open_store(&config);
+            if let Err(e) = import::run_import(&config, &store, args) {
+                eprintln!("Import failed: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        // None or Serve => continue to server startup
+        _ => {}
+    }
 
     info!(
         "Starting Branch Messenger Node v{}",
@@ -211,40 +279,8 @@ async fn main() {
     info!("Max messages per mailbox: {}", config.max_messages);
     info!("Default TTL: {} seconds", config.default_ttl);
 
-    // Determine storage path (default: :memory:)
-    let storage_path = config
-        .storage_path
-        .clone()
-        .unwrap_or_else(|| ":memory:".to_string());
-
-    if storage_path == ":memory:" {
-        info!("Using in-memory storage (data will not persist across restarts)");
-    } else {
-        // Create parent directory if needed for file-based storage
-        if let Some(parent) = std::path::Path::new(&storage_path).parent() {
-            if !parent.as_os_str().is_empty() {
-                if let Err(e) = std::fs::create_dir_all(parent) {
-                    error!("Failed to create storage directory: {}", e);
-                    std::process::exit(1);
-                }
-            }
-        }
-        info!("Using persistent storage: {}", storage_path);
-    }
-
-    // Create store
-    let store_config = PersistentStoreConfig {
-        max_messages_per_mailbox: config.max_messages,
-        default_ttl_secs: u64::from(config.default_ttl),
-    };
-
-    let store = match PersistentMailboxStore::open(&storage_path, store_config) {
-        Ok(s) => Arc::new(s),
-        Err(e) => {
-            error!("Failed to create storage: {}", e);
-            std::process::exit(1);
-        }
-    };
+    // Open persistent store (shared helper)
+    let store = Arc::new(open_store(&config));
 
     // Create replication client with signing identity
     // Parse and validate HTTP peer configurations
