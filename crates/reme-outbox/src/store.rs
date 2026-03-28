@@ -38,6 +38,17 @@ pub trait OutboxStore {
         recipient: &PublicID,
     ) -> Result<Vec<PendingMessage>, Self::Error>;
 
+    /// Get all outbox entries including confirmed and expired.
+    ///
+    /// Used by export with `--include-sent` to re-export confirmed messages.
+    fn outbox_get_all(&self) -> Result<Vec<PendingMessage>, Self::Error>;
+
+    /// Get all outbox entries for a specific recipient including confirmed and expired.
+    fn outbox_get_all_for_recipient(
+        &self,
+        recipient: &PublicID,
+    ) -> Result<Vec<PendingMessage>, Self::Error>;
+
     /// Get pending messages that are due for retry (`next_retry_at <= now`).
     fn outbox_get_due_for_retry(&self, now_ms: u64) -> Result<Vec<PendingMessage>, Self::Error>;
 
@@ -179,6 +190,17 @@ impl<T: OutboxStore> OutboxStore for Arc<T> {
         recipient: &PublicID,
     ) -> Result<Vec<PendingMessage>, Self::Error> {
         (**self).outbox_get_for_recipient(recipient)
+    }
+
+    fn outbox_get_all(&self) -> Result<Vec<PendingMessage>, Self::Error> {
+        (**self).outbox_get_all()
+    }
+
+    fn outbox_get_all_for_recipient(
+        &self,
+        recipient: &PublicID,
+    ) -> Result<Vec<PendingMessage>, Self::Error> {
+        (**self).outbox_get_all_for_recipient(recipient)
     }
 
     fn outbox_get_due_for_retry(&self, now_ms: u64) -> Result<Vec<PendingMessage>, Self::Error> {

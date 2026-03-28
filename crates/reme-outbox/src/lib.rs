@@ -624,6 +624,23 @@ mod tests {
                 .collect())
         }
 
+        fn outbox_get_all(&self) -> Result<Vec<PendingMessage>, Self::Error> {
+            Ok(self.entries.borrow().values().cloned().collect())
+        }
+
+        fn outbox_get_all_for_recipient(
+            &self,
+            recipient: &PublicID,
+        ) -> Result<Vec<PendingMessage>, Self::Error> {
+            Ok(self
+                .entries
+                .borrow()
+                .values()
+                .filter(|m| m.recipient == *recipient)
+                .cloned()
+                .collect())
+        }
+
         fn outbox_get_due_for_retry(
             &self,
             now_ms: u64,

@@ -165,6 +165,26 @@ pub struct TuiArgs {
 pub struct ExportArgs {
     /// Output path for the .reme bundle
     pub file: PathBuf,
+
+    /// Export only messages for this recipient (hex-encoded public ID)
+    #[arg(long)]
+    pub to: Option<String>,
+
+    /// Include already-confirmed messages (re-export)
+    #[arg(long)]
+    pub include_sent: bool,
+
+    /// Overwrite existing output file
+    #[arg(long)]
+    pub force: bool,
+
+    /// Export at most N messages
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Only export messages created within this duration (e.g. 24h, 7d)
+    #[arg(long)]
+    pub since: Option<String>,
 }
 
 /// Arguments for the import subcommand
@@ -1374,6 +1394,51 @@ mod tests {
         match cli.command {
             Some(Commands::Export(ref args)) => {
                 assert_eq!(args.file, PathBuf::from("out.reme"));
+            }
+            _ => panic!("Expected Export subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_export_args_full() {
+        let cli = Cli::try_parse_from([
+            "reme",
+            "export",
+            "--to",
+            "abcd1234",
+            "--force",
+            "--include-sent",
+            "--limit",
+            "50",
+            "--since",
+            "24h",
+            "out.reme",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Export(ref args)) => {
+                assert_eq!(args.file, PathBuf::from("out.reme"));
+                assert_eq!(args.to, Some("abcd1234".to_string()));
+                assert!(args.force);
+                assert!(args.include_sent);
+                assert_eq!(args.limit, Some(50));
+                assert_eq!(args.since, Some("24h".to_string()));
+            }
+            _ => panic!("Expected Export subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_export_args_defaults() {
+        let cli = Cli::try_parse_from(["reme", "export", "out.reme"]).unwrap();
+        match cli.command {
+            Some(Commands::Export(ref args)) => {
+                assert_eq!(args.file, PathBuf::from("out.reme"));
+                assert!(args.to.is_none());
+                assert!(!args.force);
+                assert!(!args.include_sent);
+                assert!(args.limit.is_none());
+                assert!(args.since.is_none());
             }
             _ => panic!("Expected Export subcommand"),
         }

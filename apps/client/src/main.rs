@@ -11,6 +11,7 @@
 
 mod config;
 mod discovery;
+mod export;
 mod tui;
 
 use crate::config::{load_config_from, Cli, Commands};
@@ -44,11 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             tui::run(config).await
         }
-        Some(Commands::Export(ref args)) => Err(format!(
-            "Export not yet implemented. Would export to: {}",
-            args.file.display()
-        )
-        .into()),
+        Some(Commands::Export(ref args)) => export::run_export(&config, args),
         Some(Commands::Import(ref args)) => Err(format!(
             "Import not yet implemented. Would import from: {}",
             args.file.display()
