@@ -202,20 +202,25 @@ async fn recv_messages(
     let (mut events, _handle) = coordinator.subscribe(bob.routing_key());
 
     let mut received = Vec::with_capacity(count);
+    let mut errors: Vec<String> = Vec::new();
     let result = tokio::time::timeout(timeout, async {
         while received.len() < count {
             match events.recv().await {
                 Some(TransportEvent::Message(envelope)) => {
-                    if let Ok(msg) = bob.process_message(&envelope).await {
-                        received.push(msg);
+                    match bob.process_message(&envelope).await {
+                        Ok(msg) => received.push(msg),
+                        Err(e) => errors.push(format!("process_message failed: {e}")),
                     }
                 }
-                Some(_) => {}
+                Some(TransportEvent::Error(e)) => {
+                    errors.push(format!("transport error: {e}"));
+                }
                 None => break,
             }
         }
     })
     .await;
+    assert!(errors.is_empty(), "Errors during receive: {errors:?}");
     assert!(
         result.is_ok(),
         "Timeout: received {}/{count} messages",
