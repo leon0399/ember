@@ -1,0 +1,35 @@
+apps/node/src/import.rs
+  3afd932167fef56a 1-135
+apps/node/src/main.rs
+  3afd932167fef56a 46-47,55,57,143-180,184-188,192,209-229,282-283
+apps/node/src/export.rs
+  3afd932167fef56a 1-97
+crates/reme-node-core/src/mailbox_store.rs
+  3afd932167fef56a 496-555
+apps/node/Cargo.toml
+  3afd932167fef56a 67
+apps/node/src/config.rs
+  3afd932167fef56a 82,257,261-264,268,272-302,441-470,613-615,652,656-657,659-662,666-675,680-699,701,723,756,764-765,767-768,808-809,812,815,818,821,824,827,830,832,848-849,852,855,857,867,869-870,886-887,894-895,911-912,914-915,917-918
+apps/node/src/lib.rs
+  3afd932167fef56a 8-9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "cde1bd265fc2813ff54dfcb0ca6f05a0fe255022",
+  "prompts": {
+    "3afd932167fef56a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "03f30216-bf11-4896-ba61-28ed420ab886",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 710,
+      "total_deletions": 160,
+      "accepted_lines": 650,
+      "overriden_lines": 0
+    }
+  }
+}
