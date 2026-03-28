@@ -52,14 +52,13 @@ pub struct HttpTransport {
 
 #[derive(Debug, Deserialize)]
 struct SubmitResponse {
-    #[allow(dead_code)]
-    results: Vec<LegacyFrameResult>,
+    results: Vec<FrameResultResponse>,
 }
 
 #[derive(Debug, Deserialize)]
-struct LegacyFrameResult {
-    #[allow(dead_code)]
+struct FrameResultResponse {
     status: String,
+    error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -315,10 +314,22 @@ impl HttpTransport {
             )));
         }
 
-        let _result: SubmitResponse = response
+        let result: SubmitResponse = response
             .json()
             .await
             .map_err(|e| TransportError::Serialization(e.to_string()))?;
+
+        // Check per-frame error (count=1 submissions always have exactly one result)
+        if let Some(frame) = result.results.first() {
+            if frame.status != "ok" {
+                let msg = frame
+                    .error
+                    .as_deref()
+                    .unwrap_or("unknown frame error")
+                    .to_string();
+                return Err(TransportError::ServerError(msg));
+            }
+        }
 
         Ok(())
     }

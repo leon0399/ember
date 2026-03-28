@@ -568,8 +568,9 @@ fn build_target_client(config: &HttpTargetConfig) -> Result<Client, TransportErr
             )
         })?;
 
-        // has_pin already verified cert_pin is Some
-        let pin = config.cert_pin.as_ref().expect("has_pin requires cert_pin");
+        let pin = config.cert_pin.as_ref().ok_or_else(|| {
+            TransportError::TlsConfig("certificate pin missing despite has_pin flag".to_string())
+        })?;
         let pins = std::collections::HashMap::from([(hostname, pin.clone())]);
 
         // Create pinning verifier
