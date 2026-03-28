@@ -108,6 +108,8 @@ pub struct ProcessedMessage {
     pub received: ReceivedMessage,
     /// Tombstone to fire-and-forget (None for detached messages)
     pub pending_tombstone: Option<SignedAckTombstone>,
+    /// Whether this message was already stored (idempotent re-delivery)
+    pub is_duplicate: bool,
 }
 
 /// The main client for Resilient Messenger (MIK-only stateless encryption)
@@ -869,6 +871,7 @@ impl<T: Transport> Client<T> {
                 local_state_behind,
             },
             pending_tombstone,
+            is_duplicate,
         })
     }
 

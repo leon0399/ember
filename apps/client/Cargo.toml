@@ -19,6 +19,7 @@ reme-bundle = { workspace = true }
 reme-config = { workspace = true, features = ["http", "mqtt"] }
 reme-discovery = { workspace = true, features = ["mdns-sd"] }
 
+async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
