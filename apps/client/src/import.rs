@@ -79,15 +79,8 @@ pub fn run_import(config: &AppConfig, args: &ImportArgs) -> Result<(), Box<dyn s
 /// Read all frames from a bundle file and verify checksum.
 fn read_bundle(path: &std::path::Path) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Error>> {
     let file = File::open(path)?;
-    let mut reader = BundleReader::open(file)?;
-
-    let mut frames = Vec::new();
-    while let Some(frame) = reader.next_frame()? {
-        frames.push(frame);
-    }
-
-    reader.verify_checksum()?;
-    Ok(frames)
+    let reader = BundleReader::open(file)?;
+    Ok(reader.read_all_verified()?)
 }
 
 /// Process decoded frames through the client.

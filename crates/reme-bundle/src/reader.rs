@@ -92,6 +92,19 @@ impl<R: Read> BundleReader<R> {
         Ok(Some(frame))
     }
 
+    /// Read all frames and verify the checksum in one call.
+    ///
+    /// Convenience method that collects all frames into a `Vec`, then verifies
+    /// the BLAKE3 checksum. Returns the collected frames on success.
+    pub fn read_all_verified(mut self) -> Result<Vec<Vec<u8>>, BundleError> {
+        let mut frames = Vec::new();
+        while let Some(frame) = self.next_frame()? {
+            frames.push(frame);
+        }
+        self.verify_checksum()?;
+        Ok(frames)
+    }
+
     /// Verify the BLAKE3 checksum after all frames have been read.
     ///
     /// All frames must be consumed via [`next_frame`](Self::next_frame) before calling
