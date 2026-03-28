@@ -31,7 +31,7 @@ pub fn run_export(config: &AppConfig, args: &ExportArgs) -> Result<(), Box<dyn s
     // Parse --since filter
     let since_ms = args.since.as_deref().map(parse_since).transpose()?;
 
-    // Open storage (read-only)
+    // Open storage
     let db_path = config.data_dir.join("messages.db");
     if !db_path.exists() {
         eprintln!("Nothing to export (no database found).");
@@ -46,6 +46,10 @@ pub fn run_export(config: &AppConfig, args: &ExportArgs) -> Result<(), Box<dyn s
     let filtered = apply_filters(messages, since_ms, args.limit);
 
     if filtered.is_empty() {
+        // If --force and file exists, remove the stale file
+        if args.force && args.file.exists() {
+            fs::remove_file(&args.file)?;
+        }
         eprintln!("Nothing to export.");
         return Ok(());
     }
@@ -59,15 +63,18 @@ pub fn run_export(config: &AppConfig, args: &ExportArgs) -> Result<(), Box<dyn s
 
 /// Parse a hex-encoded public ID string.
 fn parse_public_id(hex_str: &str) -> Result<PublicID, Box<dyn std::error::Error>> {
-    let bytes = hex::decode(hex_str).map_err(|_| {
-        format!("Invalid public ID: expected 64-character hex string, got '{hex_str}'")
-    })?;
-    let bytes: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
-        format!(
-            "Invalid public ID: expected 32 bytes (64 hex chars), got {} bytes",
-            v.len()
+    if hex_str.len() != 64 {
+        return Err(format!(
+            "Invalid public ID: expected 64 hex characters, got {}",
+            hex_str.len()
         )
-    })?;
+        .into());
+    }
+    let bytes =
+        hex::decode(hex_str).map_err(|e| format!("Invalid public ID: bad hex encoding: {e}"))?;
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .expect("64 hex chars always decode to 32 bytes");
     PublicID::try_from_bytes(&bytes)
         .map_err(|_| "Invalid public ID: rejected as low-order point".into())
 }
@@ -79,7 +86,7 @@ fn parse_since(since_str: &str) -> Result<u64, Box<dyn std::error::Error>> {
         .map_err(|e| format!("Invalid --since duration '{since_str}': {e}"))?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("System time before Unix epoch")
+        .map_err(|_| "System time is before the Unix epoch; check your system clock")?
         .as_millis() as u64;
     Ok(now.saturating_sub(duration.as_millis() as u64))
 }
@@ -170,19 +177,20 @@ mod tests {
 
     #[test]
     fn test_parse_public_id_invalid_hex() {
-        let result = parse_public_id("not-hex");
+        // 64 chars but invalid hex
+        let result = parse_public_id(&"zz".repeat(32));
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("expected 64-character hex"));
+        assert!(result.unwrap_err().to_string().contains("bad hex encoding"));
     }
 
     #[test]
     fn test_parse_public_id_wrong_length() {
         let result = parse_public_id("aabb");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("32 bytes"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("expected 64 hex characters"));
     }
 
     #[test]
