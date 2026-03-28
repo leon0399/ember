@@ -29,6 +29,7 @@ impl Transport for NoopTransport {
 }
 
 /// Import summary counters.
+#[derive(Default)]
 struct ImportSummary {
     imported: usize,
     duplicates: usize,
@@ -51,21 +52,19 @@ pub fn run_import(config: &AppConfig, args: &ImportArgs) -> Result<(), Box<dyn s
     }
     let identity = crate::identity::load_existing(&identity_path)?;
 
-    // Ensure data directory exists and open storage
-    std::fs::create_dir_all(&config.data_dir)?;
-    let db_path = config.data_dir.join("messages.db");
-    let storage = Storage::open(db_path.to_str().ok_or("Invalid database path (non-UTF8)")?)?;
-
-    // Create client with no-op transport (offline import)
-    let client = Client::new(identity, Arc::new(NoopTransport), storage);
-
-    // Read and verify bundle
+    // Read and verify bundle (before any DB writes)
     let frames = read_bundle(&args.file)?;
 
     if frames.is_empty() {
         eprintln!("Nothing to import (empty bundle).");
         return Ok(());
     }
+
+    // Open storage and create client
+    std::fs::create_dir_all(&config.data_dir)?;
+    let db_path = config.data_dir.join("messages.db");
+    let storage = Storage::open(db_path.to_str().ok_or("Invalid database path (non-UTF8)")?)?;
+    let client = Client::new(identity, Arc::new(NoopTransport), storage);
 
     // Process each frame
     let summary = process_frames(&client, &frames);
@@ -81,7 +80,7 @@ fn read_bundle(path: &std::path::Path) -> Result<Vec<Vec<u8>>, Box<dyn std::erro
     let file = File::open(path)?;
     let mut reader = BundleReader::open(file)?;
 
-    let mut frames = Vec::with_capacity(reader.frame_count() as usize);
+    let mut frames = Vec::new();
     while let Some(frame) = reader.next_frame()? {
         frames.push(frame);
     }
@@ -92,13 +91,7 @@ fn read_bundle(path: &std::path::Path) -> Result<Vec<Vec<u8>>, Box<dyn std::erro
 
 /// Process decoded frames through the client.
 fn process_frames<T: Transport>(client: &Client<T>, frames: &[Vec<u8>]) -> ImportSummary {
-    let mut summary = ImportSummary {
-        imported: 0,
-        duplicates: 0,
-        skipped_not_for_us: 0,
-        skipped_tombstones: 0,
-        errors: 0,
-    };
+    let mut summary = ImportSummary::default();
 
     for (i, frame) in frames.iter().enumerate() {
         match WirePayload::decode(frame) {
