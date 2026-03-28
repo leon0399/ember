@@ -1,0 +1,23 @@
+apps/client/src/config.rs
+  3afd932167fef56a 671-674
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "4ae57d0402cf2c65e79779b77d99c18ca661534d",
+  "prompts": {
+    "3afd932167fef56a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "03f30216-bf11-4896-ba61-28ed420ab886",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 10,
+      "total_deletions": 9,
+      "accepted_lines": 543,
+      "overriden_lines": 2
+    }
+  }
+}
