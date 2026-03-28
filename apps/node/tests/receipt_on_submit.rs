@@ -15,12 +15,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::tempdir;
 use tokio::net::TcpListener;
 
-/// Response from /api/v1/submit
+/// Response from /api/v1/submit (batch format)
 #[derive(Debug, Deserialize)]
 struct SubmitResponse {
+    results: Vec<FrameResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FrameResult {
     status: String,
     ack_secret: Option<String>,
     signature: Option<String>,
+    #[allow(dead_code)]
+    error: Option<String>,
 }
 
 /// Create an identity and save it to a temp file
@@ -69,6 +76,7 @@ async fn start_test_node(
         identity,
         public_host: None,
         additional_hosts: vec![],
+        config: node::config::NodeConfig::default(),
     });
     let app = api::router(state, None);
 
@@ -138,20 +146,28 @@ fn create_encrypted_envelope(
 }
 
 /// Submit envelope to node and parse response
-async fn submit_envelope(url: &str, envelope: OuterEnvelope) -> SubmitResponse {
+async fn submit_envelope(url: &str, envelope: OuterEnvelope) -> FrameResult {
     let client = reqwest::Client::new();
     let wire_payload = reme_message::WirePayload::Message(envelope);
-    let body = BASE64_STANDARD.encode(wire_payload.encode().unwrap());
+    let wire_bytes = wire_payload.encode().unwrap();
+    let bundle_body = reme_bundle::encode_body(&[&wire_bytes]);
 
     let response = client
         .post(format!("{url}/api/v1/submit"))
-        .body(body)
+        .header("Content-Type", "application/vnd.reme.bundle")
+        .body(bundle_body)
         .send()
         .await
         .expect("Submit request failed");
 
     assert!(response.status().is_success(), "Submit should succeed");
-    response.json().await.expect("Failed to parse response")
+    let submit_response: SubmitResponse = response.json().await.expect("Failed to parse response");
+    assert_eq!(
+        submit_response.results.len(),
+        1,
+        "Single submit should return 1 result"
+    );
+    submit_response.results.into_iter().next().unwrap()
 }
 
 /// Test: Node is the intended recipient → returns valid `ack_secret`
@@ -414,4 +430,89 @@ async fn test_low_order_ephemeral_key_returns_signature_but_no_ack_secret() {
     );
 
     println!("Low-order ephemeral key correctly returned signature-only receipt");
+}
+
+/// Test: Batch submit with multiple messages returns per-frame results
+#[tokio::test]
+async fn test_batch_submit_multiple_messages() {
+    // Create node identity (this will be the recipient)
+    let (node_identity, _dir) = create_temp_identity();
+    let node_pubkey = *node_identity.public_id();
+
+    // Start node with this identity
+    let (url, _handle) = start_test_node(Some(Arc::new(node_identity))).await;
+
+    // Create 3 different senders and encrypt messages TO the node
+    let sender1 = Identity::generate();
+    let sender2 = Identity::generate();
+    let sender3 = Identity::generate();
+
+    let (envelope1, _) = create_encrypted_envelope(&sender1, &node_pubkey);
+    let (envelope2, _) = create_encrypted_envelope(&sender2, &node_pubkey);
+    let (envelope3, _) = create_encrypted_envelope(&sender3, &node_pubkey);
+
+    // Encode all 3 as a single bundle
+    let wire1 = reme_message::WirePayload::Message(envelope1.clone())
+        .encode()
+        .unwrap();
+    let wire2 = reme_message::WirePayload::Message(envelope2.clone())
+        .encode()
+        .unwrap();
+    let wire3 = reme_message::WirePayload::Message(envelope3.clone())
+        .encode()
+        .unwrap();
+
+    let bundle_body = reme_bundle::encode_body(&[&wire1, &wire2, &wire3]);
+
+    // Submit batch
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{url}/api/v1/submit"))
+        .header("Content-Type", "application/vnd.reme.bundle")
+        .body(bundle_body)
+        .send()
+        .await
+        .expect("Batch submit request failed");
+
+    assert!(
+        response.status().is_success(),
+        "Batch submit should succeed"
+    );
+    let submit_response: SubmitResponse = response.json().await.expect("Failed to parse response");
+
+    // Should have 3 results, all status: "ok"
+    assert_eq!(
+        submit_response.results.len(),
+        3,
+        "Batch submit should return 3 results"
+    );
+    for (i, result) in submit_response.results.iter().enumerate() {
+        assert_eq!(result.status, "ok", "Result {i} should be ok");
+        assert!(
+            result.ack_secret.is_some(),
+            "Result {i} should have ack_secret (node is recipient)"
+        );
+        assert!(
+            result.signature.is_some(),
+            "Result {i} should have signature"
+        );
+    }
+
+    // Verify all 3 messages are fetchable
+    let transport =
+        reme_transport::pool::TransportPool::<reme_transport::http_target::HttpTarget>::single(
+            &url,
+        )
+        .unwrap();
+    let messages = transport
+        .fetch_once(&node_pubkey.routing_key())
+        .await
+        .expect("fetch_once failed");
+    assert_eq!(
+        messages.len(),
+        3,
+        "All 3 messages should be stored and fetchable"
+    );
+
+    println!("Batch submit of 3 messages succeeded with correct per-frame results");
 }

@@ -11,6 +11,7 @@
 //! - `GET  /api/v1/fetch/{routing_key}` — Fetch messages for a routing key
 //! - `GET  /api/v1/stats` — Mailbox statistics
 
+use crate::config::NodeConfig;
 use crate::mqtt_bridge::MqttBridge;
 use crate::node_identity::NodeIdentity;
 use crate::rate_limit::{KeyedLimiter, RateLimiters};
@@ -27,12 +28,12 @@ use axum::{
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
+use reme_bundle::parse_body;
 use reme_encryption::{build_identity_sign_data, build_receipt_sign_data, derive_ack_secret};
 use reme_identity::PublicID;
 use reme_message::{OuterEnvelope, RoutingKey, WirePayload};
-use reme_node_core::{FetchPage, MailboxStore, NodeError, PersistentMailboxStore};
-use serde::Deserialize;
-use serde::{Serialize, Serializer};
+use reme_node_core::{FetchPage, MailboxStore, PersistentMailboxStore};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use tracing::{debug, error, warn};
@@ -55,12 +56,10 @@ pub struct AppState {
     pub public_host: Option<String>,
     /// Additional acceptable hostnames (for multi-homed, dev, migration)
     pub additional_hosts: Vec<String>,
+    /// Node configuration (for per-request limits etc.)
+    pub config: NodeConfig,
 }
 
-/// Maximum request body size (256 KiB)
-/// Prevents memory exhaustion from oversized payloads.
-/// Typical `OuterEnvelope` is ~2 KiB; 256 KiB provides ample headroom.
-const MAX_BODY_SIZE: usize = 256 * 1024;
 const DEFAULT_FETCH_PAGE_SIZE: usize = 100;
 const MAX_FETCH_PAGE_SIZE: usize = 100;
 const MAX_FETCH_RESPONSE_BYTES: usize = 64 * 1024;
@@ -102,7 +101,7 @@ pub fn router(state: Arc<AppState>, rate_limiters: Option<&RateLimiters>) -> Rou
         .merge(submit_route)
         .merge(fetch_route)
         .route("/api/v1/stats", get(get_stats))
-        .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
+        .layer(DefaultBodyLimit::max(state.config.max_body_size))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             check_basic_auth,
@@ -205,20 +204,40 @@ impl RequestSource {
 // Request/Response types
 // ============================================
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SubmitResponse {
-    pub status: &'static str,
-    /// Ack secret proving the node can decrypt this message.
-    /// Present only if the node is the intended recipient (`routing_key` matches).
-    /// Base64-encoded 16-byte secret.
+    pub results: Vec<FrameResult>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FrameResult {
+    pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ack_secret: Option<String>,
-    /// `XEdDSA` signature proving node received the message.
-    /// Signed data: `"reme-receipt-v1:" || signer_pubkey || message_id`
-    /// Always present when node has an identity configured.
-    /// Base64-encoded 64-byte signature.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl FrameResult {
+    fn ok(ack_secret: Option<String>, signature: Option<String>) -> Self {
+        Self {
+            status: "ok".to_string(),
+            ack_secret,
+            signature,
+            error: None,
+        }
+    }
+
+    fn error(msg: impl Into<String>) -> Self {
+        Self {
+            status: "error".to_string(),
+            ack_secret: None,
+            signature: None,
+            error: Some(msg.into()),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -320,36 +339,21 @@ fn parse_fetch_query(query: &FetchQuery) -> Result<(usize, Option<i64>), String>
     Ok((limit, after))
 }
 
-struct FetchResponseRef<'a> {
-    payloads: &'a [String],
-    next_cursor: Option<&'a str>,
-    has_more: bool,
-}
-
-impl Serialize for FetchResponseRef<'_> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        use serde::ser::SerializeStruct;
-
-        let field_count = if self.next_cursor.is_some() { 3 } else { 2 };
-        let mut state = serializer.serialize_struct("FetchResponse", field_count)?;
-        state.serialize_field("payloads", self.payloads)?;
-        if let Some(next_cursor) = self.next_cursor {
-            state.serialize_field("next_cursor", next_cursor)?;
-        }
-        state.serialize_field("has_more", &self.has_more)?;
-        state.end()
-    }
-}
-
 fn fetch_response_size(
     payloads: &[String],
     next_cursor: Option<&str>,
     has_more: bool,
 ) -> Result<usize, String> {
-    serde_json::to_vec(&FetchResponseRef {
+    // Borrow FetchResponse fields temporarily to measure serialized size without cloning.
+    // next_cursor is &str here to avoid an allocation just for size estimation.
+    #[derive(Serialize)]
+    struct Probe<'a> {
+        payloads: &'a [String],
+        #[serde(skip_serializing_if = "Option::is_none")]
+        next_cursor: Option<&'a str>,
+        has_more: bool,
+    }
+    serde_json::to_vec(&Probe {
         payloads,
         next_cursor,
         has_more,
@@ -506,39 +510,27 @@ fn identify_request_source(
     Ok(RequestSource::Client)
 }
 
-/// Parse wire payload from body (plain text base64 of wire format bytes)
-fn parse_wire_payload(body: &Bytes) -> Result<(String, WirePayload), String> {
-    let body_str = std::str::from_utf8(body)
-        .map_err(|_| "Invalid UTF-8")?
-        .trim();
-
-    // Decode base64 to get wire format bytes
-    let wire_bytes = BASE64_STANDARD
-        .decode(body_str)
-        .map_err(|_| "Invalid base64 encoding")?;
-
-    // Decode wire payload (includes type discriminator)
-    let payload = WirePayload::decode(&wire_bytes)?;
-
-    Ok((body_str.to_string(), payload))
-}
-
-/// Unified submit endpoint for messages and tombstones
+/// Unified submit endpoint for messages and tombstones.
 ///
-/// Accepts base64-encoded wire format: `[type: u8][payload: postcard bytes]`
-/// - type 0x00: Message (`OuterEnvelope`)
-/// - type 0x02: `AckTombstone` (`SignedAckTombstone`) - Tombstone V2
+/// Accepts a binary bundle body: `[count: u32 LE][frame_len: u32 LE][frame bytes]...`
+/// Each frame is a `WirePayload` in wire format (type discriminator + postcard bytes).
 ///
 /// ## Authentication
 ///
-/// If `x-node-signature` header is present, verifies `XEdDSA` signature.
+/// If `x-node-signature` header is present, verifies `XEdDSA` signature over raw body bytes.
 /// Invalid signatures are rejected with 401 Unauthorized.
+///
+/// ## Rate Limiting
+///
+/// The per-IP rate limiter fires once per HTTP request via `GovernorLayer` middleware.
+/// Per-routing-key limits are checked inline for each message frame.
+/// TODO: Per-frame IP rate limiting (consume N tokens for N frames) is a future enhancement.
 async fn submit_payload(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
-    // Identify request source (verify signed headers if present)
+    // Identify request source (verify signed headers over raw body bytes)
     let source = match identify_request_source(&state, &headers, "POST", "/api/v1/submit", &body) {
         Ok(source) => source,
         Err(e) => {
@@ -553,128 +545,61 @@ async fn submit_payload(
         }
     };
 
-    // Parse wire payload from body
-    let (payload_b64, payload) = match parse_wire_payload(&body) {
-        Ok(result) => result,
+    // Parse binary bundle body into individual frames
+    let frames = match parse_body(&body, state.config.max_batch_size) {
+        Ok(frames) => frames,
         Err(e) => {
-            error!("Failed to parse wire payload: {}", e);
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            error!("Failed to parse bundle body: {}", e);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid bundle body: {e}"),
+                }),
+            )
+                .into_response();
         }
     };
 
     // Get from_node string for replication
     let from_node = source.to_from_node_string();
 
-    match payload {
-        WirePayload::Message(envelope) => {
-            handle_message(state, envelope, payload_b64, from_node, source).await
-        }
-        WirePayload::AckTombstone(tombstone) => {
-            // Tombstone V2: ECDH-derived ack verification
-            // 1. Look up message by message_id to get its ack_hash
-            let ack_hash = match state.store.get_ack_hash(&tombstone.message_id) {
-                Ok(Some(hash)) => hash,
-                Ok(None) => {
-                    debug!(?tombstone.message_id, "AckTombstone for unknown message");
-                    return (
-                        StatusCode::NOT_FOUND,
-                        Json(ErrorResponse {
-                            error: "Message not found".to_string(),
-                        }),
-                    )
-                        .into_response();
-                }
-                Err(e) => {
-                    error!("Failed to get ack_hash: {}", e);
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse {
-                            error: "Internal error".to_string(),
-                        }),
-                    )
-                        .into_response();
-                }
-            };
-
-            // 2. Verify authorization: hash(ack_secret) == ack_hash
-            if !tombstone.verify_authorization(&ack_hash) {
-                debug!(?tombstone.message_id, "AckTombstone authorization failed");
-                return (
-                    StatusCode::FORBIDDEN,
-                    Json(ErrorResponse {
-                        error: "Invalid ack_secret".to_string(),
-                    }),
-                )
-                    .into_response();
+    // Process each frame, collecting results
+    let mut results = Vec::with_capacity(frames.len());
+    for frame in frames {
+        // Decode wire payload from frame bytes
+        let payload = match WirePayload::decode(&frame) {
+            Ok(p) => p,
+            Err(e) => {
+                results.push(FrameResult::error(format!("Failed to decode frame: {e}")));
+                continue;
             }
+        };
 
-            // 3. Delete message from mailbox
-            match state.store.delete_message(&tombstone.message_id) {
-                Ok(true) => {
-                    debug!(?tombstone.message_id, "Message deleted via AckTombstone");
-
-                    // Replicate tombstone to peer nodes (fire-and-forget)
-                    // This ensures message is deleted across all nodes in the cluster
-                    state.replication.replicate_payload(payload_b64, from_node);
-
-                    (
-                        StatusCode::OK,
-                        Json(SubmitResponse {
-                            status: "ok",
-                            ack_secret: None,
-                            signature: None,
-                        }),
-                    )
-                        .into_response()
-                }
-                Ok(false) => {
-                    // Message was already deleted (race condition, not an error)
-                    // Don't replicate - this is likely a replicated tombstone arriving
-                    (
-                        StatusCode::OK,
-                        Json(SubmitResponse {
-                            status: "ok",
-                            ack_secret: None,
-                            signature: None,
-                        }),
-                    )
-                        .into_response()
-                }
-                Err(e) => {
-                    error!("Failed to delete message: {}", e);
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse {
-                            error: "Internal error".to_string(),
-                        }),
-                    )
-                        .into_response()
-                }
+        let result = match payload {
+            WirePayload::Message(envelope) => {
+                handle_message(&state, envelope, &frame, from_node.clone(), &source).await
             }
-        }
+            WirePayload::AckTombstone(tombstone) => {
+                handle_tombstone(&state, &tombstone, &frame, from_node.clone())
+            }
+        };
+        results.push(result);
     }
+
+    (StatusCode::OK, Json(SubmitResponse { results })).into_response()
 }
 
-#[allow(clippy::unused_async)] // Async used in spawned task, function signature for consistency
 async fn handle_message(
-    state: Arc<AppState>,
+    state: &AppState,
     envelope: OuterEnvelope,
-    payload_b64: String,
+    wire_frame_bytes: &[u8],
     from_node: Option<String>,
-    source: RequestSource,
-) -> axum::response::Response {
+    source: &RequestSource,
+) -> FrameResult {
     // Check for self-loop (message from ourselves)
     if source.is_self(state.identity.as_deref()) {
         debug!("Rejecting message from ourselves (loop prevention)");
-        return (
-            StatusCode::OK,
-            Json(SubmitResponse {
-                status: "ok",
-                ack_secret: None,
-                signature: None,
-            }),
-        )
-            .into_response();
+        return FrameResult::ok(None, None);
     }
 
     let routing_key = envelope.routing_key;
@@ -692,13 +617,7 @@ async fn handle_message(
                 "Rate limited submit for routing key {:?}",
                 &routing_key[..4]
             );
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(ErrorResponse {
-                    error: "Rate limit exceeded for this routing key".to_string(),
-                }),
-            )
-                .into_response();
+            return FrameResult::error("Rate limit exceeded for this routing key");
         }
     }
 
@@ -706,26 +625,12 @@ async fn handle_message(
     match state.store.has_message(&routing_key, &message_id) {
         Ok(true) => {
             debug!("Duplicate message {:?}, skipping", message_id);
-            return (
-                StatusCode::OK,
-                Json(SubmitResponse {
-                    status: "ok",
-                    ack_secret: None,
-                    signature: None,
-                }),
-            )
-                .into_response();
+            return FrameResult::ok(None, None);
         }
         Ok(false) => {}
         Err(e) => {
             error!("Failed to check message existence: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response();
+            return FrameResult::error(e.to_string());
         }
     }
 
@@ -739,7 +644,9 @@ async fn handle_message(
             debug!("Message enqueued for {:?}", &routing_key[..4]);
 
             // Trigger replication to peers (fire-and-forget)
-            state.replication.replicate_payload(payload_b64, from_node);
+            state
+                .replication
+                .replicate_payload(wire_frame_bytes, from_node);
 
             // Publish to MQTT brokers if bridge is configured (fire-and-forget)
             if let Some(ref bridge) = state.mqtt_bridge {
@@ -757,29 +664,61 @@ async fn handle_message(
                 None => (None, None),
             };
 
-            (
-                StatusCode::OK,
-                Json(SubmitResponse {
-                    status: "ok",
-                    ack_secret,
-                    signature,
-                }),
-            )
-                .into_response()
+            FrameResult::ok(ack_secret, signature)
         }
         Err(e) => {
             error!("Failed to enqueue message: {}", e);
-            let status = match e {
-                NodeError::MailboxFull => StatusCode::INSUFFICIENT_STORAGE,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            (
-                status,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response()
+            FrameResult::error(e.to_string())
+        }
+    }
+}
+
+/// Handle an `AckTombstone` frame, returning a `FrameResult`.
+fn handle_tombstone(
+    state: &AppState,
+    tombstone: &reme_message::SignedAckTombstone,
+    wire_frame_bytes: &[u8],
+    from_node: Option<String>,
+) -> FrameResult {
+    // 1. Look up message by message_id to get its ack_hash
+    let ack_hash = match state.store.get_ack_hash(&tombstone.message_id) {
+        Ok(Some(hash)) => hash,
+        Ok(None) => {
+            debug!(?tombstone.message_id, "AckTombstone for unknown message");
+            return FrameResult::error("Message not found");
+        }
+        Err(e) => {
+            error!("Failed to get ack_hash: {}", e);
+            return FrameResult::error("Internal error");
+        }
+    };
+
+    // 2. Verify authorization: hash(ack_secret) == ack_hash
+    if !tombstone.verify_authorization(&ack_hash) {
+        debug!(?tombstone.message_id, "AckTombstone authorization failed");
+        return FrameResult::error("Invalid ack_secret");
+    }
+
+    // 3. Delete message from mailbox
+    match state.store.delete_message(&tombstone.message_id) {
+        Ok(true) => {
+            debug!(?tombstone.message_id, "Message deleted via AckTombstone");
+
+            // Replicate tombstone to peer nodes (fire-and-forget)
+            state
+                .replication
+                .replicate_payload(wire_frame_bytes, from_node);
+
+            FrameResult::ok(None, None)
+        }
+        Ok(false) => {
+            // Message was already deleted (race condition, not an error)
+            // Don't replicate - this is likely a replicated tombstone arriving
+            FrameResult::ok(None, None)
+        }
+        Err(e) => {
+            error!("Failed to delete message: {}", e);
+            FrameResult::error("Internal error")
         }
     }
 }

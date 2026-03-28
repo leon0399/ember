@@ -21,6 +21,7 @@
 
 use crate::node_identity::NodeIdentity;
 use crate::signed_headers::SignedHeaders;
+use reme_bundle::encode_body;
 use reme_config::ParsedHttpPeer;
 use reme_transport::sanitize_url_for_logging;
 use reqwest::Client;
@@ -64,13 +65,21 @@ impl ReplicationClient {
 
     /// Replicate a wire payload (message or tombstone) to all peer nodes (except the source)
     ///
+    /// Accepts raw wire frame bytes and wraps them in a count=1 bundle body before sending.
     /// Uses fire-and-forget pattern - spawns tasks and returns immediately.
     /// Signs requests with `XEdDSA` if node identity is configured.
     /// Supports URL-embedded credentials for per-peer authentication.
-    pub fn replicate_payload(self: &Arc<Self>, payload_b64: String, from_node: Option<String>) {
+    pub fn replicate_payload(
+        self: &Arc<Self>,
+        wire_payload_bytes: &[u8],
+        from_node: Option<String>,
+    ) {
         if self.peer_configs.is_empty() {
             return;
         }
+
+        // Encode as a count=1 bundle body before spawning
+        let bundle_body = encode_body(&[wire_payload_bytes]);
 
         let this = Arc::clone(self);
         tokio::spawn(async move {
@@ -98,13 +107,8 @@ impl ReplicationClient {
                 // Sign request if identity and destination are available
                 match (&this.identity, &dest_host) {
                     (Some(ref identity), Some(ref dest)) => {
-                        let signed = SignedHeaders::sign(
-                            identity,
-                            "POST",
-                            path,
-                            payload_b64.as_bytes(),
-                            dest,
-                        );
+                        let signed =
+                            SignedHeaders::sign(identity, "POST", path, &bundle_body, dest);
                         for (header_name, header_value) in signed.to_headers() {
                             request = request.header(header_name, header_value);
                         }
@@ -126,8 +130,8 @@ impl ReplicationClient {
                 }
 
                 request = request
-                    .header("Content-Type", "text/plain")
-                    .body(payload_b64.clone());
+                    .header("Content-Type", "application/vnd.reme.bundle")
+                    .body(bundle_body.clone());
 
                 // Add Basic Auth if credentials are configured
                 if let Some((username, password)) = &peer_config.auth {

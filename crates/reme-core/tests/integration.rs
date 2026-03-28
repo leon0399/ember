@@ -55,6 +55,7 @@ impl TestServer {
             identity: None,
             public_host: None,
             additional_hosts: vec![],
+            config: node::config::NodeConfig::default(),
         });
         let app = api::router(state, None);
 
@@ -420,6 +421,7 @@ async fn test_multi_node_replication() {
         identity: None,
         public_host: None,
         additional_hosts: vec![],
+        config: node::config::NodeConfig::default(),
     });
     let app1 = api::router(state1, None);
 
@@ -453,6 +455,7 @@ async fn test_multi_node_replication() {
         identity: None,
         public_host: None,
         additional_hosts: vec![],
+        config: node::config::NodeConfig::default(),
     });
     let app2 = api::router(state2, None);
 

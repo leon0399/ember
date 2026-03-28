@@ -16,7 +16,7 @@ use url::Url;
 
 use reme_encryption::build_identity_sign_data;
 
-use crate::http_pagination::validate_next_cursor;
+use crate::http_pagination::{decode_fetch_payloads, validate_next_cursor};
 use crate::tls::{CertPin, PinningVerifier};
 use crate::url_auth::parse_url_with_auth;
 use crate::{Transport, TransportError};
@@ -52,8 +52,13 @@ pub struct HttpTransport {
 
 #[derive(Debug, Deserialize)]
 struct SubmitResponse {
-    #[allow(dead_code)]
+    results: Vec<FrameResultResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FrameResultResponse {
     status: String,
+    error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -269,7 +274,7 @@ impl HttpTransport {
     async fn submit_to_node(
         &self,
         base_url: &str,
-        payload_b64: &str,
+        wire_bytes: &[u8],
     ) -> Result<(), TransportError> {
         // Parse URL and extract credentials if present
         let parsed = parse_url_with_auth(base_url)
@@ -277,11 +282,13 @@ impl HttpTransport {
 
         let url = format!("{}/api/v1/submit", parsed.url.trim_end_matches('/'));
 
+        let bundle_body = reme_bundle::encode_body(&[wire_bytes]);
+
         let mut request = self
             .client
             .post(&url)
-            .header("Content-Type", "text/plain")
-            .body(payload_b64.to_string());
+            .header("Content-Type", "application/vnd.reme.bundle")
+            .body(bundle_body);
 
         // Add Basic Auth if credentials were embedded in URL
         if let Some((username, password)) = parsed.auth {
@@ -307,10 +314,22 @@ impl HttpTransport {
             )));
         }
 
-        let _result: SubmitResponse = response
+        let result: SubmitResponse = response
             .json()
             .await
             .map_err(|e| TransportError::Serialization(e.to_string()))?;
+
+        // Check per-frame error (count=1 submissions always have exactly one result)
+        if let Some(frame) = result.results.first() {
+            if frame.status != "ok" {
+                let msg = frame
+                    .error
+                    .as_deref()
+                    .unwrap_or("unknown frame error")
+                    .to_string();
+                return Err(TransportError::ServerError(msg));
+            }
+        }
 
         Ok(())
     }
@@ -370,24 +389,6 @@ impl HttpTransport {
             .map_err(|e| TransportError::Serialization(e.to_string()))
     }
 
-    fn decode_fetch_payloads(payloads: Vec<String>) -> Result<Vec<OuterEnvelope>, TransportError> {
-        let mut envelopes = Vec::new();
-        for blob in payloads {
-            let wire_bytes = BASE64_STANDARD
-                .decode(&blob)
-                .map_err(|e| TransportError::Serialization(format!("base64 decode: {e}")))?;
-
-            let payload = WirePayload::decode(&wire_bytes)
-                .map_err(|e| TransportError::Serialization(format!("wire decode: {e}")))?;
-
-            if let WirePayload::Message(envelope) = payload {
-                envelopes.push(envelope);
-            }
-        }
-
-        Ok(envelopes)
-    }
-
     async fn fetch_from_node(
         &self,
         base_url: &str,
@@ -401,7 +402,7 @@ impl HttpTransport {
             let page = self
                 .fetch_page_from_node(base_url, routing_key_b64, after.as_deref())
                 .await?;
-            envelopes.extend(Self::decode_fetch_payloads(page.payloads)?);
+            envelopes.extend(decode_fetch_payloads(page.payloads)?);
 
             if !page.has_more {
                 break;
@@ -499,14 +500,11 @@ impl Transport for HttpTransport {
             .encode()
             .map_err(|e| TransportError::Serialization(e.to_string()))?;
 
-        // Base64 encode
-        let envelope_b64 = BASE64_STANDARD.encode(&wire_bytes);
-
         // Submit to all nodes in parallel
         let futures: Vec<_> = self
             .base_urls
             .iter()
-            .map(|url| self.submit_to_node(url, &envelope_b64))
+            .map(|url| self.submit_to_node(url, &wire_bytes))
             .collect();
 
         let results = join_all(futures).await;
@@ -553,14 +551,11 @@ impl Transport for HttpTransport {
             .encode()
             .map_err(|e| TransportError::Serialization(e.to_string()))?;
 
-        // Base64 encode
-        let tombstone_b64 = BASE64_STANDARD.encode(&wire_bytes);
-
         // Submit to all nodes in parallel
         let futures: Vec<_> = self
             .base_urls
             .iter()
-            .map(|url| self.submit_to_node(url, &tombstone_b64))
+            .map(|url| self.submit_to_node(url, &wire_bytes))
             .collect();
 
         let results = join_all(futures).await;

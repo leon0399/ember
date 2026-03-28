@@ -15,7 +15,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
-use crate::http_pagination::validate_next_cursor;
+use crate::http_pagination::{decode_fetch_payloads, validate_next_cursor};
 use crate::target::{
     HealthData, HealthState, RawReceipt, TargetConfig, TargetHealth, TargetId, TargetKind,
     TransportTarget,
@@ -146,17 +146,20 @@ pub struct HttpTarget {
 
 #[derive(Debug, Deserialize)]
 struct SubmitResponse {
-    #[allow(dead_code)]
-    status: String,
-
-    /// Base64-encoded 16-byte `ack_secret` (optional).
-    ack_secret: Option<String>,
-
-    /// Base64-encoded 64-byte `XEdDSA` signature (optional).
-    signature: Option<String>,
+    results: Vec<FrameResultResponse>,
 }
 
-impl SubmitResponse {
+#[derive(Debug, Deserialize)]
+struct FrameResultResponse {
+    #[allow(dead_code)]
+    status: String,
+    ack_secret: Option<String>,
+    signature: Option<String>,
+    #[allow(dead_code)]
+    error: Option<String>,
+}
+
+impl FrameResultResponse {
     /// Parse the response into a `RawReceipt`.
     fn into_raw_receipt(self) -> RawReceipt {
         let ack_secret = self.ack_secret.and_then(|s| {
@@ -235,15 +238,17 @@ impl HttpTarget {
     /// Submit a wire payload to this target.
     ///
     /// Returns the raw receipt data from the node (if any).
-    async fn submit_payload(&self, payload_b64: &str) -> Result<RawReceipt, TransportError> {
+    async fn submit_payload(&self, wire_bytes: &[u8]) -> Result<RawReceipt, TransportError> {
         let url = format!("{}/api/v1/submit", self.sanitized_url.trim_end_matches('/'));
+
+        let bundle_body = reme_bundle::encode_body(&[wire_bytes]);
 
         let mut request = self
             .client
             .post(&url)
-            .header("Content-Type", "text/plain")
+            .header("Content-Type", "application/vnd.reme.bundle")
             .timeout(self.config.base.request_timeout)
-            .body(payload_b64.to_string());
+            .body(bundle_body);
 
         // Priority 1: Explicit auth from config
         // Priority 2: URL-embedded auth (legacy/backward compat)
@@ -279,16 +284,32 @@ impl HttpTarget {
             .await
             .map_err(|e| TransportError::Serialization(e.to_string()))?;
 
-        Ok(result.into_raw_receipt())
+        let frame = result.results.into_iter().next().ok_or_else(|| {
+            TransportError::ServerError("empty results in submit response".to_string())
+        })?;
+
+        // Check for per-frame errors
+        if let Some(ref error) = frame.error {
+            let err_lower = error.to_lowercase();
+            if err_lower.contains("not found") {
+                return Err(TransportError::NotFound);
+            }
+            if err_lower.contains("invalid ack_secret") || err_lower.contains("authorization") {
+                return Err(TransportError::ServerError(format!("403: {error}")));
+            }
+            return Err(TransportError::ServerError(error.clone()));
+        }
+
+        Ok(frame.into_raw_receipt())
     }
 
     /// Get a display label for logging.
     fn display_label(&self) -> String {
-        if let Some(ref label) = self.config.base.label {
-            label.clone()
-        } else {
-            sanitize_url_for_log(&self.config.url)
-        }
+        self.config
+            .base
+            .label
+            .clone()
+            .unwrap_or_else(|| sanitize_url_for_log(&self.config.url))
     }
 
     /// Fetch messages once from this target.
@@ -379,24 +400,6 @@ impl HttpTarget {
             .map_err(|e| TransportError::Serialization(e.to_string()))
     }
 
-    fn decode_fetch_payloads(payloads: Vec<String>) -> Result<Vec<OuterEnvelope>, TransportError> {
-        let mut envelopes = Vec::new();
-        for blob in payloads {
-            let wire_bytes = BASE64_STANDARD
-                .decode(&blob)
-                .map_err(|e| TransportError::Serialization(format!("base64 decode: {e}")))?;
-
-            let payload = WirePayload::decode(&wire_bytes)
-                .map_err(|e| TransportError::Serialization(format!("wire decode: {e}")))?;
-
-            if let WirePayload::Message(envelope) = payload {
-                envelopes.push(envelope);
-            }
-        }
-
-        Ok(envelopes)
-    }
-
     async fn fetch_from_endpoint(
         &self,
         routing_key_b64: &str,
@@ -409,7 +412,7 @@ impl HttpTarget {
             let page = self
                 .fetch_page_from_endpoint(routing_key_b64, after.as_deref())
                 .await?;
-            envelopes.extend(Self::decode_fetch_payloads(page.payloads)?);
+            envelopes.extend(decode_fetch_payloads(page.payloads)?);
 
             if !page.has_more {
                 break;
@@ -460,9 +463,8 @@ impl TransportTarget for HttpTarget {
         let wire_bytes = wire_payload
             .encode()
             .map_err(|e| TransportError::Serialization(e.to_string()))?;
-        let payload_b64 = BASE64_STANDARD.encode(&wire_bytes);
 
-        let result = self.submit_payload(&payload_b64).await;
+        let result = self.submit_payload(&wire_bytes).await;
 
         match &result {
             Ok(receipt) => {
@@ -498,9 +500,8 @@ impl TransportTarget for HttpTarget {
         let wire_bytes = wire_payload
             .encode()
             .map_err(|e| TransportError::Serialization(e.to_string()))?;
-        let payload_b64 = BASE64_STANDARD.encode(&wire_bytes);
 
-        let result = self.submit_payload(&payload_b64).await;
+        let result = self.submit_payload(&wire_bytes).await;
 
         match &result {
             Ok(_receipt) => {
@@ -567,11 +568,10 @@ fn build_target_client(config: &HttpTargetConfig) -> Result<Client, TransportErr
             )
         })?;
 
-        // Create pins map with single entry
-        let mut pins = std::collections::HashMap::new();
-        if let Some(ref pin) = config.cert_pin {
-            pins.insert(hostname, pin.clone());
-        }
+        let pin = config.cert_pin.as_ref().ok_or_else(|| {
+            TransportError::TlsConfig("certificate pin missing despite has_pin flag".to_string())
+        })?;
+        let pins = std::collections::HashMap::from([(hostname, pin.clone())]);
 
         // Create pinning verifier
         let verifier =

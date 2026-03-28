@@ -1,4 +1,30 @@
+use base64::prelude::*;
+use reme_message::{OuterEnvelope, WirePayload};
+
 use crate::TransportError;
+
+/// Decode base64-encoded `WirePayload` blobs from a fetch response.
+///
+/// Non-message payloads (e.g. tombstones) are silently skipped, matching
+/// the server-side filter that only stores `WirePayload::Message` envelopes.
+pub(crate) fn decode_fetch_payloads(
+    payloads: Vec<String>,
+) -> Result<Vec<OuterEnvelope>, TransportError> {
+    let mut envelopes = Vec::with_capacity(payloads.len());
+    for blob in payloads {
+        let wire_bytes = BASE64_STANDARD
+            .decode(&blob)
+            .map_err(|e| TransportError::Serialization(format!("base64 decode: {e}")))?;
+
+        let payload = WirePayload::decode(&wire_bytes)
+            .map_err(|e| TransportError::Serialization(format!("wire decode: {e}")))?;
+
+        if let WirePayload::Message(envelope) = payload {
+            envelopes.push(envelope);
+        }
+    }
+    Ok(envelopes)
+}
 
 pub(crate) fn validate_next_cursor(
     next_cursor: &str,

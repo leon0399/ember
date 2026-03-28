@@ -13,10 +13,12 @@
 //! [checksum: 32 bytes]       // BLAKE3 hash of all preceding bytes
 //! ```
 
+pub mod body;
 mod error;
 mod reader;
 mod writer;
 
+pub use body::{encode_body, parse_body, BodyParseError};
 pub use error::BundleError;
 pub use reader::BundleReader;
 pub use writer::BundleWriter;

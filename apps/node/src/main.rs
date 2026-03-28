@@ -259,6 +259,9 @@ async fn main() {
             std::process::exit(1);
         });
 
+    // Clone config before partial moves so it can be stored in AppState.
+    let config_for_state = config.clone();
+
     let replication = Arc::new(ReplicationClient::with_identity(
         config.node_id,
         parsed_peers,
@@ -351,6 +354,7 @@ async fn main() {
         identity,
         public_host: config.public_host.clone(),
         additional_hosts: config.additional_hosts.clone(),
+        config: config_for_state,
     });
 
     // Create router with rate limiting
