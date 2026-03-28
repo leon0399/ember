@@ -1,0 +1,23 @@
+crates/reme-core/tests/sneakernet.rs
+  3afd932167fef56a 205,210-212,215-217,223
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "8d147145e0a65c344338e3b17c01cbe4969a8742",
+  "prompts": {
+    "3afd932167fef56a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "03f30216-bf11-4896-ba61-28ed420ab886",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 11,
+      "total_deletions": 4,
+      "accepted_lines": 8,
+      "overriden_lines": 0
+    }
+  }
+}
