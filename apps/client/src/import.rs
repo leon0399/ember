@@ -2,7 +2,8 @@
 //!
 //! Reads a bundle, decodes each frame, and processes self-addressed messages
 //! via `Client::process_message_local`. Messages for other routing keys are
-//! skipped. Duplicate messages are silently ignored (idempotent import).
+//! skipped. Duplicate messages are deduplicated and counted in the summary.
+//! Conflicting duplicates (same ID, different content) emit a warning.
 
 use crate::config::{AppConfig, ImportArgs};
 use reme_bundle::BundleReader;
@@ -133,7 +134,7 @@ fn process_message<T: Transport>(
                 "Warning: frame {frame_index}: conflicting duplicate for message {}",
                 hex::encode(id.as_bytes())
             );
-            summary.duplicates += 1;
+            summary.errors += 1;
         }
         Err(e) => {
             eprintln!("Warning: frame {frame_index}: {e}");
@@ -146,7 +147,7 @@ fn process_message<T: Transport>(
 fn print_summary(s: &ImportSummary) {
     let total = s.imported + s.duplicates + s.skipped_not_for_us + s.skipped_tombstones + s.errors;
 
-    if s.imported == 0 && s.duplicates == 0 {
+    if s.imported == 0 && s.duplicates == 0 && s.errors == 0 {
         eprintln!("No messages for this identity ({total} frames processed).");
         return;
     }
