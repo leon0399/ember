@@ -1,0 +1,25 @@
+crates/reme-core/tests/sneakernet.rs
+  3afd932167fef56a 1-461
+crates/reme-core/Cargo.toml
+  3afd932167fef56a 32-34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "e20f799d2a628ad450d3b772416ebfe5cc2d7bad",
+  "prompts": {
+    "3afd932167fef56a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "03f30216-bf11-4896-ba61-28ed420ab886",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 827,
+      "total_deletions": 373,
+      "accepted_lines": 464,
+      "overriden_lines": 0
+    }
+  }
+}
