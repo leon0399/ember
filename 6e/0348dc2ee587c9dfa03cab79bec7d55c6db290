@@ -1,0 +1,27 @@
+crates/reme-bundle/src/body.rs
+  31a52504c02f1b6b 29-31,35-38,40-43,116-121
+apps/node/src/config.rs
+  31a52504c02f1b6b 575,631
+apps/client/src/tui/http_server.rs
+  31a52504c02f1b6b 734-735
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "6e0348dc2ee587c9dfa03cab79bec7d55c6db290",
+  "prompts": {
+    "31a52504c02f1b6b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6968c33-0db9-4942-b7da-866d5c00cc80",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 39,
+      "total_deletions": 35,
+      "accepted_lines": 34,
+      "overriden_lines": 0
+    }
+  }
+}
