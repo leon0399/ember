@@ -42,7 +42,7 @@ ContentId = BLAKE3(
     "reme-content-id-v1"
     || InnerEnvelope.from.to_bytes()          // PublicID as 32 raw bytes
     || InnerEnvelope.created_at_ms.to_le()    // u64 little-endian
-    || postcard::to_allocvec(content)          // postcard-serialized Content
+    || bincode::encode_to_vec(content)         // bincode-serialized Content
 )[0..8]
 ```
 
@@ -143,7 +143,9 @@ On the receiving side, `Client::process_message()` feeds the peer's `observed_he
 
 ```mermaid
 flowchart TD
-    Recv["Receive message from peer"] --> Loop["For each content_id in observed_heads"]
+    Recv["Receive message from peer"] --> Check{"observed_heads\nnon-empty?"}
+    Check -->|No| NoOp["No confirmation possible"]
+    Check -->|Yes| Loop["For each content_id in observed_heads"]
     Loop --> Match{"content_id matches\npending outbox entry?"}
     Match -->|Yes| Confirm["Mark entry as confirmed\n(DeliveryConfirmation::Dag)"]
     Match -->|No| Skip["Skip"]
@@ -152,6 +154,8 @@ flowchart TD
 ```
 
 This eliminates the need for explicit ACK messages — the DAG structure provides piggybacked confirmation on every message the peer sends.
+
+**Caveat:** The entire implicit ACK and resend-triggering path is gated on `observed_heads` being non-empty. Detached messages (`FLAG_DETACHED`) and first messages in a conversation carry empty `observed_heads`, so they cannot confirm delivery or trigger gap-based resends.
 
 ## Automatic Resend Triggering
 
@@ -210,7 +214,7 @@ This means the peer has seen messages from us that we have no record of sending 
 
 ## Epochs: Intentional History Clears
 
-The `epoch` field (`u16`, 65,536 distinct values 0..=65,535) allows cleanly breaking the DAG when history is intentionally deleted.
+The `epoch` field (`u16`, 65,536 distinct values 0–65,535) allows cleanly breaking the DAG when history is intentionally deleted.
 
 ### Local Clear
 
@@ -319,11 +323,7 @@ Orphans in the `ReceiverGapDetector` accumulate indefinitely in-memory (though t
 
 ### Receiver State Not Persisted
 
-The `ReceiverGapDetector` is not persisted across restarts. This means:
-
-- Messages received before restart lose their "complete" status in the gap detector.
-- If the same messages are re-delivered after restart, they are re-processed without gap context.
-- This is acceptable because relay nodes have TTLs and will not re-deliver expired messages.
+The `ReceiverGapDetector` is not persisted across restarts. After restart, the detector starts empty — previously received messages are simply unknown, so re-delivered messages are processed without prior gap context. This is acceptable because relay nodes have TTLs and will not re-deliver expired messages.
 
 ### ContentId Collision Bound
 
