@@ -10,3 +10,5 @@
 # AI agent working directories
 .opencode/
 .serena/
+/.claude/settings.local.json
+CLAUDE.local.md

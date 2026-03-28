@@ -1,0 +1,10 @@
+# Clippy configuration for resilient-messenger
+# See: https://doc.rust-lang.org/clippy/lint_configuration.html
+
+# F-COMBINATOR (epage style guide): side-effects belong in `for` loops, not combinators.
+# Readers skim combinator chains and miss mutations inside closures.
+# Ref: https://epage.github.io/dev/rust-style/#f-combinator-pure-combinators
+disallowed-methods = [
+    { path = "std::iter::Iterator::for_each", reason = "Use a `for` loop for side-effects (F-COMBINATOR)" },
+    { path = "std::iter::Iterator::try_for_each", reason = "Use a `for` loop for side-effects (F-COMBINATOR)" },
+]

@@ -162,6 +162,29 @@ Research/prototype stage — no external users. Breaking changes and public API 
 - **Sender authentication**: XEdDSA signature binds sender identity to message content.
 - **Threat model**: See `docs/threat-model.md` for attack scenarios and mitigations. Review and update when adding new transport mechanisms or discovery features.
 
+## Code Style
+
+Adapted from [epage's Rust Style Guide](https://epage.github.io/dev/rust-style/). These are review guidelines, not hard rules — use judgement when they conflict.
+
+### File & Module Layout
+
+- **Type then impl** (M-TYPE-ASSOC): Place a type definition immediately before its `impl` block.
+- **Inherent impl before trait impls** (M-ASSOC-TRAIT): `impl Foo {}` comes before `impl Display for Foo {}`.
+- **Public before private** (M-PUB-PRIV): Public items precede private ones in modules, structs, and impl blocks.
+- **Caller before callee** (M-CALLER-CALLEE): Place callers first; the weaker the callee's abstraction, the closer it should follow its caller.
+- **Central item first** (M-ITEM-TOC): The titular type/function for a module appears first — it acts as a table of contents.
+- **`lib.rs` / `mod.rs` = re-exports only** (P-DIR-MOD): Keep definitions in topically named files.
+
+### Function Structure
+
+- **Group related logic** (F-GROUP): Use blank lines to separate logical "paragraphs".
+- **Pure combinators** (F-COMBINATOR): No side-effects in `map`/`filter`/`fold` closures. Use `for` loops for mutations. Enforced via `clippy.toml` (`disallowed-methods`).
+- **Blocks reflect business logic** (F-VISUAL): Use `if`/`else` or `match` for mutually exclusive business paths. Reserve early returns for bookkeeping. Use combinators for transformations.
+
+### Visibility
+
+Use only three levels: private (default), `pub(crate)`, `pub`. Avoid `pub(super)`.
+
 ## Development Workflow
 
 When writing or reviewing Rust code, consult these skills:

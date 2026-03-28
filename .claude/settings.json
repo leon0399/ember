@@ -1,7 +1,35 @@
 {
+  "permissions": {
+    "allow": [
+      "mcp__ide__getDiagnostics",
+      "mcp__context7__*",
+      "mcp__deepwiki__*",
+      "mcp__gh_grep__*",
+      "mcp__repomix__*",
+      "Bash(cargo test:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo tree:*)",
+      "Bash(cargo update:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo search:*)",
+      "Bash(cargo doc:*)",
+      "Bash(cargo metadata:*)",
+      "WebFetch(domain:signal.org)",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:mesh.im)",
+      "WebFetch(domain:doc-internal.dalek.rs)",
+      "WebFetch(domain:datatracker.ietf.org)",
+      "WebFetch(domain:cheatsheetseries.owasp.org)",
+      "WebFetch(domain:getsession.org)",
+      "WebFetch(domain:berty.tech)"
+    ]
+  },
   "enabledPlugins": {
     "security-scanning@claude-code-workflows": true,
-    "systems-programming@claude-code-workflows": true
+    "systems-programming@claude-code-workflows": true,
+    "rust-analyzer-lsp@claude-plugins-official": true
   },
   "hooks": {
     "PostToolUse": [
@@ -10,8 +38,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cargo fmt --quiet",
-            "timeout": 30
+            "command": ".claude/hooks/post-edit-fmt.sh",
+            "timeout": 15
           }
         ]
       }
@@ -21,8 +49,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cargo clippy --quiet --all-targets 2>&1",
-            "timeout": 120
+            "command": ".claude/hooks/stop-lint.sh",
+            "timeout": 180
           }
         ]
       }
