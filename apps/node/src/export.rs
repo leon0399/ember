@@ -52,9 +52,10 @@ pub fn run_export(
     // Write bundle
     let file = fs::File::create(&args.file)?;
     let mut writer = BundleWriter::new(file);
+    let total = envelopes.len();
     let mut skipped = 0usize;
-    for env in &envelopes {
-        match WirePayload::Message(env.clone()).encode() {
+    for env in envelopes {
+        match WirePayload::Message(env).encode() {
             Ok(frame) => writer.write_frame(&frame)?,
             Err(e) => {
                 eprintln!("Warning: skipping message: {e}");
@@ -64,7 +65,7 @@ pub fn run_export(
     }
     writer.finish()?;
 
-    let count = envelopes.len() - skipped;
+    let count = total - skipped;
     eprintln!("Exported {count} messages to {}", args.file.display());
     Ok(())
 }
