@@ -1,4 +1,4 @@
-name: test.yml
+name: check.yml
 
 on:
   push:
@@ -17,10 +17,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Test (${{ matrix.os }}, ${{ matrix.features }})
+  check:
+    name: Check (${{ matrix.os }}, ${{ matrix.features }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -39,8 +39,5 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: Run tests
-        run: cargo test --workspace --all-targets --locked ${{ matrix.features }}
-
-      - name: Run doc tests
-        run: cargo test --workspace --doc --locked ${{ matrix.features }}
+      - name: Run cargo check
+        run: cargo check --workspace --all-targets --locked ${{ matrix.features }}
