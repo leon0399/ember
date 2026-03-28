@@ -29,3 +29,6 @@ hex = { workspace = true }
 node = { path = "../../apps/node" }
 axum = { workspace = true }
 reme-config = { workspace = true }
+reme-bundle = { workspace = true }
+reme-outbox = { workspace = true }
+reme-node-core = { workspace = true }
