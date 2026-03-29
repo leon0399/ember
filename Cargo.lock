@@ -1985,6 +1985,7 @@ dependencies = [
  "rand_core 0.6.4",
  "reme-bundle",
  "reme-config",
+ "reme-discovery",
  "reme-encryption",
  "reme-identity",
  "reme-message",

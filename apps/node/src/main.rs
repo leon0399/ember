@@ -69,6 +69,7 @@ use mqtt_bridge::MqttBridge;
 use node_identity::NodeIdentity;
 use rate_limit::RateLimiters;
 use reme_config::ParsedHttpPeer;
+use reme_discovery::MdnsSdBackend;
 use reme_node_core::{PersistentMailboxStore, PersistentStoreConfig};
 use replication::ReplicationClient;
 use std::net::SocketAddr;
@@ -197,6 +198,66 @@ fn ensure_storage_dir(storage_path: &str) {
     if let Err(e) = std::fs::create_dir_all(parent) {
         error!("Failed to create storage directory: {e}");
         std::process::exit(1);
+    }
+}
+
+/// Start mDNS advertising if LAN discovery is enabled and identity is available.
+///
+/// Returns an optional mDNS backend handle for graceful shutdown.
+async fn start_mdns_advertising(
+    lan_discovery_enabled: bool,
+    identity: Option<&NodeIdentity>,
+    bound_addr: SocketAddr,
+) -> Option<Arc<MdnsSdBackend>> {
+    if !lan_discovery_enabled {
+        return None;
+    }
+
+    let Some(node_identity) = identity else {
+        warn!("LAN discovery enabled but no identity loaded — skipping mDNS advertisement");
+        return None;
+    };
+
+    info!("Starting mDNS advertisement for LAN discovery");
+
+    let backend = match MdnsSdBackend::new() {
+        Ok(b) => Arc::new(b),
+        Err(e) => {
+            warn!("Failed to create mDNS backend: {e}");
+            return None;
+        }
+    };
+
+    let port = bound_addr.port();
+    let routing_key: [u8; 16] = node_identity.routing_key().into();
+    let txt = reme_discovery::encode_txt_with_caps(&routing_key, port, Some(&["relay", "store"]));
+
+    let spec = reme_discovery::AdvertisementSpec {
+        service_type: "_reme._tcp.local.".to_owned(),
+        port,
+        txt_records: txt,
+        routing_key,
+    };
+
+    if let Err(e) = reme_discovery::DiscoveryBackend::start_advertising(backend.as_ref(), spec).await
+    {
+        warn!("Failed to start mDNS advertising: {e}");
+        return None;
+    }
+
+    info!("mDNS advertisement started on port {port}");
+    Some(backend)
+}
+
+/// Stop mDNS advertising gracefully.
+async fn stop_mdns_advertising(backend: Option<Arc<MdnsSdBackend>>) {
+    if let Some(backend) = backend {
+        info!("Stopping mDNS advertisement");
+        if let Err(e) =
+            reme_discovery::DiscoveryBackend::stop_advertising(backend.as_ref()).await
+        {
+            warn!("Failed to stop mDNS advertising: {e}");
+        }
     }
 }
 
@@ -409,6 +470,10 @@ async fn main() {
     // Create app state (submit_key_limiter is moved out of rate_limiters for AppState)
     let submit_key_limiter = rate_limiters.as_ref().and_then(|r| r.submit_key.clone());
 
+    // Capture values needed for mDNS advertising before moving into AppState
+    let lan_discovery_enabled = config.lan_discovery.enabled;
+    let identity_for_mdns = identity.clone();
+
     let state = Arc::new(AppState {
         store,
         replication,
@@ -460,13 +525,20 @@ async fn main() {
 
         info!("Node listening on https://{}", addr);
 
+        // Start mDNS advertising if enabled
+        let mdns_backend =
+            start_mdns_advertising(lan_discovery_enabled, identity_for_mdns.as_deref(), addr)
+                .await;
+
         let handle = axum_server::Handle::new();
 
         // Spawn task to trigger graceful shutdown on cancel
         let tls_handle = handle.clone();
         let tls_cancel = cancel.clone();
+        let tls_mdns = mdns_backend.clone();
         tokio::spawn(async move {
             tls_cancel.cancelled().await;
+            stop_mdns_advertising(tls_mdns).await;
             tls_handle.graceful_shutdown(Some(Duration::from_secs(10)));
         });
 
@@ -500,12 +572,24 @@ async fn main() {
         });
         info!("Node listening on http://{}", local_addr);
 
+        // Start mDNS advertising if enabled
+        let mdns_backend = start_mdns_advertising(
+            lan_discovery_enabled,
+            identity_for_mdns.as_deref(),
+            local_addr,
+        )
+        .await;
+
         let timeout_cancel = cancel.clone();
+        let http_mdns = mdns_backend.clone();
         let server = axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
-        .with_graceful_shutdown(cancel.cancelled_owned());
+        .with_graceful_shutdown(async move {
+            cancel.cancelled().await;
+            stop_mdns_advertising(http_mdns).await;
+        });
 
         // Enforce 10s shutdown timeout to match TLS mode behavior
         tokio::select! {
