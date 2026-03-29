@@ -1,0 +1,53 @@
+Cargo.toml
+  67c14c05b96d95c5 122
+crates/reme-transport/src/http.rs
+  67c14c05b96d95c5 1292-1302,1351-1361
+crates/reme-transport/src/mqtt_receiver.rs
+  67c14c05b96d95c5 307-317
+crates/reme-core/tests/sneakernet.rs
+  67c14c05b96d95c5 261,264,295-296,300
+crates/reme-core/src/lib.rs
+  67c14c05b96d95c5 822-825,1856
+crates/reme-encryption/src/lib.rs
+  67c14c05b96d95c5 764,895
+crates/reme-outbox/src/state.rs
+  67c14c05b96d95c5 247,262
+crates/reme-discovery/src/fake.rs
+  67c14c05b96d95c5 123-125,139-141,155-157
+crates/reme-core/tests/integration.rs
+  67c14c05b96d95c5 267,329,363
+crates/reme-discovery/src/mdns_sd.rs
+  67c14c05b96d95c5 82,98-99
+apps/client/src/tui/app.rs
+  67c14c05b96d95c5 1037,1075,1105,1141,1173,1321,1425,1439,1453
+apps/client/src/config.rs
+  67c14c05b96d95c5 1157,1159
+crates/reme-node-core/src/mailbox_store.rs
+  67c14c05b96d95c5 1242-1248
+crates/reme-transport/src/delivery.rs
+  67c14c05b96d95c5 99
+crates/reme-transport/src/http_target.rs
+  67c14c05b96d95c5 827-837,886-896
+crates/reme-message/tests/golden_wire_format.rs
+  67c14c05b96d95c5 399,402,414,420,579,585
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "dcc89e9d4bbae97aa064fe26cce66c1b67be6031",
+  "prompts": {
+    "67c14c05b96d95c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b0f343cb-873d-4cd5-8036-c96c039e94e5",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 130,
+      "total_deletions": 37,
+      "accepted_lines": 235,
+      "overriden_lines": 0
+    }
+  }
+}
