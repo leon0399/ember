@@ -1154,7 +1154,9 @@ mod tests {
         let transport: QuorumStrategy = config.into();
         match transport {
             QuorumStrategy::Fraction(f) => assert!((f - 0.75).abs() < 0.001),
-            _ => panic!("Expected Fraction"),
+            QuorumStrategy::Any | QuorumStrategy::Count(_) | QuorumStrategy::All => {
+                panic!("Expected Fraction")
+            }
         }
 
         // Test All

@@ -1289,7 +1289,17 @@ mod tests {
                     "unexpected error: {message}"
                 );
             }
-            other => panic!("expected server error, got {other:?}"),
+            TransportError::Network(_)
+            | TransportError::Serialization(_)
+            | TransportError::AuthenticationFailed
+            | TransportError::NotFound
+            | TransportError::ChannelClosed
+            | TransportError::TlsConfig(_)
+            | TransportError::CertificatePinMismatch { .. }
+            | TransportError::Timeout
+            | TransportError::SignatureVerificationFailed => {
+                panic!("expected ServerError, got {error:?}")
+            }
         }
     }
 
@@ -1338,7 +1348,17 @@ mod tests {
                     "unexpected error: {message}"
                 );
             }
-            other => panic!("expected server error, got {other:?}"),
+            TransportError::Network(_)
+            | TransportError::Serialization(_)
+            | TransportError::AuthenticationFailed
+            | TransportError::NotFound
+            | TransportError::ChannelClosed
+            | TransportError::TlsConfig(_)
+            | TransportError::CertificatePinMismatch { .. }
+            | TransportError::Timeout
+            | TransportError::SignatureVerificationFailed => {
+                panic!("expected ServerError, got {error:?}")
+            }
         }
     }
 }

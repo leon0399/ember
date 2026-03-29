@@ -819,7 +819,10 @@ impl<T: Transport> Client<T> {
         .map_err(|e| match e {
             EncryptionError::DecryptionFailed => ClientError::DecryptionFailed,
             EncryptionError::InvalidSenderSignature => ClientError::InvalidSenderSignature,
-            other => other.into(),
+            EncryptionError::EncryptionFailed
+            | EncryptionError::InvalidRecipientKey
+            | EncryptionError::SerializationError(_)
+            | EncryptionError::DeserializationError(_) => e.into(),
         })?;
 
         // Extract inner envelope and ack_secret
@@ -1850,6 +1853,7 @@ mod tests {
         let received = bob.process_message(&messages[0]).await.unwrap();
         assert_eq!(received.from, *alice.public_id());
 
+        #[allow(clippy::wildcard_enum_match_arm)] // Content is #[non_exhaustive]
         match received.content {
             Content::Text(text) => assert_eq!(text.body, "Hello Bob!"),
             _ => panic!("Expected text content"),

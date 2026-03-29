@@ -1034,6 +1034,7 @@ impl App<'_> {
         // Global shortcuts (Alt+key) - work from any focus
         // Note: Handle both lowercase and uppercase since some terminals send different cases
         if key.modifiers.contains(KeyModifiers::ALT) {
+            #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
             match key.code {
                 KeyCode::Char('a' | 'A') => {
                     // Alt+A: Add contact
@@ -1071,6 +1072,7 @@ impl App<'_> {
         }
 
         // Function key fallbacks for terminals where Alt doesn't work properly
+        #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
         match key.code {
             KeyCode::F(2) => {
                 // F2: Add contact (fallback for Alt+A)
@@ -1100,6 +1102,7 @@ impl App<'_> {
             _ => {}
         }
 
+        #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
         match key.code {
             KeyCode::Esc => {
                 if self.focus == Focus::Input {
@@ -1135,6 +1138,7 @@ impl App<'_> {
     /// Handle key events in conversation list
     #[allow(clippy::unnecessary_wraps)] // Returns Result for consistency with other handlers
     fn handle_conversation_key(&mut self, key: KeyEvent) -> AppResult<()> {
+        #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.selected_conversation > 0 {
@@ -1166,6 +1170,7 @@ impl App<'_> {
 
     /// Handle key events in message view
     fn handle_message_key(&mut self, key: KeyEvent) {
+        #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.message_scroll = self.message_scroll.saturating_add(1);
@@ -1313,6 +1318,7 @@ impl App<'_> {
 
     /// Handle key events when add contact popup is visible
     fn handle_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
+        #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
         match key.code {
             KeyCode::Esc => {
                 // Cancel and close popup
@@ -1416,6 +1422,7 @@ impl App<'_> {
     /// Handle key events when my ID popup is visible
     #[allow(clippy::unnecessary_wraps)] // Returns Result for consistency with other handlers
     fn handle_my_id_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
+        #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
         match key.code {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | 'i') => {
                 // Close popup
@@ -1429,6 +1436,7 @@ impl App<'_> {
     /// Handle key events when view upstreams popup is visible
     #[allow(clippy::unnecessary_wraps)] // Returns Result for consistency with other handlers
     fn handle_upstreams_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
+        #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
         match key.code {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | 'v') => {
                 // Close popup
@@ -1442,6 +1450,7 @@ impl App<'_> {
     /// Handle key events when add upstream popup is visible
     #[allow(clippy::unnecessary_wraps)] // Returns Result for consistency with other handlers
     fn handle_add_upstream_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
+        #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
         match key.code {
             KeyCode::Esc => {
                 // Cancel

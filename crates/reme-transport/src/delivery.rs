@@ -96,7 +96,7 @@ impl ReceiptStatus {
     pub const fn ack_secret(&self) -> Option<&[u8; 16]> {
         match self {
             Self::Full { ack_secret, .. } => Some(ack_secret),
-            _ => None,
+            Self::Missing | Self::SignatureOnly { .. } => None,
         }
     }
 

@@ -244,7 +244,7 @@ impl TieredDeliveryPhase {
     pub const fn confidence(&self) -> Option<&DeliveryConfidence> {
         match self {
             Self::Distributed { confidence, .. } => Some(confidence),
-            _ => None,
+            Self::Urgent | Self::Confirmed { .. } => None,
         }
     }
 
@@ -259,7 +259,7 @@ impl TieredDeliveryPhase {
                 let last = last_maintenance_ms.unwrap_or(*reached_at_ms);
                 now_ms.saturating_sub(last) >= maintenance_interval_ms
             }
-            _ => false,
+            Self::Urgent | Self::Confirmed { .. } => false,
         }
     }
 }

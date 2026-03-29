@@ -119,6 +119,7 @@ unimplemented = "deny"
 dbg_macro = "deny"
 print_stdout = "deny"
 print_stderr = "deny"
+wildcard_enum_match_arm = "deny"     # Force exhaustive match — compiler catches new variants
 cognitive_complexity = "deny"
 
 # ── Pedantic allows (genuinely too noisy) ────────────────────

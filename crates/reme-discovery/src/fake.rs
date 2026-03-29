@@ -120,7 +120,9 @@ mod tests {
             DiscoveryEvent::PeerDiscovered(peer) => {
                 assert_eq!(peer.instance_name, "alice");
             }
-            other => panic!("expected PeerDiscovered, got {other:?}"),
+            DiscoveryEvent::PeerUpdated(_) | DiscoveryEvent::PeerLost(_) => {
+                panic!("expected PeerDiscovered, got {event:?}")
+            }
         }
     }
 
@@ -134,7 +136,9 @@ mod tests {
         let event = rx.try_recv().unwrap();
         match event {
             DiscoveryEvent::PeerUpdated(peer) => assert_eq!(peer.instance_name, "alice"),
-            other => panic!("expected PeerUpdated, got {other:?}"),
+            DiscoveryEvent::PeerDiscovered(_) | DiscoveryEvent::PeerLost(_) => {
+                panic!("expected PeerUpdated, got {event:?}")
+            }
         }
     }
 
@@ -148,7 +152,9 @@ mod tests {
         let event = rx.try_recv().unwrap();
         match event {
             DiscoveryEvent::PeerLost(name) => assert_eq!(name, "bob"),
-            other => panic!("expected PeerLost, got {other:?}"),
+            DiscoveryEvent::PeerDiscovered(_) | DiscoveryEvent::PeerUpdated(_) => {
+                panic!("expected PeerLost, got {event:?}")
+            }
         }
     }
 

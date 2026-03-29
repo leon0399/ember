@@ -1239,7 +1239,13 @@ mod tests {
                     "unexpected error message: {message}"
                 );
             }
-            other => panic!("expected invalid config, got {other:?}"),
+            NodeError::Database(_)
+            | NodeError::Serialization(_)
+            | NodeError::Deserialization(_)
+            | NodeError::LockPoisoned
+            | NodeError::MailboxFull
+            | NodeError::InvalidMessage(_)
+            | NodeError::ChannelClosed => panic!("expected InvalidConfig, got {error:?}"),
         }
     }
 

@@ -79,6 +79,7 @@ impl MdnsSdBackend {
     /// Map an mDNS-SD service event to a [`DiscoveryEvent`], updating the known
     /// peer set. Returns `None` for events we don't propagate (e.g.
     /// `ServiceFound`, search-started/stopped).
+    #[allow(clippy::wildcard_enum_match_arm)] // ServiceEvent is #[non_exhaustive]
     fn map_service_event(
         event: mdns_sd::ServiceEvent,
         known: &mut HashSet<String>,
@@ -94,6 +95,8 @@ impl MdnsSdBackend {
             mdns_sd::ServiceEvent::ServiceRemoved(_stype, fullname) => {
                 Some(Self::handle_service_removed(fullname, known))
             }
+            // ServiceEvent is #[non_exhaustive]; SearchStarted/SearchStopped
+            // and future variants are ignored.
             _ => None,
         }
     }

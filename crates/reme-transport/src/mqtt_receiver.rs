@@ -304,7 +304,17 @@ impl MqttReceiver {
             Incoming::ConnAck(_) => log_conn_ack(&self.url),
             Incoming::SubAck(_) => log_sub_ack(),
             Incoming::Disconnect => log_disconnect(&self.url, event_tx),
-            _ => {}
+            Incoming::Connect(_)
+            | Incoming::Publish(_)
+            | Incoming::PubAck(_)
+            | Incoming::PubRec(_)
+            | Incoming::PubRel(_)
+            | Incoming::PubComp(_)
+            | Incoming::Subscribe(_)
+            | Incoming::Unsubscribe(_)
+            | Incoming::UnsubAck(_)
+            | Incoming::PingReq
+            | Incoming::PingResp => {}
         }
     }
 
