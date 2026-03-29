@@ -22,6 +22,7 @@ reme-transport = { workspace = true, features = ["mqtt"] }
 reme-node-core = { workspace = true }
 reme-bundle = { workspace = true }
 reme-config = { workspace = true, features = ["http", "mqtt"] }
+reme-discovery = { workspace = true }
 
 # storage
 rusqlite = { workspace = true }

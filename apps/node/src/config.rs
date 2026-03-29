@@ -22,6 +22,7 @@
 //! - `REME_NODE_MQTT_BROKER` - Comma-separated MQTT broker URLs
 //! - `REME_NODE_MQTT_CLIENT_ID` - Comma-separated client IDs (paired with broker URLs)
 //! - `REME_NODE_MQTT_TOPIC_PREFIX` - MQTT topic prefix (default: "reme/v1")
+//! - `REME_NODE_LAN_DISCOVERY_ENABLED` - Enable mDNS advertisement (true/false)
 //! - `REME_NODE_IDENTITY_PATH` - Path to node identity key file
 //! - `REME_NODE_PUBLIC_HOST` - Canonical public hostname for signature verification
 //! - `REME_NODE_ADDITIONAL_HOSTS` - Comma-separated additional valid hostnames
@@ -75,6 +76,10 @@
 //! [[mqtt.brokers]]
 //! url = "mqtts://broker.example.com:8883"
 //! client_id = "node-1"  # Optional, auto-generated if not set
+//!
+//! # LAN discovery (mDNS advertisement)
+//! [lan_discovery]
+//! enabled = false  # Default: off for standalone nodes
 //! ```
 //!
 
@@ -214,6 +219,17 @@ impl MqttBridgeConfig {
     pub fn topic_prefix(&self) -> &str {
         self.topic_prefix.as_deref().unwrap_or("reme/v1")
     }
+}
+
+/// LAN discovery configuration for mDNS advertisement
+///
+/// When enabled, the node advertises itself via mDNS so clients on the LAN
+/// can discover it without manual configuration.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(default)]
+pub struct LanDiscoveryConfig {
+    /// Enable mDNS advertisement (default: false for standalone nodes)
+    pub enabled: bool,
 }
 
 impl RateLimitConfig {
@@ -519,6 +535,10 @@ pub struct NodeConfig {
     #[serde(default)]
     pub mqtt: MqttBridgeConfig,
 
+    /// LAN discovery configuration (mDNS advertisement)
+    #[serde(default)]
+    pub lan_discovery: LanDiscoveryConfig,
+
     /// Path to node identity key file
     #[serde(default)]
     pub identity_path: Option<PathBuf>,
@@ -562,6 +582,7 @@ impl Default for NodeConfig {
             rate_limit: RateLimitConfig::default(),
             tls: TlsConfig::default(),
             mqtt: MqttBridgeConfig::default(),
+            lan_discovery: LanDiscoveryConfig::default(),
             identity_path: None, // None means use default location
             public_host: None,
             additional_hosts: Vec::new(),
@@ -897,6 +918,13 @@ pub fn load_config_from(
         }
     };
 
+    // Extract LAN discovery config
+    let lan_discovery = LanDiscoveryConfig {
+        enabled: config
+            .get::<bool>("lan_discovery.enabled")
+            .unwrap_or(defaults.lan_discovery.enabled),
+    };
+
     // Extract identity config
     let identity_path_from_config: Option<PathBuf> = config
         .get::<String>("identity_path")
@@ -945,6 +973,7 @@ pub fn load_config_from(
         rate_limit,
         tls,
         mqtt,
+        lan_discovery,
         identity_path,
         public_host,
         additional_hosts,

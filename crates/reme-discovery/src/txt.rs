@@ -15,12 +15,15 @@ pub struct TxtFields {
     pub port: u16,
     /// The protocol version.
     pub version: u8,
+    /// Optional capability tokens (e.g., "relay", "store").
+    pub caps: Option<Vec<String>>,
 }
 
 // TXT record key names — shared between encode and decode.
 const TXT_KEY_VERSION: &str = "v";
 const TXT_KEY_ROUTING_KEY: &str = "rk";
 const TXT_KEY_PORT: &str = "port";
+const TXT_KEY_CAPS: &str = "caps";
 
 /// Errors that occur when parsing TXT records.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -45,19 +48,31 @@ pub enum TxtError {
 /// Encode discovery-relevant fields into a TXT record map.
 ///
 /// Produces keys: `v` (protocol version), `rk` (hex-encoded routing key),
-/// and `port` (decimal port number).
+/// `port` (decimal port number), and optionally `caps` (comma-separated capability tokens).
 ///
 /// Note: the `port` value here is redundant with the port contained in the
 /// corresponding SRV record and/or [`RawDiscoveredPeer`] metadata. Callers
 /// should treat the SRV/peer port as authoritative in the presence of any
 /// conflict, and may ignore the TXT `port` entirely once the SRV record has
 /// been resolved.
-pub fn encode_txt(routing_key: &RoutingKey, port: u16) -> HashMap<String, String> {
-    HashMap::from([
+pub fn encode_txt(
+    routing_key: &RoutingKey,
+    port: u16,
+    caps: Option<&[String]>,
+) -> HashMap<String, String> {
+    let mut txt = HashMap::from([
         (TXT_KEY_VERSION.to_owned(), "1".to_owned()),
         (TXT_KEY_ROUTING_KEY.to_owned(), hex::encode(routing_key)),
         (TXT_KEY_PORT.to_owned(), port.to_string()),
-    ])
+    ]);
+
+    if let Some(cap_list) = caps {
+        if !cap_list.is_empty() {
+            txt.insert(TXT_KEY_CAPS.to_owned(), cap_list.join(","));
+        }
+    }
+
+    txt
 }
 
 /// Decode a TXT record map back into structured fields.
@@ -98,10 +113,20 @@ pub fn decode_txt(records: &HashMap<String, String>) -> Result<TxtFields, TxtErr
         .parse()
         .map_err(|_| TxtError::InvalidPort(port_str.clone()))?;
 
+    // --- caps (optional) ---
+    let caps = records.get(TXT_KEY_CAPS).map(|caps_str| {
+        caps_str
+            .split(',')
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<String>>()
+    });
+
     Ok(TxtFields {
         routing_key,
         port,
         version,
+        caps,
     })
 }
 
@@ -117,23 +142,25 @@ mod tests {
         ];
         let port = 8443;
 
-        let txt = encode_txt(&rk, port);
+        let txt = encode_txt(&rk, port, None);
         let fields = decode_txt(&txt).unwrap();
 
         assert_eq!(fields.routing_key, rk);
         assert_eq!(fields.port, port);
         assert_eq!(fields.version, 1);
+        assert_eq!(fields.caps, None);
     }
 
     #[test]
     fn round_trip_zero_port() {
         let rk = [0u8; 16];
-        let txt = encode_txt(&rk, 0);
+        let txt = encode_txt(&rk, 0, None);
         let fields = decode_txt(&txt).unwrap();
 
         assert_eq!(fields.routing_key, rk);
         assert_eq!(fields.port, 0);
         assert_eq!(fields.version, 1);
+        assert_eq!(fields.caps, None);
     }
 
     #[test]
@@ -248,6 +275,61 @@ mod tests {
         assert_eq!(
             decode_txt(&txt).unwrap_err(),
             TxtError::InvalidVersion("2".to_owned()),
+        );
+    }
+
+    #[test]
+    fn round_trip_with_caps() {
+        let rk = [0xaa; 16];
+        let caps = vec!["relay".to_owned(), "store".to_owned()];
+
+        let txt = encode_txt(&rk, 3000, Some(&caps));
+        let fields = decode_txt(&txt).unwrap();
+
+        assert_eq!(fields.routing_key, rk);
+        assert_eq!(fields.port, 3000);
+        assert_eq!(fields.version, 1);
+        assert_eq!(fields.caps, Some(caps));
+    }
+
+    #[test]
+    fn caps_field_is_optional() {
+        let rk = [0xbb; 16];
+        let txt = encode_txt(&rk, 4000, None);
+        let fields = decode_txt(&txt).unwrap();
+
+        assert_eq!(fields.caps, None);
+    }
+
+    #[test]
+    fn caps_empty_list_omitted() {
+        let rk = [0xcc; 16];
+        let empty_caps: Vec<String> = vec![];
+        let txt = encode_txt(&rk, 5000, Some(&empty_caps));
+
+        // Empty caps should not add a caps field
+        assert!(!txt.contains_key("caps"));
+
+        let fields = decode_txt(&txt).unwrap();
+        assert_eq!(fields.caps, None);
+    }
+
+    #[test]
+    fn caps_whitespace_trimmed() {
+        let mut txt = HashMap::new();
+        txt.insert("v".to_owned(), "1".to_owned());
+        txt.insert("rk".to_owned(), "00".repeat(16));
+        txt.insert("port".to_owned(), "3000".to_owned());
+        txt.insert("caps".to_owned(), " relay , store , forward ".to_owned());
+
+        let fields = decode_txt(&txt).unwrap();
+        assert_eq!(
+            fields.caps,
+            Some(vec![
+                "relay".to_owned(),
+                "store".to_owned(),
+                "forward".to_owned()
+            ])
         );
     }
 }

@@ -117,7 +117,7 @@ pub async fn initialize(
             .unwrap_or(23004);
 
         let our_rk: [u8; 16] = identity.public_id().routing_key().into();
-        let txt = reme_discovery::encode_txt(&our_rk, port);
+        let txt = reme_discovery::encode_txt(&our_rk, port, None);
         let spec = reme_discovery::AdvertisementSpec {
             txt_records: txt,
             ..reme_discovery::AdvertisementSpec::new(port, our_rk)

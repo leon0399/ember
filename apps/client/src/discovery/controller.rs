@@ -859,7 +859,7 @@ mod tests {
             instance_name: instance_name.to_string(),
             addresses: vec!["192.168.1.50".parse().unwrap()],
             port: 23003,
-            txt_records: reme_discovery::encode_txt(rk, 23003),
+            txt_records: reme_discovery::encode_txt(rk, 23003, None),
             discovered_at: Instant::now(),
         }
     }
@@ -958,7 +958,7 @@ mod tests {
             instance_name: "stranger-a".to_string(),
             addresses: vec!["192.168.1.99".parse().unwrap()],
             port: 9999,
-            txt_records: reme_discovery::encode_txt(&rk_a, 9999),
+            txt_records: reme_discovery::encode_txt(&rk_a, 9999, None),
             discovered_at: Instant::now(),
         };
         controller.handle_discovered(updated, &coordinator).await;
