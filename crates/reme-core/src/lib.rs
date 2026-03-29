@@ -798,7 +798,7 @@ impl<T: Transport> Client<T> {
     ///
     /// Returns a [`ProcessedMessage`] containing the decrypted message and an
     /// optional tombstone to send via [`send_tombstone`](Self::send_tombstone).
-    #[allow(clippy::too_many_lines, clippy::cast_possible_truncation)] // Message processing has many steps
+    #[allow(clippy::cast_possible_truncation)] // Message processing has many steps
     pub fn process_message_local(
         &self,
         outer: &OuterEnvelope,

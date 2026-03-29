@@ -693,7 +693,6 @@ struct RawDeliveryConfig {
 /// 2. Environment variables (REME_*)
 /// 3. Config file
 /// 4. Built-in defaults
-#[allow(clippy::too_many_lines)] // Config loading requires many steps
 pub fn load_config_from(
     cli: &Cli,
     tui_args: Option<&TuiArgs>,
@@ -894,7 +893,11 @@ fn dirs_home() -> Option<PathBuf> {
 }
 
 /// Generate a default config file content
-#[allow(clippy::too_many_lines, dead_code)] // Template generation, may be used for init command
+#[expect(
+    clippy::too_many_lines,
+    reason = "default config template is clearer as one contiguous rendered document"
+)]
+#[allow(dead_code)] // Template generation, may be used for init command
 pub fn default_config_toml() -> String {
     let defaults = AppConfig::default();
     let quorum_str = match &defaults.delivery.quorum {

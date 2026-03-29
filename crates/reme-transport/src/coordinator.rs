@@ -629,7 +629,10 @@ impl TransportCoordinator {
     /// Submit envelope to Quorum tier targets (HTTP stable + MQTT) in parallel.
     ///
     /// If `filter_ids` is Some, only targets with matching IDs are attempted.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "quorum submission logic is easier to audit as one target collection and fanout flow"
+    )]
     async fn submit_to_quorum_targets(
         &self,
         envelope: &OuterEnvelope,
