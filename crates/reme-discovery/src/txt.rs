@@ -114,12 +114,18 @@ pub fn decode_txt(records: &HashMap<String, String>) -> Result<TxtFields, TxtErr
         .map_err(|_| TxtError::InvalidPort(port_str.clone()))?;
 
     // --- caps (optional) ---
-    let caps = records.get(TXT_KEY_CAPS).map(|caps_str| {
-        caps_str
+    let caps = records.get(TXT_KEY_CAPS).and_then(|caps_str| {
+        let caps_vec: Vec<String> = caps_str
             .split(',')
             .map(|s| s.trim().to_owned())
             .filter(|s| !s.is_empty())
-            .collect::<Vec<String>>()
+            .collect();
+
+        if caps_vec.is_empty() {
+            None
+        } else {
+            Some(caps_vec)
+        }
     });
 
     Ok(TxtFields {
@@ -331,5 +337,29 @@ mod tests {
                 "forward".to_owned()
             ])
         );
+    }
+
+    #[test]
+    fn caps_empty_string_returns_none() {
+        let mut txt = HashMap::new();
+        txt.insert("v".to_owned(), "1".to_owned());
+        txt.insert("rk".to_owned(), "00".repeat(16));
+        txt.insert("port".to_owned(), "3000".to_owned());
+        txt.insert("caps".to_owned(), "".to_owned());
+
+        let fields = decode_txt(&txt).unwrap();
+        assert_eq!(fields.caps, None);
+    }
+
+    #[test]
+    fn caps_whitespace_only_returns_none() {
+        let mut txt = HashMap::new();
+        txt.insert("v".to_owned(), "1".to_owned());
+        txt.insert("rk".to_owned(), "00".repeat(16));
+        txt.insert("port".to_owned(), "3000".to_owned());
+        txt.insert("caps".to_owned(), "  ,  ,  ".to_owned());
+
+        let fields = decode_txt(&txt).unwrap();
+        assert_eq!(fields.caps, None);
     }
 }

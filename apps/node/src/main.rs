@@ -232,6 +232,16 @@ async fn start_mdns_advertisement(
     }
 }
 
+/// Gracefully shutdown mDNS advertisement.
+///
+/// Logs a warning if shutdown fails but does not propagate the error,
+/// as shutdown errors should not prevent application termination.
+async fn shutdown_mdns(backend: Arc<reme_discovery::mdns_sd::MdnsSdBackend>) {
+    if let Err(e) = backend.shutdown().await {
+        warn!("mDNS shutdown failed: {e}");
+    }
+}
+
 #[tokio::main]
 #[allow(clippy::too_many_lines)] // Entry point, refactoring would reduce clarity
 async fn main() {
@@ -487,11 +497,21 @@ async fn main() {
 
         info!("Node listening on https://{}", addr);
 
-        // Start mDNS advertisement if enabled
-        let mdns_backend =
+        // Start mDNS advertisement if enabled and the port is non-zero.
+        // If the port is 0 (ephemeral), we skip advertising here to avoid
+        // publishing an incorrect or unusable port before the listener is
+        // actually bound and its real port is known.
+        let mdns_backend = if addr.port() == 0 {
+            warn!(
+                "mDNS advertisement disabled: bind address uses port 0 (ephemeral); \
+                 cannot determine actual listening port in TLS mode."
+            );
+            None
+        } else {
             start_mdns_advertisement(&config_for_mdns, state.identity.as_deref(), addr.port())
                 .await
-                .map(Arc::new);
+                .map(Arc::new)
+        };
 
         let handle = axum_server::Handle::new();
 
@@ -503,9 +523,7 @@ async fn main() {
             tls_cancel.cancelled().await;
             // Shutdown mDNS advertising before server shutdown
             if let Some(backend) = mdns_shutdown {
-                if let Err(e) = backend.shutdown().await {
-                    warn!("mDNS shutdown failed: {e}");
-                }
+                shutdown_mdns(backend).await;
             }
             tls_handle.graceful_shutdown(Some(Duration::from_secs(10)));
         });
@@ -556,9 +574,7 @@ async fn main() {
         if let Some(backend) = mdns_backend {
             tokio::spawn(async move {
                 mdns_shutdown_cancel.cancelled().await;
-                if let Err(e) = backend.shutdown().await {
-                    warn!("mDNS shutdown failed: {e}");
-                }
+                shutdown_mdns(backend).await;
             });
         }
 

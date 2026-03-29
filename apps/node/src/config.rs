@@ -919,10 +919,15 @@ pub fn load_config_from(
     };
 
     // Extract LAN discovery config
+    // Try the canonical key from file config (`lan_discovery.enabled`) first,
+    // then fall back to `lan.discovery.enabled` which is what the environment
+    // source produces when using `.separator("_")` with REME_NODE_LAN_DISCOVERY_ENABLED.
+    let lan_discovery_enabled = config
+        .get::<bool>("lan_discovery.enabled")
+        .or_else(|_| config.get::<bool>("lan.discovery.enabled"))
+        .unwrap_or(defaults.lan_discovery.enabled);
     let lan_discovery = LanDiscoveryConfig {
-        enabled: config
-            .get::<bool>("lan_discovery.enabled")
-            .unwrap_or(defaults.lan_discovery.enabled),
+        enabled: lan_discovery_enabled,
     };
 
     // Extract identity config
