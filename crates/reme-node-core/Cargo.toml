@@ -3,6 +3,7 @@ name = "reme-node-core"
 version = "0.1.0"
 edition = "2021"
 description = "Core node functionality for embedded and standalone mailbox nodes"
+publish = false
 
 [lints]
 workspace = true
