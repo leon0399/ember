@@ -166,6 +166,18 @@ Research/prototype stage — no external users. Breaking changes and public API 
 
 Adapted from [epage's Rust Style Guide](https://epage.github.io/dev/rust-style/). These are review guidelines, not hard rules — use judgement when they conflict.
 
+## Quality gates
+
+Hard rules:
+
+- No `.unwrap()` or `.expect()` in library crates
+- No `todo!()`, `unimplemented!()`, `dbg!()` in merged code
+- No `println!()` / `eprintln!()` in library crates (use tracing)
+- Cognitive complexity per function ≤ 15
+- Function body ≤ 80 lines
+- Function arguments ≤ 5
+- All dependencies must pass cargo-deny policy
+
 ### File & Module Layout
 
 - **Type then impl** (M-TYPE-ASSOC): Place a type definition immediately before its `impl` block.

@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-use crate::target::{HealthState, TargetConfig, TargetId, TargetKind, TransportTarget};
+use crate::target::{HealthData, HealthState, TargetConfig, TargetId, TargetKind, TransportTarget};
 
 /// Read-only view of transport metadata for UI queries.
 ///
@@ -101,29 +101,22 @@ impl TargetSnapshot {
     ///
     /// Use this for embedded or synthetic targets where you have direct
     /// access to the raw data.
-    pub fn from_config(
-        config: &TargetConfig,
-        health: HealthState,
-        avg_latency_ms: u32,
-        consecutive_failures: u32,
-        since_last_success: Option<Duration>,
-        since_last_failure: Option<Duration>,
-    ) -> Self {
+    pub fn from_config(config: &TargetConfig, health_data: &HealthData) -> Self {
         Self {
             id: config.id.clone(),
             label: config.label.clone(),
             kind: config.kind,
-            health,
+            health: health_data.state,
             priority: config.priority,
-            avg_latency_ms,
-            consecutive_failures,
-            since_last_success,
-            since_last_failure,
+            avg_latency_ms: health_data.avg_latency_ms,
+            consecutive_failures: health_data.consecutive_failures,
+            since_last_success: health_data.since_last_success,
+            since_last_failure: health_data.since_last_failure,
         }
     }
 
     /// Check if this target is currently available for operations.
-    pub fn is_available(&self) -> bool {
+    pub const fn is_available(&self) -> bool {
         matches!(self.health, HealthState::Healthy | HealthState::Degraded)
     }
 
@@ -170,7 +163,7 @@ impl HealthSummary {
     }
 
     /// Merge another summary into this one.
-    pub fn merge(&mut self, other: &HealthSummary) {
+    pub fn merge(&mut self, other: &Self) {
         self.total += other.total;
         self.healthy += other.healthy;
         self.degraded += other.degraded;
@@ -189,12 +182,12 @@ impl HealthSummary {
     }
 
     /// Check if all targets are healthy.
-    pub fn all_healthy(&self) -> bool {
+    pub const fn all_healthy(&self) -> bool {
         self.total > 0 && self.healthy == self.total
     }
 
     /// Check if any target is available (healthy or degraded).
-    pub fn any_available(&self) -> bool {
+    pub const fn any_available(&self) -> bool {
         self.healthy > 0 || self.degraded > 0
     }
 }
@@ -211,11 +204,13 @@ mod tests {
 
         let snapshot = TargetSnapshot::from_config(
             &config,
-            HealthState::Healthy,
-            150,
-            0,
-            Some(Duration::from_secs(5)),
-            None,
+            &HealthData {
+                state: HealthState::Healthy,
+                avg_latency_ms: 150,
+                consecutive_failures: 0,
+                since_last_success: Some(Duration::from_secs(5)),
+                since_last_failure: None,
+            },
         );
 
         assert_eq!(snapshot.label.as_deref(), Some("Test Node"));
@@ -229,7 +224,13 @@ mod tests {
     #[test]
     fn test_target_snapshot_display_label() {
         let config = TargetConfig::stable(TargetId::http("https://example.com"));
-        let snapshot = TargetSnapshot::from_config(&config, HealthState::Healthy, 0, 0, None, None);
+        let snapshot = TargetSnapshot::from_config(
+            &config,
+            &HealthData {
+                state: HealthState::Healthy,
+                ..HealthData::default()
+            },
+        );
 
         // No label set, should use ID
         assert!(snapshot.display_label().contains("example.com"));
@@ -237,15 +238,26 @@ mod tests {
         // With label
         let config_with_label =
             TargetConfig::stable(TargetId::http("https://example.com")).with_label("Primary");
-        let snapshot_with_label =
-            TargetSnapshot::from_config(&config_with_label, HealthState::Healthy, 0, 0, None, None);
+        let snapshot_with_label = TargetSnapshot::from_config(
+            &config_with_label,
+            &HealthData {
+                state: HealthState::Healthy,
+                ..HealthData::default()
+            },
+        );
         assert_eq!(snapshot_with_label.display_label(), "Primary");
     }
 
     #[test]
     fn test_target_snapshot_address() {
         let config = TargetConfig::stable(TargetId::http("https://example.com:23003/api"));
-        let snapshot = TargetSnapshot::from_config(&config, HealthState::Healthy, 0, 0, None, None);
+        let snapshot = TargetSnapshot::from_config(
+            &config,
+            &HealthData {
+                state: HealthState::Healthy,
+                ..HealthData::default()
+            },
+        );
 
         assert_eq!(snapshot.transport_type(), "http");
         assert_eq!(snapshot.address(), "https://example.com:23003/api");

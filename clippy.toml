@@ -8,3 +8,38 @@ disallowed-methods = [
     { path = "std::iter::Iterator::for_each", reason = "Use a `for` loop for side-effects (F-COMBINATOR)" },
     { path = "std::iter::Iterator::try_for_each", reason = "Use a `for` loop for side-effects (F-COMBINATOR)" },
 ]
+
+# ──────────────────────────────────────────────
+# Complexity thresholds
+# ──────────────────────────────────────────────
+# Default is 25. We tase at 15.
+# If a vibe-coded function hits 15, it needs to be split.
+cognitive-complexity-threshold = 15
+
+# Max lines in a single function body (default: 100)
+too-many-lines-threshold = 80
+
+# Max number of function arguments (default: 7)
+too-many-arguments-threshold = 5
+
+# Max struct fields before suggesting a builder (default: 8)
+# Relevant for your envelope types — keep them tight
+too-large-for-stack = 512
+
+# Max type complexity score (default: 250)
+type-complexity-threshold = 200
+
+# ──────────────────────────────────────────────
+# Naming & style
+# ──────────────────────────────────────────────
+# Enforce consistent enum variant naming
+enum-variant-name-threshold = 3
+
+# ──────────────────────────────────────────────
+# Safety & correctness
+# ──────────────────────────────────────────────
+# Disallow large error types on the stack
+large-error-threshold = 256
+
+# Warn on future-incompatible code
+msrv = "1.75"

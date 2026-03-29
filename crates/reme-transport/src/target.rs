@@ -40,12 +40,12 @@ pub struct RawReceipt {
 
 impl RawReceipt {
     /// Check if any receipt data was returned.
-    pub fn has_data(&self) -> bool {
+    pub const fn has_data(&self) -> bool {
         self.ack_secret.is_some() || self.signature.is_some()
     }
 
     /// Create a receipt with only a signature (no `ack_secret`).
-    pub fn signature_only(signature: [u8; 64]) -> Self {
+    pub const fn signature_only(signature: [u8; 64]) -> Self {
         Self {
             ack_secret: None,
             signature: Some(signature),
@@ -53,7 +53,7 @@ impl RawReceipt {
     }
 
     /// Create a full receipt with both `ack_secret` and signature.
-    pub fn full(ack_secret: [u8; 16], signature: [u8; 64]) -> Self {
+    pub const fn full(ack_secret: [u8; 16], signature: [u8; 64]) -> Self {
         Self {
             ack_secret: Some(ack_secret),
             signature: Some(signature),
@@ -180,50 +180,50 @@ impl TargetKind {
     /// Get the default priority for this target kind.
     ///
     /// Higher values = higher priority (preferred for routing).
-    pub fn default_priority(&self) -> u8 {
+    pub const fn default_priority(&self) -> u8 {
         match self {
-            TargetKind::Stable => 100,
-            TargetKind::Ephemeral => 200, // Prefer direct when available
+            Self::Stable => 100,
+            Self::Ephemeral => 200, // Prefer direct when available
         }
     }
 
     /// Get the default request timeout for this target kind.
-    pub fn default_request_timeout(&self) -> Duration {
+    pub const fn default_request_timeout(&self) -> Duration {
         match self {
-            TargetKind::Stable => Duration::from_secs(30),
-            TargetKind::Ephemeral => Duration::from_secs(5),
+            Self::Stable => Duration::from_secs(30),
+            Self::Ephemeral => Duration::from_secs(5),
         }
     }
 
     /// Get the default connect timeout for this target kind.
-    pub fn default_connect_timeout(&self) -> Duration {
+    pub const fn default_connect_timeout(&self) -> Duration {
         match self {
-            TargetKind::Stable => Duration::from_secs(10),
-            TargetKind::Ephemeral => Duration::from_secs(2),
+            Self::Stable => Duration::from_secs(10),
+            Self::Ephemeral => Duration::from_secs(2),
         }
     }
 
     /// Get the default circuit breaker threshold (failures before unhealthy).
-    pub fn default_circuit_breaker_threshold(&self) -> u32 {
+    pub const fn default_circuit_breaker_threshold(&self) -> u32 {
         match self {
-            TargetKind::Stable => 5,
-            TargetKind::Ephemeral => 2,
+            Self::Stable => 5,
+            Self::Ephemeral => 2,
         }
     }
 
     /// Get the default circuit breaker recovery time.
-    pub fn default_circuit_breaker_recovery(&self) -> Duration {
+    pub const fn default_circuit_breaker_recovery(&self) -> Duration {
         match self {
-            TargetKind::Stable => Duration::from_secs(60),
-            TargetKind::Ephemeral => Duration::from_secs(10),
+            Self::Stable => Duration::from_secs(60),
+            Self::Ephemeral => Duration::from_secs(10),
         }
     }
 
     /// Get the default capabilities for this target kind.
     pub fn default_capabilities(&self) -> TargetCapabilities {
         match self {
-            TargetKind::Stable => TargetCapabilities::stable_defaults(),
-            TargetKind::Ephemeral => TargetCapabilities::ephemeral_defaults(),
+            Self::Stable => TargetCapabilities::stable_defaults(),
+            Self::Ephemeral => TargetCapabilities::ephemeral_defaults(),
         }
     }
 }
@@ -316,7 +316,7 @@ pub struct TargetHealth {
 
 impl TargetHealth {
     /// Create new health tracker with given configuration.
-    pub fn new(threshold: u32, recovery: Duration) -> Self {
+    pub const fn new(threshold: u32, recovery: Duration) -> Self {
         Self {
             state: RwLock::new(HealthState::Healthy),
             consecutive_failures: AtomicU32::new(0),
@@ -330,7 +330,7 @@ impl TargetHealth {
     }
 
     /// Create health tracker with defaults for a target kind.
-    pub fn for_kind(kind: TargetKind) -> Self {
+    pub const fn for_kind(kind: TargetKind) -> Self {
         Self::new(
             kind.default_circuit_breaker_threshold(),
             kind.default_circuit_breaker_recovery(),
@@ -344,7 +344,9 @@ impl TargetHealth {
         // the state lock to prevent deadlock with record_failure(), which
         // acquires locks in the opposite order (state first, then recovery_started).
         let should_reset = {
-            let recovery_started = self.recovery_started.read().unwrap();
+            let Ok(recovery_started) = self.recovery_started.read() else {
+                return HealthState::Healthy;
+            };
             if let Some(started) = *recovery_started {
                 started.elapsed() >= self.circuit_breaker_recovery
             } else {
@@ -357,7 +359,10 @@ impl TargetHealth {
             return HealthState::Healthy;
         }
 
-        *self.state.read().unwrap()
+        let Ok(state) = self.state.read() else {
+            return HealthState::Healthy;
+        };
+        *state
     }
 
     /// Check if target is available for operations.
@@ -377,12 +382,18 @@ impl TargetHealth {
 
     /// Get last success time.
     pub fn last_success(&self) -> Option<Instant> {
-        *self.last_success.read().unwrap()
+        let Ok(last_success) = self.last_success.read() else {
+            return None;
+        };
+        *last_success
     }
 
     /// Get last failure time.
     pub fn last_failure(&self) -> Option<Instant> {
-        *self.last_failure.read().unwrap()
+        let Ok(last_failure) = self.last_failure.read() else {
+            return None;
+        };
+        *last_failure
     }
 
     /// Record a successful operation.
@@ -392,7 +403,9 @@ impl TargetHealth {
         self.consecutive_failures.store(0, Ordering::Relaxed);
 
         // Update last success
-        *self.last_success.write().unwrap() = Some(Instant::now());
+        if let Ok(mut last_success) = self.last_success.write() {
+            *last_success = Some(Instant::now());
+        }
 
         // Update average latency (exponential moving average)
         let new_latency_ms = latency.as_millis() as u32;
@@ -406,20 +419,30 @@ impl TargetHealth {
         self.avg_latency_ms.store(new_avg, Ordering::Relaxed);
 
         // Reset state to healthy
-        *self.state.write().unwrap() = HealthState::Healthy;
-        *self.recovery_started.write().unwrap() = None;
+        if let Ok(mut state) = self.state.write() {
+            *state = HealthState::Healthy;
+        }
+        if let Ok(mut recovery_started) = self.recovery_started.write() {
+            *recovery_started = None;
+        }
     }
 
     /// Record a failed operation.
     pub fn record_failure(&self) {
         let failures = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
-        *self.last_failure.write().unwrap() = Some(Instant::now());
+        if let Ok(mut last_failure) = self.last_failure.write() {
+            *last_failure = Some(Instant::now());
+        }
 
         // Update state based on failure count
-        let mut state = self.state.write().unwrap();
+        let Ok(mut state) = self.state.write() else {
+            return;
+        };
         if failures >= self.circuit_breaker_threshold {
             if *state != HealthState::Unhealthy {
-                *self.recovery_started.write().unwrap() = Some(Instant::now());
+                if let Ok(mut recovery_started) = self.recovery_started.write() {
+                    *recovery_started = Some(Instant::now());
+                }
             }
             *state = HealthState::Unhealthy;
         } else if failures > self.circuit_breaker_threshold / 2 {
@@ -431,8 +454,12 @@ impl TargetHealth {
     /// Reset health state to healthy.
     fn reset_to_healthy(&self) {
         self.consecutive_failures.store(0, Ordering::Relaxed);
-        *self.state.write().unwrap() = HealthState::Healthy;
-        *self.recovery_started.write().unwrap() = None;
+        if let Ok(mut state) = self.state.write() {
+            *state = HealthState::Healthy;
+        }
+        if let Ok(mut recovery_started) = self.recovery_started.write() {
+            *recovery_started = None;
+        }
     }
 }
 
@@ -524,49 +551,49 @@ impl TargetConfig {
     }
 
     /// Set the request timeout.
-    pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
+    pub const fn with_request_timeout(mut self, timeout: Duration) -> Self {
         self.request_timeout = timeout;
         self
     }
 
     /// Set the connect timeout.
-    pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
+    pub const fn with_connect_timeout(mut self, timeout: Duration) -> Self {
         self.connect_timeout = timeout;
         self
     }
 
     /// Set the priority.
-    pub fn with_priority(mut self, priority: u8) -> Self {
+    pub const fn with_priority(mut self, priority: u8) -> Self {
         self.priority = priority;
         self
     }
 
     /// Set the circuit breaker threshold.
-    pub fn with_circuit_breaker_threshold(mut self, threshold: u32) -> Self {
+    pub const fn with_circuit_breaker_threshold(mut self, threshold: u32) -> Self {
         self.circuit_breaker_threshold = threshold;
         self
     }
 
     /// Set the circuit breaker recovery time.
-    pub fn with_circuit_breaker_recovery(mut self, recovery: Duration) -> Self {
+    pub const fn with_circuit_breaker_recovery(mut self, recovery: Duration) -> Self {
         self.circuit_breaker_recovery = recovery;
         self
     }
 
     /// Set the node's public identity for receipt verification.
-    pub fn with_node_pubkey(mut self, pubkey: PublicID) -> Self {
+    pub const fn with_node_pubkey(mut self, pubkey: PublicID) -> Self {
         self.node_pubkey = Some(pubkey);
         self
     }
 
     /// Set an optional node public identity.
-    pub fn with_node_pubkey_opt(mut self, pubkey: Option<PublicID>) -> Self {
+    pub const fn with_node_pubkey_opt(mut self, pubkey: Option<PublicID>) -> Self {
         self.node_pubkey = pubkey;
         self
     }
 
     /// Override the capabilities for this target.
-    pub fn with_capabilities(mut self, capabilities: TargetCapabilities) -> Self {
+    pub const fn with_capabilities(mut self, capabilities: TargetCapabilities) -> Self {
         self.capabilities = capabilities;
         self
     }

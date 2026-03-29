@@ -218,7 +218,7 @@ impl MqttBridgeConfig {
 
 impl RateLimitConfig {
     /// Check if any rate limiting is enabled
-    pub fn any_enabled(&self) -> bool {
+    pub const fn any_enabled(&self) -> bool {
         self.submit_ip_rps > 0
             || self.submit_key_rps > 0
             || self.fetch_ip_rps > 0
@@ -227,30 +227,16 @@ impl RateLimitConfig {
 
     /// Log which limiters are enabled
     pub fn log_config(&self) {
-        if self.submit_ip_rps > 0 {
-            info!(
-                "  Submit per-IP: {} rps, burst {}",
-                self.submit_ip_rps, self.submit_ip_burst
-            );
-        }
-        if self.submit_key_rps > 0 {
-            info!(
-                "  Submit per-key: {} rps, burst {}",
-                self.submit_key_rps, self.submit_key_burst
-            );
-        }
-        if self.fetch_ip_rps > 0 {
-            info!(
-                "  Fetch per-IP: {} rps, burst {}",
-                self.fetch_ip_rps, self.fetch_ip_burst
-            );
-        }
-        if self.fetch_key_rps > 0 {
-            info!(
-                "  Fetch per-key: {} rps, burst {}",
-                self.fetch_key_rps, self.fetch_key_burst
-            );
-        }
+        log_limiter("Submit per-IP", self.submit_ip_rps, self.submit_ip_burst);
+        log_limiter("Submit per-key", self.submit_key_rps, self.submit_key_burst);
+        log_limiter("Fetch per-IP", self.fetch_ip_rps, self.fetch_ip_burst);
+        log_limiter("Fetch per-key", self.fetch_key_rps, self.fetch_key_burst);
+    }
+}
+
+fn log_limiter(label: &str, rps: u32, burst: u32) {
+    if rps > 0 {
+        info!("  {label}: {rps} rps, burst {burst}");
     }
 }
 
@@ -609,102 +595,18 @@ fn i64_to_usize_clamped(v: i64) -> usize {
 /// 2. Environment variables (`REME_NODE`_*)
 /// 3. Config file
 /// 4. Built-in defaults
-#[allow(clippy::cast_possible_wrap, clippy::too_many_lines)] // Config loading requires many steps
+#[allow(clippy::cast_possible_wrap)] // Config loading uses i64 intermediates
 pub fn load_config_from(
     cli: &Cli,
     serve_args: Option<&ServeArgs>,
 ) -> Result<NodeConfig, config::ConfigError> {
-    // Start with defaults
     let defaults = NodeConfig::default();
+    let config = build_layered_config(cli, serve_args, &defaults)?;
 
-    let mut builder = Config::builder()
-        // Layer 1: Built-in defaults (lowest priority)
-        .set_default("bind_addr", defaults.bind_addr.clone())?
-        .set_default("max_messages", defaults.max_messages as i64)?
-        .set_default("default_ttl", i64::from(defaults.default_ttl))?
-        .set_default("log_level", defaults.log_level.clone())?
-        .set_default("node_id", defaults.node_id.clone())?
-        // Note: peers default is applied after config extraction (see below)
-        // Cleanup defaults
-        .set_default("cleanup.enabled", defaults.cleanup.enabled)?
-        .set_default("cleanup.interval_secs", defaults.cleanup.interval_secs as i64)?
-        .set_default("cleanup.tombstone_delay_secs", defaults.cleanup.tombstone_delay_secs as i64)?
-        .set_default("cleanup.orphan_delay_secs", defaults.cleanup.orphan_delay_secs as i64)?
-        .set_default("cleanup.rate_limit_delay_secs", defaults.cleanup.rate_limit_delay_secs as i64)?
-        .set_default("max_body_size", i64::try_from(defaults.max_body_size).unwrap_or(i64::MAX))?
-        .set_default("max_batch_size", i64::from(defaults.max_batch_size))?;
-
-    // Layer 2: Config file
-    let config_path = cli.config.clone().or_else(default_config_path);
-    if let Some(path) = config_path {
-        if path.exists() {
-            builder = builder.add_source(File::from(path).format(FileFormat::Toml).required(false));
-        }
-    }
-
-    // Layer 3: Environment variables (REME_NODE_*)
-    builder = builder.add_source(
-        Environment::with_prefix("REME_NODE")
-            .separator("_")
-            .try_parsing(true),
-    );
-
-    // Layer 4: Global CLI arguments (highest priority)
-    if let Some(ref log_level) = cli.log_level {
-        builder = builder.set_override("log_level", log_level.clone())?;
-    }
-    if let Some(ref storage_path) = cli.storage_path {
-        builder = builder.set_override("storage_path", storage_path.clone())?;
-    }
-
-    // Layer 4b: Serve-specific CLI arguments (only when running in serve mode)
-    if let Some(serve) = serve_args {
-        if let Some(ref bind_addr) = serve.bind_addr {
-            builder = builder.set_override("bind_addr", bind_addr.clone())?;
-        }
-        // Port is a shorthand for bind_addr
-        if let Some(port) = serve.port {
-            builder = builder.set_override("bind_addr", format!("0.0.0.0:{port}"))?;
-        }
-        if let Some(max_messages) = serve.max_messages {
-            builder = builder.set_override("max_messages", max_messages as i64)?;
-        }
-        if let Some(default_ttl) = serve.default_ttl {
-            builder = builder.set_override("default_ttl", i64::from(default_ttl))?;
-        }
-        if let Some(ref node_id) = serve.node_id {
-            builder = builder.set_override("node_id", node_id.clone())?;
-        }
-        // Note: CLI peers are applied after extraction (complex type incompatible with config crate)
-        // Cleanup CLI overrides
-        if serve.cleanup_disabled {
-            builder = builder.set_override("cleanup.enabled", false)?;
-        }
-        if let Some(interval) = serve.cleanup_interval {
-            builder = builder.set_override("cleanup.interval_secs", interval as i64)?;
-        }
-        if let Some(delay) = serve.cleanup_tombstone_delay {
-            builder = builder.set_override("cleanup.tombstone_delay_secs", delay as i64)?;
-        }
-        if let Some(delay) = serve.cleanup_orphan_delay {
-            builder = builder.set_override("cleanup.orphan_delay_secs", delay as i64)?;
-        }
-        if serve.allow_insecure_destination {
-            builder = builder.set_override("allow_insecure_destination", true)?;
-        }
-        if let Some(v) = serve.max_body_size {
-            builder =
-                builder.set_override("max_body_size", i64::try_from(v).unwrap_or(i64::MAX))?;
-        }
-        if let Some(v) = serve.max_batch_size {
-            builder = builder.set_override("max_batch_size", i64::from(v))?;
-        }
-    }
-
-    let config = builder.build()?;
-
-    // Extract values (using clamped conversions to prevent negative values wrapping)
-    let bind_addr: String = config.get("bind_addr").unwrap_or(defaults.bind_addr);
+    // Extract core values
+    let bind_addr: String = config
+        .get("bind_addr")
+        .unwrap_or_else(|_| defaults.bind_addr.clone());
     let max_messages: usize = config
         .get::<i64>("max_messages")
         .map(i64_to_usize_clamped)
@@ -713,25 +615,189 @@ pub fn load_config_from(
         .get::<i64>("default_ttl")
         .map(i64_to_u32_clamped)
         .unwrap_or(defaults.default_ttl);
-    let log_level: String = config.get("log_level").unwrap_or(defaults.log_level);
-    let node_id: String = config.get("node_id").unwrap_or(defaults.node_id);
+    let log_level: String = config
+        .get("log_level")
+        .unwrap_or_else(|_| defaults.log_level.clone());
+    let node_id: String = config
+        .get("node_id")
+        .unwrap_or_else(|_| defaults.node_id.clone());
+    let storage_path: Option<String> = config.get("storage_path").ok();
+    let max_body_size: usize = config
+        .get::<i64>("max_body_size")
+        .map(i64_to_usize_clamped)
+        .unwrap_or(defaults.max_body_size);
+    let max_batch_size: u32 = config
+        .get::<i64>("max_batch_size")
+        .map(i64_to_u32_clamped)
+        .unwrap_or(defaults.max_batch_size);
+    let allow_insecure_destination = config
+        .get::<bool>("allow_insecure_destination")
+        .unwrap_or(false);
 
-    // Extract peers configuration
-    let mut peers: PeersConfig = config.get::<PeersConfig>("peers").unwrap_or(defaults.peers);
+    let peers = extract_peers(&config, serve_args, &defaults);
+    let cleanup = extract_cleanup(&config, &defaults);
+    let (auth_username, auth_password) = extract_auth(&config, serve_args);
+    let rate_limit = extract_rate_limit(&config, serve_args, &defaults);
+    let tls = extract_tls(&config, serve_args, &defaults);
+    let mqtt = extract_mqtt(&config, serve_args);
+    let (identity_path, public_host, additional_hosts) =
+        extract_identity_config(&config, serve_args);
 
-    // Apply CLI peer overrides (URL-only shorthand, not full peer-config parity)
-    if let Some(peer_urls) = serve_args.and_then(|s| s.peers.as_ref()) {
-        // CLI peers override all file/env config
-        let (http_peers, _warnings) = HttpPeerConfig::from_cli_urls(peer_urls, None, None, None);
+    Ok(NodeConfig {
+        bind_addr,
+        max_messages,
+        default_ttl,
+        log_level,
+        node_id,
+        peers,
+        cleanup,
+        storage_path,
+        auth_username,
+        auth_password,
+        rate_limit,
+        tls,
+        mqtt,
+        identity_path,
+        public_host,
+        additional_hosts,
+        allow_insecure_destination,
+        max_body_size,
+        max_batch_size,
+    })
+}
 
-        peers = PeersConfig {
-            http: http_peers,
-            mqtt: vec![],
-        };
+/// Build the layered config object from all sources.
+#[allow(clippy::cast_possible_wrap)] // Config loading uses i64 intermediates
+fn build_layered_config(
+    cli: &Cli,
+    serve_args: Option<&ServeArgs>,
+    defaults: &NodeConfig,
+) -> Result<Config, config::ConfigError> {
+    let mut builder = Config::builder()
+        .set_default("bind_addr", defaults.bind_addr.clone())?
+        .set_default("max_messages", defaults.max_messages as i64)?
+        .set_default("default_ttl", i64::from(defaults.default_ttl))?
+        .set_default("log_level", defaults.log_level.clone())?
+        .set_default("node_id", defaults.node_id.clone())?
+        .set_default("cleanup.enabled", defaults.cleanup.enabled)?
+        .set_default(
+            "cleanup.interval_secs",
+            defaults.cleanup.interval_secs as i64,
+        )?
+        .set_default(
+            "cleanup.tombstone_delay_secs",
+            defaults.cleanup.tombstone_delay_secs as i64,
+        )?
+        .set_default(
+            "cleanup.orphan_delay_secs",
+            defaults.cleanup.orphan_delay_secs as i64,
+        )?
+        .set_default(
+            "cleanup.rate_limit_delay_secs",
+            defaults.cleanup.rate_limit_delay_secs as i64,
+        )?
+        .set_default(
+            "max_body_size",
+            i64::try_from(defaults.max_body_size).unwrap_or(i64::MAX),
+        )?
+        .set_default("max_batch_size", i64::from(defaults.max_batch_size))?;
+
+    // Config file
+    let config_path = cli.config.clone().or_else(default_config_path);
+    if let Some(path) = config_path {
+        if path.exists() {
+            builder = builder.add_source(File::from(path).format(FileFormat::Toml).required(false));
+        }
     }
 
-    // Extract cleanup config (using clamped conversions for safety)
-    let cleanup = CleanupConfig {
+    // Environment variables (REME_NODE_*)
+    builder = builder.add_source(
+        Environment::with_prefix("REME_NODE")
+            .separator("_")
+            .try_parsing(true),
+    );
+
+    // Global CLI arguments
+    if let Some(ref log_level) = cli.log_level {
+        builder = builder.set_override("log_level", log_level.clone())?;
+    }
+    if let Some(ref storage_path) = cli.storage_path {
+        builder = builder.set_override("storage_path", storage_path.clone())?;
+    }
+
+    // Serve-specific CLI arguments
+    if let Some(serve) = serve_args {
+        builder = apply_serve_overrides(builder, serve)?;
+    }
+
+    builder.build()
+}
+
+/// Apply serve-specific CLI overrides to the config builder.
+#[allow(clippy::cast_possible_wrap)] // Config loading uses i64 intermediates
+fn apply_serve_overrides(
+    mut builder: config::ConfigBuilder<config::builder::DefaultState>,
+    serve: &ServeArgs,
+) -> Result<config::ConfigBuilder<config::builder::DefaultState>, config::ConfigError> {
+    if let Some(ref bind_addr) = serve.bind_addr {
+        builder = builder.set_override("bind_addr", bind_addr.clone())?;
+    }
+    if let Some(port) = serve.port {
+        builder = builder.set_override("bind_addr", format!("0.0.0.0:{port}"))?;
+    }
+    if let Some(max_messages) = serve.max_messages {
+        builder = builder.set_override("max_messages", max_messages as i64)?;
+    }
+    if let Some(default_ttl) = serve.default_ttl {
+        builder = builder.set_override("default_ttl", i64::from(default_ttl))?;
+    }
+    if let Some(ref node_id) = serve.node_id {
+        builder = builder.set_override("node_id", node_id.clone())?;
+    }
+    if serve.cleanup_disabled {
+        builder = builder.set_override("cleanup.enabled", false)?;
+    }
+    if let Some(interval) = serve.cleanup_interval {
+        builder = builder.set_override("cleanup.interval_secs", interval as i64)?;
+    }
+    if let Some(delay) = serve.cleanup_tombstone_delay {
+        builder = builder.set_override("cleanup.tombstone_delay_secs", delay as i64)?;
+    }
+    if let Some(delay) = serve.cleanup_orphan_delay {
+        builder = builder.set_override("cleanup.orphan_delay_secs", delay as i64)?;
+    }
+    if serve.allow_insecure_destination {
+        builder = builder.set_override("allow_insecure_destination", true)?;
+    }
+    if let Some(v) = serve.max_body_size {
+        builder = builder.set_override("max_body_size", i64::try_from(v).unwrap_or(i64::MAX))?;
+    }
+    if let Some(v) = serve.max_batch_size {
+        builder = builder.set_override("max_batch_size", i64::from(v))?;
+    }
+    Ok(builder)
+}
+
+fn extract_peers(
+    config: &Config,
+    serve_args: Option<&ServeArgs>,
+    defaults: &NodeConfig,
+) -> PeersConfig {
+    if let Some(peer_urls) = serve_args.and_then(|s| s.peers.as_ref()) {
+        let (http_peers, _warnings) = HttpPeerConfig::from_cli_urls(peer_urls, None, None, None);
+        PeersConfig {
+            http: http_peers,
+            mqtt: vec![],
+        }
+    } else {
+        config
+            .get::<PeersConfig>("peers")
+            .unwrap_or_else(|_| defaults.peers.clone())
+    }
+}
+
+fn extract_cleanup(config: &Config, defaults: &NodeConfig) -> CleanupConfig {
+    CleanupConfig {
         enabled: config
             .get::<bool>("cleanup.enabled")
             .unwrap_or(defaults.cleanup.enabled),
@@ -751,25 +817,30 @@ pub fn load_config_from(
             .get::<i64>("cleanup.rate_limit_delay_secs")
             .map(i64_to_u64_clamped)
             .unwrap_or(defaults.cleanup.rate_limit_delay_secs),
-    };
+    }
+}
 
-    // Extract storage config (CLI override already applied via builder)
-    let storage_path: Option<String> = config.get("storage_path").ok();
-
-    // Extract auth config
+fn extract_auth(
+    config: &Config,
+    serve_args: Option<&ServeArgs>,
+) -> (Option<String>, Option<String>) {
     let auth_username: Option<String> = config.get("auth_username").ok();
     let auth_password: Option<String> = config.get("auth_password").ok();
-
-    // Override from CLI if provided
     let auth_username = serve_args
         .and_then(|s| s.auth_username.clone())
         .or(auth_username);
     let auth_password = serve_args
         .and_then(|s| s.auth_password.clone())
         .or(auth_password);
+    (auth_username, auth_password)
+}
 
-    // Extract rate limit config (clamp negative values to 0)
-    let mut rate_limit = RateLimitConfig {
+fn extract_rate_limit(
+    config: &Config,
+    serve_args: Option<&ServeArgs>,
+    defaults: &NodeConfig,
+) -> RateLimitConfig {
+    let mut rl = RateLimitConfig {
         submit_ip_rps: config
             .get::<i64>("rate_limit.submit_ip_rps")
             .map(i64_to_u32_clamped)
@@ -804,35 +875,44 @@ pub fn load_config_from(
             .unwrap_or(defaults.rate_limit.fetch_key_burst),
     };
 
-    // Apply CLI overrides for rate limiting
     if let Some(serve) = serve_args {
-        if let Some(v) = serve.rate_limit_submit_ip_rps {
-            rate_limit.submit_ip_rps = v;
-        }
-        if let Some(v) = serve.rate_limit_submit_ip_burst {
-            rate_limit.submit_ip_burst = v;
-        }
-        if let Some(v) = serve.rate_limit_submit_key_rps {
-            rate_limit.submit_key_rps = v;
-        }
-        if let Some(v) = serve.rate_limit_submit_key_burst {
-            rate_limit.submit_key_burst = v;
-        }
-        if let Some(v) = serve.rate_limit_fetch_ip_rps {
-            rate_limit.fetch_ip_rps = v;
-        }
-        if let Some(v) = serve.rate_limit_fetch_ip_burst {
-            rate_limit.fetch_ip_burst = v;
-        }
-        if let Some(v) = serve.rate_limit_fetch_key_rps {
-            rate_limit.fetch_key_rps = v;
-        }
-        if let Some(v) = serve.rate_limit_fetch_key_burst {
-            rate_limit.fetch_key_burst = v;
-        }
+        apply_rate_limit_overrides(&mut rl, serve);
     }
+    rl
+}
 
-    // Extract TLS config
+fn apply_rate_limit_overrides(rl: &mut RateLimitConfig, serve: &ServeArgs) {
+    if let Some(v) = serve.rate_limit_submit_ip_rps {
+        rl.submit_ip_rps = v;
+    }
+    if let Some(v) = serve.rate_limit_submit_ip_burst {
+        rl.submit_ip_burst = v;
+    }
+    if let Some(v) = serve.rate_limit_submit_key_rps {
+        rl.submit_key_rps = v;
+    }
+    if let Some(v) = serve.rate_limit_submit_key_burst {
+        rl.submit_key_burst = v;
+    }
+    if let Some(v) = serve.rate_limit_fetch_ip_rps {
+        rl.fetch_ip_rps = v;
+    }
+    if let Some(v) = serve.rate_limit_fetch_ip_burst {
+        rl.fetch_ip_burst = v;
+    }
+    if let Some(v) = serve.rate_limit_fetch_key_rps {
+        rl.fetch_key_rps = v;
+    }
+    if let Some(v) = serve.rate_limit_fetch_key_burst {
+        rl.fetch_key_burst = v;
+    }
+}
+
+fn extract_tls(
+    config: &Config,
+    serve_args: Option<&ServeArgs>,
+    defaults: &NodeConfig,
+) -> TlsConfig {
     let mut tls = TlsConfig {
         enabled: config
             .get::<bool>("tls.enabled")
@@ -844,7 +924,6 @@ pub fn load_config_from(
         key_path: config.get::<String>("tls.key_path").ok().map(PathBuf::from),
     };
 
-    // Apply CLI overrides for TLS
     if let Some(serve) = serve_args {
         if let Some(v) = serve.tls_enabled {
             tls.enabled = v;
@@ -856,15 +935,16 @@ pub fn load_config_from(
             tls.key_path = Some(path.clone());
         }
     }
+    tls
+}
 
-    // Extract MQTT bridge config from file/env
-    let mqtt_brokers_from_config: Vec<MqttBrokerConfig> = config
-        .get::<Vec<MqttBrokerConfig>>("mqtt.brokers")
-        .unwrap_or_default();
+fn extract_mqtt(config: &Config, serve_args: Option<&ServeArgs>) -> MqttBridgeConfig {
     let mqtt_topic_prefix_from_config: Option<String> = config.get("mqtt.topic_prefix").ok();
+    let topic_prefix = serve_args
+        .and_then(|s| s.mqtt_topic_prefix.clone())
+        .or(mqtt_topic_prefix_from_config);
 
-    // Build MQTT config, applying CLI overrides
-    let mqtt = if let Some(broker_urls) = serve_args.and_then(|s| s.mqtt_broker.as_ref()) {
+    if let Some(broker_urls) = serve_args.and_then(|s| s.mqtt_broker.as_ref()) {
         // CLI brokers override file config entirely
         let client_ids = serve_args
             .and_then(|s| s.mqtt_client_id.clone())
@@ -872,32 +952,31 @@ pub fn load_config_from(
         let brokers: Vec<MqttBrokerConfig> = broker_urls
             .iter()
             .enumerate()
-            // TODO: Add REME_NODE_MQTT_USERNAME and REME_NODE_MQTT_PASSWORD env vars
-            // Currently only config-based MQTT brokers support authentication
             .map(|(i, url)| MqttBrokerConfig {
                 url: url.clone(),
                 client_id: client_ids.get(i).cloned(),
-                username: None, // No env var support for auth yet
+                username: None,
                 password: None,
             })
             .collect();
         MqttBridgeConfig {
             brokers,
-            topic_prefix: serve_args
-                .and_then(|s| s.mqtt_topic_prefix.clone())
-                .or(mqtt_topic_prefix_from_config),
+            topic_prefix,
         }
     } else {
-        // Use file/env config
         MqttBridgeConfig {
-            brokers: mqtt_brokers_from_config,
-            topic_prefix: serve_args
-                .and_then(|s| s.mqtt_topic_prefix.clone())
-                .or(mqtt_topic_prefix_from_config),
+            brokers: config
+                .get::<Vec<MqttBrokerConfig>>("mqtt.brokers")
+                .unwrap_or_default(),
+            topic_prefix,
         }
-    };
+    }
+}
 
-    // Extract identity config
+fn extract_identity_config(
+    config: &Config,
+    serve_args: Option<&ServeArgs>,
+) -> (Option<PathBuf>, Option<String>, Vec<String>) {
     let identity_path_from_config: Option<PathBuf> = config
         .get::<String>("identity_path")
         .ok()
@@ -907,7 +986,6 @@ pub fn load_config_from(
         .get::<Vec<String>>("additional_hosts")
         .unwrap_or_default();
 
-    // Apply CLI overrides for identity
     let identity_path = serve_args
         .and_then(|s| s.identity_path.clone())
         .or(identity_path_from_config);
@@ -917,41 +995,8 @@ pub fn load_config_from(
     let additional_hosts = serve_args
         .and_then(|s| s.additional_hosts.clone())
         .unwrap_or(additional_hosts_from_config);
-    let allow_insecure_destination = config
-        .get::<bool>("allow_insecure_destination")
-        .unwrap_or(false);
 
-    let max_body_size: usize = config
-        .get::<i64>("max_body_size")
-        .map(i64_to_usize_clamped)
-        .unwrap_or(defaults.max_body_size);
-
-    let max_batch_size: u32 = config
-        .get::<i64>("max_batch_size")
-        .map(i64_to_u32_clamped)
-        .unwrap_or(defaults.max_batch_size);
-
-    Ok(NodeConfig {
-        bind_addr,
-        max_messages,
-        default_ttl,
-        log_level,
-        node_id,
-        peers,
-        cleanup,
-        storage_path,
-        auth_username,
-        auth_password,
-        rate_limit,
-        tls,
-        mqtt,
-        identity_path,
-        public_host,
-        additional_hosts,
-        allow_insecure_destination,
-        max_body_size,
-        max_batch_size,
-    })
+    (identity_path, public_host, additional_hosts)
 }
 
 #[cfg(test)]

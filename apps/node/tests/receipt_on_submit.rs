@@ -1,3 +1,10 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr
+)]
 //! Integration tests for `ack_secret` receipt on submit
 //!
 //! Tests that nodes return cryptographic receipts proving they can decrypt messages.

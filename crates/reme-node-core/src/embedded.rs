@@ -50,7 +50,7 @@ use std::sync::Arc;
 
 use reme_message::{MessageID, OuterEnvelope, RoutingKey};
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::{MailboxStore, NodeError, NodeEvent, NodeRequest};
 
@@ -105,31 +105,41 @@ impl<S: MailboxStore + 'static> EmbeddedNode<S> {
     /// background task. Returns when a Shutdown request is received
     /// or when all request senders are dropped.
     pub async fn run(mut self) {
-        info!("Embedded node starting");
-
+        Self::log_starting();
         while let Some(request) = self.requests.recv().await {
-            match request {
-                NodeRequest::SubmitMessage { envelope, response } => {
-                    let result = self.handle_submit_message(envelope);
-                    let _ = response.send(result);
-                }
-
-                NodeRequest::FetchMessages {
-                    routing_key,
-                    response,
-                } => {
-                    let result = self.handle_fetch_messages(routing_key);
-                    let _ = response.send(result);
-                }
-
-                NodeRequest::Shutdown => {
-                    info!("Embedded node received shutdown request");
-                    break;
-                }
+            if self.dispatch(request) {
+                break;
             }
         }
+        Self::log_stopped();
+    }
 
+    fn log_starting() {
+        info!("Embedded node starting");
+    }
+
+    fn log_stopped() {
         info!("Embedded node stopped");
+    }
+
+    /// Dispatch a single request. Returns `true` if the node should shut down.
+    fn dispatch(&self, request: NodeRequest) -> bool {
+        match request {
+            NodeRequest::SubmitMessage { envelope, response } => {
+                let _ = response.send(self.handle_submit_message(envelope));
+            }
+            NodeRequest::FetchMessages {
+                routing_key,
+                response,
+            } => {
+                let _ = response.send(self.handle_fetch_messages(routing_key));
+            }
+            NodeRequest::Shutdown => {
+                info!("Embedded node received shutdown request");
+                return true;
+            }
+        }
+        false
     }
 
     /// Handle a submit message request.
@@ -237,36 +247,24 @@ impl EmbeddedNodeHandle {
         let routing_key = envelope.routing_key;
         let message_id = envelope.message_id;
 
-        // Store the message
         trace!(?message_id, "Storing message from external source");
         self.store.enqueue(routing_key, envelope.clone())?;
 
-        // Push event to client
-        match self
-            .event_sender
-            .try_send(NodeEvent::MessageReceived(envelope))
-        {
-            Ok(()) => {
-                debug!(?message_id, "Message event sent to client");
-            }
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                // Message stored, but client backlogged - they'll see it on next fetch
-                warn!(
-                    ?message_id,
-                    "Event channel full - message stored but client not immediately notified"
-                );
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                // Client receiver dropped - this is a serious error
-                error!(
-                    ?message_id,
-                    "Event channel closed - message stored but client may have crashed"
-                );
-                return Err(NodeError::ChannelClosed);
-            }
-        }
-
+        self.send_event(NodeEvent::MessageReceived(envelope))?;
+        debug!(?message_id, "Message event sent to client");
         Ok(())
+    }
+
+    /// Try to send an event via the event channel.
+    ///
+    /// Returns `Ok(())` if sent successfully or if the channel is full
+    /// (the message is already persisted). Returns `Err` only if the
+    /// channel is closed (receiver dropped).
+    fn send_event(&self, event: NodeEvent) -> Result<(), NodeError> {
+        match self.event_sender.try_send(event) {
+            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => Ok(()),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(NodeError::ChannelClosed),
+        }
     }
 
     /// Check if the node is still running (request channel not closed).
@@ -289,7 +287,6 @@ impl EmbeddedNodeHandle {
     ) -> Result<bool, NodeError> {
         let message_id = tombstone.message_id;
 
-        // Get the stored ack_hash for this message
         let Some(ack_hash) = self.store.get_ack_hash(&message_id)? else {
             debug!(
                 ?message_id,
@@ -298,22 +295,30 @@ impl EmbeddedNodeHandle {
             return Ok(false);
         };
 
-        // Verify the ack_secret
-        if !tombstone.verify_authorization(&ack_hash) {
-            warn!(
-                ?message_id,
-                "AckTombstone authorization failed - invalid ack_secret"
-            );
-            return Err(NodeError::InvalidMessage("Invalid ack_secret".to_string()));
-        }
+        Self::verify_tombstone_auth(tombstone, &ack_hash, message_id)?;
 
-        // Delete the message
         let deleted = self.store.delete_message(&message_id)?;
         if deleted {
             debug!(?message_id, "Message deleted via AckTombstone");
         }
 
         Ok(deleted)
+    }
+
+    /// Verify a tombstone's `ack_secret` against the stored `ack_hash`.
+    fn verify_tombstone_auth(
+        tombstone: &reme_message::SignedAckTombstone,
+        ack_hash: &[u8; 16],
+        message_id: MessageID,
+    ) -> Result<(), NodeError> {
+        if tombstone.verify_authorization(ack_hash) {
+            return Ok(());
+        }
+        warn!(
+            ?message_id,
+            "AckTombstone authorization failed - invalid ack_secret"
+        );
+        Err(NodeError::InvalidMessage("Invalid ack_secret".to_string()))
     }
 }
 

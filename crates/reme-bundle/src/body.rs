@@ -64,7 +64,7 @@ pub fn parse_body(bytes: &[u8], max_frames: u32) -> Result<Vec<Vec<u8>>, BodyPar
         return Err(BodyParseError::TooShort);
     }
 
-    let count = u32::from_le_bytes(bytes[..4].try_into().expect("slice is exactly 4 bytes"));
+    let count = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
     if count == 0 {
         return Err(BodyParseError::EmptyBundle);
     }
@@ -86,11 +86,12 @@ pub fn parse_body(bytes: &[u8], max_frames: u32) -> Result<Vec<Vec<u8>>, BodyPar
                 available: bytes.len().saturating_sub(offset),
             });
         }
-        let frame_len = u32::from_le_bytes(
-            bytes[offset..offset + 4]
-                .try_into()
-                .expect("slice is exactly 4 bytes"),
-        );
+        let frame_len = u32::from_le_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ]);
         offset += 4;
 
         if frame_len > crate::MAX_FRAME_SIZE {

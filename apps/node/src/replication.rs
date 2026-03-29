@@ -183,17 +183,28 @@ impl ReplicationClient {
     ///
     /// Note: Credentials are stripped from URLs before logging for security.
     pub fn log_config(&self) {
-        if self.peer_configs.is_empty() {
-            info!("Replication: disabled (no peers configured)");
-        } else {
-            info!("Replication: enabled");
-            info!("  Node ID: {}", self.node_id);
-            info!("  Peers:");
-            for peer_config in &self.peer_configs {
-                info!("    - {}", format_peer_log_entry(peer_config));
-            }
-        }
+        log_replication_config(&self.peer_configs, &self.node_id);
     }
+}
+
+fn log_replication_config(peer_configs: &[ParsedHttpPeer], node_id: &str) {
+    if peer_configs.is_empty() {
+        info!("Replication: disabled (no peers configured)");
+        return;
+    }
+
+    log_replication_details(peer_configs, node_id);
+}
+
+fn log_replication_details(peer_configs: &[ParsedHttpPeer], node_id: &str) {
+    info!("Replication: enabled");
+    info!("  Node ID: {node_id}");
+    log_peer_list(peer_configs);
+}
+
+fn log_peer_list(peer_configs: &[ParsedHttpPeer]) {
+    let peers: Vec<String> = peer_configs.iter().map(format_peer_log_entry).collect();
+    info!(count = peers.len(), "  Peers: {}", peers.join(", "));
 }
 
 fn format_peer_log_entry(peer_config: &ParsedHttpPeer) -> String {

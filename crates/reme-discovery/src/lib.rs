@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 pub mod backend;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod fake;

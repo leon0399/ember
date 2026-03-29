@@ -20,7 +20,7 @@ pub struct BundleWriter<W: Write> {
 
 impl<W: Write> BundleWriter<W> {
     /// Create a new `BundleWriter` that writes the finished bundle into `writer`.
-    pub fn new(writer: W) -> Self {
+    pub const fn new(writer: W) -> Self {
         Self {
             inner: writer,
             frames: Vec::new(),

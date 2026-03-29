@@ -1,3 +1,11 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::missing_const_for_fn
+)]
 //! Golden reference tests for postcard wire format.
 //!
 //! These tests assert the exact byte encoding of each wire type.

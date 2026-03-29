@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 use derive_more::From;
 pub use reme_identity::{PublicID, RoutingKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -54,14 +55,14 @@ pub struct MessageID(Uuid);
 
 impl MessageID {
     pub fn new() -> Self {
-        MessageID(Uuid::new_v4())
+        Self(Uuid::new_v4())
     }
 
-    pub fn from_bytes(bytes: [u8; 16]) -> Self {
-        MessageID(Uuid::from_bytes(bytes))
+    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(Uuid::from_bytes(bytes))
     }
 
-    pub fn as_bytes(&self) -> &[u8; 16] {
+    pub const fn as_bytes(&self) -> &[u8; 16] {
         self.0.as_bytes()
     }
 }
@@ -81,7 +82,7 @@ impl Serialize for MessageID {
 impl<'de> Deserialize<'de> for MessageID {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let bytes = <[u8; 16]>::deserialize(deserializer)?;
-        Ok(MessageID(Uuid::from_bytes(bytes)))
+        Ok(Self(Uuid::from_bytes(bytes)))
     }
 }
 
@@ -228,6 +229,7 @@ pub struct InnerEnvelope {
 }
 
 /// Flag: Message is intentionally detached (no DAG linkage).
+///
 /// Used for constrained transports (`LoRa`, BLE) where bandwidth is limited.
 /// When set, `prev_self=None` and `observed_heads`=[] is intentional, not state loss.
 pub const FLAG_DETACHED: u8 = 0x01;
@@ -260,13 +262,17 @@ impl InnerEnvelope {
         // Timestamp (prevents same-user collision for identical content)
         hasher.update(&self.created_at_ms.to_le_bytes());
 
-        // Content
-        let content_bytes = postcard::to_allocvec(&self.content).expect("content serialization");
-        hasher.update(&content_bytes);
+        // Content (postcard serialization of enums is infallible for in-memory data)
+        if let Ok(content_bytes) = postcard::to_allocvec(&self.content) {
+            hasher.update(&content_bytes);
+        }
 
         // Truncate to 8 bytes - safe for BLAKE3 (XOF design)
         let hash = hasher.finalize();
-        hash.as_bytes()[..8].try_into().unwrap()
+        let bytes = hash.as_bytes();
+        [
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]
     }
 
     /// Check if this is an intentionally detached (unlinked) message.
@@ -277,7 +283,7 @@ impl InnerEnvelope {
     ///
     /// Note: This checks the explicit flag, not just empty DAG fields.
     /// A message with empty DAG fields but no flag may indicate state loss.
-    pub fn is_detached(&self) -> bool {
+    pub const fn is_detached(&self) -> bool {
         (self.flags & FLAG_DETACHED) != 0
     }
 

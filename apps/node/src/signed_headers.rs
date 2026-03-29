@@ -64,6 +64,15 @@ pub enum SignatureError {
     SystemClockError,
 }
 
+/// Bundles the parameters needed to produce a signed header set.
+struct SignRequest<'a> {
+    identity: &'a NodeIdentity,
+    method: &'a str,
+    path: &'a str,
+    body: &'a [u8],
+    dest_host: &'a str,
+}
+
 /// Signed headers for outgoing requests
 #[derive(Debug, Clone)]
 pub struct SignedHeaders {
@@ -90,17 +99,24 @@ impl SignedHeaders {
         body: &[u8],
         dest_host: &str,
     ) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect(
-                "system clock is before UNIX epoch (1970-01-01) - check system time configuration",
-            )
-            .as_secs();
+        let timestamp = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(d) => d.as_secs(),
+            Err(_) => 0, // Pre-epoch clock: use epoch as fallback
+        };
 
-        Self::sign_with_timestamp(identity, method, path, body, dest_host, timestamp)
+        let request = SignRequest {
+            identity,
+            method,
+            path,
+            body,
+            dest_host,
+        };
+        Self::build_with_request(&request, timestamp)
     }
 
     /// Create signed headers with a specific timestamp (for testing).
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)] // Test-facing convenience wrapper
     pub fn sign_with_timestamp(
         identity: &NodeIdentity,
         method: &str,
@@ -109,21 +125,33 @@ impl SignedHeaders {
         dest_host: &str,
         timestamp: u64,
     ) -> Self {
-        let node_id = identity.node_id().to_string();
-        let pubkey = BASE64.encode(identity.public_id().to_bytes());
-        let canonical_dest = canonicalize_host(dest_host);
-        let canonical_path = canonicalize_path(path);
-
-        let message = build_signed_message(
-            &node_id,
-            timestamp,
+        let request = SignRequest {
+            identity,
             method,
-            &canonical_path,
+            path,
             body,
-            &canonical_dest,
-        );
+            dest_host,
+        };
+        Self::build_with_request(&request, timestamp)
+    }
 
-        let signature = identity.sign(message.as_bytes());
+    fn build_with_request(request: &SignRequest<'_>, timestamp: u64) -> Self {
+        let node_id = request.identity.node_id().to_string();
+        let pubkey = BASE64.encode(request.identity.public_id().to_bytes());
+        let canonical_dest = canonicalize_host(request.dest_host);
+        let canonical_path = canonicalize_path(request.path);
+
+        let params = SignedMessageParams {
+            node_id: &node_id,
+            timestamp,
+            method: request.method,
+            path: &canonical_path,
+            body: request.body,
+            dest_host: &canonical_dest,
+        };
+        let message = build_signed_message(&params);
+
+        let signature = request.identity.sign(message.as_bytes());
         let signature_b64 = BASE64.encode(signature);
 
         Self {
@@ -161,7 +189,7 @@ impl<'a> SignatureVerifier<'a> {
     /// Create a new verifier.
     ///
     /// If `public_host` is None, destination verification is skipped (insecure).
-    pub fn new(public_host: Option<&'a str>, additional_hosts: &'a [String]) -> Self {
+    pub const fn new(public_host: Option<&'a str>, additional_hosts: &'a [String]) -> Self {
         Self {
             public_host,
             additional_hosts,
@@ -221,14 +249,15 @@ impl<'a> SignatureVerifier<'a> {
         let canonical_path = canonicalize_path(path);
         let canonical_dest = canonicalize_host(&dest_host);
 
-        let message = build_signed_message(
-            &node_id,
+        let params = SignedMessageParams {
+            node_id: &node_id,
             timestamp,
             method,
-            &canonical_path,
+            path: &canonical_path,
             body,
-            &canonical_dest,
-        );
+            dest_host: &canonical_dest,
+        };
+        let message = build_signed_message(&params);
 
         let signature_bytes = BASE64
             .decode(signature_b64.as_bytes())
@@ -323,24 +352,27 @@ impl<'a> SignatureVerifier<'a> {
     }
 }
 
-/// Build the message that gets signed.
-fn build_signed_message(
-    node_id: &str,
+/// Parameters for building a signed message.
+struct SignedMessageParams<'a> {
+    node_id: &'a str,
     timestamp: u64,
-    method: &str,
-    path: &str,
-    body: &[u8],
-    dest_host: &str,
-) -> String {
-    let body_hash = hex::encode(blake3::hash(body).as_bytes());
+    method: &'a str,
+    path: &'a str,
+    body: &'a [u8],
+    dest_host: &'a str,
+}
+
+/// Build the message that gets signed.
+fn build_signed_message(params: &SignedMessageParams<'_>) -> String {
+    let body_hash = hex::encode(blake3::hash(params.body).as_bytes());
     format!(
         "{}:{}:{}:{}:{}:{}",
-        node_id,
-        timestamp,
-        method.to_uppercase(),
-        path,
+        params.node_id,
+        params.timestamp,
+        params.method.to_uppercase(),
+        params.path,
         body_hash,
-        dest_host
+        params.dest_host
     )
 }
 

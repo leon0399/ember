@@ -17,6 +17,16 @@ use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, trace, warn};
 
+/// Action to take after processing an MQTT event.
+enum EventAction {
+    /// Continue the event loop normally.
+    Continue,
+    /// Stop the event loop (channel closed or stop signal).
+    Stop,
+    /// Sleep before the next poll (connection error recovery).
+    RetryDelay,
+}
+
 /// Default topic prefix for REME messages.
 pub const DEFAULT_TOPIC_PREFIX: &str = "reme/v1";
 
@@ -228,53 +238,90 @@ impl MqttReceiver {
                     break;
                 }
                 result = event_loop.poll() => {
-                    match result {
-                        Ok(Event::Incoming(Incoming::ConnAck(_))) => {
-                            debug!("MQTT receiver connected to {}", self.url);
-                        }
-                        Ok(Event::Incoming(Incoming::Publish(publish))) => {
-                            trace!("MQTT received publish on topic: {}", publish.topic);
-
-                            // Try to parse the message
-                            match self.parse_message(&publish.payload) {
-                                Ok(envelope) => {
-                                    // Check deduplication
-                                    if self.seen_cache.check_and_mark(&envelope.message_id) {
-                                        if event_tx.send(TransportEvent::Message(envelope)).is_err() {
-                                            debug!("MQTT event channel closed");
-                                            break;
-                                        }
-                                    } else {
-                                        trace!("MQTT skipping duplicate message");
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!("Failed to parse MQTT message: {}", e);
-                                    let _ = event_tx.send(TransportEvent::Error(e.to_string()));
-                                }
-                            }
-                        }
-                        Ok(Event::Incoming(Incoming::Disconnect)) => {
-                            warn!("MQTT receiver disconnected from {}", self.url);
-                            let _ = event_tx.send(TransportEvent::Error(
-                                "MQTT disconnected".to_string()
-                            ));
-                            // The library will attempt to reconnect
-                        }
-                        Ok(Event::Incoming(Incoming::SubAck(_))) => {
-                            debug!("MQTT subscription acknowledged");
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            error!("MQTT event loop error: {}", e);
-                            let _ = event_tx.send(TransportEvent::Error(e.to_string()));
-                            // Small delay before retry
+                    let action = self.handle_mqtt_event(result, &event_tx);
+                    match action {
+                        EventAction::Continue => {}
+                        EventAction::Stop => break,
+                        EventAction::RetryDelay => {
                             tokio::time::sleep(Duration::from_secs(1)).await;
                         }
                     }
                 }
             }
         }
+    }
+
+    /// Process a single MQTT event and return an action for the event loop.
+    fn handle_mqtt_event(
+        &self,
+        result: Result<Event, rumqttc::ConnectionError>,
+        event_tx: &mpsc::UnboundedSender<TransportEvent>,
+    ) -> EventAction {
+        match result {
+            Ok(event) => self.handle_ok_event(event, event_tx),
+            Err(e) => {
+                error!("MQTT event loop error: {}", e);
+                let _ = event_tx.send(TransportEvent::Error(e.to_string()));
+                EventAction::RetryDelay
+            }
+        }
+    }
+
+    /// Dispatch a successfully received MQTT event.
+    fn handle_ok_event(
+        &self,
+        event: Event,
+        event_tx: &mpsc::UnboundedSender<TransportEvent>,
+    ) -> EventAction {
+        let Event::Incoming(incoming) = event else {
+            return EventAction::Continue;
+        };
+
+        self.handle_incoming(incoming, event_tx)
+    }
+
+    /// Dispatch an incoming MQTT packet.
+    fn handle_incoming(
+        &self,
+        incoming: Incoming,
+        event_tx: &mpsc::UnboundedSender<TransportEvent>,
+    ) -> EventAction {
+        if let Incoming::Publish(publish) = incoming {
+            return self.handle_publish(&publish, event_tx);
+        }
+
+        self.log_incoming_event(&incoming, event_tx);
+        EventAction::Continue
+    }
+
+    /// Log non-publish incoming MQTT events.
+    fn log_incoming_event(
+        &self,
+        incoming: &Incoming,
+        event_tx: &mpsc::UnboundedSender<TransportEvent>,
+    ) {
+        match incoming {
+            Incoming::ConnAck(_) => log_conn_ack(&self.url),
+            Incoming::SubAck(_) => log_sub_ack(),
+            Incoming::Disconnect => log_disconnect(&self.url, event_tx),
+            _ => {}
+        }
+    }
+
+    /// Handle a received MQTT publish message: parse, deduplicate, and forward.
+    fn handle_publish(
+        &self,
+        publish: &rumqttc::Publish,
+        event_tx: &mpsc::UnboundedSender<TransportEvent>,
+    ) -> EventAction {
+        trace!("MQTT received publish on topic: {}", publish.topic);
+
+        let envelope = match self.parse_message(&publish.payload) {
+            Ok(e) => e,
+            Err(ref e) => return forward_parse_error(e, event_tx),
+        };
+
+        deduplicate_and_forward(envelope, &self.seen_cache, event_tx)
     }
 
     /// Parse a base64-encoded MQTT message payload.
@@ -297,9 +344,60 @@ impl MqttReceiver {
     }
 
     /// Get the seen cache for deduplication.
-    pub fn seen_cache(&self) -> &Arc<SharedSeenCache> {
+    pub const fn seen_cache(&self) -> &Arc<SharedSeenCache> {
         &self.seen_cache
     }
+}
+
+/// Log a connection acknowledgment event.
+fn log_conn_ack(url: &str) {
+    debug!("MQTT receiver connected to {url}");
+}
+
+/// Log a subscription acknowledgment event.
+fn log_sub_ack() {
+    debug!("MQTT subscription acknowledged");
+}
+
+/// Log a disconnection event and notify the event channel.
+fn log_disconnect(url: &str, event_tx: &mpsc::UnboundedSender<TransportEvent>) {
+    warn!("MQTT receiver disconnected from {url}");
+    let _ = event_tx.send(TransportEvent::Error("MQTT disconnected".to_string()));
+}
+
+/// Check deduplication and forward envelope if novel.
+fn deduplicate_and_forward(
+    envelope: reme_message::OuterEnvelope,
+    seen_cache: &SharedSeenCache,
+    event_tx: &mpsc::UnboundedSender<TransportEvent>,
+) -> EventAction {
+    if !seen_cache.check_and_mark(&envelope.message_id) {
+        trace!("MQTT skipping duplicate message");
+        return EventAction::Continue;
+    }
+    forward_envelope(envelope, event_tx)
+}
+
+/// Forward a parse error to the event channel and continue.
+fn forward_parse_error(
+    e: &TransportError,
+    event_tx: &mpsc::UnboundedSender<TransportEvent>,
+) -> EventAction {
+    warn!("Failed to parse MQTT message: {}", e);
+    let _ = event_tx.send(TransportEvent::Error(e.to_string()));
+    EventAction::Continue
+}
+
+/// Forward a parsed envelope to the event channel.
+fn forward_envelope(
+    envelope: reme_message::OuterEnvelope,
+    event_tx: &mpsc::UnboundedSender<TransportEvent>,
+) -> EventAction {
+    if event_tx.send(TransportEvent::Message(envelope)).is_err() {
+        debug!("MQTT event channel closed");
+        return EventAction::Stop;
+    }
+    EventAction::Continue
 }
 
 /// Multi-broker MQTT receiver that aggregates events from multiple brokers.
@@ -457,7 +555,7 @@ impl MultiBrokerReceiver {
     }
 
     /// Get the shared seen cache.
-    pub fn seen_cache(&self) -> &Arc<SharedSeenCache> {
+    pub const fn seen_cache(&self) -> &Arc<SharedSeenCache> {
         &self.seen_cache
     }
 }

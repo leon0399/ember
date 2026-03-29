@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 use async_trait::async_trait;
 use reme_message::{OuterEnvelope, SignedAckTombstone};
 use thiserror::Error;
@@ -116,10 +117,10 @@ impl TransportError {
     /// - TLS configuration errors
     /// - Certificate pin mismatches (security failures)
     /// - Channel closed (sender/receiver dropped - permanent state)
-    pub fn is_transient(&self) -> bool {
+    pub const fn is_transient(&self) -> bool {
         matches!(
             self,
-            TransportError::Network(_) | TransportError::Timeout | TransportError::ServerError(_)
+            Self::Network(_) | Self::Timeout | Self::ServerError(_)
         )
     }
 }

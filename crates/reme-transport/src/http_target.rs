@@ -66,7 +66,7 @@ impl HttpTargetConfig {
     }
 
     /// Set the certificate pin for TLS verification.
-    pub fn with_cert_pin(mut self, pin: CertPin) -> Self {
+    pub const fn with_cert_pin(mut self, pin: CertPin) -> Self {
         self.cert_pin = Some(pin);
         self
     }
@@ -86,19 +86,19 @@ impl HttpTargetConfig {
     }
 
     /// Set the priority.
-    pub fn with_priority(mut self, priority: u8) -> Self {
+    pub const fn with_priority(mut self, priority: u8) -> Self {
         self.base.priority = priority;
         self
     }
 
     /// Set the request timeout.
-    pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
+    pub const fn with_request_timeout(mut self, timeout: Duration) -> Self {
         self.base.request_timeout = timeout;
         self
     }
 
     /// Set the connect timeout.
-    pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
+    pub const fn with_connect_timeout(mut self, timeout: Duration) -> Self {
         self.base.connect_timeout = timeout;
         self
     }
@@ -108,13 +108,13 @@ impl HttpTargetConfig {
     /// When set, receipts from this target can be verified using this public key.
     /// The `routing_key()` derived from this is also used to filter targets
     /// during Direct tier delivery.
-    pub fn with_node_pubkey(mut self, pubkey: PublicID) -> Self {
+    pub const fn with_node_pubkey(mut self, pubkey: PublicID) -> Self {
         self.base.node_pubkey = Some(pubkey);
         self
     }
 
     /// Set an optional node public identity.
-    pub fn with_node_pubkey_opt(mut self, pubkey: Option<PublicID>) -> Self {
+    pub const fn with_node_pubkey_opt(mut self, pubkey: Option<PublicID>) -> Self {
         self.base.node_pubkey = pubkey;
         self
     }
@@ -231,7 +231,7 @@ impl HttpTarget {
     }
 
     /// Get the certificate pin if configured.
-    pub fn cert_pin(&self) -> Option<&CertPin> {
+    pub const fn cert_pin(&self) -> Option<&CertPin> {
         self.config.cert_pin.as_ref()
     }
 
@@ -262,22 +262,7 @@ impl HttpTarget {
             .await
             .map_err(|e| TransportError::Network(e.to_string()))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            if status == reqwest::StatusCode::UNAUTHORIZED {
-                return Err(TransportError::AuthenticationFailed);
-            }
-            if status == reqwest::StatusCode::NOT_FOUND {
-                return Err(TransportError::NotFound);
-            }
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".to_string());
-            return Err(TransportError::ServerError(format!(
-                "HTTP {status}: {body}"
-            )));
-        }
+        let response = check_http_target_response(response).await?;
 
         let result: SubmitResponse = response
             .json()
@@ -324,25 +309,27 @@ impl HttpTarget {
         let routing_key_b64 = URL_SAFE_NO_PAD.encode(routing_key);
 
         let result = self.fetch_from_endpoint(&routing_key_b64).await;
+        self.record_fetch_result(&result, start.elapsed());
+        result
+    }
 
-        match &result {
-            Ok(messages) => {
-                self.record_success(start.elapsed());
-                if !messages.is_empty() {
-                    debug!(
-                        "Fetched {} messages from {}",
-                        messages.len(),
-                        self.display_label()
-                    );
-                }
-            }
+    /// Record health metrics and log the outcome of a fetch operation.
+    fn record_fetch_result(
+        &self,
+        result: &Result<Vec<OuterEnvelope>, TransportError>,
+        elapsed: Duration,
+    ) {
+        let label = self.display_label();
+        match result {
             Err(e) => {
                 self.record_failure(e);
-                warn!("Failed to fetch from {}: {}", self.display_label(), e);
+                warn!("Failed to fetch from {label}: {e}");
+            }
+            Ok(messages) => {
+                self.record_success(elapsed);
+                log_fetched_count(messages.len(), &label);
             }
         }
-
-        result
     }
 
     /// Internal fetch implementation.
@@ -377,22 +364,7 @@ impl HttpTarget {
             .await
             .map_err(|e| TransportError::Network(e.to_string()))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            if status == reqwest::StatusCode::UNAUTHORIZED {
-                return Err(TransportError::AuthenticationFailed);
-            }
-            if status == reqwest::StatusCode::NOT_FOUND {
-                return Err(TransportError::NotFound);
-            }
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".to_string());
-            return Err(TransportError::ServerError(format!(
-                "HTTP {status}: {body}"
-            )));
-        }
+        let response = check_http_target_response(response).await?;
 
         response
             .json()
@@ -555,6 +527,39 @@ impl crate::Transport for HttpTarget {
     }
 }
 
+/// Log fetched message count if non-zero.
+fn log_fetched_count(count: usize, label: &str) {
+    if count > 0 {
+        debug!("Fetched {count} messages from {label}");
+    }
+}
+
+/// Check an HTTP response for error status codes and return it on success.
+///
+/// Maps 401 to `AuthenticationFailed`, 404 to `NotFound`, and other error codes to `ServerError`.
+async fn check_http_target_response(
+    response: reqwest::Response,
+) -> Result<reqwest::Response, TransportError> {
+    if response.status().is_success() {
+        return Ok(response);
+    }
+
+    let status = response.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(TransportError::AuthenticationFailed);
+    }
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Err(TransportError::NotFound);
+    }
+    let body = response
+        .text()
+        .await
+        .unwrap_or_else(|_| "unknown error".to_string());
+    Err(TransportError::ServerError(format!(
+        "HTTP {status}: {body}"
+    )))
+}
+
 /// Build a reqwest client for a specific HTTP target.
 fn build_target_client(config: &HttpTargetConfig) -> Result<Client, TransportError> {
     // Check if we need certificate pinning
@@ -620,6 +625,7 @@ fn sanitize_url_for_log(url_str: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::literal_string_with_formatting_args)] // Axum route path syntax, not format args
 mod tests {
     use super::*;
     use axum::{extract::Query, routing::get, Json, Router};

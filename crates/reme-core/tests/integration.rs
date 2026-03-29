@@ -1,3 +1,10 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr
+)]
 //! Integration test: Two clients exchanging messages through the node
 //!
 //! These tests spin up an in-process node server for self-contained testing.
@@ -74,7 +81,7 @@ impl TestServer {
         }
         assert!(server_ready, "Test server failed to start within 500ms");
 
-        TestServer {
+        Self {
             url,
             _handle: handle,
         }

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Integration tests for the identity endpoint.
 //!
 //! Tests that nodes correctly respond to challenge-response identity verification.

@@ -1,3 +1,13 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::cognitive_complexity
+    )
+)]
 //! Branch Messenger Mailbox Node
 //!
 //! A mailbox server that stores and forwards encrypted messages.
@@ -65,7 +75,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn, Level};
+use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 /// Resolve bind address, supporting both IP:port and hostname:port formats.
@@ -79,22 +89,23 @@ async fn resolve_bind_addr(addr_str: &str) -> Result<SocketAddr, String> {
     }
 
     // Try DNS resolution (hostname:port)
-    debug!("Resolving hostname for bind address: {}", addr_str);
-    match tokio::net::lookup_host(addr_str).await {
-        Ok(mut addrs) => {
-            if let Some(addr) = addrs.next() {
-                debug!("Resolved {} to {}", addr_str, addr);
-                Ok(addr)
-            } else {
-                Err(format!(
-                    "No addresses found for '{addr_str}'. Expected format: IP:port or hostname:port (e.g., '127.0.0.1:23003' or 'localhost:23003')"
-                ))
-            }
-        }
-        Err(e) => Err(format!(
-            "Failed to resolve bind address '{addr_str}': {e}. Expected format: IP:port or hostname:port (e.g., '127.0.0.1:23003' or 'localhost:23003')"
-        )),
-    }
+    resolve_hostname(addr_str).await
+}
+
+async fn resolve_hostname(addr_str: &str) -> Result<SocketAddr, String> {
+    let mut addrs = tokio::net::lookup_host(addr_str).await.map_err(|e| {
+        format!(
+            "Failed to resolve bind address '{addr_str}': {e}. \
+             Expected format: IP:port or hostname:port (e.g., '127.0.0.1:23003')"
+        )
+    })?;
+
+    addrs.next().ok_or_else(|| {
+        format!(
+            "No addresses found for '{addr_str}'. \
+             Expected format: IP:port or hostname:port (e.g., '127.0.0.1:23003')"
+        )
+    })
 }
 
 /// Parse log level from string
@@ -120,11 +131,17 @@ async fn shutdown_signal(cancel: CancellationToken) {
 async fn wait_for_signal() -> &'static str {
     use tokio::signal::unix::{signal, SignalKind};
 
-    let mut sigterm = signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+    let Ok(mut sigterm) = signal(SignalKind::terminate()) else {
+        eprintln!("Failed to install SIGTERM handler");
+        std::process::exit(1);
+    };
 
     tokio::select! {
         result = tokio::signal::ctrl_c() => {
-            result.expect("failed to listen for SIGINT");
+            if let Err(e) = result {
+                eprintln!("Failed to listen for SIGINT: {e}");
+                std::process::exit(1);
+            }
             "SIGINT"
         }
         _ = sigterm.recv() => "SIGTERM",
@@ -134,9 +151,10 @@ async fn wait_for_signal() -> &'static str {
 /// Block until an OS termination signal arrives and return its name.
 #[cfg(not(unix))]
 async fn wait_for_signal() -> &'static str {
-    tokio::signal::ctrl_c()
-        .await
-        .expect("failed to listen for Ctrl+C");
+    if let Err(e) = tokio::signal::ctrl_c().await {
+        eprintln!("Failed to listen for Ctrl+C: {e}");
+        std::process::exit(1);
+    }
     "Ctrl+C"
 }
 
@@ -149,20 +167,7 @@ fn open_store(config: &config::NodeConfig) -> PersistentMailboxStore {
         .clone()
         .unwrap_or_else(|| ":memory:".to_string());
 
-    if storage_path == ":memory:" {
-        info!("Using in-memory storage (data will not persist across restarts)");
-    } else {
-        // Create parent directory if needed for file-based storage
-        if let Some(parent) = std::path::Path::new(&storage_path).parent() {
-            if !parent.as_os_str().is_empty() {
-                if let Err(e) = std::fs::create_dir_all(parent) {
-                    error!("Failed to create storage directory: {}", e);
-                    std::process::exit(1);
-                }
-            }
-        }
-        info!("Using persistent storage: {}", storage_path);
-    }
+    ensure_storage_dir(&storage_path);
 
     let store_config = PersistentStoreConfig {
         max_messages_per_mailbox: config.max_messages,
@@ -172,9 +177,26 @@ fn open_store(config: &config::NodeConfig) -> PersistentMailboxStore {
     match PersistentMailboxStore::open(&storage_path, store_config) {
         Ok(s) => s,
         Err(e) => {
-            error!("Failed to create storage: {}", e);
+            error!("Failed to create storage: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+fn ensure_storage_dir(storage_path: &str) {
+    if storage_path == ":memory:" {
+        return;
+    }
+
+    let Some(parent) = std::path::Path::new(storage_path).parent() else {
+        return;
+    };
+    if parent.as_os_str().is_empty() {
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(parent) {
+        error!("Failed to create storage directory: {e}");
+        std::process::exit(1);
     }
 }
 
@@ -204,7 +226,10 @@ async fn main() {
     // Initialize tracing with configured log level
     let log_level = parse_log_level(&config.log_level);
     let subscriber = FmtSubscriber::builder().with_max_level(log_level).finish();
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    if tracing::subscriber::set_global_default(subscriber).is_err() {
+        eprintln!("Failed to set default tracing subscriber");
+        std::process::exit(1);
+    }
 
     // Dispatch export/import subcommands (these don't need the full server setup)
     match &cli.command {

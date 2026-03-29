@@ -206,40 +206,48 @@ impl CompositeTransport {
 
         let results = join_all(futures).await;
 
-        // Collect successes and errors
         let success_count = results.iter().filter(|r| r.is_ok()).count();
         let errors: Vec<_> = results
             .into_iter()
             .filter_map(std::result::Result::err)
             .collect();
 
-        if success_count > 0 {
-            trace!(
-                "Broadcast succeeded on {}/{} transports",
-                success_count,
-                transport_count
-            );
-            if !errors.is_empty() {
-                warn!(
-                    "Some transports failed ({} of {}): {:?}",
-                    errors.len(),
-                    transport_count,
-                    errors
-                        .iter()
-                        .map(std::string::ToString::to_string)
-                        .collect::<Vec<_>>()
-                );
-            }
-            Ok(())
-        } else {
-            Err(TransportError::Network(format!(
-                "All transports failed: {:?}",
-                errors
-                    .iter()
-                    .map(std::string::ToString::to_string)
-                    .collect::<Vec<_>>()
-            )))
-        }
+        evaluate_broadcast(success_count, transport_count, &errors)
+    }
+}
+
+/// Evaluate broadcast results: succeed if at least one transport succeeded.
+fn evaluate_broadcast(
+    success_count: usize,
+    transport_count: usize,
+    errors: &[TransportError],
+) -> Result<(), TransportError> {
+    let msgs = format_error_messages(errors);
+
+    if success_count == 0 {
+        return Err(TransportError::Network(format!(
+            "All transports failed: {msgs:?}"
+        )));
+    }
+
+    trace!("Broadcast succeeded on {success_count}/{transport_count} transports");
+    log_partial_failures(&msgs, transport_count);
+    Ok(())
+}
+
+/// Format transport errors as a string vec for logging.
+fn format_error_messages(errors: &[TransportError]) -> Vec<String> {
+    errors.iter().map(ToString::to_string).collect()
+}
+
+/// Log a warning if there were partial failures.
+fn log_partial_failures(msgs: &[String], transport_count: usize) {
+    if !msgs.is_empty() {
+        warn!(
+            "Some transports failed ({} of {}): {msgs:?}",
+            msgs.len(),
+            transport_count,
+        );
     }
 }
 
@@ -422,7 +430,7 @@ mod tests {
         // MQTT only
         let composite = CompositeTransport::from_options::<MockTransport, MockTransport>(
             None,
-            Some(MockTransport::new(call_count.clone(), false)),
+            Some(MockTransport::new(call_count, false)),
         );
         assert_eq!(composite.len(), 1);
 

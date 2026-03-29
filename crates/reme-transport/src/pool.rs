@@ -99,7 +99,7 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
     }
 
     /// Create a new transport pool with configuration and seen cache.
-    pub fn with_config(config: PoolConfig, seen_cache: Arc<SharedSeenCache>) -> Self {
+    pub const fn with_config(config: PoolConfig, seen_cache: Arc<SharedSeenCache>) -> Self {
         Self {
             targets: RwLock::new(Vec::new()),
             config,
@@ -109,19 +109,23 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
     }
 
     /// Get a reference to the shared seen cache.
-    pub fn seen_cache(&self) -> &Arc<SharedSeenCache> {
+    pub const fn seen_cache(&self) -> &Arc<SharedSeenCache> {
         &self.seen_cache
     }
 
     /// Add a target to the pool.
     pub fn add_target(&self, target: T) {
-        let mut targets = self.targets.write().unwrap();
+        let Ok(mut targets) = self.targets.write() else {
+            return;
+        };
         targets.push(Arc::new(target));
     }
 
     /// Add an already-Arc'd target to the pool.
     pub fn add_arc_target(&self, target: Arc<T>) {
-        let mut targets = self.targets.write().unwrap();
+        let Ok(mut targets) = self.targets.write() else {
+            return;
+        };
         targets.push(target);
     }
 
@@ -129,7 +133,9 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
     ///
     /// Returns true if a target was removed.
     pub fn remove_target(&self, id: &TargetId) -> bool {
-        let mut targets = self.targets.write().unwrap();
+        let Ok(mut targets) = self.targets.write() else {
+            return false;
+        };
         let before_len = targets.len();
         targets.retain(|t| t.id() != id);
         targets.len() < before_len
@@ -146,7 +152,9 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
     /// Returns `true` if the old target was found and removed.
     pub fn replace_target(&self, old_id: &TargetId, new_target: T) -> bool {
         let new_id = new_target.id();
-        let mut targets = self.targets.write().unwrap();
+        let Ok(mut targets) = self.targets.write() else {
+            return false;
+        };
         let before_len = targets.len();
         // Remove both the old target and any existing target with the new ID
         // to prevent duplicate entries when old_id != new_id.
@@ -158,14 +166,18 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
 
     /// Get all targets.
     pub fn all_targets(&self) -> Vec<Arc<T>> {
-        self.targets.read().unwrap().clone()
+        let Ok(targets) = self.targets.read() else {
+            return Vec::new();
+        };
+        targets.clone()
     }
 
     /// Get all healthy (available) targets.
     pub fn healthy_targets(&self) -> Vec<Arc<T>> {
-        self.targets
-            .read()
-            .unwrap()
+        let Ok(targets) = self.targets.read() else {
+            return Vec::new();
+        };
+        targets
             .iter()
             .filter(|t| t.is_available())
             .cloned()
@@ -174,9 +186,10 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
 
     /// Get targets by kind.
     pub fn targets_by_kind(&self, kind: TargetKind) -> Vec<Arc<T>> {
-        self.targets
-            .read()
-            .unwrap()
+        let Ok(targets) = self.targets.read() else {
+            return Vec::new();
+        };
+        targets
             .iter()
             .filter(|t| t.config().kind == kind)
             .cloned()
@@ -185,9 +198,10 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
 
     /// Get targets matching a capability predicate.
     pub fn targets_by_capability(&self, pred: impl Fn(&TargetCapabilities) -> bool) -> Vec<Arc<T>> {
-        self.targets
-            .read()
-            .unwrap()
+        let Ok(targets) = self.targets.read() else {
+            return Vec::new();
+        };
+        targets
             .iter()
             .filter(|t| pred(&t.config().capabilities))
             .cloned()
@@ -196,36 +210,41 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
 
     /// Get a target by ID.
     pub fn get_target(&self, id: &TargetId) -> Option<Arc<T>> {
-        self.targets
-            .read()
-            .unwrap()
-            .iter()
-            .find(|t| t.id() == id)
-            .cloned()
+        let Ok(targets) = self.targets.read() else {
+            return None;
+        };
+        targets.iter().find(|t| t.id() == id).cloned()
     }
 
     /// Get the number of targets in the pool.
     pub fn len(&self) -> usize {
-        self.targets.read().unwrap().len()
+        let Ok(targets) = self.targets.read() else {
+            return 0;
+        };
+        targets.len()
     }
 
     /// Check if the pool is empty.
     pub fn is_empty(&self) -> bool {
-        self.targets.read().unwrap().is_empty()
+        let Ok(targets) = self.targets.read() else {
+            return true;
+        };
+        targets.is_empty()
     }
 
     /// Check if any target is available.
     pub fn has_available(&self) -> bool {
-        self.targets
-            .read()
-            .unwrap()
-            .iter()
-            .any(|t| t.is_available())
+        let Ok(targets) = self.targets.read() else {
+            return false;
+        };
+        targets.iter().any(|t| t.is_available())
     }
 
     /// Select targets based on current strategy.
     fn select_targets(&self) -> Vec<Arc<T>> {
-        let all_targets = self.targets.read().unwrap();
+        let Ok(all_targets) = self.targets.read() else {
+            return Vec::new();
+        };
         let available: Vec<_> = all_targets
             .iter()
             .filter(|t| t.is_available())
@@ -245,9 +264,6 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
                 sorted
             }
             PoolStrategy::RoundRobin => {
-                if available.is_empty() {
-                    return vec![];
-                }
                 let index =
                     self.round_robin_index.fetch_add(1, Ordering::Relaxed) % available.len();
                 vec![available[index].clone()]
@@ -260,7 +276,11 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
                     // For now, use priority as proxy (higher priority = preferred)
                     std::cmp::Reverse(t.config().priority)
                 });
-                vec![sorted.first().unwrap().clone()]
+                // available is non-empty (checked above), so sorted is non-empty
+                match sorted.first() {
+                    Some(target) => vec![target.clone()],
+                    None => Vec::new(),
+                }
             }
         }
     }
@@ -331,31 +351,42 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
             .collect();
 
         let results = join_all(futures).await;
+        Self::tally_broadcast_results(&results, targets, "Message")
+    }
 
-        let mut last_error = None;
-        let mut success_count = 0;
+    /// Tally broadcast results: return Ok if any succeeded, Err with last error otherwise.
+    fn tally_broadcast_results<R>(
+        results: &[Result<R, TransportError>],
+        targets: &[Arc<T>],
+        label: &str,
+    ) -> Result<(), TransportError> {
+        Self::log_target_failures(results, targets);
 
-        for (i, result) in results.into_iter().enumerate() {
-            match result {
-                Ok(_receipt) => {
-                    success_count += 1;
-                }
-                Err(e) => {
-                    warn!("Target {} failed: {}", targets[i].id(), e);
-                    last_error = Some(e);
-                }
-            }
-        }
-
+        let success_count = results.iter().filter(|r| r.is_ok()).count();
         if success_count > 0 {
             debug!(
-                "Message sent to {}/{} targets",
+                "{} sent to {}/{} targets",
+                label,
                 success_count,
                 targets.len()
             );
-            Ok(())
-        } else {
-            Err(last_error.unwrap_or(TransportError::Network("All targets failed".to_string())))
+            return Ok(());
+        }
+
+        let last_error = results
+            .iter()
+            .filter_map(|r| r.as_ref().err())
+            .last()
+            .cloned();
+        Err(last_error.unwrap_or_else(|| TransportError::Network("All targets failed".to_string())))
+    }
+
+    /// Log warnings for failed targets in a broadcast batch.
+    fn log_target_failures<R>(results: &[Result<R, TransportError>], targets: &[Arc<T>]) {
+        for (i, result) in results.iter().enumerate() {
+            if let Err(e) = result {
+                warn!("Target {} failed: {}", targets[i].id(), e);
+            }
         }
     }
 
@@ -405,7 +436,7 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
         }
 
         // All targets failed
-        Err(last_error.unwrap_or(TransportError::Network("All targets failed".to_string())))
+        Err(last_error.unwrap_or_else(|| TransportError::Network("All targets failed".to_string())))
     }
 
     /// Try targets in priority order, stop on first success.
@@ -418,18 +449,24 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
 
         for target in targets {
             match target.submit_message(envelope.clone()).await {
-                Ok(_receipt) => {
-                    debug!("Message sent via {}", target.id());
+                Ok(_) => {
+                    Self::log_fallback_success(target);
                     return Ok(());
                 }
-                Err(e) => {
-                    warn!("Target {} failed, trying next: {}", target.id(), e);
-                    last_error = Some(e);
-                }
+                Err(e) => last_error = Some(Self::log_fallback_failure(target, e)),
             }
         }
 
-        Err(last_error.unwrap_or(TransportError::Network("All targets failed".to_string())))
+        Err(last_error.unwrap_or_else(|| TransportError::Network("All targets failed".to_string())))
+    }
+
+    fn log_fallback_success(target: &T) {
+        debug!("Message sent via {}", target.id());
+    }
+
+    fn log_fallback_failure(target: &T, err: TransportError) -> TransportError {
+        warn!("Target {} failed, trying next: {}", target.id(), err);
+        err
     }
 
     /// Broadcast ack tombstone to all targets, succeed if any succeeds.
@@ -448,25 +485,7 @@ impl<T: TransportTarget + 'static> TransportPool<T> {
             .collect();
 
         let results = join_all(futures).await;
-
-        let mut last_error = None;
-        let mut success_count = 0;
-
-        for (i, result) in results.into_iter().enumerate() {
-            match result {
-                Ok(()) => success_count += 1,
-                Err(e) => {
-                    warn!("Target {} failed: {}", targets[i].id(), e);
-                    last_error = Some(e);
-                }
-            }
-        }
-
-        if success_count > 0 {
-            Ok(())
-        } else {
-            Err(last_error.unwrap_or(TransportError::Network("All targets failed".to_string())))
-        }
+        Self::tally_broadcast_results(&results, targets, "Tombstone")
     }
 }
 
@@ -480,14 +499,14 @@ impl<T: TransportTarget + 'static> Default for TransportPool<T> {
 #[async_trait]
 impl<T: TransportTarget + 'static> Transport for TransportPool<T> {
     async fn submit_message(&self, envelope: OuterEnvelope) -> Result<(), TransportError> {
-        TransportPool::submit_message(self, envelope).await
+        Self::submit_message(self, envelope).await
     }
 
     async fn submit_ack_tombstone(
         &self,
         tombstone: SignedAckTombstone,
     ) -> Result<(), TransportError> {
-        TransportPool::submit_ack_tombstone(self, tombstone).await
+        Self::submit_ack_tombstone(self, tombstone).await
     }
 }
 
@@ -509,7 +528,15 @@ pub struct PoolHealthSummary {
 impl<T: TransportTarget> TransportPool<T> {
     /// Get a summary of pool health.
     pub fn health_summary(&self) -> PoolHealthSummary {
-        let targets = self.targets.read().unwrap();
+        let Ok(targets) = self.targets.read() else {
+            return PoolHealthSummary {
+                total: 0,
+                healthy: 0,
+                degraded: 0,
+                unhealthy: 0,
+                unknown: 0,
+            };
+        };
         let mut summary = PoolHealthSummary {
             total: targets.len(),
             healthy: 0,
@@ -534,16 +561,17 @@ impl<T: TransportTarget> TransportPool<T> {
 /// Implement `TransportQuery` for UI and monitoring access.
 impl<T: TransportTarget + 'static> TransportQuery for TransportPool<T> {
     fn list_targets(&self) -> Vec<TargetSnapshot> {
-        self.targets
-            .read()
-            .unwrap()
+        let Ok(targets) = self.targets.read() else {
+            return Vec::new();
+        };
+        targets
             .iter()
             .map(|t| TargetSnapshot::from_target(t.as_ref()))
             .collect()
     }
 
     fn health_summary(&self) -> HealthSummary {
-        let pool_summary = TransportPool::health_summary(self);
+        let pool_summary = Self::health_summary(self);
         HealthSummary {
             total: pool_summary.total,
             healthy: pool_summary.healthy,
@@ -554,7 +582,7 @@ impl<T: TransportTarget + 'static> TransportQuery for TransportPool<T> {
     }
 
     fn has_available(&self) -> bool {
-        TransportPool::has_available(self)
+        Self::has_available(self)
     }
 }
 
@@ -605,27 +633,48 @@ impl TransportPool<HttpTarget> {
                 config = config.with_cert_pin(pin);
             }
 
-            // Log security warnings (sanitize URL to prevent credential exposure)
-            let safe_url = sanitize_url_for_logging(&node.url);
-            if node.url.starts_with("http://") {
-                warn!(
-                    "Node {} uses unencrypted HTTP - credentials and messages may be exposed",
-                    safe_url
-                );
-            } else if node.url.starts_with("https://") && config.cert_pin.is_none() {
-                warn!(
-                    "Node {} has no certificate pin - vulnerable to MITM attacks",
-                    safe_url
-                );
-            } else if config.cert_pin.is_some() {
-                info!("Certificate pinning enabled for {}", safe_url);
-            }
+            Self::log_node_security(&node.url, &config);
 
             let target = HttpTarget::new(config)?;
             pool.add_target(target);
         }
 
         Ok(pool)
+    }
+
+    /// Log security warnings for a node configuration.
+    fn log_node_security(url: &str, config: &HttpTargetConfig) {
+        let safe_url = sanitize_url_for_logging(url);
+        Self::log_node_security_warning(url, config, &safe_url);
+        Self::log_node_security_info(config, &safe_url);
+    }
+
+    fn log_node_security_warning(url: &str, config: &HttpTargetConfig, safe_url: &str) {
+        if url.starts_with("http://") {
+            Self::warn_plain_http(safe_url);
+        } else if url.starts_with("https://") && config.cert_pin.is_none() {
+            Self::warn_no_cert_pin(safe_url);
+        }
+    }
+
+    fn warn_plain_http(safe_url: &str) {
+        warn!(
+            "Node {} uses unencrypted HTTP - credentials and messages may be exposed",
+            safe_url
+        );
+    }
+
+    fn warn_no_cert_pin(safe_url: &str) {
+        warn!(
+            "Node {} has no certificate pin - vulnerable to MITM attacks",
+            safe_url
+        );
+    }
+
+    fn log_node_security_info(config: &HttpTargetConfig, safe_url: &str) {
+        if config.cert_pin.is_some() {
+            info!("Certificate pinning enabled for {}", safe_url);
+        }
     }
     /// Fetch messages once from all healthy targets and deduplicate.
     ///
@@ -685,11 +734,17 @@ impl TransportPool<HttpTarget> {
             .collect();
 
         let results = join_all(futures).await;
+        Self::accumulate_fetch_results(results, &fetchable)
+    }
 
-        // Aggregate and deduplicate by message_id, preserving conflicting variants
+    /// Accumulate fetch results from multiple targets, deduplicating by message ID.
+    fn accumulate_fetch_results(
+        results: Vec<Result<Vec<OuterEnvelope>, TransportError>>,
+        fetchable: &[Arc<HttpTarget>],
+    ) -> Result<Vec<OuterEnvelope>, TransportError> {
         let mut accumulated = crate::dedup::EnvelopeAccumulator::default();
         let mut last_error = None;
-        let mut success_count = 0;
+        let mut success_count = 0u32;
 
         for (i, result) in results.into_iter().enumerate() {
             match result {
@@ -708,19 +763,29 @@ impl TransportPool<HttpTarget> {
             }
         }
 
-        // If we got messages from at least one target, return them
-        if success_count > 0 {
-            let messages = crate::dedup::flatten_variants(accumulated);
-            debug!(
-                "Fetched {} unique messages from {}/{} targets",
-                messages.len(),
-                success_count,
-                fetchable.len()
-            );
-            Ok(messages)
-        } else {
-            Err(last_error.unwrap_or(TransportError::Network("All targets failed".to_string())))
+        Self::finalize_fetch(accumulated, last_error, success_count, fetchable.len())
+    }
+
+    /// Convert accumulated fetch data into a final result.
+    fn finalize_fetch(
+        accumulated: crate::dedup::EnvelopeAccumulator,
+        last_error: Option<TransportError>,
+        success_count: u32,
+        total_targets: usize,
+    ) -> Result<Vec<OuterEnvelope>, TransportError> {
+        if success_count == 0 {
+            return Err(last_error
+                .unwrap_or_else(|| TransportError::Network("All targets failed".to_string())));
         }
+
+        let messages = crate::dedup::flatten_variants(accumulated);
+        debug!(
+            "Fetched {} unique messages from {}/{} targets",
+            messages.len(),
+            success_count,
+            total_targets
+        );
+        Ok(messages)
     }
 }
 

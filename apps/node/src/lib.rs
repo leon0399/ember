@@ -1,3 +1,13 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::cognitive_complexity
+    )
+)]
 //! Branch Messenger Mailbox Node Library
 //!
 //! This library exposes the node components for use in testing and embedding.

@@ -54,7 +54,10 @@ impl Default for FakeDiscoveryBackend {
 #[async_trait::async_trait]
 impl DiscoveryBackend for FakeDiscoveryBackend {
     async fn start_advertising(&self, _spec: AdvertisementSpec) -> Result<(), DiscoveryError> {
-        let mut advertising = self.advertising.lock().unwrap();
+        let mut advertising = self
+            .advertising
+            .lock()
+            .map_err(|_| DiscoveryError::LockPoisoned)?;
         if *advertising {
             return Err(DiscoveryError::AlreadyAdvertising);
         }
@@ -63,7 +66,10 @@ impl DiscoveryBackend for FakeDiscoveryBackend {
     }
 
     async fn stop_advertising(&self) -> Result<(), DiscoveryError> {
-        let mut advertising = self.advertising.lock().unwrap();
+        let mut advertising = self
+            .advertising
+            .lock()
+            .map_err(|_| DiscoveryError::LockPoisoned)?;
         if !*advertising {
             return Err(DiscoveryError::NotAdvertising);
         }
@@ -76,7 +82,10 @@ impl DiscoveryBackend for FakeDiscoveryBackend {
     }
 
     async fn shutdown(&self) -> Result<(), DiscoveryError> {
-        *self.advertising.lock().unwrap() = false;
+        *self
+            .advertising
+            .lock()
+            .map_err(|_| DiscoveryError::LockPoisoned)? = false;
         Ok(())
     }
 }

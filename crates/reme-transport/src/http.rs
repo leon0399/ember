@@ -122,39 +122,7 @@ impl HttpTransport {
             ));
         }
 
-        // Collect pins and emit warnings
-        let mut pins: HashMap<String, CertPin> = HashMap::new();
-        for node in &nodes {
-            if node.url.starts_with("http://") {
-                warn!(
-                    "Node {} uses unencrypted HTTP - credentials and messages may be exposed",
-                    sanitize_url_for_log(&node.url)
-                );
-            } else if node.url.starts_with("https://") {
-                if let Some(ref pin) = node.cert_pin {
-                    if let Some(host) = extract_hostname(&node.url) {
-                        pins.insert(host, pin.clone());
-                        info!(
-                            "Certificate pinning enabled for {}",
-                            sanitize_url_for_log(&node.url)
-                        );
-                    } else {
-                        // Fail if we can't extract hostname for a pinned URL
-                        return Err(TransportError::TlsConfig(format!(
-                            "Could not extract hostname from URL '{}' to apply certificate pin",
-                            sanitize_url_for_log(&node.url)
-                        )));
-                    }
-                } else {
-                    warn!(
-                        "Node {} has no certificate pin - vulnerable to MITM attacks",
-                        sanitize_url_for_log(&node.url)
-                    );
-                }
-            }
-        }
-
-        // Build TLS client with pinning verifier
+        let pins = collect_node_pins(&nodes)?;
         let client = build_pinning_client(pins)?;
         let base_urls = nodes.into_iter().map(|n| n.url).collect();
 
@@ -192,16 +160,31 @@ impl HttpTransport {
         base_url: &str,
         candidates: &[PublicID],
     ) -> Result<Option<PublicID>, TransportError> {
-        // Generate 32-byte random challenge
         let challenge: [u8; 32] = rand::rng().random();
-        let challenge_b64 = BASE64_STANDARD.encode(challenge);
+        let signature = self.fetch_identity_signature(base_url, &challenge).await?;
 
-        // Parse URL and extract credentials if present
+        let matched = find_matching_candidate(&challenge, &signature, candidates);
+
+        if matched.is_none() {
+            debug!(
+                "No candidate matched for {} (relay mode)",
+                sanitize_url_for_log(base_url)
+            );
+        }
+
+        Ok(matched)
+    }
+
+    /// Send a challenge to a node and return the decoded 64-byte signature.
+    async fn fetch_identity_signature(
+        &self,
+        base_url: &str,
+        challenge: &[u8; 32],
+    ) -> Result<[u8; 64], TransportError> {
         let parsed = parse_url_with_auth(base_url)
             .map_err(|e| TransportError::Network(format!("Invalid URL: {e}")))?;
 
-        // URL-encode the base64 challenge since + and / are special in URLs.
-        // Standard base64 uses +, /, and = which need encoding in query parameters.
+        let challenge_b64 = BASE64_STANDARD.encode(challenge);
         let challenge_encoded = percent_encode(challenge_b64.as_bytes(), NON_ALPHANUMERIC);
 
         let url = format!(
@@ -211,8 +194,6 @@ impl HttpTransport {
         );
 
         let mut request = self.client.get(&url);
-
-        // Add Basic Auth if credentials were embedded in URL
         if let Some((username, password)) = parsed.auth {
             request = request.basic_auth(username, Some(password));
         }
@@ -222,49 +203,20 @@ impl HttpTransport {
             .await
             .map_err(|e| TransportError::Network(e.to_string()))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            if status == reqwest::StatusCode::UNAUTHORIZED {
-                return Err(TransportError::AuthenticationFailed);
-            }
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".to_string());
-            return Err(TransportError::ServerError(format!(
-                "HTTP {status}: {body}"
-            )));
-        }
+        let response = check_http_response(response).await?;
 
         let identity_response: IdentityResponse = response
             .json()
             .await
             .map_err(|e| TransportError::Serialization(format!("JSON parse error: {e}")))?;
 
-        // Decode signature once (shared across all candidate checks)
-        let signature: [u8; 64] = BASE64_STANDARD
+        BASE64_STANDARD
             .decode(&identity_response.signature)
             .map_err(|e| TransportError::Serialization(format!("Invalid signature base64: {e}")))?
             .try_into()
             .map_err(|_| {
                 TransportError::Serialization("signature must be exactly 64 bytes".to_string())
-            })?;
-
-        // Try each candidate until one verifies
-        for candidate in candidates {
-            let sign_data = build_identity_sign_data(&challenge, &candidate.to_bytes());
-            if candidate.verify_xeddsa(&sign_data, &signature) {
-                debug!("Verified identity for {}", candidate);
-                return Ok(Some(*candidate));
-            }
-        }
-
-        // No match - can use as relay (Quorum tier)
-        debug!(
-            "No candidate matched for {} (relay mode)",
-            sanitize_url_for_log(base_url)
-        );
-        Ok(None)
+            })
     }
 
     /// Submit wire payload to a single node
@@ -300,19 +252,7 @@ impl HttpTransport {
             .await
             .map_err(|e| TransportError::Network(e.to_string()))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            if status == reqwest::StatusCode::UNAUTHORIZED {
-                return Err(TransportError::AuthenticationFailed);
-            }
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".to_string());
-            return Err(TransportError::ServerError(format!(
-                "HTTP {status}: {body}"
-            )));
-        }
+        let response = check_http_response(response).await?;
 
         let result: SubmitResponse = response
             .json()
@@ -369,19 +309,7 @@ impl HttpTransport {
             .await
             .map_err(|e| TransportError::Network(e.to_string()))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            if status == reqwest::StatusCode::UNAUTHORIZED {
-                return Err(TransportError::AuthenticationFailed);
-            }
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".to_string());
-            return Err(TransportError::ServerError(format!(
-                "HTTP {status}: {body}"
-            )));
-        }
+        let response = check_http_response(response).await?;
 
         response
             .json()
@@ -444,47 +372,65 @@ impl HttpTransport {
             .collect();
 
         let results = join_all(futures).await;
+        self.aggregate_fetch_results(results)
+    }
 
-        // Aggregate and deduplicate by message_id, preserving conflicting variants
+    /// Aggregate fetch results from multiple nodes, deduplicating by message ID.
+    fn aggregate_fetch_results(
+        &self,
+        results: Vec<Result<Vec<OuterEnvelope>, TransportError>>,
+    ) -> Result<Vec<OuterEnvelope>, TransportError> {
         let mut accumulated = crate::dedup::EnvelopeAccumulator::default();
         let mut last_error = None;
-        let mut success_count = 0;
+        let mut success_count = 0usize;
 
         for (i, result) in results.into_iter().enumerate() {
+            let node_url = &self.base_urls[i];
             match result {
                 Ok(messages) => {
-                    debug!(
-                        "Fetched {} messages from node {}",
-                        messages.len(),
-                        self.base_urls[i]
-                    );
+                    Self::log_node_fetch_success(node_url, messages.len());
                     success_count += 1;
                     crate::dedup::merge_envelopes(
                         &mut accumulated,
                         messages,
-                        &sanitize_url_for_log(&self.base_urls[i]),
+                        &sanitize_url_for_log(node_url),
                     );
                 }
                 Err(e) => {
-                    warn!("Failed to fetch from node {}: {}", self.base_urls[i], e);
+                    warn!("Failed to fetch from node {node_url}: {e}");
                     last_error = Some(e);
                 }
             }
         }
 
-        // If we got messages from at least one node, return them
-        if success_count > 0 {
-            let messages = crate::dedup::flatten_variants(accumulated);
-            debug!(
-                "Fetched {} unique messages from {}/{} nodes",
-                messages.len(),
-                success_count,
-                self.base_urls.len()
-            );
-            Ok(messages)
-        } else {
-            Err(last_error.unwrap_or(TransportError::Network("All nodes failed".to_string())))
+        self.finalize_fetch(accumulated, success_count, last_error)
+    }
+
+    /// Log a successful per-node fetch.
+    fn log_node_fetch_success(node_url: &str, count: usize) {
+        debug!("Fetched {count} messages from node {node_url}");
+    }
+
+    /// Convert accumulated results into the final response or an error.
+    fn finalize_fetch(
+        &self,
+        accumulated: crate::dedup::EnvelopeAccumulator,
+        success_count: usize,
+        last_error: Option<TransportError>,
+    ) -> Result<Vec<OuterEnvelope>, TransportError> {
+        if success_count == 0 {
+            return Err(last_error
+                .unwrap_or_else(|| TransportError::Network("All nodes failed".to_string())));
         }
+
+        let messages = crate::dedup::flatten_variants(accumulated);
+        debug!(
+            "Fetched {} unique messages from {}/{} nodes",
+            messages.len(),
+            success_count,
+            self.base_urls.len()
+        );
+        Ok(messages)
     }
 }
 
@@ -534,7 +480,8 @@ impl Transport for HttpTransport {
             );
             Ok(())
         } else {
-            Err(last_error.unwrap_or(TransportError::Network("All nodes failed".to_string())))
+            Err(last_error
+                .unwrap_or_else(|| TransportError::Network("All nodes failed".to_string())))
         }
     }
 
@@ -588,8 +535,94 @@ impl Transport for HttpTransport {
             );
             Ok(())
         } else {
-            Err(last_error.unwrap_or(TransportError::Network("All nodes failed".to_string())))
+            Err(last_error
+                .unwrap_or_else(|| TransportError::Network("All nodes failed".to_string())))
         }
+    }
+}
+
+/// Try each candidate public key against a challenge signature, returning the first match.
+fn find_matching_candidate(
+    challenge: &[u8; 32],
+    signature: &[u8; 64],
+    candidates: &[PublicID],
+) -> Option<PublicID> {
+    for candidate in candidates {
+        let sign_data = build_identity_sign_data(challenge, &candidate.to_bytes());
+        if candidate.verify_xeddsa(&sign_data, signature) {
+            debug!("Verified identity for {}", candidate);
+            return Some(*candidate);
+        }
+    }
+    None
+}
+
+/// Check an HTTP response status and return the response on success, or a typed error on failure.
+///
+/// Maps 401 to `AuthenticationFailed` and other non-success codes to `ServerError`.
+async fn check_http_response(
+    response: reqwest::Response,
+) -> Result<reqwest::Response, TransportError> {
+    if response.status().is_success() {
+        return Ok(response);
+    }
+
+    let status = response.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(TransportError::AuthenticationFailed);
+    }
+    let body = response
+        .text()
+        .await
+        .unwrap_or_else(|_| "unknown error".to_string());
+    Err(TransportError::ServerError(format!(
+        "HTTP {status}: {body}"
+    )))
+}
+
+/// Collect TLS certificate pins from node specs, emitting security warnings.
+///
+/// For each node: warns on HTTP (unencrypted), warns on HTTPS without pin (MITM risk),
+/// and registers pins for HTTPS nodes that have them.
+fn collect_node_pins(nodes: &[NodeSpec]) -> Result<HashMap<String, CertPin>, TransportError> {
+    let mut pins = HashMap::new();
+    for node in nodes {
+        collect_single_node_pin(node, &mut pins)?;
+    }
+    Ok(pins)
+}
+
+/// Process a single node's TLS pin configuration.
+fn collect_single_node_pin(
+    node: &NodeSpec,
+    pins: &mut HashMap<String, CertPin>,
+) -> Result<(), TransportError> {
+    let safe_url = sanitize_url_for_log(&node.url);
+
+    if !node.url.starts_with("https://") {
+        warn_non_https_node(&node.url, &safe_url);
+        return Ok(());
+    }
+
+    let Some(ref pin) = node.cert_pin else {
+        warn!("Node {safe_url} has no certificate pin - vulnerable to MITM attacks");
+        return Ok(());
+    };
+
+    let host = extract_hostname(&node.url).ok_or_else(|| {
+        TransportError::TlsConfig(format!(
+            "Could not extract hostname from URL '{safe_url}' to apply certificate pin",
+        ))
+    })?;
+    pins.insert(host, pin.clone());
+    info!("Certificate pinning enabled for {safe_url}");
+    Ok(())
+}
+
+/// Emit a warning for non-HTTPS node URLs.
+fn warn_non_https_node(url: &str, safe_url: &str) {
+    if url.starts_with("http://") {
+        warn!("Node {safe_url} uses unencrypted HTTP - credentials and messages may be exposed");
     }
 }
 
@@ -638,6 +671,7 @@ fn build_pinning_client(pins: HashMap<String, CertPin>) -> Result<Client, Transp
 }
 
 #[cfg(test)]
+#[allow(clippy::literal_string_with_formatting_args)] // Axum route path syntax, not format args
 mod tests {
     use super::*;
     use axum::{extract::Query, routing::get, Json, Router};
@@ -797,7 +831,7 @@ mod tests {
         let app = Router::new().route(
             "/api/v1/identity",
             get(move |Query(query): Query<IdentityQuery>| {
-                let identity = Identity::from_bytes(&node_identity_clone);
+                let identity = Identity::from_bytes(&node_identity_clone).unwrap();
                 let pubkey_bytes = identity.public_id().to_bytes();
 
                 // Decode and validate challenge
@@ -864,7 +898,7 @@ mod tests {
         let app = Router::new().route(
             "/api/v1/identity",
             get(move |Query(query): Query<IdentityQuery>| {
-                let node_identity = Identity::from_bytes(&actual_node_bytes);
+                let node_identity = Identity::from_bytes(&actual_node_bytes).unwrap();
                 let node_pubkey_bytes = node_identity.public_id().to_bytes();
 
                 // Decode and validate challenge
@@ -935,7 +969,7 @@ mod tests {
         let app = Router::new().route(
             "/api/v1/identity",
             get(move |Query(query): Query<IdentityQuery>| {
-                let identity = Identity::from_bytes(&node_identity_bytes);
+                let identity = Identity::from_bytes(&node_identity_bytes).unwrap();
                 let pubkey_bytes = identity.public_id().to_bytes();
 
                 let challenge: [u8; 32] = BASE64_STANDARD

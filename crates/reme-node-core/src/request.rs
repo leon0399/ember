@@ -79,7 +79,7 @@ mod tests {
             inner_ciphertext: vec![1, 2, 3, 4],
         };
 
-        let event = NodeEvent::MessageReceived(envelope.clone());
+        let event = NodeEvent::MessageReceived(envelope);
         let cloned = event.clone();
 
         match (event, cloned) {

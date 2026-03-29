@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 use reme_identity::{InvalidPublicKey, PublicID};
 use reme_message::{Content, ContentId, MessageID, ReceiptContent, ReceiptKind};
 use reme_node_core::{
@@ -5,8 +6,8 @@ use reme_node_core::{
     PersistentMailboxStore, PersistentStoreConfig,
 };
 use reme_outbox::{
-    AttemptError, AttemptResult, DeliveryConfidence, DeliveryConfirmation, OutboxEntryId,
-    OutboxStore, PendingMessage, TargetId, TieredDeliveryPhase, TransportAttempt,
+    AttemptError, AttemptResult, DeliveryConfidence, DeliveryConfirmation, EnqueueParams,
+    OutboxEntryId, OutboxStore, PendingMessage, TargetId, TieredDeliveryPhase, TransportAttempt,
 };
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use std::collections::HashMap;
@@ -73,6 +74,9 @@ pub enum StorageError {
     LockPoisoned,
 }
 
+/// A contact entry: (database row ID, public identity, optional display name).
+pub type ContactEntry = (i64, PublicID, Option<String>);
+
 /// Simple `SQLite` storage for desktop v0.1
 ///
 /// Supports unified storage for both client data (contacts, messages, outbox)
@@ -112,7 +116,7 @@ impl Storage {
     }
 
     /// Get the database path (None for in-memory databases)
-    pub fn path(&self) -> Option<&PathBuf> {
+    pub const fn path(&self) -> Option<&PathBuf> {
         self.path.as_ref()
     }
 
@@ -122,8 +126,16 @@ impl Storage {
     /// Each message is encrypted with a fresh ephemeral key directly to the recipient's MIK.
     fn init_schema(&self) -> Result<(), StorageError> {
         let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        Self::create_contact_and_message_tables(&conn)?;
+        Self::create_outbox_tables(&conn)?;
+        Self::create_ack_and_dag_tables(&conn)?;
+        Ok(())
+    }
+
+    /// Create contacts and messages tables with indexes.
+    fn create_contact_and_message_tables(conn: &Connection) -> Result<(), StorageError> {
         conn.execute_batch(
-            r#"
+            r"
             CREATE TABLE IF NOT EXISTS contacts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 public_id BLOB NOT NULL UNIQUE,
@@ -147,30 +159,34 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_messages_contact ON messages(contact_id);
             CREATE INDEX IF NOT EXISTS idx_messages_contact_id_desc ON messages(contact_id, id DESC);
             CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
+            ",
+        )?;
+        Ok(())
+    }
 
-            -- Outbox for pending outgoing messages
-            -- message_id (MessageID) is the primary key, eliminating the need for a
-            -- separate database-generated ID.
+    /// Create outbox, successes, and attempts tables with indexes.
+    fn create_outbox_tables(conn: &Connection) -> Result<(), StorageError> {
+        conn.execute_batch(
+            r"
             CREATE TABLE IF NOT EXISTS outbox (
-                message_id BLOB PRIMARY KEY NOT NULL, -- MessageID (16 bytes) - also serves as entry_id
-                recipient_id BLOB NOT NULL,           -- PublicID (32 bytes)
-                content_id BLOB NOT NULL,             -- ContentId (8 bytes)
-                envelope_bytes BLOB NOT NULL,         -- Serialized OuterEnvelope
-                inner_bytes BLOB NOT NULL,            -- Serialized InnerEnvelope
+                message_id BLOB PRIMARY KEY NOT NULL,
+                recipient_id BLOB NOT NULL,
+                content_id BLOB NOT NULL,
+                envelope_bytes BLOB NOT NULL,
+                inner_bytes BLOB NOT NULL,
                 created_at_ms INTEGER NOT NULL,
-                expires_at_ms INTEGER,                -- NULL = no expiry
-                next_retry_at_ms INTEGER,             -- NULL = immediate, used for scheduling
-                confirmed_at_ms INTEGER,              -- NULL = not confirmed
-                expired_at_ms INTEGER,                -- NULL = not expired
-                confirmation_type TEXT,               -- 'dag', future: 'zk_receipt', 'p2p_ack'
-                confirmation_data BLOB,               -- Type-specific confirmation data
-                -- Tiered delivery phase tracking
-                delivery_phase TEXT DEFAULT 'urgent', -- 'urgent', 'distributed', 'confirmed'
-                quorum_reached_at_ms INTEGER,         -- When phase changed to 'distributed'
-                last_maintenance_ms INTEGER,          -- Last maintenance refresh
-                quorum_count INTEGER,                 -- Number of successful targets for QuorumReached
-                quorum_required INTEGER,              -- Required targets for QuorumReached
-                direct_target_id TEXT                 -- Target ID for DirectDelivery confidence
+                expires_at_ms INTEGER,
+                next_retry_at_ms INTEGER,
+                confirmed_at_ms INTEGER,
+                expired_at_ms INTEGER,
+                confirmation_type TEXT,
+                confirmation_data BLOB,
+                delivery_phase TEXT DEFAULT 'urgent',
+                quorum_reached_at_ms INTEGER,
+                last_maintenance_ms INTEGER,
+                quorum_count INTEGER,
+                quorum_required INTEGER,
+                direct_target_id TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_outbox_content_id ON outbox(content_id);
@@ -185,7 +201,6 @@ impl Storage {
                 ON outbox(last_maintenance_ms)
                 WHERE delivery_phase = 'distributed' AND confirmed_at_ms IS NULL AND expired_at_ms IS NULL;
 
-            -- Per-target success tracking (which targets have this message)
             CREATE TABLE IF NOT EXISTS outbox_successes (
                 message_id BLOB NOT NULL REFERENCES outbox(message_id) ON DELETE CASCADE,
                 target_id TEXT NOT NULL,
@@ -195,40 +210,42 @@ impl Storage {
 
             CREATE INDEX IF NOT EXISTS idx_successes_message ON outbox_successes(message_id);
 
-            -- Delivery attempts (separate table for history)
             CREATE TABLE IF NOT EXISTS outbox_attempts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 message_id BLOB NOT NULL REFERENCES outbox(message_id) ON DELETE CASCADE,
-                transport_id TEXT NOT NULL,          -- e.g., "http:node1.example.com"
+                transport_id TEXT NOT NULL,
                 attempted_at_ms INTEGER NOT NULL,
-                result_type TEXT NOT NULL,           -- 'sent', 'failed'
-                error_type TEXT,                     -- 'network', 'rejected', etc.
+                result_type TEXT NOT NULL,
+                error_type TEXT,
                 error_message TEXT,
-                error_transient INTEGER              -- 1 = transient, 0 = permanent
+                error_transient INTEGER
             );
 
             CREATE INDEX IF NOT EXISTS idx_attempts_message ON outbox_attempts(message_id);
+            ",
+        )?;
+        Ok(())
+    }
 
-            -- Pending ack secrets for Tombstone V2
-            -- Stores ack_secret derived during encryption so sender can create
-            -- tombstones for sent messages (e.g., to retract before delivery)
+    /// Create pending acks and DAG state tables with indexes.
+    fn create_ack_and_dag_tables(conn: &Connection) -> Result<(), StorageError> {
+        conn.execute_batch(
+            r"
             CREATE TABLE IF NOT EXISTS pending_acks (
-                message_id BLOB PRIMARY KEY NOT NULL,  -- MessageID (16 bytes)
-                ack_secret BLOB NOT NULL,              -- 16-byte ack_secret
-                created_at INTEGER NOT NULL            -- Unix timestamp (seconds)
+                message_id BLOB PRIMARY KEY NOT NULL,
+                ack_secret BLOB NOT NULL,
+                created_at INTEGER NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_pending_acks_created ON pending_acks(created_at);
 
-            -- DAG state per contact for message ordering persistence
-            -- Survives client restarts so peers don't see gaps
             CREATE TABLE IF NOT EXISTS dag_state (
-                contact_pubkey BLOB PRIMARY KEY NOT NULL,  -- PublicID bytes (32 bytes)
-                epoch INTEGER NOT NULL DEFAULT 0,          -- Conversation epoch (u16)
-                sender_head BLOB,                          -- Last ContentId we sent (8 bytes), NULL if none
-                peer_heads BLOB                            -- Serialized peer heads (Vec<ContentId>)
+                contact_pubkey BLOB PRIMARY KEY NOT NULL,
+                epoch INTEGER NOT NULL DEFAULT 0,
+                sender_head BLOB,
+                peer_heads BLOB
             );
-            "#,
+            ",
         )?;
         Ok(())
     }
@@ -305,17 +322,23 @@ impl Storage {
         &self,
         config: PersistentStoreConfig,
     ) -> Result<PersistentMailboxStore, StorageError> {
-        if let Some(path) = &self.path {
+        Self::open_mailbox_store(self.path.as_ref(), config)
+    }
+
+    /// Open a mailbox store backed by the same database (or in-memory for tests).
+    fn open_mailbox_store(
+        path: Option<&PathBuf>,
+        config: PersistentStoreConfig,
+    ) -> Result<PersistentMailboxStore, StorageError> {
+        if let Some(path) = path {
             debug!(path = %path.display(), "creating mailbox store for embedded node");
-            let store = PersistentMailboxStore::open(path, config)?;
-            Ok(store)
-        } else {
-            // For in-memory databases, create an in-memory mailbox store
-            // Note: This won't share data with the main connection
-            debug!("creating in-memory mailbox store (testing mode)");
-            let store = PersistentMailboxStore::in_memory(config)?;
-            Ok(store)
+            return Ok(PersistentMailboxStore::open(path, config)?);
         }
+
+        // For in-memory databases, create an in-memory mailbox store
+        // Note: This won't share data with the main connection
+        debug!("creating in-memory mailbox store (testing mode)");
+        Ok(PersistentMailboxStore::in_memory(config)?)
     }
 
     // ============================================
@@ -486,7 +509,9 @@ impl Storage {
             ));
         }
 
-        let public_id_bytes: [u8; 32] = bytes.try_into().unwrap();
+        let public_id_bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| StorageError::Serialization("Invalid public_id length".to_string()))?;
         Ok(PublicID::try_from_bytes(&public_id_bytes)?)
     }
 
@@ -503,7 +528,7 @@ impl Storage {
     }
 
     /// List all contacts
-    pub fn list_contacts(&self) -> Result<Vec<(i64, PublicID, Option<String>)>, StorageError> {
+    pub fn list_contacts(&self) -> Result<Vec<ContactEntry>, StorageError> {
         let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let mut stmt =
             conn.prepare("SELECT id, public_id, name FROM contacts ORDER BY name, id")?;
@@ -521,7 +546,9 @@ impl Storage {
             if public_id_bytes.len() != 32 {
                 continue; // Skip invalid entries
             }
-            let public_id_arr: [u8; 32] = public_id_bytes.try_into().unwrap();
+            let Ok(public_id_arr): Result<[u8; 32], _> = public_id_bytes.try_into() else {
+                continue; // Skip entries with unexpected length
+            };
             // Skip contacts with invalid (low-order) public keys
             if let Ok(public_id) = PublicID::try_from_bytes(&public_id_arr) {
                 contacts.push((id, public_id, name));
@@ -1125,25 +1152,21 @@ impl Storage {
                 "Invalid message_id length".to_string(),
             ));
         }
-        let message_id_arr: [u8; 16] = message_id.try_into().unwrap();
+        let message_id_arr: [u8; 16] = message_id
+            .try_into()
+            .map_err(|_| StorageError::Serialization("Invalid message_id length".to_string()))?;
         let message_id = MessageID::from_bytes(message_id_arr);
 
         // Parse recipient
-        if recipient_id.len() != 32 {
-            return Err(StorageError::Serialization(
-                "Invalid recipient_id length".to_string(),
-            ));
-        }
-        let recipient_bytes: [u8; 32] = recipient_id.try_into().unwrap();
+        let recipient_bytes: [u8; 32] = recipient_id
+            .try_into()
+            .map_err(|_| StorageError::Serialization("Invalid recipient_id length".to_string()))?;
         let recipient = PublicID::try_from_bytes(&recipient_bytes)?;
 
         // Parse content_id
-        if content_id.len() != 8 {
-            return Err(StorageError::Serialization(
-                "Invalid content_id length".to_string(),
-            ));
-        }
-        let content_id_arr: ContentId = content_id.try_into().unwrap();
+        let content_id_arr: ContentId = content_id
+            .try_into()
+            .map_err(|_| StorageError::Serialization("Invalid content_id length".to_string()))?;
 
         // Load attempts
         let attempts = Self::load_attempts(conn, &message_id)?;
@@ -1249,16 +1272,10 @@ fn map_stored_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMessage
     let delivered_at: Option<i64> = row.get(7)?;
     let read_at: Option<i64> = row.get(8)?;
 
-    let message_id = if message_id_bytes.len() == 16 {
-        let arr: [u8; 16] = message_id_bytes.try_into().expect("checked length");
-        MessageID::from_bytes(arr)
-    } else {
-        return Err(rusqlite::Error::InvalidColumnType(
-            1,
-            "message_id".to_string(),
-            rusqlite::types::Type::Blob,
-        ));
-    };
+    let message_id_arr: [u8; 16] = message_id_bytes.try_into().map_err(|_| {
+        rusqlite::Error::InvalidColumnType(1, "message_id".to_string(), rusqlite::types::Type::Blob)
+    })?;
+    let message_id = MessageID::from_bytes(message_id_arr);
 
     let direction = match direction_str.as_str() {
         "sent" => MessageDirection::Sent,
@@ -1285,7 +1302,7 @@ fn map_stored_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMessage
     })
 }
 
-fn content_type_name(content: &Content) -> &'static str {
+const fn content_type_name(content: &Content) -> &'static str {
     match content {
         Content::Text(_) => "text",
         Content::Receipt(_) => "receipt",
@@ -1333,19 +1350,11 @@ fn is_duplicate_message_id_error(error: &rusqlite::Error) -> bool {
 impl OutboxStore for Storage {
     type Error = StorageError;
 
-    fn outbox_enqueue(
-        &self,
-        recipient: &PublicID,
-        content_id: ContentId,
-        message_id: MessageID,
-        envelope_bytes: &[u8],
-        inner_bytes: &[u8],
-        expires_at_ms: Option<u64>,
-    ) -> Result<OutboxEntryId, Self::Error> {
+    fn outbox_enqueue(&self, params: EnqueueParams<'_>) -> Result<OutboxEntryId, Self::Error> {
         let now_ms = now_ms();
 
-        let recipient_bytes = recipient.to_bytes();
-        let message_id_bytes = message_id.as_bytes();
+        let recipient_bytes = params.recipient.to_bytes();
+        let message_id_bytes = params.message_id.as_bytes();
 
         let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         conn.execute(
@@ -1354,17 +1363,17 @@ impl OutboxStore for Storage {
             params![
                 &message_id_bytes[..],
                 &recipient_bytes[..],
-                &content_id[..],
-                envelope_bytes,
-                inner_bytes,
+                &params.content_id[..],
+                params.envelope_bytes,
+                params.inner_bytes,
                 timestamp_to_i64(now_ms),
-                timestamp_opt_to_i64(expires_at_ms),
+                timestamp_opt_to_i64(params.expires_at_ms),
                 timestamp_to_i64(now_ms), // Ready for immediate retry
             ],
         )?;
 
         // Return the message_id as the entry ID (it's the primary key now)
-        Ok(message_id)
+        Ok(params.message_id)
     }
 
     fn outbox_get_pending(&self) -> Result<Vec<PendingMessage>, Self::Error> {
@@ -2279,7 +2288,7 @@ mod tests {
             inner_ciphertext: vec![5, 6, 7, 8],
         };
 
-        mailbox.enqueue(routing_key, envelope.clone()).unwrap();
+        mailbox.enqueue(routing_key, envelope).unwrap();
 
         // Verify both client and mailbox data coexist
         let contacts = storage.list_contacts().unwrap();

@@ -184,7 +184,7 @@ impl RequestSource {
     /// Check if this source is our own identity (for loop prevention)
     pub fn is_self(&self, our_identity: Option<&NodeIdentity>) -> bool {
         match (self, our_identity) {
-            (RequestSource::VerifiedNode(their_pubkey), Some(identity)) => {
+            (Self::VerifiedNode(their_pubkey), Some(identity)) => {
                 their_pubkey == identity.public_id()
             }
             _ => false,
@@ -194,8 +194,8 @@ impl RequestSource {
     /// Get a string representation for logging/replication
     pub fn to_from_node_string(&self) -> Option<String> {
         match self {
-            RequestSource::VerifiedNode(pubkey) => Some(crate::node_identity::node_id_hex(pubkey)),
-            RequestSource::Client => None,
+            Self::VerifiedNode(pubkey) => Some(crate::node_identity::node_id_hex(pubkey)),
+            Self::Client => None,
         }
     }
 }
@@ -530,43 +530,43 @@ async fn submit_payload(
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
-    // Identify request source (verify signed headers over raw body bytes)
-    let source = match identify_request_source(&state, &headers, "POST", "/api/v1/submit", &body) {
-        Ok(source) => source,
-        Err(e) => {
+    submit_payload_inner(&state, &headers, &body)
+        .await
+        .unwrap_or_else(|e| e)
+}
+
+async fn submit_payload_inner(
+    state: &AppState,
+    headers: &HeaderMap,
+    body: &Bytes,
+) -> Result<axum::response::Response, axum::response::Response> {
+    let source =
+        identify_request_source(state, headers, "POST", "/api/v1/submit", body).map_err(|e| {
             warn!("Signature verification failed: {}", e);
-            return (
+            error_response(
                 StatusCode::UNAUTHORIZED,
-                Json(ErrorResponse {
-                    error: format!("Signature verification failed: {e}"),
-                }),
+                format!("Signature verification failed: {e}"),
             )
-                .into_response();
-        }
-    };
+        })?;
 
-    // Parse binary bundle body into individual frames
-    let frames = match parse_body(&body, state.config.max_batch_size) {
-        Ok(frames) => frames,
-        Err(e) => {
-            error!("Failed to parse bundle body: {}", e);
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Invalid bundle body: {e}"),
-                }),
-            )
-                .into_response();
-        }
-    };
+    let frames = parse_body(body, state.config.max_batch_size).map_err(|e| {
+        error!("Failed to parse bundle body: {}", e);
+        error_response(StatusCode::BAD_REQUEST, format!("Invalid bundle body: {e}"))
+    })?;
 
-    // Get from_node string for replication
     let from_node = source.to_from_node_string();
+    let results = process_frames(state, frames, from_node, &source).await;
+    Ok((StatusCode::OK, Json(SubmitResponse { results })).into_response())
+}
 
-    // Process each frame, collecting results
+async fn process_frames(
+    state: &AppState,
+    frames: Vec<Vec<u8>>,
+    from_node: Option<String>,
+    source: &RequestSource,
+) -> Vec<FrameResult> {
     let mut results = Vec::with_capacity(frames.len());
     for frame in frames {
-        // Decode wire payload from frame bytes
         let payload = match WirePayload::decode(&frame) {
             Ok(p) => p,
             Err(e) => {
@@ -577,16 +577,19 @@ async fn submit_payload(
 
         let result = match payload {
             WirePayload::Message(envelope) => {
-                handle_message(&state, envelope, &frame, from_node.clone(), &source).await
+                handle_message(state, envelope, &frame, from_node.clone(), source).await
             }
             WirePayload::AckTombstone(tombstone) => {
-                handle_tombstone(&state, &tombstone, &frame, from_node.clone())
+                handle_tombstone(state, &tombstone, &frame, from_node.clone())
             }
         };
         results.push(result);
     }
+    results
+}
 
-    (StatusCode::OK, Json(SubmitResponse { results })).into_response()
+fn error_response(status: StatusCode, message: String) -> axum::response::Response {
+    (status, Json(ErrorResponse { error: message })).into_response()
 }
 
 async fn handle_message(
@@ -596,7 +599,6 @@ async fn handle_message(
     from_node: Option<String>,
     source: &RequestSource,
 ) -> FrameResult {
-    // Check for self-loop (message from ourselves)
     if source.is_self(state.identity.as_deref()) {
         debug!("Rejecting message from ourselves (loop prevention)");
         return FrameResult::ok(None, None);
@@ -605,72 +607,93 @@ async fn handle_message(
     let routing_key = envelope.routing_key;
     let message_id = envelope.message_id;
 
-    // Clone envelope for MQTT publishing (enqueue takes ownership)
-    let envelope_for_mqtt = envelope.clone();
-
-    // Check per-routing-key rate limit (inline, after parsing body)
-    if let Some(ref limiter) = state.submit_key_limiter {
-        // Use URL-safe base64 of routing key as the rate limit key
-        let key = URL_SAFE_NO_PAD.encode(routing_key.as_bytes());
-        if limiter.check_key(&key).is_err() {
-            debug!(
-                "Rate limited submit for routing key {:?}",
-                &routing_key[..4]
-            );
-            return FrameResult::error("Rate limit exceeded for this routing key");
-        }
+    if let Some(err) = check_submit_rate_limit(state, &routing_key) {
+        return err;
     }
 
-    // Check for duplicate (idempotent operation)
-    match state.store.has_message(&routing_key, &message_id) {
-        Ok(true) => {
-            debug!("Duplicate message {:?}, skipping", message_id);
-            return FrameResult::ok(None, None);
-        }
-        Ok(false) => {}
-        Err(e) => {
-            error!("Failed to check message existence: {}", e);
-            return FrameResult::error(e.to_string());
-        }
+    if let Some(result) = check_duplicate(state, &routing_key, &message_id) {
+        return result;
     }
 
-    // Generate signed receipt AFTER duplicate check (avoid crypto work for duplicates)
-    // Signature always present when identity exists, ack_secret only if we're the intended recipient
+    // Generate signed receipt AFTER duplicate check (avoid crypto for duplicates)
     let receipt = generate_receipt(state.identity.clone(), &envelope).await;
 
-    // Enqueue
+    enqueue_and_distribute(state, envelope, wire_frame_bytes, from_node, receipt)
+}
+
+/// Check per-routing-key rate limit. Returns `Some(error)` if limited.
+fn check_submit_rate_limit(state: &AppState, routing_key: &RoutingKey) -> Option<FrameResult> {
+    let limiter = state.submit_key_limiter.as_ref()?;
+    let key = URL_SAFE_NO_PAD.encode(routing_key.as_bytes());
+    if limiter.check_key(&key).is_err() {
+        debug!(
+            "Rate limited submit for routing key {:?}",
+            &routing_key[..4]
+        );
+        return Some(FrameResult::error(
+            "Rate limit exceeded for this routing key",
+        ));
+    }
+    None
+}
+
+/// Check for duplicate message. Returns `Some(result)` if duplicate or error.
+fn check_duplicate(
+    state: &AppState,
+    routing_key: &RoutingKey,
+    message_id: &reme_message::MessageID,
+) -> Option<FrameResult> {
+    let exists = match state.store.has_message(routing_key, message_id) {
+        Ok(exists) => exists,
+        Err(e) => return Some(FrameResult::error(e.to_string())),
+    };
+    if exists {
+        debug!("Duplicate message {:?}, skipping", message_id);
+        return Some(FrameResult::ok(None, None));
+    }
+    None
+}
+
+/// Enqueue the message, replicate to peers, and publish to MQTT.
+fn enqueue_and_distribute(
+    state: &AppState,
+    envelope: OuterEnvelope,
+    wire_frame_bytes: &[u8],
+    from_node: Option<String>,
+    receipt: Option<Receipt>,
+) -> FrameResult {
+    let routing_key = envelope.routing_key;
+    let envelope_for_mqtt = envelope.clone();
+
     match state.store.enqueue(routing_key, envelope) {
         Ok(()) => {
-            debug!("Message enqueued for {:?}", &routing_key[..4]);
-
-            // Trigger replication to peers (fire-and-forget)
             state
                 .replication
                 .replicate_payload(wire_frame_bytes, from_node);
-
-            // Publish to MQTT brokers if bridge is configured (fire-and-forget)
-            if let Some(ref bridge) = state.mqtt_bridge {
-                let bridge = bridge.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = bridge.publish(&envelope_for_mqtt).await {
-                        warn!("Failed to publish message to MQTT: {}", e);
-                    }
-                });
-            }
-
-            // Extract receipt fields (signature always present when identity exists, ack_secret only if recipient)
-            let (ack_secret, signature) = match receipt {
-                Some(r) => (r.ack_secret, Some(r.signature)),
-                None => (None, None),
-            };
-
-            FrameResult::ok(ack_secret, signature)
+            publish_to_mqtt(state, envelope_for_mqtt);
+            receipt_to_frame_result(receipt)
         }
-        Err(e) => {
-            error!("Failed to enqueue message: {}", e);
-            FrameResult::error(e.to_string())
-        }
+        Err(e) => FrameResult::error(e.to_string()),
     }
+}
+
+fn publish_to_mqtt(state: &AppState, envelope: OuterEnvelope) {
+    if let Some(ref bridge) = state.mqtt_bridge {
+        let bridge = bridge.clone();
+        tokio::spawn(async move {
+            if let Err(e) = bridge.publish(&envelope).await {
+                warn!("Failed to publish message to MQTT: {}", e);
+            }
+        });
+    }
+}
+
+fn receipt_to_frame_result(receipt: Option<Receipt>) -> FrameResult {
+    let (ack_secret, signature) = match receipt {
+        Some(r) => (r.ack_secret, Some(r.signature)),
+        None => (None, None),
+    };
+    FrameResult::ok(ack_secret, signature)
 }
 
 /// Handle an `AckTombstone` frame, returning a `FrameResult`.
@@ -680,45 +703,60 @@ fn handle_tombstone(
     wire_frame_bytes: &[u8],
     from_node: Option<String>,
 ) -> FrameResult {
-    // 1. Look up message by message_id to get its ack_hash
-    let ack_hash = match state.store.get_ack_hash(&tombstone.message_id) {
-        Ok(Some(hash)) => hash,
-        Ok(None) => {
-            debug!(?tombstone.message_id, "AckTombstone for unknown message");
-            return FrameResult::error("Message not found");
-        }
-        Err(e) => {
-            error!("Failed to get ack_hash: {}", e);
-            return FrameResult::error("Internal error");
-        }
-    };
-
-    // 2. Verify authorization: hash(ack_secret) == ack_hash
-    if !tombstone.verify_authorization(&ack_hash) {
-        debug!(?tombstone.message_id, "AckTombstone authorization failed");
-        return FrameResult::error("Invalid ack_secret");
+    if let Some(err) = verify_tombstone_auth(state, tombstone) {
+        return err;
     }
 
-    // 3. Delete message from mailbox
+    delete_and_replicate_tombstone(state, tombstone, wire_frame_bytes, from_node)
+}
+
+fn delete_and_replicate_tombstone(
+    state: &AppState,
+    tombstone: &reme_message::SignedAckTombstone,
+    wire_frame_bytes: &[u8],
+    from_node: Option<String>,
+) -> FrameResult {
     match state.store.delete_message(&tombstone.message_id) {
         Ok(true) => {
-            debug!(?tombstone.message_id, "Message deleted via AckTombstone");
-
-            // Replicate tombstone to peer nodes (fire-and-forget)
             state
                 .replication
                 .replicate_payload(wire_frame_bytes, from_node);
+        }
+        Ok(false) => {} // Already deleted (race condition)
+        Err(_) => return FrameResult::error("Internal error"),
+    }
+    FrameResult::ok(None, None)
+}
 
-            FrameResult::ok(None, None)
-        }
-        Ok(false) => {
-            // Message was already deleted (race condition, not an error)
-            // Don't replicate - this is likely a replicated tombstone arriving
-            FrameResult::ok(None, None)
-        }
+/// Verify tombstone authorization: look up `ack_hash` and verify `ack_secret`.
+/// Returns `Some(error)` if authorization fails, `None` if authorized.
+fn verify_tombstone_auth(
+    state: &AppState,
+    tombstone: &reme_message::SignedAckTombstone,
+) -> Option<FrameResult> {
+    let ack_hash = match lookup_ack_hash(state, &tombstone.message_id) {
+        Ok(hash) => hash,
+        Err(result) => return Some(result),
+    };
+
+    if !tombstone.verify_authorization(&ack_hash) {
+        return Some(FrameResult::error("Invalid ack_secret"));
+    }
+
+    None
+}
+
+/// Look up the `ack_hash` for a message.
+fn lookup_ack_hash(
+    state: &AppState,
+    message_id: &reme_message::MessageID,
+) -> Result<[u8; 16], FrameResult> {
+    match state.store.get_ack_hash(message_id) {
+        Ok(Some(hash)) => Ok(hash),
+        Ok(None) => Err(FrameResult::error("Message not found")),
         Err(e) => {
-            error!("Failed to delete message: {}", e);
-            FrameResult::error("Internal error")
+            error!("Failed to get ack_hash: {}", e);
+            Err(FrameResult::error("Internal error"))
         }
     }
 }
@@ -728,46 +766,36 @@ async fn fetch_messages(
     Path(routing_key_b64): Path<String>,
     Query(query): Query<FetchQuery>,
 ) -> impl IntoResponse {
-    let routing_key = match decode_fetch_routing_key(&routing_key_b64) {
-        Ok(routing_key) => routing_key,
-        Err(message) => return bad_request(message),
-    };
-    let (limit, after) = match parse_fetch_query(&query) {
-        Ok(params) => params,
-        Err(message) => return bad_request(message),
-    };
+    fetch_messages_inner(&state, &routing_key_b64, &query).unwrap_or_else(|e| e)
+}
 
-    // Fetch messages
-    match state.store.fetch_page(&routing_key, limit, after) {
-        Ok(page) => match build_fetch_response(page) {
-            Ok(response) => {
-                debug!(
-                    "Fetched {} payloads for {:?}",
-                    response.payloads.len(),
-                    &routing_key[..4]
-                );
-                (StatusCode::OK, Json(response)).into_response()
-            }
-            Err(e) => {
-                error!("Failed to build fetch response: {}", e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse { error: e }),
-                )
-                    .into_response()
-            }
-        },
-        Err(e) => {
+fn fetch_messages_inner(
+    state: &AppState,
+    routing_key_b64: &str,
+    query: &FetchQuery,
+) -> Result<axum::response::Response, axum::response::Response> {
+    let routing_key = decode_fetch_routing_key(routing_key_b64).map_err(bad_request)?;
+    let (limit, after) = parse_fetch_query(query).map_err(bad_request)?;
+
+    let page = state
+        .store
+        .fetch_page(&routing_key, limit, after)
+        .map_err(|e| {
             error!("Failed to fetch messages: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response()
-        }
-    }
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        })?;
+
+    let response = build_fetch_response(page).map_err(|e| {
+        error!("Failed to build fetch response: {}", e);
+        error_response(StatusCode::INTERNAL_SERVER_ERROR, e)
+    })?;
+
+    debug!(
+        "Fetched {} payloads for {:?}",
+        response.payloads.len(),
+        &routing_key[..4]
+    );
+    Ok((StatusCode::OK, Json(response)).into_response())
 }
 
 async fn health_check() -> impl IntoResponse {
@@ -861,7 +889,16 @@ async fn get_identity(
     let identity = identity.clone();
 
     // Offload crypto operations (XEdDSA signing) to thread pool
-    let challenge: [u8; 32] = challenge.try_into().expect("validated above");
+    let Ok(challenge): Result<[u8; 32], _> = challenge.try_into() else {
+        // Length was validated above; this branch is unreachable
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Challenge conversion failed".to_string(),
+            }),
+        )
+            .into_response();
+    };
     let result = tokio::task::spawn_blocking(move || {
         // Sign: "reme-identity-v1:" || challenge || node_pubkey
         // Note: node_pubkey is still included in signed data for cryptographic binding,

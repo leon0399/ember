@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Integration tests for paginated mailbox fetch responses.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};

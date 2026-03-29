@@ -60,7 +60,7 @@ pub struct RetryTriggerConfig {
 
 impl RetryTriggerConfig {
     /// Create config with all automatic retries disabled.
-    pub fn manual_only() -> Self {
+    pub const fn manual_only() -> Self {
         Self {
             timer: None,
             on_gap_detected: false,
@@ -69,7 +69,7 @@ impl RetryTriggerConfig {
     }
 
     /// Create config with only timer-based retries.
-    pub fn timer_only(interval: Duration) -> Self {
+    pub const fn timer_only(interval: Duration) -> Self {
         Self {
             timer: Some(interval),
             on_gap_detected: false,
@@ -109,7 +109,7 @@ impl TransportRetryPolicy {
     /// Create a policy for HTTP transports.
     ///
     /// Fast initial retry with aggressive backoff.
-    pub fn http() -> Self {
+    pub const fn http() -> Self {
         Self {
             initial_delay: Duration::from_secs(5),
             max_delay: Duration::from_secs(300),
@@ -121,7 +121,7 @@ impl TransportRetryPolicy {
     /// Create a policy for LoRa/Meshtastic transports.
     ///
     /// Slower retry with longer intervals due to mesh propagation time.
-    pub fn lora() -> Self {
+    pub const fn lora() -> Self {
         Self {
             initial_delay: Duration::from_secs(60),
             max_delay: Duration::from_secs(3600), // 1 hour
@@ -133,7 +133,7 @@ impl TransportRetryPolicy {
     /// Create a policy for BLE transports.
     ///
     /// Medium retry with device discovery considerations.
-    pub fn ble() -> Self {
+    pub const fn ble() -> Self {
         Self {
             initial_delay: Duration::from_secs(10),
             max_delay: Duration::from_secs(600), // 10 minutes
@@ -145,7 +145,7 @@ impl TransportRetryPolicy {
     /// Create a policy for Direct tier transports.
     ///
     /// Fast retry when peer is directly reachable.
-    pub fn direct() -> Self {
+    pub const fn direct() -> Self {
         Self {
             initial_delay: Duration::from_secs(2),
             max_delay: Duration::from_secs(60),

@@ -41,7 +41,7 @@ impl EmbeddedTargetConfig {
     }
 
     /// Set the priority.
-    pub fn with_priority(mut self, priority: u8) -> Self {
+    pub const fn with_priority(mut self, priority: u8) -> Self {
         self.base.priority = priority;
         self
     }
@@ -75,7 +75,7 @@ impl EmbeddedTarget {
     }
 
     /// Create a new embedded target with custom configuration.
-    pub fn with_config(handle: EmbeddedNodeHandle, config: EmbeddedTargetConfig) -> Self {
+    pub const fn with_config(handle: EmbeddedNodeHandle, config: EmbeddedTargetConfig) -> Self {
         let health = TargetHealth::new(
             config.base.circuit_breaker_threshold,
             config.base.circuit_breaker_recovery,
@@ -89,7 +89,7 @@ impl EmbeddedTarget {
     }
 
     /// Get the underlying node handle.
-    pub fn handle(&self) -> &EmbeddedNodeHandle {
+    pub const fn handle(&self) -> &EmbeddedNodeHandle {
         &self.handle
     }
 

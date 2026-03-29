@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 //! reme-outbox: Client-side outbox for resilient message delivery
 //!
 //! This crate provides:
@@ -27,7 +28,7 @@
 //! outbox.set_transport_policy("ble", TransportRetryPolicy::ble());
 //!
 //! // Enqueue a message
-//! let entry_id = outbox.enqueue(&recipient, content_id, message_id, &envelope, &inner, None)?;
+//! let entry_id = outbox.enqueue(EnqueueParams { recipient: &recipient, content_id, message_id, envelope_bytes: &envelope, inner_bytes: &inner, expires_at_ms: None }, None)?;
 //!
 //! // Record attempt result
 //! outbox.record_attempt(entry_id, "http:node1.example.com", &AttemptResult::Sent)?;
@@ -120,12 +121,12 @@ impl<S: OutboxStore> ClientOutbox<S> {
     }
 
     /// Get current configuration.
-    pub fn config(&self) -> &OutboxConfig {
+    pub const fn config(&self) -> &OutboxConfig {
         &self.config
     }
 
     /// Get reference to the underlying store.
-    pub fn store(&self) -> &S {
+    pub const fn store(&self) -> &S {
         &self.store
     }
 
@@ -134,23 +135,10 @@ impl<S: OutboxStore> ClientOutbox<S> {
     /// Stores both the outer envelope (for fast retry) and inner envelope
     /// (for re-encryption if needed, e.g., different transport).
     ///
-    /// # Arguments
-    /// * `recipient` - Recipient's public ID
-    /// * `content_id` - Content ID for DAG tracking
-    /// * `message_id` - Wire message ID
-    /// * `envelope_bytes` - Serialized `OuterEnvelope`
-    /// * `inner_bytes` - Serialized `InnerEnvelope`
-    /// * `ttl_ms` - Optional TTL override (uses config default if None)
-    ///
-    /// # Returns
-    /// The database ID for the new outbox entry
+    /// `ttl_ms` overrides the config default if provided.
     pub fn enqueue(
         &self,
-        recipient: &PublicID,
-        content_id: ContentId,
-        message_id: reme_message::MessageID,
-        envelope_bytes: &[u8],
-        inner_bytes: &[u8],
+        params: &EnqueueParams<'_>,
         ttl_ms: Option<u64>,
     ) -> Result<OutboxEntryId, S::Error> {
         let now_ms = now_ms();
@@ -158,14 +146,14 @@ impl<S: OutboxStore> ClientOutbox<S> {
             .or(self.config.default_ttl_ms)
             .map(|ttl| now_ms + ttl);
 
-        self.store.outbox_enqueue(
-            recipient,
-            content_id,
-            message_id,
-            envelope_bytes,
-            inner_bytes,
+        self.store.outbox_enqueue(EnqueueParams {
+            recipient: params.recipient,
+            content_id: params.content_id,
+            message_id: params.message_id,
+            envelope_bytes: params.envelope_bytes,
+            inner_bytes: params.inner_bytes,
             expires_at_ms,
-        )
+        })
     }
 
     /// Get messages that are ready for retry.
@@ -522,15 +510,12 @@ static DEFAULT_RETRY_POLICY: TransportRetryPolicy = TransportRetryPolicy {
 
 /// Get current time in milliseconds since epoch.
 ///
-/// # Panics
-/// Panics if system time is before Unix epoch, which indicates a serious
-/// system configuration error that would break all time-based operations.
+/// Returns 0 if system time is before Unix epoch.
 #[allow(clippy::cast_possible_truncation)] // Milliseconds since epoch fit in u64 for centuries
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .expect("System time is before Unix epoch - check system clock configuration")
-        .as_millis() as u64
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 #[cfg(test)]
@@ -567,24 +552,16 @@ mod tests {
     impl OutboxStore for MockOutboxStore {
         type Error = MockError;
 
-        fn outbox_enqueue(
-            &self,
-            recipient: &PublicID,
-            content_id: ContentId,
-            message_id: MessageID,
-            envelope_bytes: &[u8],
-            inner_bytes: &[u8],
-            expires_at_ms: Option<u64>,
-        ) -> Result<OutboxEntryId, Self::Error> {
+        fn outbox_enqueue(&self, params: EnqueueParams<'_>) -> Result<OutboxEntryId, Self::Error> {
             // message_id IS the entry_id (unified identity)
             let msg = PendingMessage {
-                id: message_id,
-                recipient: *recipient,
-                content_id,
-                envelope_bytes: envelope_bytes.to_vec(),
-                inner_bytes: inner_bytes.to_vec(),
+                id: params.message_id,
+                recipient: *params.recipient,
+                content_id: params.content_id,
+                envelope_bytes: params.envelope_bytes.to_vec(),
+                inner_bytes: params.inner_bytes.to_vec(),
                 created_at_ms: now_ms(),
-                expires_at_ms,
+                expires_at_ms: params.expires_at_ms,
                 expired_at_ms: None,
                 attempts: Vec::new(),
                 next_retry_at_ms: None,
@@ -593,8 +570,8 @@ mod tests {
                 tiered_phase: TieredDeliveryPhase::Urgent,
             };
 
-            self.entries.borrow_mut().insert(message_id, msg);
-            Ok(message_id)
+            self.entries.borrow_mut().insert(params.message_id, msg);
+            Ok(params.message_id)
         }
 
         fn outbox_get_pending(&self) -> Result<Vec<PendingMessage>, Self::Error> {
@@ -843,11 +820,14 @@ mod tests {
 
         let entry_id = outbox
             .enqueue(
-                &recipient,
-                content_id,
-                message_id,
-                b"envelope",
-                b"inner",
+                &EnqueueParams {
+                    recipient: &recipient,
+                    content_id,
+                    message_id,
+                    envelope_bytes: b"envelope",
+                    inner_bytes: b"inner",
+                    expires_at_ms: None,
+                },
                 None,
             )
             .unwrap();
@@ -865,11 +845,14 @@ mod tests {
         let recipient = make_test_public_id(1);
         let entry_id = outbox
             .enqueue(
-                &recipient,
-                [1u8; 8],
-                MessageID::new(),
-                b"envelope",
-                b"inner",
+                &EnqueueParams {
+                    recipient: &recipient,
+                    content_id: [1u8; 8],
+                    message_id: MessageID::new(),
+                    envelope_bytes: b"envelope",
+                    inner_bytes: b"inner",
+                    expires_at_ms: None,
+                },
                 None,
             )
             .unwrap();
@@ -891,11 +874,14 @@ mod tests {
         let recipient = make_test_public_id(1);
         let entry_id = outbox
             .enqueue(
-                &recipient,
-                [1u8; 8],
-                MessageID::new(),
-                b"envelope",
-                b"inner",
+                &EnqueueParams {
+                    recipient: &recipient,
+                    content_id: [1u8; 8],
+                    message_id: MessageID::new(),
+                    envelope_bytes: b"envelope",
+                    inner_bytes: b"inner",
+                    expires_at_ms: None,
+                },
                 None,
             )
             .unwrap();
@@ -921,11 +907,14 @@ mod tests {
         let content_id = [1u8; 8];
         let entry_id = outbox
             .enqueue(
-                &recipient,
-                content_id,
-                MessageID::new(),
-                b"envelope",
-                b"inner",
+                &EnqueueParams {
+                    recipient: &recipient,
+                    content_id,
+                    message_id: MessageID::new(),
+                    envelope_bytes: b"envelope",
+                    inner_bytes: b"inner",
+                    expires_at_ms: None,
+                },
                 None,
             )
             .unwrap();
@@ -953,22 +942,28 @@ mod tests {
 
         let entry1 = outbox
             .enqueue(
-                &recipient,
-                content_id1,
-                MessageID::new(),
-                b"envelope1",
-                b"inner1",
+                &EnqueueParams {
+                    recipient: &recipient,
+                    content_id: content_id1,
+                    message_id: MessageID::new(),
+                    envelope_bytes: b"envelope1",
+                    inner_bytes: b"inner1",
+                    expires_at_ms: None,
+                },
                 None,
             )
             .unwrap();
 
         let entry2 = outbox
             .enqueue(
-                &recipient,
-                content_id2,
-                MessageID::new(),
-                b"envelope2",
-                b"inner2",
+                &EnqueueParams {
+                    recipient: &recipient,
+                    content_id: content_id2,
+                    message_id: MessageID::new(),
+                    envelope_bytes: b"envelope2",
+                    inner_bytes: b"inner2",
+                    expires_at_ms: None,
+                },
                 None,
             )
             .unwrap();
@@ -1009,11 +1004,14 @@ mod tests {
         let recipient = make_test_public_id(1);
         let entry_id = outbox
             .enqueue(
-                &recipient,
-                [1u8; 8],
-                MessageID::new(),
-                b"envelope",
-                b"inner",
+                &EnqueueParams {
+                    recipient: &recipient,
+                    content_id: [1u8; 8],
+                    message_id: MessageID::new(),
+                    envelope_bytes: b"envelope",
+                    inner_bytes: b"inner",
+                    expires_at_ms: None,
+                },
                 None,
             )
             .unwrap();

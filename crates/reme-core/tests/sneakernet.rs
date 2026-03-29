@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Sneakernet round-trip integration tests (GH issue #161)
 //!
 //! Tests the offline workflow: Alice prepares messages offline, exports to a bundle,
@@ -96,7 +97,7 @@ impl TestServerWithStore {
         }
         assert!(server_ready, "Test server failed to start within 500ms");
 
-        TestServerWithStore {
+        Self {
             url,
             store,
             _handle: handle,

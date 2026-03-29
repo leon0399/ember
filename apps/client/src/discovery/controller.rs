@@ -22,6 +22,9 @@ use tracing::{debug, info, warn};
 /// Max identity response body size (a valid response is ~120 bytes).
 const MAX_IDENTITY_RESPONSE_BYTES: u64 = 4096;
 
+/// Result type for a single peer refresh verification.
+type RefreshResult = (String, Result<Option<PublicID>, reqwest::Error>);
+
 /// Number of consecutive verification failures before a peer is removed.
 const FAILURE_THRESHOLD: u8 = 2;
 
@@ -52,6 +55,14 @@ struct PeerEntry {
     routing_key: [u8; 16],
     /// Consecutive verification failures during periodic refresh.
     failure_count: u8,
+}
+
+/// Parameters for registering or updating a verified peer.
+struct VerifiedPeerInfo<'a> {
+    instance_name: &'a str,
+    url: &'a str,
+    verified: PublicID,
+    routing_key: [u8; 16],
 }
 
 #[derive(Deserialize)]
@@ -117,18 +128,9 @@ pub fn spawn(config: SpawnConfig) -> JoinHandle<()> {
             }
         };
 
-        let refresh_secs = refresh_interval_secs.max(30);
-        if refresh_secs != refresh_interval_secs {
-            warn!(
-                requested = refresh_interval_secs,
-                actual = refresh_secs,
-                "refresh_interval_secs too low, clamping to 30"
-            );
-        }
+        let refresh_secs = clamp_refresh_interval(refresh_interval_secs);
         let mut refresh_timer = tokio::time::interval(std::time::Duration::from_secs(refresh_secs));
-        // The first tick completes immediately; skip it so we don't
-        // run refresh before any peers have been discovered.
-        refresh_timer.tick().await;
+        refresh_timer.tick().await; // skip first immediate tick
 
         loop {
             tokio::select! {
@@ -140,40 +142,15 @@ pub fn spawn(config: SpawnConfig) -> JoinHandle<()> {
                             | DiscoveryEvent::PeerUpdated(peer),
                         ) => {
                             controller.handle_discovered(peer, &coordinator).await;
-                            peer_count.store(controller.peer_index.len(), Ordering::Relaxed);
                         }
-                        Ok(DiscoveryEvent::PeerLost(name)) => {
-                            controller.handle_lost(&name, &coordinator);
-                            peer_count.store(controller.peer_index.len(), Ordering::Relaxed);
+                        other => {
+                            controller.handle_event(other, &coordinator);
                         }
-                        Err(broadcast::error::RecvError::Lagged(n)) => {
-                            warn!("Discovery controller lagged by {n} events");
-                        }
-                        Err(broadcast::error::RecvError::Closed) => break,
                     }
+                    peer_count.store(controller.peer_index.len(), Ordering::Relaxed);
                 }
                 Some((pubkey, routing_key)) = contact_rx.recv() => {
-                    let candidates = controller.contact_index.entry(routing_key).or_default();
-                    if !candidates.contains(&pubkey) {
-                        candidates.push(pubkey);
-                    }
-                    debug!(
-                        pubkey = %hex::encode(pubkey.to_bytes()),
-                        "Added new contact to discovery controller"
-                    );
-
-                    // Re-process any cached strangers whose routing key matches
-                    // the newly added contact. Peers that fail verification are
-                    // silently dropped (not re-cached) — they will be caught on
-                    // the next mDNS re-announcement.
-                    let cached_peers = controller.drain_matching_strangers(&routing_key);
-                    for peer in cached_peers {
-                        debug!(
-                            instance = %peer.instance_name,
-                            "Re-processing cached stranger for new contact"
-                        );
-                        controller.handle_discovered(peer, &coordinator).await;
-                    }
+                    controller.add_runtime_contact(pubkey, routing_key, &coordinator).await;
                     peer_count.store(controller.peer_index.len(), Ordering::Relaxed);
                 }
                 _ = refresh_timer.tick() => {
@@ -183,19 +160,23 @@ pub fn spawn(config: SpawnConfig) -> JoinHandle<()> {
             }
         }
 
-        // Deregister all tracked peers on shutdown.
-        for (name, entry) in controller.peer_index.drain() {
-            let target_id = TargetId::http(&entry.url);
-            coordinator.remove_http_target(&target_id);
-            controller.registry.remove_meta(&target_id);
-            debug!(instance = %name, "Deregistered peer on shutdown");
-        }
-        controller.verified_peer_index.clear();
-        controller.stranger_cache.clear();
+        controller.deregister_all(&coordinator);
         peer_count.store(0, Ordering::Relaxed);
-
         info!("Discovery controller stopped");
     })
+}
+
+/// Clamp refresh interval to a minimum of 30 seconds, warning if clamped.
+fn clamp_refresh_interval(requested: u64) -> u64 {
+    let clamped = requested.max(30);
+    if clamped != requested {
+        warn!(
+            requested,
+            actual = clamped,
+            "refresh_interval_secs too low, clamping to 30"
+        );
+    }
+    clamped
 }
 
 /// Perform identity challenge-response verification against a single peer.
@@ -217,49 +198,104 @@ async fn verify_identity(
         challenge_encoded
     );
 
-    let mut resp = http_client.get(&url).send().await?;
+    let resp = http_client.get(&url).send().await?;
+    let Some(signature) = read_identity_signature(resp).await? else {
+        return Ok(None);
+    };
 
+    Ok(find_matching_candidate(&challenge, &signature, &candidates))
+}
+
+/// Read an HTTP response body with size limit.
+///
+/// Returns `Ok(None)` if the response is non-success or body exceeds `MAX_IDENTITY_RESPONSE_BYTES`.
+async fn read_bounded_response(
+    mut resp: reqwest::Response,
+) -> Result<Option<Vec<u8>>, reqwest::Error> {
     if !resp.status().is_success() {
-        debug!(status = %resp.status(), "Identity challenge returned non-success");
+        debug!("Identity challenge returned non-success: {}", resp.status());
         return Ok(None);
     }
 
+    read_bounded_body(&mut resp).await
+}
+
+/// Read response body chunks up to the size limit.
+async fn read_bounded_body(
+    resp: &mut reqwest::Response,
+) -> Result<Option<Vec<u8>>, reqwest::Error> {
     #[allow(clippy::cast_possible_truncation)]
     let max = MAX_IDENTITY_RESPONSE_BYTES as usize;
     let mut buf = Vec::with_capacity(max);
     while let Some(chunk) = resp.chunk().await? {
         if buf.len() + chunk.len() > max {
-            debug!(
-                size = buf.len() + chunk.len(),
-                "Identity response too large, skipping"
-            );
+            debug!("Identity response too large, skipping");
             return Ok(None);
         }
         buf.extend_from_slice(&chunk);
     }
-    let Ok(body) = serde_json::from_slice::<IdentityResponse>(&buf) else {
-        debug!("Failed to parse identity response");
-        return Ok(None);
-    };
+    Ok(Some(buf))
+}
 
-    let Ok(sig_bytes) = BASE64_STANDARD.decode(&body.signature) else {
-        debug!("Failed to base64-decode identity signature");
-        return Ok(None);
-    };
-    let Ok(signature): Result<[u8; 64], _> = sig_bytes.try_into() else {
-        debug!("Identity signature has wrong length (expected 64 bytes)");
-        return Ok(None);
-    };
+/// Parse a 64-byte signature from an identity response JSON body.
+fn parse_signature_from_body(buf: &[u8]) -> Option<[u8; 64]> {
+    let body = serde_json::from_slice::<IdentityResponse>(buf).ok()?;
+    let sig_bytes = BASE64_STANDARD.decode(&body.signature).ok()?;
+    sig_bytes.try_into().ok()
+}
 
-    let mut matched: Option<PublicID> = None;
-    for candidate in &candidates {
-        let sign_data = build_identity_sign_data(&challenge, &candidate.to_bytes());
-        if candidate.verify_xeddsa(&sign_data, &signature) && matched.is_none() {
-            matched = Some(*candidate);
+/// Read and validate the identity response, extracting the 64-byte signature.
+async fn read_identity_signature(
+    resp: reqwest::Response,
+) -> Result<Option<[u8; 64]>, reqwest::Error> {
+    let Some(buf) = read_bounded_response(resp).await? else {
+        return Ok(None);
+    };
+    Ok(parse_signature_from_body(&buf))
+}
+
+/// Find the first candidate whose `XEdDSA` signature matches the challenge.
+fn find_matching_candidate(
+    challenge: &[u8; 32],
+    signature: &[u8; 64],
+    candidates: &[PublicID],
+) -> Option<PublicID> {
+    candidates.iter().find_map(|candidate| {
+        let sign_data = build_identity_sign_data(challenge, &candidate.to_bytes());
+        candidate
+            .verify_xeddsa(&sign_data, signature)
+            .then_some(*candidate)
+    })
+}
+
+/// Extract routing key from peer TXT records, logging on failure.
+fn extract_routing_key(peer: &reme_discovery::RawDiscoveredPeer) -> Option<[u8; 16]> {
+    match decode_txt(&peer.txt_records) {
+        Ok(fields) => Some(fields.routing_key),
+        Err(e) => {
+            warn!(
+                "Failed to decode TXT records for {}: {e}",
+                peer.instance_name
+            );
+            None
         }
     }
+}
 
-    Ok(matched)
+fn log_peer_limit_reached(max_peers: usize, instance_name: &str) {
+    warn!("Peer limit reached (max={max_peers}), ignoring {instance_name}");
+}
+
+fn log_no_addresses(instance_name: &str) {
+    warn!("No addresses in discovery event for {instance_name}");
+}
+
+fn log_no_match(instance_name: &str, addr: std::net::IpAddr) {
+    debug!("No candidate matched for {instance_name} at {addr}");
+}
+
+fn log_verify_error(instance_name: &str, addr: std::net::IpAddr, e: &reqwest::Error) {
+    debug!("Verification failed for {instance_name} at {addr}: {e}");
 }
 
 impl DiscoveryController {
@@ -294,6 +330,78 @@ impl DiscoveryController {
         })
     }
 
+    /// Handle non-async broadcast events (`PeerLost`, errors).
+    ///
+    /// PeerDiscovered/PeerUpdated are handled directly in the spawn loop
+    /// because they require async identity verification.
+    fn handle_event(
+        &mut self,
+        event: Result<DiscoveryEvent, broadcast::error::RecvError>,
+        coordinator: &TransportCoordinator,
+    ) {
+        match event {
+            Ok(DiscoveryEvent::PeerLost(name)) => {
+                self.handle_lost(&name, coordinator);
+            }
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                warn!("Discovery controller lagged by {n} events");
+            }
+            _ => {}
+        }
+    }
+
+    /// Add a runtime contact and re-process cached strangers that match.
+    async fn add_runtime_contact(
+        &mut self,
+        pubkey: PublicID,
+        routing_key: [u8; 16],
+        coordinator: &TransportCoordinator,
+    ) {
+        self.register_contact(pubkey, routing_key);
+        self.reprocess_strangers_for_key(&routing_key, coordinator)
+            .await;
+    }
+
+    /// Register a contact in the index if not already present.
+    fn register_contact(&mut self, pubkey: PublicID, routing_key: [u8; 16]) {
+        let candidates = self.contact_index.entry(routing_key).or_default();
+        if !candidates.contains(&pubkey) {
+            candidates.push(pubkey);
+        }
+        debug!(
+            "Added new contact to discovery controller: {}",
+            hex::encode(pubkey.to_bytes())
+        );
+    }
+
+    /// Re-process cached strangers whose routing key matches the given key.
+    async fn reprocess_strangers_for_key(
+        &mut self,
+        routing_key: &[u8; 16],
+        coordinator: &TransportCoordinator,
+    ) {
+        let cached_peers = self.drain_matching_strangers(routing_key);
+        for peer in cached_peers {
+            debug!(
+                "Re-processing cached stranger for new contact: {}",
+                peer.instance_name
+            );
+            self.handle_discovered(peer, coordinator).await;
+        }
+    }
+
+    /// Deregister all tracked peers (used during shutdown).
+    fn deregister_all(&mut self, coordinator: &TransportCoordinator) {
+        for (name, entry) in self.peer_index.drain() {
+            let target_id = TargetId::http(&entry.url);
+            coordinator.remove_http_target(&target_id);
+            self.registry.remove_meta(&target_id);
+            debug!("Deregistered peer {name} on shutdown");
+        }
+        self.verified_peer_index.clear();
+        self.stranger_cache.clear();
+    }
+
     /// Periodic refresh: re-verify every tracked peer concurrently using
     /// [`JoinSet`]. On failure, increment the failure counter; at
     /// [`FAILURE_THRESHOLD`] consecutive failures, remove the peer entirely
@@ -309,197 +417,223 @@ impl DiscoveryController {
             return;
         }
 
-        debug!(count = peers.len(), "Starting periodic peer refresh");
+        debug!("Starting periodic peer refresh ({} peers)", peers.len());
 
+        let mut set = self.spawn_refresh_tasks(peers);
+        let to_remove = self.collect_refresh_results(&mut set).await;
+        self.remove_stale_peers(to_remove, coordinator);
+    }
+
+    /// Spawn concurrent verification tasks for all tracked peers.
+    fn spawn_refresh_tasks(
+        &self,
+        peers: Vec<(String, String, PublicID)>,
+    ) -> JoinSet<RefreshResult> {
         let mut set = JoinSet::new();
         for (name, url, identity) in peers {
             let client = self.http_client.clone();
             set.spawn(async move { (name, verify_identity(client, url, vec![identity]).await) });
         }
+        set
+    }
 
-        let mut to_remove = Vec::new();
-
-        while let Some(res) = set.join_next().await {
-            match res {
-                Ok((name, Ok(Some(_)))) => {
-                    if let Some(entry) = self.peer_index.get_mut(&name) {
-                        if entry.failure_count > 0 {
-                            debug!(instance = %name, "Peer refresh succeeded, resetting failure count");
-                        }
-                        entry.failure_count = 0;
-                    }
-                }
-                Ok((name, Ok(None) | Err(_))) => {
-                    if let Some(entry) = self.peer_index.get_mut(&name) {
-                        entry.failure_count += 1;
-                        debug!(
-                            instance = %name,
-                            failures = entry.failure_count,
-                            "Peer refresh verification failed"
-                        );
-                        if entry.failure_count >= FAILURE_THRESHOLD {
-                            to_remove.push(name);
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!("Peer refresh task panicked: {e}");
-                }
-            }
-        }
-
+    /// Remove peers that exceeded the failure threshold.
+    fn remove_stale_peers(&mut self, to_remove: Vec<String>, coordinator: &TransportCoordinator) {
         for name in to_remove {
-            info!(
-                instance = %name,
-                "Removing stale peer after {} consecutive verification failures",
-                FAILURE_THRESHOLD
-            );
+            info!("Removing stale peer {name} after {FAILURE_THRESHOLD} consecutive failures");
             self.remove_peer(&name, coordinator);
         }
     }
 
-    // This handler orchestrates validation, identity verification, and routing
-    // for a single discovery event; keeping it in one function preserves the
-    // control-flow context, so we suppress the length lint rather than splitting.
-    #[allow(clippy::too_many_lines)]
+    /// Collect results from a concurrent peer refresh, updating failure counters.
+    /// Returns names of peers that should be removed.
+    async fn collect_refresh_results(&mut self, set: &mut JoinSet<RefreshResult>) -> Vec<String> {
+        let mut to_remove = Vec::new();
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok((name, Ok(Some(_)))) => self.record_refresh_success(&name),
+                Ok((name, Ok(None) | Err(_))) => {
+                    if self.record_refresh_failure(&name) {
+                        to_remove.push(name);
+                    }
+                }
+                Err(e) => warn!("Peer refresh task panicked: {e}"),
+            }
+        }
+        to_remove
+    }
+
+    /// Record a successful refresh for a peer, resetting its failure count.
+    fn record_refresh_success(&mut self, name: &str) {
+        if let Some(entry) = self.peer_index.get_mut(name) {
+            if entry.failure_count > 0 {
+                debug!("Peer refresh succeeded for {name}, resetting failure count");
+            }
+            entry.failure_count = 0;
+        }
+    }
+
+    /// Record a refresh failure. Returns `true` if the peer should be removed.
+    fn record_refresh_failure(&mut self, name: &str) -> bool {
+        let Some(entry) = self.peer_index.get_mut(name) else {
+            return false;
+        };
+        entry.failure_count += 1;
+        debug!(
+            "Peer refresh verification failed for {name} (failures: {})",
+            entry.failure_count
+        );
+        entry.failure_count >= FAILURE_THRESHOLD
+    }
+
+    /// Handle a discovered or updated peer from mDNS events.
     async fn handle_discovered(
         &mut self,
         peer: reme_discovery::RawDiscoveredPeer,
         coordinator: &TransportCoordinator,
     ) {
-        let routing_key = match decode_txt(&peer.txt_records) {
-            Ok(fields) => fields.routing_key,
-            Err(e) => {
-                warn!(
-                    instance = %peer.instance_name,
-                    "Failed to decode TXT records: {e}"
-                );
-                return;
-            }
+        let Some(routing_key) = extract_routing_key(&peer) else {
+            return;
         };
 
         let Some(candidates) = self.contact_index.get(&routing_key) else {
-            // Allow updates for already-cached peers (refreshes address/TXT),
-            // only enforce cap for new inserts.
-            if self.stranger_cache.contains_key(&peer.instance_name) {
-                debug!(
-                    instance = %peer.instance_name,
-                    "Updating cached stranger (routing key not in contacts)"
-                );
-                self.stranger_cache
-                    .insert(peer.instance_name.clone(), (peer, routing_key));
-            } else if self.stranger_cache.len() < self.max_peers {
-                debug!(
-                    instance = %peer.instance_name,
-                    "Caching stranger (routing key not in contacts)"
-                );
-                self.stranger_cache
-                    .insert(peer.instance_name.clone(), (peer, routing_key));
-            } else {
-                debug!(
-                    instance = %peer.instance_name,
-                    max = self.max_peers,
-                    "Stranger cache full, dropping peer"
-                );
-            }
+            self.cache_stranger(peer, routing_key);
             return;
         };
 
-        let is_update = self.peer_index.contains_key(&peer.instance_name);
+        if !self.should_process_peer(&peer, routing_key, candidates) {
+            return;
+        }
 
-        if !is_update && self.peer_index.len() >= self.max_peers {
-            warn!(
-                instance = %peer.instance_name,
-                max = self.max_peers,
-                "Peer limit reached, ignoring new peer"
+        if let Some((verified, url)) = self.verify_any_address(&peer, candidates).await {
+            self.register_verified_peer(
+                &VerifiedPeerInfo {
+                    instance_name: &peer.instance_name,
+                    url: &url,
+                    verified,
+                    routing_key,
+                },
+                coordinator,
+            );
+        }
+    }
+
+    /// Register or update a verified peer in indices and coordinator.
+    fn register_verified_peer(
+        &mut self,
+        info: &VerifiedPeerInfo<'_>,
+        coordinator: &TransportCoordinator,
+    ) {
+        if self.peer_index.contains_key(info.instance_name) {
+            self.handle_update_impl(info, coordinator);
+        } else {
+            self.handle_new_impl(info, coordinator);
+        }
+    }
+
+    /// Cache a peer whose routing key doesn't match any known contact.
+    fn cache_stranger(&mut self, peer: reme_discovery::RawDiscoveredPeer, routing_key: [u8; 16]) {
+        let is_known = self.stranger_cache.contains_key(&peer.instance_name);
+
+        if !is_known && !self.has_stranger_capacity() {
+            debug!(
+                "Stranger cache full (max={}), dropping {}",
+                self.max_peers, peer.instance_name
             );
             return;
+        }
+
+        self.insert_stranger(peer, routing_key, is_known);
+    }
+
+    /// Whether the stranger cache has room for a new entry.
+    fn has_stranger_capacity(&self) -> bool {
+        self.stranger_cache.len() < self.max_peers
+    }
+
+    /// Insert a peer into the stranger cache.
+    fn insert_stranger(
+        &mut self,
+        peer: reme_discovery::RawDiscoveredPeer,
+        routing_key: [u8; 16],
+        is_update: bool,
+    ) {
+        debug!(
+            "Caching stranger {} (update={})",
+            peer.instance_name, is_update
+        );
+        self.stranger_cache
+            .insert(peer.instance_name.clone(), (peer, routing_key));
+    }
+
+    /// Check whether a discovered peer should proceed to identity verification.
+    ///
+    /// Returns `false` if the peer should be skipped (limit reached, no addresses,
+    /// or is an update with unchanged address+routing key).
+    fn should_process_peer(
+        &self,
+        peer: &reme_discovery::RawDiscoveredPeer,
+        routing_key: [u8; 16],
+        _candidates: &[PublicID],
+    ) -> bool {
+        let is_update = self.peer_index.contains_key(&peer.instance_name);
+
+        if !is_update && self.is_at_peer_limit() {
+            log_peer_limit_reached(self.max_peers, &peer.instance_name);
+            return false;
         }
 
         if peer.addresses.is_empty() {
-            warn!(
-                instance = %peer.instance_name,
-                "No addresses in discovery event"
+            log_no_addresses(&peer.instance_name);
+            return false;
+        }
+
+        !is_update || self.needs_reverification(peer, routing_key)
+    }
+
+    /// Whether the peer index is at capacity.
+    fn is_at_peer_limit(&self) -> bool {
+        self.peer_index.len() >= self.max_peers
+    }
+
+    /// Check if an already-tracked peer needs re-verification (address or TXT changed).
+    fn needs_reverification(
+        &self,
+        peer: &reme_discovery::RawDiscoveredPeer,
+        routing_key: [u8; 16],
+    ) -> bool {
+        let Some(entry) = self.peer_index.get(&peer.instance_name) else {
+            return false;
+        };
+        let stored_url_still_valid = peer.addresses.iter().any(|&addr| {
+            let candidate = format!("http://{}", SocketAddr::new(addr, peer.port));
+            entry.url == candidate
+        });
+        if stored_url_still_valid && entry.routing_key == routing_key {
+            debug!(
+                "Update unchanged for {}, skipping re-verification",
+                peer.instance_name
             );
-            return;
+            return false;
         }
+        true
+    }
 
-        // For updates where both the stored URL and TXT routing key still match,
-        // skip re-verification entirely. If only the address matches but TXT
-        // content changed (e.g. identity rotation), re-verify. (Fixes #105)
-        if is_update {
-            let Some(entry) = self.peer_index.get(&peer.instance_name) else {
-                warn!(
-                    instance = %peer.instance_name,
-                    "PeerUpdated for unknown peer (possible mDNS race), skipping"
-                );
-                return;
-            };
-            let stored_url_still_valid = peer.addresses.iter().any(|&addr| {
-                let candidate = format!("http://{}", SocketAddr::new(addr, peer.port));
-                entry.url == candidate
-            });
-            let routing_key_unchanged = entry.routing_key == routing_key;
-            if stored_url_still_valid && routing_key_unchanged {
-                debug!(
-                    instance = %peer.instance_name,
-                    "Update with matching address and routing key, skipping re-verification"
-                );
-                return;
-            }
-        }
-
-        // Try each address until identity verification succeeds.
-        let mut result: Option<(PublicID, String)> = None;
+    /// Try each address in the peer until identity verification succeeds.
+    async fn verify_any_address(
+        &self,
+        peer: &reme_discovery::RawDiscoveredPeer,
+        candidates: &[PublicID],
+    ) -> Option<(PublicID, String)> {
         for &addr in &peer.addresses {
             let url = format!("http://{}", SocketAddr::new(addr, peer.port));
             match self.verify_peer_identity(&url, candidates).await {
-                Ok(Some(pubkey)) => {
-                    result = Some((pubkey, url));
-                    break;
-                }
-                Ok(None) => {
-                    debug!(
-                        instance = %peer.instance_name,
-                        addr = %addr,
-                        "Identity verification: no candidate matched"
-                    );
-                }
-                Err(e) => {
-                    debug!(
-                        instance = %peer.instance_name,
-                        addr = %addr,
-                        "Identity verification failed: {e}"
-                    );
-                }
+                Ok(Some(pubkey)) => return Some((pubkey, url)),
+                Ok(None) => log_no_match(&peer.instance_name, addr),
+                Err(e) => log_verify_error(&peer.instance_name, addr, &e),
             }
         }
-
-        let Some((verified, url)) = result else {
-            debug!(
-                instance = %peer.instance_name,
-                "No address passed identity verification"
-            );
-            return;
-        };
-
-        if is_update {
-            self.handle_update(
-                &peer.instance_name,
-                &url,
-                verified,
-                routing_key,
-                coordinator,
-            );
-        } else {
-            self.handle_new(
-                &peer.instance_name,
-                &url,
-                verified,
-                routing_key,
-                coordinator,
-            );
-        }
+        None
     }
 
     fn build_http_target(instance_name: &str, url: &str, verified: PublicID) -> Option<HttpTarget> {
@@ -510,78 +644,66 @@ impl DiscoveryController {
         match HttpTarget::new(config) {
             Ok(t) => Some(t),
             Err(e) => {
-                warn!(instance = %instance_name, "Failed to create HTTP target: {e}");
+                warn!("Failed to create HTTP target for {instance_name}: {e}");
                 None
             }
         }
     }
 
-    fn handle_new(
-        &mut self,
-        instance_name: &str,
-        url: &str,
-        verified: PublicID,
-        routing_key: [u8; 16],
-        coordinator: &TransportCoordinator,
-    ) {
-        let Some(target) = Self::build_http_target(instance_name, url, verified) else {
+    fn handle_new_impl(&mut self, info: &VerifiedPeerInfo<'_>, coordinator: &TransportCoordinator) {
+        let Some(target) = Self::build_http_target(info.instance_name, info.url, info.verified)
+        else {
             return;
         };
 
-        let target_id = TargetId::http(url);
+        let target_id = TargetId::http(info.url);
 
         // TODO(#90): receipt-gated direct tier — currently a relay attacker who
         // passes identity verification can blackhole messages. Once #90 lands,
         // Direct tier will require a verified receipt before declaring success.
-        // See also #27 / #32 for privacy-preserving fetch from ephemeral nodes.
         coordinator.add_http_target(target);
 
-        // Register as ephemeral Direct target so UI/registry show correct tier (#106)
         self.registry.register_ephemeral(
             target_id,
-            Some(format!("lan:{instance_name}")),
+            Some(format!("lan:{}", info.instance_name)),
             DeliveryTier::Direct,
         );
 
         info!(
-            instance = %instance_name,
-            url = %url,
-            "Registered discovered peer"
+            "Registered discovered peer {} at {}",
+            info.instance_name, info.url
         );
 
         self.peer_index.insert(
-            instance_name.to_owned(),
+            info.instance_name.to_owned(),
             PeerEntry {
-                verified_identity: verified,
-                url: url.to_owned(),
-                routing_key,
+                verified_identity: info.verified,
+                url: info.url.to_owned(),
+                routing_key: info.routing_key,
                 failure_count: 0,
             },
         );
 
         self.verified_peer_index
-            .entry(verified)
+            .entry(info.verified)
             .or_default()
-            .push(instance_name.to_owned());
+            .push(info.instance_name.to_owned());
     }
 
-    fn handle_update(
+    fn handle_update_impl(
         &mut self,
-        instance_name: &str,
-        url: &str,
-        verified: PublicID,
-        routing_key: [u8; 16],
+        info: &VerifiedPeerInfo<'_>,
         coordinator: &TransportCoordinator,
     ) {
-        let Some(entry) = self.peer_index.get(instance_name) else {
+        let Some(entry) = self.peer_index.get(info.instance_name) else {
             warn!(
-                instance = %instance_name,
-                "handle_update called for unknown peer (possible mDNS race), skipping"
+                "handle_update for unknown peer {}, skipping",
+                info.instance_name
             );
             return;
         };
-        let address_changed = entry.url != url;
-        let identity_changed = entry.verified_identity != verified;
+        let address_changed = entry.url != info.url;
+        let identity_changed = entry.verified_identity != info.verified;
 
         if !address_changed && !identity_changed {
             return;
@@ -590,68 +712,83 @@ impl DiscoveryController {
         let old_target_id = TargetId::http(&entry.url);
         let old_identity = entry.verified_identity;
 
-        let Some(target) = Self::build_http_target(instance_name, url, verified) else {
+        let Some(target) = Self::build_http_target(info.instance_name, info.url, info.verified)
+        else {
             return;
         };
 
         coordinator.replace_http_target(&old_target_id, target);
+        self.apply_update_registry(info, &old_target_id, address_changed);
+        self.update_verified_index_on_identity_change(
+            info.instance_name,
+            old_identity,
+            info.verified,
+            identity_changed,
+        );
+        self.finalize_peer_entry(info);
+    }
 
-        // Update registry metadata when address changes (#106)
+    /// Update registry metadata and log address/identity changes.
+    fn apply_update_registry(
+        &self,
+        info: &VerifiedPeerInfo<'_>,
+        old_target_id: &TargetId,
+        address_changed: bool,
+    ) {
         if address_changed {
-            // Remove old target metadata, register new one
-            self.registry.remove_meta(&old_target_id);
-            self.registry.register_ephemeral(
-                TargetId::http(url),
-                Some(format!("lan:{instance_name}")),
-                DeliveryTier::Direct,
-            );
-        }
-
-        if address_changed {
-            info!(
-                instance = %instance_name,
-                old_url = %entry.url,
-                new_url = %url,
-                "Updated discovered peer address"
-            );
+            self.replace_registry_entry(info, old_target_id);
         } else {
-            info!(
-                instance = %instance_name,
-                "Updated discovered peer identity"
-            );
+            info!("Updated peer {} identity", info.instance_name);
         }
+    }
 
-        // If identity changed, update the verified_peer_index.
-        if identity_changed {
-            // Remove from old identity's instance list.
-            if let Some(instances) = self.verified_peer_index.get_mut(&old_identity) {
-                instances.retain(|n| n != instance_name);
-                if instances.is_empty() {
-                    self.verified_peer_index.remove(&old_identity);
-                }
-            }
-            // Add to new identity's instance list.
-            self.verified_peer_index
-                .entry(verified)
-                .or_default()
-                .push(instance_name.to_owned());
-        }
+    /// Replace registry entry when a peer's address changes.
+    fn replace_registry_entry(&self, info: &VerifiedPeerInfo<'_>, old_target_id: &TargetId) {
+        self.registry.remove_meta(old_target_id);
+        self.registry.register_ephemeral(
+            TargetId::http(info.url),
+            Some(format!("lan:{}", info.instance_name)),
+            DeliveryTier::Direct,
+        );
+        info!(
+            "Updated peer {} address to {}",
+            info.instance_name, info.url
+        );
+    }
 
-        // Update the entry in-place to avoid re-allocating the key.
-        // Safety: this method takes `&mut self` so no concurrent removal is possible,
-        // and no code path above removes from `peer_index`, so this lookup cannot fail
-        // if the guard at the top of the function succeeded.
-        let Some(entry) = self.peer_index.get_mut(instance_name) else {
-            warn!(
-                instance = %instance_name,
-                "Peer entry vanished before in-place update (possible mDNS race), skipping"
-            );
+    /// Write verified peer data into the `peer_index` entry.
+    fn finalize_peer_entry(&mut self, info: &VerifiedPeerInfo<'_>) {
+        let Some(entry) = self.peer_index.get_mut(info.instance_name) else {
+            warn!("Peer entry vanished before update: {}", info.instance_name);
             return;
         };
-        entry.verified_identity = verified;
-        url.clone_into(&mut entry.url);
-        entry.routing_key = routing_key;
+        entry.verified_identity = info.verified;
+        info.url.clone_into(&mut entry.url);
+        entry.routing_key = info.routing_key;
         entry.failure_count = 0;
+    }
+
+    /// Update the verified peer index when a peer's identity changes.
+    fn update_verified_index_on_identity_change(
+        &mut self,
+        instance_name: &str,
+        old_identity: PublicID,
+        new_identity: PublicID,
+        changed: bool,
+    ) {
+        if !changed {
+            return;
+        }
+        if let Some(instances) = self.verified_peer_index.get_mut(&old_identity) {
+            instances.retain(|n| n != instance_name);
+            if instances.is_empty() {
+                self.verified_peer_index.remove(&old_identity);
+            }
+        }
+        self.verified_peer_index
+            .entry(new_identity)
+            .or_default()
+            .push(instance_name.to_owned());
     }
 
     fn handle_lost(&mut self, instance_name: &str, coordinator: &TransportCoordinator) {
@@ -674,7 +811,7 @@ impl DiscoveryController {
                 }
             }
 
-            info!(instance = %instance_name, "Removed peer");
+            info!("Removed peer {instance_name}");
         }
     }
 
@@ -703,6 +840,46 @@ impl DiscoveryController {
             candidates.to_vec(),
         )
         .await
+    }
+}
+
+/// Test-only wrappers that accept the old 5-arg signature for backward compat.
+#[cfg(test)]
+impl DiscoveryController {
+    #[allow(clippy::too_many_arguments)]
+    fn handle_new(
+        &mut self,
+        instance_name: &str,
+        url: &str,
+        verified: PublicID,
+        routing_key: [u8; 16],
+        coordinator: &TransportCoordinator,
+    ) {
+        let info = VerifiedPeerInfo {
+            instance_name,
+            url,
+            verified,
+            routing_key,
+        };
+        self.handle_new_impl(&info, coordinator);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn handle_update(
+        &mut self,
+        instance_name: &str,
+        url: &str,
+        verified: PublicID,
+        routing_key: [u8; 16],
+        coordinator: &TransportCoordinator,
+    ) {
+        let info = VerifiedPeerInfo {
+            instance_name,
+            url,
+            verified,
+            routing_key,
+        };
+        self.handle_update_impl(&info, coordinator);
     }
 }
 

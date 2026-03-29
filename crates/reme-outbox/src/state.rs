@@ -69,7 +69,7 @@ pub enum AttemptError {
 
 impl AttemptError {
     /// Whether this error is likely transient (worth retrying).
-    pub fn is_transient(&self) -> bool {
+    pub const fn is_transient(&self) -> bool {
         match self {
             Self::Network { is_transient, .. } | Self::Rejected { is_transient, .. } => {
                 *is_transient
@@ -126,12 +126,12 @@ pub enum AttemptResult {
 
 impl AttemptResult {
     /// Returns true if this attempt was successful.
-    pub fn is_sent(&self) -> bool {
+    pub const fn is_sent(&self) -> bool {
         matches!(self, Self::Sent)
     }
 
     /// Returns the error if this attempt failed.
-    pub fn error(&self) -> Option<&AttemptError> {
+    pub const fn error(&self) -> Option<&AttemptError> {
         match self {
             Self::Sent => None,
             Self::Failed(e) => Some(e),
@@ -226,22 +226,22 @@ pub enum TieredDeliveryPhase {
 
 impl TieredDeliveryPhase {
     /// Check if this message is in the urgent phase (needs aggressive retry).
-    pub fn is_urgent(&self) -> bool {
+    pub const fn is_urgent(&self) -> bool {
         matches!(self, Self::Urgent)
     }
 
     /// Check if this message is distributed (needs periodic maintenance).
-    pub fn is_distributed(&self) -> bool {
+    pub const fn is_distributed(&self) -> bool {
         matches!(self, Self::Distributed { .. })
     }
 
     /// Check if this message is confirmed (ready for cleanup).
-    pub fn is_confirmed(&self) -> bool {
+    pub const fn is_confirmed(&self) -> bool {
         matches!(self, Self::Confirmed { .. })
     }
 
     /// Get confidence level if distributed.
-    pub fn confidence(&self) -> Option<&DeliveryConfidence> {
+    pub const fn confidence(&self) -> Option<&DeliveryConfidence> {
         match self {
             Self::Distributed { confidence, .. } => Some(confidence),
             _ => None,
@@ -362,7 +362,7 @@ impl PendingMessage {
 
     /// Check if this message is due for retry.
     pub fn is_due_for_retry(&self, now_ms: u64) -> bool {
-        self.next_retry_at_ms.is_none_or(|t| t <= now_ms)
+        self.next_retry_at_ms.map_or(true, |t| t <= now_ms)
     }
 
     /// Get the last attempt for a specific transport, if any.
@@ -616,7 +616,7 @@ mod tests {
 
         msg.successful_targets.insert(node1.clone());
 
-        let all_targets = [node1.clone(), node2.clone(), node3.clone()];
+        let all_targets = [node1, node2.clone(), node3.clone()];
 
         let failed = msg.failed_targets(all_targets.iter());
         assert_eq!(failed.len(), 2);

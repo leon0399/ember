@@ -59,7 +59,7 @@ impl<R: Read> BundleReader<R> {
     }
 
     /// Total number of frames declared in the bundle header.
-    pub fn frame_count(&self) -> u32 {
+    pub const fn frame_count(&self) -> u32 {
         self.frame_count
     }
 
