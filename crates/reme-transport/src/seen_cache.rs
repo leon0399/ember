@@ -183,9 +183,11 @@ impl SharedSeenCache {
     ///
     /// Returns `true` if the message was NOT seen before.
     /// Returns `false` if the message was already seen.
+    /// On lock poisoning: fail-open (returns `true`) to avoid dropping messages.
     pub fn check_and_mark(&self, message_id: &MessageID) -> bool {
         let Ok(mut guard) = self.0.lock() else {
-            return false;
+            tracing::warn!("SeenCache lock poisoned, fail-open: treating message as unseen");
+            return true;
         };
         guard.check_and_mark(message_id)
     }

@@ -250,7 +250,7 @@ impl InnerEnvelope {
     /// Hash covers: identity + timestamp + content (NOT DAG fields).
     /// This ensures the same content can be resent with different DAG
     /// fields while maintaining the same `content_id`.
-    pub fn content_id(&self) -> ContentId {
+    pub fn content_id(&self) -> Result<ContentId, postcard::Error> {
         let mut hasher = blake3::Hasher::new();
 
         // Domain separation
@@ -262,17 +262,16 @@ impl InnerEnvelope {
         // Timestamp (prevents same-user collision for identical content)
         hasher.update(&self.created_at_ms.to_le_bytes());
 
-        // Content (postcard serialization of enums is infallible for in-memory data)
-        if let Ok(content_bytes) = postcard::to_allocvec(&self.content) {
-            hasher.update(&content_bytes);
-        }
+        // Content
+        let content_bytes = postcard::to_allocvec(&self.content)?;
+        hasher.update(&content_bytes);
 
         // Truncate to 8 bytes - safe for BLAKE3 (XOF design)
         let hash = hasher.finalize();
         let bytes = hash.as_bytes();
-        [
+        Ok([
             bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ]
+        ])
     }
 
     /// Check if this is an intentionally detached (unlinked) message.
@@ -342,7 +341,7 @@ mod tests {
     #[test]
     fn test_content_id_is_8_bytes() {
         let inner = create_test_inner("Hello", 1_234_567_890);
-        let content_id = inner.content_id();
+        let content_id = inner.content_id().unwrap();
         assert_eq!(content_id.len(), 8);
     }
 
@@ -371,7 +370,7 @@ mod tests {
             epoch: 0,
             flags: 0,
         };
-        assert_eq!(inner1.content_id(), inner2.content_id());
+        assert_eq!(inner1.content_id().unwrap(), inner2.content_id().unwrap());
     }
 
     #[test]
@@ -399,7 +398,7 @@ mod tests {
             epoch: 0,
             flags: 0,
         };
-        assert_ne!(inner1.content_id(), inner2.content_id());
+        assert_ne!(inner1.content_id().unwrap(), inner2.content_id().unwrap());
     }
 
     #[test]
@@ -428,7 +427,7 @@ mod tests {
             flags: 0,
         };
         // Same content, different timestamp = different content_id
-        assert_ne!(inner1.content_id(), inner2.content_id());
+        assert_ne!(inner1.content_id().unwrap(), inner2.content_id().unwrap());
     }
 
     #[test]
@@ -458,7 +457,7 @@ mod tests {
             flags: 0,
         };
         // Same content, different sender = different content_id
-        assert_ne!(inner1.content_id(), inner2.content_id());
+        assert_ne!(inner1.content_id().unwrap(), inner2.content_id().unwrap());
     }
 
     #[test]
@@ -490,7 +489,7 @@ mod tests {
             flags: 0,
         };
         // DAG fields should NOT affect content_id
-        assert_eq!(inner1.content_id(), inner2.content_id());
+        assert_eq!(inner1.content_id().unwrap(), inner2.content_id().unwrap());
     }
 
     #[test]

@@ -338,6 +338,8 @@ impl TargetHealth {
     }
 
     /// Get the current health state.
+    ///
+    /// Lock poisoning is treated as unhealthy (fail-safe).
     pub fn state(&self) -> HealthState {
         // Check if recovery period has elapsed.
         // IMPORTANT: We must drop the recovery_started lock before acquiring
@@ -345,7 +347,7 @@ impl TargetHealth {
         // acquires locks in the opposite order (state first, then recovery_started).
         let should_reset = {
             let Ok(recovery_started) = self.recovery_started.read() else {
-                return HealthState::Healthy;
+                return Self::poisoned_unhealthy("recovery_started");
             };
             if let Some(started) = *recovery_started {
                 started.elapsed() >= self.circuit_breaker_recovery
@@ -360,9 +362,15 @@ impl TargetHealth {
         }
 
         let Ok(state) = self.state.read() else {
-            return HealthState::Healthy;
+            return Self::poisoned_unhealthy("state");
         };
         *state
+    }
+
+    /// Log a lock-poisoned warning and return `Unhealthy`.
+    fn poisoned_unhealthy(lock_name: &str) -> HealthState {
+        tracing::warn!(lock = lock_name, "TargetHealth lock poisoned, treating as unhealthy");
+        HealthState::Unhealthy
     }
 
     /// Check if target is available for operations.

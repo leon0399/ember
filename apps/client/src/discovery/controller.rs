@@ -255,17 +255,21 @@ async fn read_identity_signature(
 }
 
 /// Find the first candidate whose `XEdDSA` signature matches the challenge.
+/// Constant-time iteration: always checks all candidates to avoid
+/// timing side-channels that could reveal which public keys are being tested.
 fn find_matching_candidate(
     challenge: &[u8; 32],
     signature: &[u8; 64],
     candidates: &[PublicID],
 ) -> Option<PublicID> {
-    candidates.iter().find_map(|candidate| {
+    let mut matched: Option<PublicID> = None;
+    for candidate in candidates {
         let sign_data = build_identity_sign_data(challenge, &candidate.to_bytes());
-        candidate
-            .verify_xeddsa(&sign_data, signature)
-            .then_some(*candidate)
-    })
+        if candidate.verify_xeddsa(&sign_data, signature) && matched.is_none() {
+            matched = Some(*candidate);
+        }
+    }
+    matched
 }
 
 /// Extract routing key from peer TXT records, logging on failure.

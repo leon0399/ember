@@ -680,8 +680,7 @@ impl<T: Transport> Client<T> {
             flags: if detached { FLAG_DETACHED } else { 0 },
         };
 
-        // Compute content_id
-        let content_id = inner.content_id();
+        let content_id = inner.content_id().map_err(|e| ClientError::Serialization(format!("content_id: {e}")))?;
 
         // Encrypt to recipient's MIK (signing happens inside encrypt_to_mik)
         let enc_output = encrypt_to_mik(&inner, to, &outer_message_id, &self.private_key())?;
@@ -844,7 +843,9 @@ impl<T: Transport> Client<T> {
 
         let sender_id = inner.from;
         let contact_id = self.ensure_contact_exists(&sender_id)?;
-        let content_id = inner.content_id();
+        let content_id = inner
+            .content_id()
+            .map_err(|e| ClientError::Serialization(format!("content_id: {e}")))?;
         let is_duplicate =
             self.store_or_detect_duplicate(contact_id, outer.message_id, &inner.content)?;
 
@@ -2141,7 +2142,7 @@ mod tests {
 
         // Second message should link to first
         assert!(dec2.inner.prev_self.is_some());
-        assert_eq!(dec2.inner.prev_self.unwrap(), dec1.inner.content_id());
+        assert_eq!(dec2.inner.prev_self.unwrap(), dec1.inner.content_id().unwrap());
     }
 
     #[tokio::test]
@@ -2246,7 +2247,7 @@ mod tests {
         .unwrap();
 
         // Third message (Linked 2) should link to first (Linked 1), skipping detached
-        assert_eq!(dec3.inner.prev_self.unwrap(), dec1.inner.content_id());
+        assert_eq!(dec3.inner.prev_self.unwrap(), dec1.inner.content_id().unwrap());
     }
 
     #[tokio::test]
