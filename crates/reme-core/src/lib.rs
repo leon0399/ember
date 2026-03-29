@@ -624,6 +624,12 @@ impl<T: Transport> Client<T> {
         self.send_message_internal(to, content, false).await
     }
 
+    fn compute_content_id(inner: &InnerEnvelope) -> Result<ContentId, ClientError> {
+        inner
+            .content_id()
+            .map_err(|e| ClientError::Serialization(format!("content_id: {e}")))
+    }
+
     /// Prepare a message for delivery (common logic for all send methods).
     ///
     /// This method handles:
@@ -648,7 +654,6 @@ impl<T: Transport> Client<T> {
         // Generate message ID
         let outer_message_id = MessageID::new();
         let routing_key = to.routing_key();
-
         // Get precise timestamp
         let now = now_ms();
 
@@ -680,7 +685,7 @@ impl<T: Transport> Client<T> {
             flags: if detached { FLAG_DETACHED } else { 0 },
         };
 
-        let content_id = inner.content_id().map_err(|e| ClientError::Serialization(format!("content_id: {e}")))?;
+        let content_id = Self::compute_content_id(&inner)?;
 
         // Encrypt to recipient's MIK (signing happens inside encrypt_to_mik)
         let enc_output = encrypt_to_mik(&inner, to, &outer_message_id, &self.private_key())?;
@@ -2142,7 +2147,10 @@ mod tests {
 
         // Second message should link to first
         assert!(dec2.inner.prev_self.is_some());
-        assert_eq!(dec2.inner.prev_self.unwrap(), dec1.inner.content_id().unwrap());
+        assert_eq!(
+            dec2.inner.prev_self.unwrap(),
+            dec1.inner.content_id().unwrap()
+        );
     }
 
     #[tokio::test]
@@ -2247,7 +2255,10 @@ mod tests {
         .unwrap();
 
         // Third message (Linked 2) should link to first (Linked 1), skipping detached
-        assert_eq!(dec3.inner.prev_self.unwrap(), dec1.inner.content_id().unwrap());
+        assert_eq!(
+            dec3.inner.prev_self.unwrap(),
+            dec1.inner.content_id().unwrap()
+        );
     }
 
     #[tokio::test]

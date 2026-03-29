@@ -369,7 +369,10 @@ impl TargetHealth {
 
     /// Log a lock-poisoned warning and return `Unhealthy`.
     fn poisoned_unhealthy(lock_name: &str) -> HealthState {
-        tracing::warn!(lock = lock_name, "TargetHealth lock poisoned, treating as unhealthy");
+        tracing::warn!(
+            lock = lock_name,
+            "TargetHealth lock poisoned, treating as unhealthy"
+        );
         HealthState::Unhealthy
     }
 
