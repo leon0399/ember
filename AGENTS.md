@@ -94,7 +94,7 @@ Messages flow through three delivery tiers with configurable quorum requirements
 
 - **Tier 1 (Direct)**: Race all ephemeral targets (mDNS, DHT, Iroh), exit on ANY success
 - **Tier 2 (Quorum)**: Broadcast to all stable targets (HTTP, MQTT), require configurable quorum
-- **Tier 3 (BestEffort)**: Fire-and-forget (future: BLE mesh, LoRa/Meshtastic)
+- **Tier 3 (BestEffort)**: Fire-and-forget (future: BLE broadcast, LoRa/Meshtastic). BLE and LoRa can serve any tier depending on context — Direct (recipient discovered), relay (known peer), or BestEffort (blind broadcast). Meshtastic handles its own mesh retransmit; BLE relay uses the same model as LAN HTTP relay.
 
 Three-phase state machine:
 
@@ -166,18 +166,6 @@ Research/prototype stage — no external users. Breaking changes and public API 
 
 Adapted from [epage's Rust Style Guide](https://epage.github.io/dev/rust-style/). These are review guidelines, not hard rules — use judgement when they conflict.
 
-## Quality gates
-
-Hard rules:
-
-- No `.unwrap()` or `.expect()` in library crates
-- No `todo!()`, `unimplemented!()`, `dbg!()` in merged code
-- No `println!()` / `eprintln!()` in library crates (use tracing)
-- Cognitive complexity per function ≤ 15
-- Function body ≤ 80 lines
-- Function arguments ≤ 5
-- All dependencies must pass cargo-deny policy
-
 ### File & Module Layout
 
 - **Type then impl** (M-TYPE-ASSOC): Place a type definition immediately before its `impl` block.
@@ -203,6 +191,18 @@ When writing or reviewing Rust code, consult these skills:
 
 - `/rust-best-practices` — borrowing vs cloning, error handling, clippy, testing conventions
 - `/rust-async-patterns` — Tokio patterns, CancellationToken, channels, graceful shutdown
+
+## Quality gates
+
+Hard rules:
+
+- No `.unwrap()` or `.expect()` in library crates
+- No `todo!()`, `unimplemented!()`, `dbg!()` in merged code
+- No `println!()` / `eprintln!()` in library crates (use tracing)
+- Cognitive complexity per function ≤ 15
+- Function body ≤ 80 lines
+- Function arguments ≤ 5
+- All dependencies must pass cargo-deny policy
 
 ## Pre-commit Checklist
 

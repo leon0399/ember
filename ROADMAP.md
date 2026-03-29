@@ -13,7 +13,7 @@ Build an outage-resilient, end-to-end encrypted messaging system that works when
 
 1. **Client-side resilience first**: Messages never disappear silently
 2. **DTN tolerance**: No session state, independent message processing
-3. **Transport agnostic**: Same encrypted payload across HTTP, BLE, mesh
+3. **Transport agnostic**: Same encrypted payload across HTTP, BLE, LoRa
 4. **Cryptographic soundness**: Conservative primitives, defense in depth
 5. **Privacy by design**: No IP leakage to DHTs, minimal metadata exposure
 
@@ -339,38 +339,36 @@ Reme does **not** implement its own LoRa mesh protocol. Meshtastic already solve
 
 ## v0.9: Bridge to Quorum
 
-BLE and Meshtastic devices can bridge messages to Quorum via the v0.6 relay queue. This is ingress only: receive an envelope from BLE or Meshtastic, deposit into the relay queue, forward to Quorum over HTTP.
+Devices that receive envelopes via BLE or Meshtastic can bridge them to Quorum via the v0.6 relay queue.
 
-### BLE/Meshtastic ingress adapters
+BLE bridging works the same way as LAN HTTP relay: the BLE peer is an ephemeral target, envelopes enter the relay queue, and the node's TransportCoordinator delivers via its available tiers (Direct, Quorum, BestEffort). No special "BLE ingress adapter" needed — the relay queue already accepts envelopes from any transport.
 
-**Problem:** A device that received a message via BLE or Meshtastic should be able to forward it to Quorum if it has Internet access.
+Meshtastic bridging requires a Meshtastic-specific ingress adapter since envelopes arrive chunked via the Meshtastic serial/BLE API and need reassembly before entering the relay queue.
 
-**Solution:** Add BLE and Meshtastic as ingress adapters to the v0.6 relay queue. The egress side (HTTP to Quorum) already exists from v0.6.
+### Ingress adapters
 
 **Deliverables:**
-- [ ] BLE ingress adapter for relay queue
-- [ ] Meshtastic ingress adapter for relay queue
+- [ ] Meshtastic ingress adapter (reassemble chunked envelopes → relay queue)
 - [ ] Relay capability advertisement in BLE service data
 
 **Success criteria:**
-- Alice (BLE only) → Bob's phone (BLE + Internet) → Quorum → Charlie
-- Alice (Meshtastic only) → Bob's node (Meshtastic + Internet) → Quorum → Charlie
+- Alice (BLE only) → Bob's phone (BLE + Internet) → relay queue → Quorum → Charlie
+- Alice (Meshtastic only) → Bob's node (Meshtastic + Internet) → relay queue → Quorum → Charlie
 - Same relay status/tracking as LAN relay
 
 ---
 
 ## v0.10: Multi-transport relay
 
-Full relay with egress adapters, cross-transport bridging, and multi-hop.
+Cross-transport bridging: relay queue can egress via Meshtastic and BLE peers, not just HTTP.
 
-### BLE egress with RSSI-informed relay
+### BLE relay via discovered peers
 
-Rebroadcast queued messages over BLE to nearby peers. Uses randomized backoff with received signal strength as a scheduling hint: weaker-signal nodes (farther away) bias toward earlier rebroadcast; stronger-signal nodes wait and cancel if they overhear a duplicate. Unlike Meshtastic's LoRa approach, BLE at 2.4 GHz has high RSSI variance indoors (multipath, body absorption, orientation), so RSSI is a probabilistic hint rather than a deterministic timer.
+Relay queued messages to discovered BLE peers — same model as LAN HTTP relay. BLE peers are registered as ephemeral targets; the relay queue submits envelopes to them, and each peer re-submits via its own available transports. This is not a BLE mesh protocol — it's opportunistic relay to nearby devices, hoping they can reach the recipient or bridge to Quorum.
 
 **Deliverables:**
 - [ ] BLE egress adapter for relay queue
-- [ ] Randomized backoff with RSSI hint
-- [ ] Duplicate suppression (heard-before cancellation)
+- [ ] Duplicate suppression (skip envelopes already sent to this peer)
 
 ### Meshtastic egress
 
@@ -410,9 +408,9 @@ The same scenario works with **any** Internet-connected Meshtastic node running 
 
 **Success criteria:**
 - Starlink relay scenario works (HTTP → Meshtastic egress without decryption)
-- BLE-to-BLE relay extends range beyond single-hop distance (RSSI as hint, not deterministic)
+- BLE relay extends reach via discovered peers (same model as LAN HTTP relay)
 - Third-party bridge nodes work without prior trust/coordination
-- Cross-transport relay works (e.g., BLE → relay queue → Meshtastic)
+- Cross-transport relay works (e.g., BLE → relay queue → HTTP, or HTTP → relay queue → Meshtastic)
 
 ---
 
@@ -567,8 +565,8 @@ Implements DTN-safe forward secrecy without prekey servers.
 
 ### v0.10
 - Starlink relay scenario works (HTTP → Meshtastic egress)
-- BLE-to-BLE relay extends range via RSSI-informed rebroadcast
-- Cross-transport relay (e.g., BLE → Meshtastic)
+- BLE relay extends reach via discovered peers (same relay model as LAN HTTP)
+- Cross-transport relay (e.g., BLE → relay queue → HTTP, HTTP → relay queue → Meshtastic)
 
 ### v1.0
 - Protobuf wire format (breaking change)

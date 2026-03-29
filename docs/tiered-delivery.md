@@ -38,15 +38,15 @@ Messages flow through three delivery tiers in sequence. Each tier has different 
 
 | Tier               | Targets                       | Strategy      | Success Criteria      | On Failure     |
 |--------------------|-------------------------------|---------------|-----------------------|----------------|
-| **1. Direct**      | Ephemeral (mDNS, DHT, Iroh)   | Race all      | ANY success → DONE    | Try Tier 2     |
+| **1. Direct**      | Ephemeral (mDNS, BLE, future DHT) | Race all      | ANY success → DONE    | Try Tier 2     |
 | **2. Quorum**      | HTTP mailboxes + MQTT brokers | Broadcast all | QUORUM reached → DONE | Try Tier 3     |
-| **3. Best-Effort** | BLE mesh, LoRa/Meshtastic     | Best effort   | Fire and forget       | Outbox retries |
+| **3. Best-Effort** | BLE broadcast, LoRa/Meshtastic | Best effort   | Fire and forget       | Outbox retries |
 
 ### Tier 1: Direct
 
 The Direct tier attempts to deliver messages directly to the recipient or their nearby peers. This provides the highest confidence delivery since the recipient (or their proxy) has the message immediately.
 
-- **Targets**: Ephemeral transports discovered via mDNS, DHT, or Iroh
+- **Targets**: Ephemeral transports discovered via mDNS, BLE proximity, or future DHT
 - **Strategy**: Race all available targets simultaneously
 - **Success**: Exit immediately when ANY target succeeds
 - **Timeout**: 500ms by default (configurable)
@@ -64,9 +64,10 @@ The Quorum tier delivers messages to stable infrastructure nodes that store and 
 
 The Best-Effort tier provides fire-and-forget delivery over constrained networks for disaster/offline scenarios.
 
-- **Targets**: BLE mesh, LoRa/Meshtastic (not yet implemented)
-- **Strategy**: Best effort transmission
-- **Success**: Fire and forget (outbox handles retries)
+- **Targets**: BLE broadcast, LoRa/Meshtastic (not yet implemented)
+- **Strategy**: Fire and forget
+- **Success**: Submission succeeds (delivery responsibility is handed off)
+- **Note**: BLE and LoRa can serve **any tier** depending on context. Discovered recipient → Direct. Known relay peer → relay queue (same as LAN HTTP relay). Blind broadcast → BestEffort. Meshtastic handles its own mesh retransmit; reme treats it as fire-and-forget. There is no "BLE mesh protocol" — BLE relay is opportunistic forwarding to discovered peers.
 
 ## Quorum Strategies
 
@@ -279,7 +280,7 @@ END
 
 ## Future Enhancements
 
-1. **Best-Effort Tier**: Implement BLE mesh and LoRa/Meshtastic transports
+1. **Best-Effort Tier**: Implement BLE broadcast and LoRa/Meshtastic transports. Tier assignment is per-delivery-context, not per-transport: BLE/LoRa can be Direct (recipient discovered), relay (known peer), or BestEffort (blind broadcast).
 2. **Smart Quorum**: Auto-adjust quorum based on transport health
 3. **Priority Queues**: Urgent messages get preferential retry scheduling
 4. **Compression**: Reduce message size for constrained transports
