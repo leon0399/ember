@@ -1,0 +1,31 @@
+crates/reme-transport/src/target.rs
+  67c14c05b96d95c5 341-342,350,365,370-373
+crates/reme-transport/src/seen_cache.rs
+  67c14c05b96d95c5 186,189-190
+crates/reme-message/src/lib.rs
+  67c14c05b96d95c5 253,266,272,274,344,373,401,430,460,492
+crates/reme-core/src/lib.rs
+  67c14c05b96d95c5 683,848,2145,2250
+apps/client/src/discovery/controller.rs
+  67c14c05b96d95c5 258-259,265-266,268-269,271-272
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "0774e26b77d8ae0ee8a23e94b9a81b9124af4e80",
+  "prompts": {
+    "67c14c05b96d95c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b0f343cb-873d-4cd5-8036-c96c039e94e5",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 47,
+      "total_deletions": 33,
+      "accepted_lines": 158,
+      "overriden_lines": 0
+    }
+  }
+}
