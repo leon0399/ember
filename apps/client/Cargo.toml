@@ -35,7 +35,8 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
 # async
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
+futures = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "time", "test-util"] }
 tokio-util = { workspace = true }
 
 # networking
@@ -52,7 +53,7 @@ directories = { workspace = true }
 
 # TUI
 ratatui = { workspace = true }
-crossterm = { workspace = true }
+crossterm = { workspace = true, features = ["event-stream"] }
 tui-textarea = { workspace = true }
 
 # HTTP server for embedded node (LAN P2P)

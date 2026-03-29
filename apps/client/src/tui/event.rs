@@ -2,8 +2,9 @@
 //!
 //! Provides async event handling for keyboard and tick events.
 
-use crossterm::event::{self, Event as CrosstermEvent, KeyEvent};
-use std::time::Duration;
+use crossterm::event::{Event as CrosstermEvent, EventStream, KeyEvent, KeyEventKind};
+use futures::{Stream, StreamExt};
+use std::{io, time::Duration};
 use tokio::sync::mpsc;
 
 /// Terminal events
@@ -31,33 +32,7 @@ impl EventHandler {
         let (tx, rx) = mpsc::unbounded_channel();
 
         tokio::spawn(async move {
-            loop {
-                // Poll for events with timeout
-                if event::poll(tick_rate).unwrap_or(false) {
-                    match event::read() {
-                        Ok(CrosstermEvent::Key(key)) => {
-                            // Only handle key press events, ignore release
-                            if key.kind == crossterm::event::KeyEventKind::Press
-                                && tx.send(Event::Key(key)).is_err()
-                            {
-                                break;
-                            }
-                        }
-                        Ok(CrosstermEvent::Resize(w, h)) => {
-                            if tx.send(Event::Resize(w, h)).is_err() {
-                                break;
-                            }
-                        }
-                        Ok(_) => {} // Ignore mouse and other events
-                        Err(_) => break,
-                    }
-                } else {
-                    // Send tick event
-                    if tx.send(Event::Tick).is_err() {
-                        break;
-                    }
-                }
-            }
+            run_event_pump(tx, tick_rate, EventStream::new()).await;
         });
 
         Self { rx }
@@ -69,5 +44,110 @@ impl EventHandler {
             .recv()
             .await
             .ok_or_else(|| "Event channel closed".into())
+    }
+}
+
+async fn run_event_pump<S>(tx: mpsc::UnboundedSender<Event>, tick_rate: Duration, mut reader: S)
+where
+    S: Stream<Item = io::Result<CrosstermEvent>> + Unpin,
+{
+    loop {
+        let sleep = tokio::time::sleep(tick_rate);
+        tokio::pin!(sleep);
+
+        tokio::select! {
+            maybe_event = reader.next() => match maybe_event {
+                Some(Ok(event)) => {
+                    if !send_terminal_event(&tx, &event) {
+                        break;
+                    }
+                }
+                Some(Err(_)) | None => break,
+            },
+            () = &mut sleep => {
+                if tx.send(Event::Tick).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn send_terminal_event(tx: &mpsc::UnboundedSender<Event>, event: &CrosstermEvent) -> bool {
+    match map_terminal_event(event) {
+        Some(event) => tx.send(event).is_ok(),
+        None => true,
+    }
+}
+
+fn map_terminal_event(event: &CrosstermEvent) -> Option<Event> {
+    match event {
+        CrosstermEvent::Key(key) if key.kind == KeyEventKind::Press => Some(Event::Key(*key)),
+        CrosstermEvent::FocusGained
+        | CrosstermEvent::FocusLost
+        | CrosstermEvent::Key(_)
+        | CrosstermEvent::Mouse(_)
+        | CrosstermEvent::Paste(_) => None,
+        CrosstermEvent::Resize(width, height) => Some(Event::Resize(*width, *height)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{map_terminal_event, run_event_pump, Event};
+    use crossterm::event::{
+        Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    };
+    use futures::stream;
+    use std::{io, time::Duration};
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn terminal_event_maps_key_press() {
+        let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+
+        match map_terminal_event(&CrosstermEvent::Key(key)) {
+            Some(Event::Key(mapped)) => assert_eq!(mapped, key),
+            other => panic!("expected key event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn terminal_event_ignores_key_release() {
+        let key = KeyEvent::new_with_kind(
+            KeyCode::Char('a'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+
+        assert!(map_terminal_event(&CrosstermEvent::Key(key)).is_none());
+    }
+
+    #[test]
+    fn terminal_event_maps_resize() {
+        match map_terminal_event(&CrosstermEvent::Resize(80, 24)) {
+            Some(Event::Resize(width, height)) => {
+                assert_eq!(width, 80);
+                assert_eq!(height, 24);
+            }
+            other => panic!("expected resize event, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pump_emits_tick_when_terminal_stream_is_idle() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let handle = tokio::spawn(run_event_pump(
+            tx,
+            Duration::from_millis(100),
+            stream::pending::<io::Result<CrosstermEvent>>(),
+        ));
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(100)).await;
+
+        assert!(matches!(rx.recv().await, Some(Event::Tick)));
+
+        handle.abort();
     }
 }
