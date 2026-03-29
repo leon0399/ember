@@ -201,7 +201,10 @@ fn ensure_storage_dir(storage_path: &str) {
 }
 
 #[tokio::main]
-#[allow(clippy::too_many_lines)] // Entry point, refactoring would reduce clarity
+#[expect(
+    clippy::too_many_lines,
+    reason = "entry point orchestration stays clearer as a single startup flow"
+)]
 async fn main() {
     let cli = Cli::parse();
 

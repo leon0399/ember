@@ -541,20 +541,33 @@ impl Transport for HttpTransport {
     }
 }
 
-/// Try each candidate public key against a challenge signature, returning the first match.
+/// Try each candidate public key against a challenge signature.
+///
+/// Scans all candidates even after a match to avoid leaking candidate position
+/// through timing differences.
 fn find_matching_candidate(
     challenge: &[u8; 32],
     signature: &[u8; 64],
     candidates: &[PublicID],
 ) -> Option<PublicID> {
-    for candidate in candidates {
+    find_matching_candidate_with(candidates, |candidate| {
         let sign_data = build_identity_sign_data(challenge, &candidate.to_bytes());
-        if candidate.verify_xeddsa(&sign_data, signature) {
+        candidate.verify_xeddsa(&sign_data, signature)
+    })
+}
+
+fn find_matching_candidate_with<F>(candidates: &[PublicID], mut is_match: F) -> Option<PublicID>
+where
+    F: FnMut(&PublicID) -> bool,
+{
+    let mut matched = None;
+    for candidate in candidates {
+        if is_match(candidate) && matched.is_none() {
             debug!("Verified identity for {}", candidate);
-            return Some(*candidate);
+            matched = Some(*candidate);
         }
     }
-    None
+    matched
 }
 
 /// Check an HTTP response status and return the response on success, or a typed error on failure.
@@ -1007,6 +1020,25 @@ mod tests {
             Some(second_pubkey),
             "Should return the second pubkey that matched"
         );
+    }
+
+    #[test]
+    fn test_find_matching_candidate_checks_all_candidates_after_match() {
+        use reme_identity::Identity;
+
+        let first_pubkey = *Identity::generate().public_id();
+        let second_pubkey = *Identity::generate().public_id();
+        let third_pubkey = *Identity::generate().public_id();
+        let candidates = [first_pubkey, second_pubkey, third_pubkey];
+        let mut checked = Vec::new();
+
+        let matched = find_matching_candidate_with(&candidates, |candidate| {
+            checked.push(*candidate);
+            *candidate == first_pubkey
+        });
+
+        assert_eq!(matched, Some(first_pubkey));
+        assert_eq!(checked, candidates);
     }
 
     /// Test `verify_identity` handles malformed response gracefully.

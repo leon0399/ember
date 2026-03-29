@@ -448,7 +448,10 @@ impl App<'_> {
     /// # Arguments
     /// * `config` - Application configuration
     /// * `identity` - The loaded/decrypted identity
-    #[allow(clippy::too_many_lines)] // App initialization requires many steps
+    #[expect(
+        clippy::too_many_lines,
+        reason = "startup wiring spans storage, transports, discovery, and outbox setup"
+    )]
     pub async fn new(config: AppConfig, identity: Identity) -> AppResult<Self> {
         // Ensure data directory exists
         fs::create_dir_all(&config.data_dir)?;
@@ -1007,7 +1010,10 @@ impl App<'_> {
     }
 
     /// Handle key events
-    #[allow(clippy::too_many_lines)] // Event handling has many cases
+    #[expect(
+        clippy::too_many_lines,
+        reason = "top-level key routing is easier to audit as a single dispatch table"
+    )]
     fn handle_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
         // Handle popups first if visible
         if self.show_add_contact_popup {
