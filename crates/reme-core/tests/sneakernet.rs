@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Sneakernet round-trip integration tests (GH issue #161)
 //!
 //! Tests the offline workflow: Alice prepares messages offline, exports to a bundle,
@@ -96,7 +97,7 @@ impl TestServerWithStore {
         }
         assert!(server_ready, "Test server failed to start within 500ms");
 
-        TestServerWithStore {
+        Self {
             url,
             store,
             _handle: handle,
@@ -257,9 +258,10 @@ async fn test_sneakernet_happy_path() {
     let received = recv_messages(&bob, &transport, 1, Duration::from_secs(5)).await;
     assert_eq!(received.len(), 1);
     assert_eq!(received[0].message_id, prepared.outer.message_id);
+    #[allow(clippy::wildcard_enum_match_arm)] // Content is #[non_exhaustive]
     match &received[0].content {
         Content::Text(text) => assert_eq!(text.body, "Hello from sneakernet!"),
-        other => panic!("Expected Text, got {other:?}"),
+        _ => panic!("Expected Text, got {:?}", received[0].content),
     }
 }
 
@@ -290,9 +292,12 @@ async fn test_sneakernet_multiple_messages() {
 
     let mut received_bodies: Vec<String> = received
         .iter()
-        .filter_map(|msg| match &msg.content {
-            Content::Text(text) => Some(text.body.clone()),
-            _ => None,
+        .filter_map(|msg| {
+            #[allow(clippy::wildcard_enum_match_arm)] // Content is #[non_exhaustive]
+            match &msg.content {
+                Content::Text(text) => Some(text.body.clone()),
+                _ => None,
+            }
         })
         .collect();
     received_bodies.sort();

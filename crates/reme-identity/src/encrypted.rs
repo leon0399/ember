@@ -114,7 +114,7 @@ impl EncryptedIdentity {
 
         // Derive encryption key using Argon2id
         let argon2_params = Params::new(ARGON2_M, ARGON2_T, ARGON2_P, Some(32))
-            .expect("hardcoded Argon2 parameters are invalid");
+            .map_err(|e| EncryptedIdentityError::EncryptionFailed(e.to_string()))?;
         let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon2_params);
 
         // Key is wrapped in Zeroizing to ensure it's cleared from memory on drop
@@ -124,8 +124,8 @@ impl EncryptedIdentity {
             .map_err(|e| EncryptedIdentityError::EncryptionFailed(e.to_string()))?;
 
         // Encrypt identity key with ChaCha20-Poly1305
-        let cipher =
-            ChaCha20Poly1305::new_from_slice(key.as_ref()).expect("derived key has correct length");
+        let cipher = ChaCha20Poly1305::new_from_slice(key.as_ref())
+            .map_err(|e| EncryptedIdentityError::EncryptionFailed(e.to_string()))?;
 
         let plaintext = Zeroizing::new(identity.to_bytes());
         let ciphertext_vec = cipher
@@ -153,7 +153,7 @@ impl EncryptedIdentity {
     pub fn decrypt(&self, password: &[u8]) -> Result<Identity, EncryptedIdentityError> {
         // Derive decryption key using Argon2id
         let argon2_params = Params::new(ARGON2_M, ARGON2_T, ARGON2_P, Some(32))
-            .expect("hardcoded Argon2 parameters are invalid");
+            .map_err(|_| EncryptedIdentityError::DecryptionFailed)?;
         let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon2_params);
 
         // Key is wrapped in Zeroizing to ensure it's cleared from memory on drop
@@ -163,8 +163,8 @@ impl EncryptedIdentity {
             .map_err(|_| EncryptedIdentityError::DecryptionFailed)?;
 
         // Decrypt with ChaCha20-Poly1305
-        let cipher =
-            ChaCha20Poly1305::new_from_slice(key.as_ref()).expect("derived key has correct length");
+        let cipher = ChaCha20Poly1305::new_from_slice(key.as_ref())
+            .map_err(|_| EncryptedIdentityError::DecryptionFailed)?;
 
         let plaintext = Zeroizing::new(
             cipher
@@ -179,7 +179,7 @@ impl EncryptedIdentity {
 
         let mut key_bytes = Zeroizing::new([0u8; 32]);
         key_bytes.copy_from_slice(&plaintext);
-        Ok(Identity::from_bytes(&key_bytes))
+        Identity::from_bytes(&key_bytes).map_err(|_| EncryptedIdentityError::DecryptionFailed)
     }
 
     /// Serialize to the binary file format.
@@ -281,12 +281,12 @@ pub fn load_identity(
             // Wrap in Zeroizing to ensure key is cleared from memory on drop
             let mut key = Zeroizing::new([0u8; 32]);
             key.copy_from_slice(data);
-            Ok(Identity::from_bytes(&key))
+            Identity::from_bytes(&key).map_err(|_| EncryptedIdentityError::DecryptionFailed)
         }
         (false, Some(_)) => {
             // User provided password but file is plaintext
-            eprintln!(
-                "Warning: Identity file is not encrypted. \
+            tracing::warn!(
+                "Identity file is not encrypted. \
                 Password provided but file is in plaintext format."
             );
             if data.len() != PLAINTEXT_FILE_SIZE {
@@ -298,7 +298,7 @@ pub fn load_identity(
             // Wrap in Zeroizing to ensure key is cleared from memory on drop
             let mut key = Zeroizing::new([0u8; 32]);
             key.copy_from_slice(data);
-            Ok(Identity::from_bytes(&key))
+            Identity::from_bytes(&key).map_err(|_| EncryptedIdentityError::DecryptionFailed)
         }
     }
 }

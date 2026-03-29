@@ -39,23 +39,23 @@ pub enum SignatureStatus {
 
 impl SignatureStatus {
     /// Check if no signature was returned by the node.
-    pub fn is_missing(&self) -> bool {
-        matches!(self, SignatureStatus::Missing)
+    pub const fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing)
     }
 
     /// Check if the signature was successfully verified.
-    pub fn is_verified(&self) -> bool {
-        matches!(self, SignatureStatus::Verified(_))
+    pub const fn is_verified(&self) -> bool {
+        matches!(self, Self::Verified(_))
     }
 
     /// Check if verification was attempted but failed.
-    pub fn is_invalid(&self) -> bool {
-        matches!(self, SignatureStatus::Invalid)
+    pub const fn is_invalid(&self) -> bool {
+        matches!(self, Self::Invalid)
     }
 
     /// Check if the signature is present but cannot be verified (no configured pubkey).
-    pub fn is_unverifiable(&self) -> bool {
-        matches!(self, SignatureStatus::Unverifiable(_))
+    pub const fn is_unverifiable(&self) -> bool {
+        matches!(self, Self::Unverifiable(_))
     }
 }
 
@@ -83,30 +83,28 @@ pub enum ReceiptStatus {
 
 impl ReceiptStatus {
     /// Check if any receipt was returned.
-    pub fn has_receipt(&self) -> bool {
-        !matches!(self, ReceiptStatus::Missing)
+    pub const fn has_receipt(&self) -> bool {
+        !matches!(self, Self::Missing)
     }
 
     /// Check if this is a full receipt (with `ack_secret`).
-    pub fn has_ack_secret(&self) -> bool {
-        matches!(self, ReceiptStatus::Full { .. })
+    pub const fn has_ack_secret(&self) -> bool {
+        matches!(self, Self::Full { .. })
     }
 
     /// Get the `ack_secret` if present.
-    pub fn ack_secret(&self) -> Option<&[u8; 16]> {
+    pub const fn ack_secret(&self) -> Option<&[u8; 16]> {
         match self {
-            ReceiptStatus::Full { ack_secret, .. } => Some(ack_secret),
-            _ => None,
+            Self::Full { ack_secret, .. } => Some(ack_secret),
+            Self::Missing | Self::SignatureOnly { .. } => None,
         }
     }
 
     /// Get the signature status if a receipt was returned.
-    pub fn signature_status(&self) -> Option<&SignatureStatus> {
+    pub const fn signature_status(&self) -> Option<&SignatureStatus> {
         match self {
-            ReceiptStatus::Missing => None,
-            ReceiptStatus::SignatureOnly { signature } | ReceiptStatus::Full { signature, .. } => {
-                Some(signature)
-            }
+            Self::Missing => None,
+            Self::SignatureOnly { signature } | Self::Full { signature, .. } => Some(signature),
         }
     }
 
@@ -143,13 +141,13 @@ pub enum QuorumStrategyError {
 impl std::fmt::Display for QuorumStrategyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            QuorumStrategyError::InvalidFraction(v) => {
+            Self::InvalidFraction(v) => {
                 write!(
                     f,
                     "Invalid quorum fraction {v}: must be in range (0.0, 1.0]"
                 )
             }
-            QuorumStrategyError::InvalidCount(v) => {
+            Self::InvalidCount(v) => {
                 write!(f, "Invalid quorum count {v}: must be > 0")
             }
         }
@@ -203,18 +201,18 @@ impl QuorumStrategy {
         if f <= 0.0 || f > 1.0 {
             return Err(QuorumStrategyError::InvalidFraction(f));
         }
-        Ok(QuorumStrategy::Fraction(f))
+        Ok(Self::Fraction(f))
     }
 
     /// Create a new Count strategy with validation.
     ///
     /// # Errors
     /// Returns an error if count is 0.
-    pub fn count(n: u32) -> Result<Self, QuorumStrategyError> {
+    pub const fn count(n: u32) -> Result<Self, QuorumStrategyError> {
         if n == 0 {
             return Err(QuorumStrategyError::InvalidCount(n));
         }
-        Ok(QuorumStrategy::Count(n))
+        Ok(Self::Count(n))
     }
 
     /// Validate the quorum strategy.
@@ -223,17 +221,14 @@ impl QuorumStrategy {
     /// Returns an error if the strategy contains invalid values.
     pub fn validate(&self) -> Result<(), QuorumStrategyError> {
         match self {
-            QuorumStrategy::Count(n) if *n == 0 => Err(QuorumStrategyError::InvalidCount(*n)),
-            QuorumStrategy::Fraction(f) if f.is_nan() || f.is_infinite() => {
+            Self::Count(n) if *n == 0 => Err(QuorumStrategyError::InvalidCount(*n)),
+            Self::Fraction(f) if f.is_nan() || f.is_infinite() => {
                 Err(QuorumStrategyError::InvalidFraction(*f))
             }
-            QuorumStrategy::Fraction(f) if *f <= 0.0 || *f > 1.0 => {
+            Self::Fraction(f) if *f <= 0.0 || *f > 1.0 => {
                 Err(QuorumStrategyError::InvalidFraction(*f))
             }
-            QuorumStrategy::Any
-            | QuorumStrategy::All
-            | QuorumStrategy::Count(_)
-            | QuorumStrategy::Fraction(_) => Ok(()),
+            Self::Any | Self::All | Self::Count(_) | Self::Fraction(_) => Ok(()),
         }
     }
 
@@ -259,24 +254,24 @@ impl QuorumStrategy {
             return 0;
         }
         match self {
-            QuorumStrategy::Any => 1,
-            QuorumStrategy::Count(n) => (*n).min(total),
-            QuorumStrategy::Fraction(f) => {
+            Self::Any => 1,
+            Self::Count(n) => (*n).min(total),
+            Self::Fraction(f) => {
                 let required = (total as f32 * f).ceil() as u32;
                 required.max(1).min(total)
             }
-            QuorumStrategy::All => total,
+            Self::All => total,
         }
     }
 
     /// Create a smart default based on transport count.
     /// - 1-2 transports: Any
     /// - 3+ transports: Count(2)
-    pub fn smart_default(total: u32) -> Self {
+    pub const fn smart_default(total: u32) -> Self {
         if total <= 2 {
-            QuorumStrategy::Any
+            Self::Any
         } else {
-            QuorumStrategy::Count(2)
+            Self::Count(2)
         }
     }
 }
@@ -303,21 +298,21 @@ pub enum DeliveryConfidence {
 
 impl DeliveryConfidence {
     /// Check if this is direct delivery (higher confidence than quorum).
-    pub fn is_direct(&self) -> bool {
-        matches!(self, DeliveryConfidence::DirectDelivery { .. })
+    pub const fn is_direct(&self) -> bool {
+        matches!(self, Self::DirectDelivery { .. })
     }
 
     /// Check if quorum was reached.
     ///
     /// Returns `false` when `required == 0` (no quorum targets configured).
     /// This keeps semantics consistent with `DeliveryResult.quorum_reached`.
-    pub fn is_quorum_reached(&self) -> bool {
+    pub const fn is_quorum_reached(&self) -> bool {
         match self {
-            DeliveryConfidence::QuorumReached { count, required } => {
+            Self::QuorumReached { count, required } => {
                 // Treat "no required quorum" (required == 0) as not reached.
                 *required > 0 && *count >= *required
             }
-            DeliveryConfidence::DirectDelivery { .. } => true,
+            Self::DirectDelivery { .. } => true,
         }
     }
 }
@@ -340,16 +335,16 @@ pub enum TargetOutcome {
 
 impl TargetOutcome {
     /// Check if this outcome represents success.
-    pub fn is_success(&self) -> bool {
-        matches!(self, TargetOutcome::Success)
+    pub const fn is_success(&self) -> bool {
+        matches!(self, Self::Success)
     }
 
     /// Check if this outcome represents a failure that should be retried.
-    pub fn should_retry(&self) -> bool {
+    pub const fn should_retry(&self) -> bool {
         match self {
-            TargetOutcome::Failed(e) => e.is_transient(),
-            TargetOutcome::Timeout => true,
-            TargetOutcome::Success | TargetOutcome::Skipped => false,
+            Self::Failed(e) => e.is_transient(),
+            Self::Timeout => true,
+            Self::Success | Self::Skipped => false,
         }
     }
 }
@@ -375,7 +370,7 @@ pub struct TargetResult {
 
 impl TargetResult {
     /// Create a success result with receipt status.
-    pub fn success(
+    pub const fn success(
         target_id: TargetId,
         tier: DeliveryTier,
         latency: Duration,
@@ -391,12 +386,16 @@ impl TargetResult {
     }
 
     /// Create a success result without receipt (legacy/transitional).
-    pub fn success_no_receipt(target_id: TargetId, tier: DeliveryTier, latency: Duration) -> Self {
+    pub const fn success_no_receipt(
+        target_id: TargetId,
+        tier: DeliveryTier,
+        latency: Duration,
+    ) -> Self {
         Self::success(target_id, tier, latency, ReceiptStatus::Missing)
     }
 
     /// Create a failure result.
-    pub fn failed(target_id: TargetId, tier: DeliveryTier, error: TransportError) -> Self {
+    pub const fn failed(target_id: TargetId, tier: DeliveryTier, error: TransportError) -> Self {
         Self {
             target_id,
             tier,
@@ -407,7 +406,7 @@ impl TargetResult {
     }
 
     /// Create a skipped result.
-    pub fn skipped(target_id: TargetId, tier: DeliveryTier) -> Self {
+    pub const fn skipped(target_id: TargetId, tier: DeliveryTier) -> Self {
         Self {
             target_id,
             tier,
@@ -418,7 +417,7 @@ impl TargetResult {
     }
 
     /// Create a timeout result.
-    pub fn timeout(target_id: TargetId, tier: DeliveryTier) -> Self {
+    pub const fn timeout(target_id: TargetId, tier: DeliveryTier) -> Self {
         Self {
             target_id,
             tier,
@@ -434,7 +433,7 @@ impl TargetResult {
     }
 
     /// Check if this result has an `ack_secret` (direct delivery indicator).
-    pub fn has_ack_secret(&self) -> bool {
+    pub const fn has_ack_secret(&self) -> bool {
         self.receipt.has_ack_secret()
     }
 }
@@ -451,7 +450,7 @@ pub struct TierResult {
 
 impl TierResult {
     /// Create a new tier result.
-    pub fn new(tier: DeliveryTier) -> Self {
+    pub const fn new(tier: DeliveryTier) -> Self {
         Self {
             tier,
             results: Vec::new(),
@@ -520,7 +519,7 @@ pub struct DeliveryResult {
 
 impl DeliveryResult {
     /// Create a successful Direct tier delivery result.
-    pub fn direct_delivery(target: TargetId, results: Vec<TargetResult>) -> Self {
+    pub const fn direct_delivery(target: TargetId, results: Vec<TargetResult>) -> Self {
         Self {
             quorum_reached: true,
             confidence: DeliveryConfidence::DirectDelivery { target },
@@ -530,7 +529,7 @@ impl DeliveryResult {
     }
 
     /// Create a successful quorum delivery result.
-    pub fn quorum_delivery(
+    pub const fn quorum_delivery(
         count: u32,
         required: u32,
         tier: DeliveryTier,
@@ -545,7 +544,7 @@ impl DeliveryResult {
     }
 
     /// Create a partial (quorum not reached) delivery result.
-    pub fn partial(count: u32, required: u32, results: Vec<TargetResult>) -> Self {
+    pub const fn partial(count: u32, required: u32, results: Vec<TargetResult>) -> Self {
         Self {
             quorum_reached: false,
             confidence: DeliveryConfidence::QuorumReached { count, required },
@@ -618,7 +617,7 @@ pub struct TieredDeliveryConfig {
 
 impl TieredDeliveryConfig {
     /// Create config with a specific quorum strategy.
-    pub fn with_quorum(mut self, quorum: QuorumStrategy) -> Self {
+    pub const fn with_quorum(mut self, quorum: QuorumStrategy) -> Self {
         self.quorum = quorum;
         self
     }
@@ -630,25 +629,25 @@ impl TieredDeliveryConfig {
     }
 
     /// Set Direct tier timeout.
-    pub fn with_direct_timeout(mut self, timeout: Duration) -> Self {
+    pub const fn with_direct_timeout(mut self, timeout: Duration) -> Self {
         self.direct_tier_timeout = timeout;
         self
     }
 
     /// Set Quorum tier timeout.
-    pub fn with_quorum_timeout(mut self, timeout: Duration) -> Self {
+    pub const fn with_quorum_timeout(mut self, timeout: Duration) -> Self {
         self.quorum_tier_timeout = timeout;
         self
     }
 
     /// Set maintenance interval.
-    pub fn with_maintenance_interval(mut self, interval: Duration) -> Self {
+    pub const fn with_maintenance_interval(mut self, interval: Duration) -> Self {
         self.maintenance_interval = interval;
         self
     }
 
     /// Disable maintenance refreshes.
-    pub fn without_maintenance(mut self) -> Self {
+    pub const fn without_maintenance(mut self) -> Self {
         self.maintenance_enabled = false;
         self
     }
@@ -746,17 +745,16 @@ mod tests {
             TransportError::Timeout,
         ));
         tier.push(TargetResult::success_no_receipt(
-            target3.clone(),
+            target3,
             DeliveryTier::Quorum,
             Duration::from_millis(150),
         ));
 
         assert!(tier.any_success());
         assert_eq!(tier.success_count(), 2);
-        assert_eq!(tier.first_success_target(), Some(target1.clone()));
+        assert_eq!(tier.first_success_target(), Some(target1));
 
-        let successful: Vec<_> = tier.successful_targets().collect();
-        assert_eq!(successful.len(), 2);
+        assert_eq!(tier.successful_targets().count(), 2);
 
         let failed: Vec<_> = tier.failed_targets().collect();
         assert_eq!(failed.len(), 1);
@@ -853,29 +851,34 @@ mod tests {
     }
 
     #[test]
-    fn test_signature_status() {
-        // Missing
+    fn test_signature_status_missing() {
         let missing = SignatureStatus::Missing;
         assert!(missing.is_missing());
         assert!(!missing.is_verified());
         assert!(!missing.is_invalid());
         assert!(!missing.is_unverifiable());
+    }
 
-        // Unverifiable (64-byte signature)
+    #[test]
+    fn test_signature_status_unverifiable() {
         let unverifiable = SignatureStatus::Unverifiable([0u8; 64]);
         assert!(!unverifiable.is_missing());
         assert!(!unverifiable.is_verified());
         assert!(!unverifiable.is_invalid());
         assert!(unverifiable.is_unverifiable());
+    }
 
-        // Invalid
+    #[test]
+    fn test_signature_status_invalid() {
         let invalid = SignatureStatus::Invalid;
         assert!(!invalid.is_missing());
         assert!(!invalid.is_verified());
         assert!(invalid.is_invalid());
         assert!(!invalid.is_unverifiable());
+    }
 
-        // Verified - create a test PublicID
+    #[test]
+    fn test_signature_status_verified() {
         let test_bytes = [42u8; 32];
         let pubkey = PublicID::from_bytes_unchecked(&test_bytes);
         let verified = SignatureStatus::Verified(pubkey);

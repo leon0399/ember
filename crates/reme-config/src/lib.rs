@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 //! Unified configuration system for Resilient Messenger.
 //!
 //! This crate provides shared configuration types used by both client and node applications,

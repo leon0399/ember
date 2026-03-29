@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 //! reme-core: Client business logic for Resilient Messenger
 //!
 //! This crate provides the high-level client API for:
@@ -167,6 +168,27 @@ pub struct PreparedMessage {
     pub entry_id: OutboxEntryId,
 }
 
+/// Load persisted DAG state from storage into a `Mutex<HashMap>`.
+///
+/// Best-effort: returns an empty map on failure with a warning log.
+fn load_persisted_dag_state(storage: &Storage) -> Mutex<HashMap<[u8; 32], ConversationDag>> {
+    let map = storage
+        .load_all_dag_states()
+        .unwrap_or_else(|e| {
+            warn!("failed to load DAG state from storage: {e} — starting fresh");
+            HashMap::new()
+        })
+        .into_iter()
+        .map(|(contact_key, (epoch, sender_head, peer_heads))| {
+            (
+                contact_key,
+                ConversationDag::from_persisted(epoch, sender_head, peer_heads),
+            )
+        })
+        .collect();
+    Mutex::new(map)
+}
+
 impl<T: Transport> Client<T> {
     /// Create a new client with the given identity, transport, and storage
     ///
@@ -200,35 +222,9 @@ impl<T: Transport> Client<T> {
         outbox_config: OutboxConfig,
         tiered_config: TieredDeliveryConfig,
     ) -> Self {
-        // Wrap storage in Arc for shared access between Client and ClientOutbox
         let storage = Arc::new(storage);
-
-        // Create outbox with shared storage reference
         let outbox = ClientOutbox::new(Arc::clone(&storage), outbox_config);
-
-        // Load persisted DAG state from storage
-        let dag_state = match storage.load_all_dag_states() {
-            Ok(persisted) => {
-                let map: HashMap<_, _> = persisted
-                    .into_iter()
-                    .map(|(contact_key, (epoch, sender_head, peer_heads))| {
-                        let dag = ConversationDag::from_persisted(epoch, sender_head, peer_heads);
-                        (contact_key, dag)
-                    })
-                    .collect();
-                if !map.is_empty() {
-                    debug!("restored DAG state for {} contacts", map.len());
-                }
-                Mutex::new(map)
-            }
-            Err(e) => {
-                warn!(
-                    "failed to load DAG state from storage: {} — starting fresh",
-                    e
-                );
-                Mutex::new(HashMap::new())
-            }
-        };
+        let dag_state = load_persisted_dag_state(&storage);
 
         Self {
             identity,
@@ -241,7 +237,7 @@ impl<T: Transport> Client<T> {
     }
 
     /// Get the current tiered delivery configuration.
-    pub fn tiered_config(&self) -> &TieredDeliveryConfig {
+    pub const fn tiered_config(&self) -> &TieredDeliveryConfig {
         &self.tiered_config
     }
 
@@ -296,6 +292,178 @@ impl<T: Transport> Client<T> {
     #[allow(clippy::unused_self)] // Method for consistency with other dag accessors
     fn get_observed_heads(&self, dag: &ConversationDag) -> Vec<ContentId> {
         dag.observed_heads()
+    }
+
+    /// Update DAG state when a message is received.
+    ///
+    /// Handles epoch advancement, state reset detection, gap detection,
+    /// and peer head tracking. Returns `(has_gaps, sender_state_reset, local_state_behind)`.
+    #[allow(clippy::cast_possible_truncation)] // Milliseconds since epoch fit in u64
+    fn update_dag_on_receive(
+        &self,
+        contact_key: &[u8; 32],
+        inner: &InnerEnvelope,
+        content_id: ContentId,
+    ) -> Result<(bool, bool, bool), ClientError> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        let (has_gaps, sender_state_reset, local_state_behind, epoch, head, peers) = {
+            let mut dag_state = self
+                .dag_state
+                .lock()
+                .map_err(|_| ClientError::LockPoisoned)?;
+            let dag = dag_state.entry(*contact_key).or_default();
+
+            // Check if peer has advanced their epoch (intentional history clear)
+            let peer_epoch_advanced = inner.epoch > dag.epoch;
+            if peer_epoch_advanced {
+                dag.advance_to_peer_epoch(inner.epoch);
+            }
+
+            // Detect sender state reset: we have history but they sent prev_self=None
+            // without DETACHED flag and without epoch advance
+            let sender_reset = dag.has_peer_history()
+                && inner.prev_self.is_none()
+                && !inner.is_detached()
+                && !peer_epoch_advanced;
+
+            // Detect local state behind: sender's observed_heads contains unknown IDs
+            let local_behind = dag.has_unknown_observed(&inner.observed_heads);
+
+            // Track this message in the receiver
+            let gap_result = dag.receiver.on_receive(content_id, inner.prev_self, now_ms);
+            let gaps = matches!(gap_result, reme_message::GapResult::Gap { .. });
+
+            // Only update peer heads for complete messages (not orphans)
+            if let reme_message::GapResult::Complete { resolved_orphans } = gap_result {
+                dag.update_peer_heads(content_id, inner.prev_self);
+                for (orphan_id, orphan_prev_self) in resolved_orphans {
+                    dag.update_peer_heads(orphan_id, Some(orphan_prev_self));
+                }
+            }
+
+            (
+                gaps,
+                sender_reset,
+                local_behind,
+                dag.epoch,
+                dag.sender.head(),
+                dag.observed_heads(),
+            )
+        };
+        self.persist_dag_state(contact_key, epoch, head, &peers);
+
+        Ok((has_gaps, sender_state_reset, local_state_behind))
+    }
+
+    /// Process outbox confirmations from a peer's `observed_heads` and handle gap recovery.
+    ///
+    /// Best-effort: logs warnings on failure rather than propagating errors,
+    /// since outbox confirmations are optimizations not correctness requirements.
+    fn process_outbox_confirmations(
+        &self,
+        sender_id: &PublicID,
+        observed_heads: &[ContentId],
+        content_id: ContentId,
+        has_gaps: bool,
+    ) {
+        if observed_heads.is_empty() {
+            return;
+        }
+
+        self.confirm_delivered_messages(sender_id, observed_heads, content_id);
+
+        if has_gaps {
+            self.schedule_gap_recovery(sender_id, observed_heads);
+        }
+    }
+
+    /// Record DAG-based delivery confirmations from peer's `observed_heads`.
+    fn confirm_delivered_messages(
+        &self,
+        sender_id: &PublicID,
+        observed_heads: &[ContentId],
+        content_id: ContentId,
+    ) {
+        let count = self
+            .outbox
+            .on_peer_message_received(sender_id, observed_heads, content_id)
+            .map_or_else(
+                |e| {
+                    warn!("Outbox confirmation check failed: {e} - message may be re-sent");
+                    0
+                },
+                |c| c.len(),
+            );
+        if count > 0 {
+            debug!("DAG confirmation: {count} messages confirmed by peer's observed_heads");
+        }
+    }
+
+    /// Schedule immediate retry for unacknowledged messages when a gap is detected.
+    fn schedule_gap_recovery(&self, sender_id: &PublicID, observed_heads: &[ContentId]) {
+        let unacked = self
+            .outbox
+            .find_unacked_messages(sender_id, observed_heads)
+            .unwrap_or_else(|e| {
+                warn!("Failed to find unacked messages for gap recovery: {e}");
+                Vec::new()
+            });
+
+        if unacked.is_empty() {
+            return;
+        }
+
+        let count = unacked.len();
+        debug!("Gap detected: scheduling retry for {count} unacknowledged messages");
+        let _: Result<(), _> = self
+            .outbox
+            .schedule_immediate_retry(&unacked)
+            .map_err(|e| warn!("Failed to schedule immediate retry for {count} messages: {e}"));
+    }
+
+    /// Ensure a contact exists in storage, creating it if necessary.
+    fn ensure_contact_exists(&self, sender_id: &PublicID) -> Result<i64, ClientError> {
+        match self.storage.get_contact_id(sender_id) {
+            Ok(id) => Ok(id),
+            Err(StorageError::NotFound) => {
+                info!("Adding new contact from incoming message");
+                Ok(self.storage.add_contact(sender_id, None)?)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Store a received message, returning whether it was a duplicate.
+    ///
+    /// Duplicate delivery is expected once fetch becomes non-destructive.
+    /// Conflicting duplicates (same ID, different content) are rejected.
+    fn store_or_detect_duplicate(
+        &self,
+        contact_id: i64,
+        message_id: MessageID,
+        content: &Content,
+    ) -> Result<bool, ClientError> {
+        match self
+            .storage
+            .store_received_message(contact_id, message_id, content)
+        {
+            Ok(()) => Ok(false),
+            Err(StorageError::AlreadyExists) => {
+                if !self
+                    .storage
+                    .received_message_matches(contact_id, message_id, content)?
+                {
+                    return Err(ClientError::ConflictingDuplicate(message_id));
+                }
+                debug!(message_id = ?message_id, "Duplicate message delivery");
+                Ok(true)
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     // ========================================
@@ -456,6 +624,12 @@ impl<T: Transport> Client<T> {
         self.send_message_internal(to, content, false).await
     }
 
+    fn compute_content_id(inner: &InnerEnvelope) -> Result<ContentId, ClientError> {
+        inner
+            .content_id()
+            .map_err(|e| ClientError::Serialization(format!("content_id: {e}")))
+    }
+
     /// Prepare a message for delivery (common logic for all send methods).
     ///
     /// This method handles:
@@ -480,7 +654,6 @@ impl<T: Transport> Client<T> {
         // Generate message ID
         let outer_message_id = MessageID::new();
         let routing_key = to.routing_key();
-
         // Get precise timestamp
         let now = now_ms();
 
@@ -512,8 +685,7 @@ impl<T: Transport> Client<T> {
             flags: if detached { FLAG_DETACHED } else { 0 },
         };
 
-        // Compute content_id
-        let content_id = inner.content_id();
+        let content_id = Self::compute_content_id(&inner)?;
 
         // Encrypt to recipient's MIK (signing happens inside encrypt_to_mik)
         let enc_output = encrypt_to_mik(&inner, to, &outer_message_id, &self.private_key())?;
@@ -563,11 +735,14 @@ impl<T: Transport> Client<T> {
         let entry_id = self
             .outbox
             .enqueue(
-                to,
-                content_id,
-                outer_message_id,
-                &envelope_bytes,
-                &inner_bytes,
+                &reme_outbox::EnqueueParams {
+                    recipient: to,
+                    content_id,
+                    message_id: outer_message_id,
+                    envelope_bytes: &envelope_bytes,
+                    inner_bytes: &inner_bytes,
+                    expires_at_ms: None,
+                },
                 None,
             )
             .map_err(ClientError::Outbox)?;
@@ -591,36 +766,19 @@ impl<T: Transport> Client<T> {
         content: Content,
         detached: bool,
     ) -> Result<MessageID, ClientError> {
-        // Prepare message (common logic)
         let prepared = self.prepare_message(to, content, detached)?;
 
-        // Attempt delivery via current transport
         let transport_id = self.transport_id();
         let attempt_result = match self.transport.submit_message(prepared.outer).await {
             Ok(()) => AttemptResult::Sent,
             Err(e) => AttemptResult::Failed(transport_error_to_attempt_error(&e)),
         };
 
-        // Record the attempt (regardless of success/failure)
         self.outbox
             .record_attempt(prepared.entry_id, &transport_id, &attempt_result)
             .map_err(ClientError::Outbox)?;
 
-        // Log result
-        match &attempt_result {
-            AttemptResult::Sent => {
-                debug!(
-                    "Message sent to contact (MIK-only encryption, content_id: {:?}, outbox_id: {:?})",
-                    prepared.content_id, prepared.entry_id
-                );
-            }
-            AttemptResult::Failed(e) => {
-                debug!(
-                    "Message delivery failed, queued for retry (content_id: {:?}, outbox_id: {:?}, error: {})",
-                    prepared.content_id, prepared.entry_id, e
-                );
-            }
-        }
+        log_delivery_attempt(&attempt_result, prepared.content_id, prepared.entry_id);
 
         Ok(prepared.entry_id)
     }
@@ -640,7 +798,7 @@ impl<T: Transport> Client<T> {
     ///
     /// Returns a [`ProcessedMessage`] containing the decrypted message and an
     /// optional tombstone to send via [`send_tombstone`](Self::send_tombstone).
-    #[allow(clippy::too_many_lines, clippy::cast_possible_truncation)] // Message processing has many steps
+    #[allow(clippy::cast_possible_truncation)] // Message processing has many steps
     pub fn process_message_local(
         &self,
         outer: &OuterEnvelope,
@@ -665,7 +823,10 @@ impl<T: Transport> Client<T> {
         .map_err(|e| match e {
             EncryptionError::DecryptionFailed => ClientError::DecryptionFailed,
             EncryptionError::InvalidSenderSignature => ClientError::InvalidSenderSignature,
-            other => other.into(),
+            EncryptionError::EncryptionFailed
+            | EncryptionError::InvalidRecipientKey
+            | EncryptionError::SerializationError(_)
+            | EncryptionError::DeserializationError(_) => e.into(),
         })?;
 
         // Extract inner envelope and ack_secret
@@ -686,41 +847,12 @@ impl<T: Transport> Client<T> {
         // The removed `to` field is cryptographically redundant.
 
         let sender_id = inner.from;
-
-        // Ensure contact exists (add if not)
-        let contact_id = match self.storage.get_contact_id(&sender_id) {
-            Ok(id) => id,
-            Err(StorageError::NotFound) => {
-                info!("Adding new contact from incoming message");
-                self.storage.add_contact(&sender_id, None)?
-            }
-            Err(e) => return Err(e.into()),
-        };
-
-        // Compute content_id for DAG tracking
-        let content_id = inner.content_id();
-
-        // Store received message. Duplicate delivery is expected once fetch becomes
-        // non-destructive, so treat an existing message_id as idempotent.
+        let contact_id = self.ensure_contact_exists(&sender_id)?;
+        let content_id = inner
+            .content_id()
+            .map_err(|e| ClientError::Serialization(format!("content_id: {e}")))?;
         let is_duplicate =
-            match self
-                .storage
-                .store_received_message(contact_id, outer.message_id, &inner.content)
-            {
-                Ok(()) => false,
-                Err(StorageError::AlreadyExists) => {
-                    if !self.storage.received_message_matches(
-                        contact_id,
-                        outer.message_id,
-                        &inner.content,
-                    )? {
-                        return Err(ClientError::ConflictingDuplicate(outer.message_id));
-                    }
-                    debug!(message_id = ?outer.message_id, "Duplicate message delivery");
-                    true
-                }
-                Err(e) => return Err(e.into()),
-            };
+            self.store_or_detect_duplicate(contact_id, outer.message_id, &inner.content)?;
 
         // Build tombstone for caller to send asynchronously (fire-and-forget).
         // This ensures we never lose the message: if storage fails above, we never
@@ -738,121 +870,11 @@ impl<T: Transport> Client<T> {
 
         // Update DAG tracking and detect state anomalies
         let contact_key = sender_id.to_bytes();
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let (has_gaps, sender_state_reset, local_state_behind) =
+            self.update_dag_on_receive(&contact_key, &inner, content_id)?;
 
-        let (
-            has_gaps,
-            sender_state_reset,
-            local_state_behind,
-            persist_epoch,
-            persist_head,
-            persist_peers,
-        ) = {
-            let mut dag_state = self
-                .dag_state
-                .lock()
-                .map_err(|_| ClientError::LockPoisoned)?;
-            let dag = dag_state.entry(contact_key).or_default();
-
-            // Check if peer has advanced their epoch (intentional history clear)
-            // If so, reset our tracking to match their new epoch
-            let peer_epoch_advanced = inner.epoch > dag.epoch;
-            if peer_epoch_advanced {
-                // Peer intentionally cleared - advance to their epoch
-                dag.advance_to_peer_epoch(inner.epoch);
-            }
-
-            // Detect sender state reset:
-            // We have history from sender, but they sent prev_self=None without DETACHED flag
-            // AND their epoch hasn't advanced (epoch advance = intentional clear, not state loss)
-            let sender_reset = dag.has_peer_history()
-                && inner.prev_self.is_none()
-                && !inner.is_detached()
-                && !peer_epoch_advanced;
-
-            // Detect local state behind:
-            // Sender's observed_heads contains IDs we don't remember sending
-            let local_behind = dag.has_unknown_observed(&inner.observed_heads);
-
-            // Track this message in the receiver
-            let gap_result = dag.receiver.on_receive(content_id, inner.prev_self, now_ms);
-
-            let gaps = matches!(gap_result, reme_message::GapResult::Gap { .. });
-
-            // Only update peer heads for complete messages (not orphans)
-            // Otherwise we'd advertise orphans in observed_heads, causing sender
-            // to think we have their ancestors when we don't
-            if let reme_message::GapResult::Complete { resolved_orphans } = gap_result {
-                // Update peer_heads for this message
-                dag.update_peer_heads(content_id, inner.prev_self);
-                // Also update peer_heads for any orphans that were just resolved
-                for (orphan_id, orphan_prev_self) in resolved_orphans {
-                    dag.update_peer_heads(orphan_id, Some(orphan_prev_self));
-                }
-            }
-            // Extract fields for persistence outside the lock
-            let epoch = dag.epoch;
-            let head = dag.sender.head();
-            let peers = dag.observed_heads();
-            (gaps, sender_reset, local_behind, epoch, head, peers)
-        };
-        self.persist_dag_state(&contact_key, persist_epoch, persist_head, &persist_peers);
-
-        // Check for delivery confirmations in the peer's observed_heads
-        // This is the DAG-based implicit ACK mechanism
-        if !inner.observed_heads.is_empty() {
-            match self.outbox.on_peer_message_received(
-                &sender_id,
-                &inner.observed_heads,
-                content_id,
-            ) {
-                Ok(confirmed) => {
-                    if !confirmed.is_empty() {
-                        debug!(
-                            "DAG confirmation: {} messages confirmed by peer's observed_heads",
-                            confirmed.len()
-                        );
-                    }
-                }
-                Err(e) => {
-                    // Log at warn level - confirmation failures may indicate storage issues
-                    // that could prevent proper message acknowledgment
-                    warn!(
-                        "Outbox confirmation check failed: {} - message may be re-sent",
-                        e
-                    );
-                }
-            }
-
-            // If gap detected and retry triggers are enabled, schedule retry for unacked messages
-            if has_gaps {
-                match self
-                    .outbox
-                    .find_unacked_messages(&sender_id, &inner.observed_heads)
-                {
-                    Ok(unacked) if !unacked.is_empty() => {
-                        debug!(
-                            "Gap detected: scheduling retry for {} unacknowledged messages",
-                            unacked.len()
-                        );
-                        if let Err(e) = self.outbox.schedule_immediate_retry(&unacked) {
-                            warn!(
-                                "Failed to schedule immediate retry for {} messages: {}",
-                                unacked.len(),
-                                e
-                            );
-                        }
-                    }
-                    Ok(_) => {} // No unacked messages
-                    Err(e) => {
-                        warn!("Failed to find unacked messages for gap recovery: {}", e);
-                    }
-                }
-            }
-        }
+        // Check for delivery confirmations and gap recovery via outbox
+        self.process_outbox_confirmations(&sender_id, &inner.observed_heads, content_id, has_gaps);
 
         debug!(
             "Message received (content_id: {:?}, duplicate: {}, has_gaps: {}, sender_reset: {}, local_behind: {})",
@@ -885,6 +907,13 @@ impl<T: Transport> Client<T> {
             .submit_ack_tombstone(tombstone)
             .await
             .map_err(ClientError::Transport)?;
+        self.cleanup_pending_ack(message_id);
+        debug!(message_id = ?message_id, "Auto-tombstone sent successfully");
+        Ok(())
+    }
+
+    /// Best-effort cleanup of a pending ack after successful tombstone submission.
+    fn cleanup_pending_ack(&self, message_id: MessageID) {
         if let Err(e) = self.storage.remove_pending_ack(&message_id) {
             warn!(
                 message_id = ?message_id,
@@ -892,8 +921,6 @@ impl<T: Transport> Client<T> {
                 "Failed to remove pending_ack after successful tombstone"
             );
         }
-        debug!(message_id = ?message_id, "Auto-tombstone sent successfully");
-        Ok(())
     }
 
     /// Process a raw envelope into a decrypted message
@@ -1201,6 +1228,18 @@ impl<T: Transport> Client<T> {
     }
 }
 
+/// Log the result of a single-transport delivery attempt.
+fn log_delivery_attempt(result: &AttemptResult, content_id: ContentId, entry_id: OutboxEntryId) {
+    let sent = matches!(result, AttemptResult::Sent);
+    debug!(
+        content_id = ?content_id,
+        outbox_id = ?entry_id,
+        sent,
+        result = ?result,
+        "Delivery attempt complete"
+    );
+}
+
 /// Convert transport error to attempt error.
 fn transport_error_to_attempt_error(e: &TransportError) -> AttemptError {
     match e {
@@ -1247,15 +1286,13 @@ fn transport_error_to_attempt_error(e: &TransportError) -> AttemptError {
 
 /// Get current time in milliseconds since epoch.
 ///
-/// # Panics
-/// Panics if system time is before Unix epoch, which indicates a serious
-/// system configuration error that would break all time-based operations.
+/// Returns 0 if the system clock is before Unix epoch (should never happen
+/// on a correctly configured system, but avoids panicking in library code).
 #[allow(clippy::cast_possible_truncation)] // Milliseconds since epoch fit in u64 for centuries
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .expect("System time is before Unix epoch - check system clock configuration")
-        .as_millis() as u64
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 // ========================================================================
@@ -1447,30 +1484,56 @@ impl Client<TransportCoordinator> {
             .try_direct_tier(&outer, &self.tiered_config)
             .await;
 
-        if direct_result.any_success() {
-            // Direct delivery! Upgrade to DirectDelivery confidence
-            if let Some(target) = direct_result.first_success_target() {
-                self.outbox
-                    .upgrade_to_direct_delivery(pending.id, &target)
-                    .map_err(ClientError::Outbox)?;
-
-                info!(
-                    entry_id = ?pending.id,
-                    target = %target,
-                    "Upgraded to direct delivery via Direct tier"
-                );
-
-                return Ok(TieredDeliveryPhase::Distributed {
-                    confidence: reme_outbox::DeliveryConfidence::DirectDelivery {
-                        target: target.clone(),
-                    },
-                    reached_at_ms: now_ms(),
-                    last_maintenance_ms: None,
-                });
-            }
+        if let Some(phase) = self.try_upgrade_to_direct(pending.id, &direct_result)? {
+            return Ok(phase);
         }
 
-        // Get all Quorum tier targets and filter to failed ones
+        // Retry failed quorum targets and record combined result
+        self.retry_failed_quorum_targets(pending, &outer, direct_result)
+            .await
+    }
+
+    /// Check if direct delivery succeeded and upgrade outbox state if so.
+    ///
+    /// Returns `Some(phase)` if direct delivery succeeded, `None` otherwise.
+    fn try_upgrade_to_direct(
+        &self,
+        entry_id: OutboxEntryId,
+        direct_result: &reme_transport::TierResult,
+    ) -> Result<Option<TieredDeliveryPhase>, ClientError> {
+        if !direct_result.any_success() {
+            return Ok(None);
+        }
+
+        let Some(target) = direct_result.first_success_target() else {
+            return Ok(None);
+        };
+
+        self.outbox
+            .upgrade_to_direct_delivery(entry_id, &target)
+            .map_err(ClientError::Outbox)?;
+
+        info!(
+            entry_id = ?entry_id,
+            target = %target,
+            "Upgraded to direct delivery via Direct tier"
+        );
+
+        Ok(Some(TieredDeliveryPhase::Distributed {
+            confidence: reme_outbox::DeliveryConfidence::DirectDelivery { target },
+            reached_at_ms: now_ms(),
+            last_maintenance_ms: None,
+        }))
+    }
+
+    /// Retry failed Quorum tier targets and record the combined delivery result.
+    #[allow(clippy::cast_possible_truncation)] // Success counts and targets fit in u32
+    async fn retry_failed_quorum_targets(
+        &self,
+        pending: &PendingMessage,
+        outer: &OuterEnvelope,
+        direct_result: reme_transport::TierResult,
+    ) -> Result<TieredDeliveryPhase, ClientError> {
         let all_quorum_targets = self.transport.quorum_target_ids(&self.tiered_config);
         let failed_targets: Vec<TargetId> = pending.failed_targets(all_quorum_targets.iter());
 
@@ -1480,7 +1543,6 @@ impl Client<TransportCoordinator> {
                 entry_id = ?pending.id,
                 "No quorum targets available, scheduling retry with backoff"
             );
-            // Build an empty result to trigger proper retry scheduling
             let empty_result = DeliveryResult {
                 quorum_reached: false,
                 confidence: reme_transport::DeliveryConfidence::QuorumReached {
@@ -1490,16 +1552,14 @@ impl Client<TransportCoordinator> {
                 target_results: Vec::new(),
                 completed_tier: None,
             };
-            let phase = self
+            return self
                 .outbox
                 .record_tiered_delivery_result(pending.id, &empty_result, &self.tiered_config)
-                .map_err(ClientError::Outbox)?;
-            return Ok(phase);
+                .map_err(ClientError::Outbox);
         }
 
         // If all targets succeeded, no need to retry Quorum tier
         if failed_targets.is_empty() {
-            // Just record that we checked - outbox state unchanged
             return self
                 .outbox
                 .get_by_id(pending.id)
@@ -1511,19 +1571,32 @@ impl Client<TransportCoordinator> {
         // Retry failed Quorum tier targets only
         let quorum_result = self
             .transport
-            .try_quorum_tier_selective(&outer, &failed_targets, &self.tiered_config)
+            .try_quorum_tier_selective(outer, &failed_targets, &self.tiered_config)
             .await;
 
-        // Calculate combined success count before moving results
+        let combined_result = self.build_combined_result(pending, direct_result, quorum_result);
+
+        self.outbox
+            .record_tiered_delivery_result(pending.id, &combined_result, &self.tiered_config)
+            .map_err(ClientError::Outbox)
+    }
+
+    /// Build a combined `DeliveryResult` from Direct and Quorum tier attempts.
+    #[allow(clippy::cast_possible_truncation)] // Success counts and targets fit in u32
+    fn build_combined_result(
+        &self,
+        pending: &PendingMessage,
+        direct_result: reme_transport::TierResult,
+        quorum_result: reme_transport::TierResult,
+    ) -> DeliveryResult {
         let quorum_success_count = quorum_result.success_count();
         let total_success = pending.success_count() as u32 + quorum_success_count;
         let total_targets = self.transport.quorum_target_count(&self.tiered_config);
 
-        // Combine Direct and Quorum results
         let mut all_results = direct_result.results;
         all_results.extend(quorum_result.results);
 
-        let combined_result = DeliveryResult {
+        DeliveryResult {
             quorum_reached: self
                 .tiered_config
                 .quorum
@@ -1538,15 +1611,7 @@ impl Client<TransportCoordinator> {
             } else {
                 None
             },
-        };
-
-        // Record result in outbox
-        let phase = self
-            .outbox
-            .record_tiered_delivery_result(pending.id, &combined_result, &self.tiered_config)
-            .map_err(ClientError::Outbox)?;
-
-        Ok(phase)
+        }
     }
 
     /// Attempt maintenance refresh for a distributed message.
@@ -1557,7 +1622,6 @@ impl Client<TransportCoordinator> {
         &self,
         pending: &PendingMessage,
     ) -> Result<(), ClientError> {
-        // Deserialize the outer envelope
         let outer: OuterEnvelope = postcard::from_bytes(&pending.envelope_bytes)
             .map_err(|e| ClientError::Serialization(format!("envelope: {e}")))?;
 
@@ -1567,21 +1631,11 @@ impl Client<TransportCoordinator> {
             .try_direct_tier(&outer, &self.tiered_config)
             .await;
 
-        if direct_result.any_success() {
-            // Upgrade to direct delivery
-            if let Some(target) = direct_result.first_success_target() {
-                self.outbox
-                    .upgrade_to_direct_delivery(pending.id, &target)
-                    .map_err(ClientError::Outbox)?;
-
-                info!(
-                    entry_id = ?pending.id,
-                    target = %target,
-                    "Maintenance: upgraded to direct delivery"
-                );
-
-                return Ok(());
-            }
+        if self
+            .try_upgrade_to_direct(pending.id, &direct_result)?
+            .is_some()
+        {
+            return Ok(());
         }
 
         // Refresh ALL Quorum tier targets
@@ -1590,44 +1644,30 @@ impl Client<TransportCoordinator> {
             .try_quorum_tier_all(&outer, &self.tiered_config)
             .await;
 
-        // Check refresh results and log appropriately
+        self.record_maintenance_result(pending.id, &quorum_result)
+    }
+
+    /// Evaluate quorum refresh results and record maintenance if any target succeeded.
+    #[allow(clippy::cast_possible_truncation)] // Target counts fit in u32
+    fn record_maintenance_result(
+        &self,
+        entry_id: OutboxEntryId,
+        quorum_result: &reme_transport::TierResult,
+    ) -> Result<(), ClientError> {
         let success_count = quorum_result.success_count();
         let total_targets = quorum_result.results.len();
 
+        // All targets failed - skip recording so we retry sooner
         if success_count == 0 && total_targets > 0 {
-            // All targets failed - don't record maintenance so we retry sooner
-            warn!(
-                entry_id = ?pending.id,
-                total_targets,
-                "Maintenance refresh failed: all {} targets unreachable, will retry sooner",
-                total_targets
-            );
-            // Don't record maintenance - message will be picked up on next tick
+            warn!(entry_id = ?entry_id, total_targets, "Maintenance refresh: all targets unreachable");
             return Ok(());
         }
 
-        if success_count < total_targets as u32 {
-            debug!(
-                entry_id = ?pending.id,
-                success_count,
-                total_targets,
-                "Maintenance refresh partial: {}/{} targets succeeded",
-                success_count, total_targets
-            );
-        }
+        log_maintenance_result(entry_id, success_count, total_targets);
 
-        // Record maintenance timestamp (only if at least one target succeeded)
         self.outbox
-            .record_maintenance_refresh(pending.id)
-            .map_err(ClientError::Outbox)?;
-
-        debug!(
-            entry_id = ?pending.id,
-            success_count,
-            "Maintenance refresh completed"
-        );
-
-        Ok(())
+            .record_maintenance_refresh(entry_id)
+            .map_err(ClientError::Outbox)
     }
 
     /// Combined outbox tick for tiered delivery.
@@ -1656,6 +1696,16 @@ impl Client<TransportCoordinator> {
     }
 }
 
+/// Log the maintenance refresh outcome.
+fn log_maintenance_result(entry_id: OutboxEntryId, success_count: u32, total_targets: usize) {
+    debug!(
+        entry_id = ?entry_id,
+        success_count,
+        total_targets,
+        "Maintenance refresh: {success_count}/{total_targets} targets succeeded",
+    );
+}
+
 /// Log a tracing message describing the outcome of a tiered delivery attempt.
 fn log_tiered_delivery_phase(
     entry_id: OutboxEntryId,
@@ -1663,31 +1713,34 @@ fn log_tiered_delivery_phase(
     result: &DeliveryResult,
     phase: &TieredDeliveryPhase,
 ) {
-    match phase {
-        TieredDeliveryPhase::Urgent => {
-            warn!(
-                message_id = ?entry_id,
-                content_id = ?content_id,
-                success_count = result.success_count(),
-                "Message quorum not reached, will retry"
-            );
-        }
-        TieredDeliveryPhase::Distributed { confidence, .. } => {
-            if confidence.is_direct() {
-                info!(
-                    message_id = ?entry_id,
-                    "Message delivered directly (Direct tier)"
-                );
-            } else {
-                debug!(
-                    message_id = ?entry_id,
-                    success_count = result.success_count(),
-                    "Message distributed, awaiting ACK"
-                );
-            }
-        }
-        TieredDeliveryPhase::Confirmed { .. } => {}
+    if matches!(phase, TieredDeliveryPhase::Urgent) {
+        warn!(
+            message_id = ?entry_id,
+            content_id = ?content_id,
+            success_count = result.success_count(),
+            "Message quorum not reached, will retry"
+        );
+        return;
     }
+
+    if let TieredDeliveryPhase::Distributed { confidence, .. } = phase {
+        log_distributed_phase(entry_id, result, confidence);
+    }
+}
+
+/// Log the distributed phase outcome (direct vs quorum).
+fn log_distributed_phase(
+    entry_id: OutboxEntryId,
+    result: &DeliveryResult,
+    confidence: &reme_outbox::DeliveryConfidence,
+) {
+    let is_direct = confidence.is_direct();
+    debug!(
+        message_id = ?entry_id,
+        is_direct,
+        success_count = result.success_count(),
+        "Message distributed"
+    );
 }
 
 #[cfg(test)]
@@ -1806,6 +1859,7 @@ mod tests {
         let received = bob.process_message(&messages[0]).await.unwrap();
         assert_eq!(received.from, *alice.public_id());
 
+        #[allow(clippy::wildcard_enum_match_arm)] // Content is #[non_exhaustive]
         match received.content {
             Content::Text(text) => assert_eq!(text.body, "Hello Bob!"),
             _ => panic!("Expected text content"),
@@ -2093,7 +2147,10 @@ mod tests {
 
         // Second message should link to first
         assert!(dec2.inner.prev_self.is_some());
-        assert_eq!(dec2.inner.prev_self.unwrap(), dec1.inner.content_id());
+        assert_eq!(
+            dec2.inner.prev_self.unwrap(),
+            dec1.inner.content_id().unwrap()
+        );
     }
 
     #[tokio::test]
@@ -2198,7 +2255,10 @@ mod tests {
         .unwrap();
 
         // Third message (Linked 2) should link to first (Linked 1), skipping detached
-        assert_eq!(dec3.inner.prev_self.unwrap(), dec1.inner.content_id());
+        assert_eq!(
+            dec3.inner.prev_self.unwrap(),
+            dec1.inner.content_id().unwrap()
+        );
     }
 
     #[tokio::test]
@@ -2475,7 +2535,7 @@ mod tests {
 
         // --- Session 1: send a message to establish DAG state ---
         let first_head = {
-            let alice = Identity::from_bytes(&alice_bytes);
+            let alice = Identity::from_bytes(&alice_bytes).unwrap();
             let storage = Storage::open(&db_path).unwrap();
             let transport = Arc::new(MockTransport::new());
             let client = Client::new(alice, Arc::clone(&transport), storage);
@@ -2502,7 +2562,7 @@ mod tests {
 
         // --- Session 2: create a new Client from the same DB file ---
         {
-            let alice = Identity::from_bytes(&alice_bytes);
+            let alice = Identity::from_bytes(&alice_bytes).unwrap();
             let storage = Storage::open(&db_path).unwrap();
             let transport = Arc::new(MockTransport::new());
             let client = Client::new(alice, Arc::clone(&transport), storage);

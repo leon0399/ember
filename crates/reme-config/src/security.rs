@@ -110,13 +110,13 @@ impl CertPin {
         // Try SPKI format first
         if let Some(hash_b64) = s.strip_prefix("spki//sha256/") {
             let sha256 = decode_hash(hash_b64)?;
-            return Ok(CertPin::Spki { sha256 });
+            return Ok(Self::Spki { sha256 });
         }
 
         // Try cert format
         if let Some(hash_b64) = s.strip_prefix("cert//sha256/") {
             let sha256 = decode_hash(hash_b64)?;
-            return Ok(CertPin::Cert { sha256 });
+            return Ok(Self::Cert { sha256 });
         }
 
         // Neither format matched
@@ -128,17 +128,17 @@ impl CertPin {
     /// Get the type prefix and hash.
     ///
     /// Returns the pin type ("spki" or "cert") and the decoded hash bytes.
-    fn parts(&self) -> (&'static str, &[u8; 32]) {
+    const fn parts(&self) -> (&'static str, &[u8; 32]) {
         match self {
-            CertPin::Spki { sha256 } => ("spki", sha256),
-            CertPin::Cert { sha256 } => ("cert", sha256),
+            Self::Spki { sha256 } => ("spki", sha256),
+            Self::Cert { sha256 } => ("cert", sha256),
         }
     }
 
     /// Get the decoded hash bytes (SHA-256, 32 bytes).
     ///
     /// Returns the hash regardless of pin type (SPKI or cert).
-    pub fn hash(&self) -> &[u8; 32] {
+    pub const fn hash(&self) -> &[u8; 32] {
         self.parts().1
     }
 

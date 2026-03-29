@@ -1,3 +1,10 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr
+)]
 //! Integration test: Two clients exchanging messages through the node
 //!
 //! These tests spin up an in-process node server for self-contained testing.
@@ -74,7 +81,7 @@ impl TestServer {
         }
         assert!(server_ready, "Test server failed to start within 500ms");
 
-        TestServer {
+        Self {
             url,
             _handle: handle,
         }
@@ -257,6 +264,7 @@ async fn test_e2e_encryption_mik_only() {
     // Signature was verified during decryption - if we got here, it's valid
     println!("Bob decrypted and verified Alice's signature: OK");
 
+    #[allow(clippy::wildcard_enum_match_arm)] // Content is #[non_exhaustive]
     match dec_output.inner.content {
         Content::Text(t) => {
             assert_eq!(t.body, "Hello Bob! This is Alice.");
@@ -318,6 +326,7 @@ async fn test_two_client_messaging() {
     .expect("No message received");
 
     assert_eq!(received.from, *alice.public_id());
+    #[allow(clippy::wildcard_enum_match_arm)] // Content is #[non_exhaustive]
     match &received.content {
         Content::Text(text) => {
             assert_eq!(text.body, "Hello Bob! This is Alice.");
@@ -351,6 +360,7 @@ async fn test_two_client_messaging() {
     .expect("No reply received");
 
     assert_eq!(alice_received.from, *bob.public_id());
+    #[allow(clippy::wildcard_enum_match_arm)] // Content is #[non_exhaustive]
     match &alice_received.content {
         Content::Text(text) => {
             assert_eq!(text.body, "Hi Alice! Got your message.");

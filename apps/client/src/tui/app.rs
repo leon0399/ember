@@ -81,16 +81,16 @@ impl UpstreamType {
     /// Toggle between HTTP and MQTT
     pub fn toggle(&mut self) {
         *self = match self {
-            UpstreamType::Http => UpstreamType::Mqtt,
-            UpstreamType::Mqtt => UpstreamType::Http,
+            Self::Http => Self::Mqtt,
+            Self::Mqtt => Self::Http,
         };
     }
 
     /// Display label for status messages
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
-            UpstreamType::Http => "HTTP",
-            UpstreamType::Mqtt => "MQTT",
+            Self::Http => "HTTP",
+            Self::Mqtt => "MQTT",
         }
     }
 }
@@ -170,10 +170,10 @@ impl AddContactPopup<'_> {
         let bytes =
             hex::decode(hex_str).map_err(|_| "Invalid hex characters in Public ID".to_string())?;
 
-        // Safe: hex::decode of 64-char hex string always produces exactly 32 bytes
+        // hex::decode of 64-char hex string always produces exactly 32 bytes
         let bytes: [u8; 32] = bytes
             .try_into()
-            .expect("hex::decode of 64-char hex produces 32 bytes");
+            .map_err(|_| "hex::decode of 64-char hex did not produce 32 bytes".to_string())?;
 
         PublicID::try_from_bytes(&bytes)
             .map_err(|_| "Invalid Public ID: not a valid Curve25519 public key".to_string())
@@ -448,7 +448,10 @@ impl App<'_> {
     /// # Arguments
     /// * `config` - Application configuration
     /// * `identity` - The loaded/decrypted identity
-    #[allow(clippy::too_many_lines)] // App initialization requires many steps
+    #[expect(
+        clippy::too_many_lines,
+        reason = "startup wiring spans storage, transports, discovery, and outbox setup"
+    )]
     pub async fn new(config: AppConfig, identity: Identity) -> AppResult<Self> {
         // Ensure data directory exists
         fs::create_dir_all(&config.data_dir)?;
@@ -469,70 +472,7 @@ impl App<'_> {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("Failed to parse HTTP peer configuration: {e}"))?;
 
-        // Create HTTP transport pool with tier/priority/label configuration
-        let http_pool = if parsed_http_peers.is_empty() {
-            None
-        } else {
-            let pool = TransportPool::new();
-
-            for parsed_peer in &parsed_http_peers {
-                // Build HTTP target config with all metadata
-                let mut config = HttpTargetConfig::stable(&parsed_peer.url);
-
-                // Set certificate pin if present (convert from config type to transport type)
-                if let Some(ref pin) = parsed_peer.cert_pin {
-                    match reme_transport::CertPin::parse(&pin.to_pin_string()) {
-                        Ok(transport_pin) => {
-                            config = config.with_cert_pin(transport_pin);
-                        }
-                        Err(e) => {
-                            warn!(
-                                url = %parsed_peer.url,
-                                error = %e,
-                                "Certificate pin conversion failed after successful validation - this is a bug"
-                            );
-                        }
-                    }
-                }
-
-                // Set label if present
-                if let Some(ref label) = parsed_peer.common.label {
-                    config = config.with_label(label.clone());
-                }
-
-                // Set priority (u16 from config -> u8 for transport, clamped)
-                let priority_u8 = if parsed_peer.common.priority > 255 {
-                    warn!(
-                        url = %parsed_peer.url,
-                        configured = parsed_peer.common.priority,
-                        "Priority {} exceeds maximum 255, clamping to 255",
-                        parsed_peer.common.priority
-                    );
-                    255
-                } else {
-                    // Safe cast: we've validated priority <= 255
-                    #[allow(clippy::cast_possible_truncation)]
-                    {
-                        parsed_peer.common.priority as u8
-                    }
-                };
-                config = config.with_priority(priority_u8);
-
-                // Set node pubkey if present
-                config = config.with_node_pubkey_opt(parsed_peer.node_pubkey);
-
-                // Set HTTP Basic Auth if configured
-                if let Some((username, password)) = &parsed_peer.auth {
-                    config = config.with_auth(username, password);
-                }
-
-                // Create target and add to pool
-                let target = HttpTarget::new(config)?;
-                pool.add_target(target);
-            }
-
-            Some(Arc::new(pool))
-        };
+        let http_pool = build_http_pool(&parsed_http_peers)?;
 
         // Parse and validate all MQTT peers
         let parsed_mqtt_peers: Vec<ParsedMqttPeer> = config
@@ -550,65 +490,8 @@ impl App<'_> {
         let identity_bytes = Zeroizing::new(identity.to_bytes());
 
         // Create embedded node if enabled
-        let (embedded_node_handle, embedded_node_task, node_event_rx) = if config
-            .embedded_node
-            .enabled
-        {
-            info!("Starting embedded node...");
-
-            // Create persistent store config from app config
-            let store_config = PersistentStoreConfig::new(
-                config.embedded_node.max_messages as usize,
-                config.embedded_node.default_ttl_secs,
-            )
-            .map_err(|e| format!("Invalid embedded node config: {e}"))?;
-
-            // Create mailbox store in the same data directory
-            let mailbox_db_path = config.data_dir.join("mailbox.db");
-            let mailbox_db_str = mailbox_db_path
-                .to_str()
-                .ok_or("Mailbox database path contains invalid UTF-8 characters")?;
-            let mailbox_store = PersistentMailboxStore::open(mailbox_db_str, store_config)
-                .map_err(|e| format!("Failed to open mailbox store: {e}"))?;
-
-            // Create and spawn embedded node, keeping JoinHandle for graceful shutdown
-            let (node, handle, event_rx) = EmbeddedNode::new(mailbox_store);
-            let join_handle = tokio::spawn(async move { node.run().await });
-
-            info!("Embedded node started");
-
-            // Start HTTP server for LAN P2P if configured
-            // Bind BEFORE spawning to fail fast on port conflicts
-            if let Some(ref bind_addr) = config.embedded_node.http_bind {
-                let http_handle = handle.clone();
-                let our_routing_key = identity.public_id().routing_key();
-
-                // Create a separate Identity instance for the HTTP server
-                // This is needed because identity will be moved to Client::with_config later
-                let http_identity = Arc::new(Identity::from_bytes(&identity_bytes));
-
-                // Bind first to verify address is valid and port is available
-                let (listener, router) = http_server::bind_server(
-                    bind_addr,
-                    http_handle,
-                    our_routing_key,
-                    http_identity,
-                )
-                .await
-                .map_err(|e| format!("Failed to start HTTP server: {e}"))?;
-
-                // Now spawn the server task - binding already succeeded
-                tokio::spawn(async move {
-                    if let Err(e) = http_server::run_server(listener, router).await {
-                        tracing::error!(error = %e, "Embedded HTTP server stopped unexpectedly");
-                    }
-                });
-            }
-
-            (Some(handle), Some(join_handle), Some(event_rx))
-        } else {
-            (None, None, None)
-        };
+        let (embedded_node_handle, embedded_node_task, node_event_rx) =
+            setup_embedded_node(&config, &identity, &identity_bytes).await?;
 
         // Build transport coordinator with 2s poll interval
         let coordinator_config = CoordinatorConfig {
@@ -627,65 +510,7 @@ impl App<'_> {
         }
 
         // Create MQTT pool and connect configured brokers in parallel.
-        // Pool is always created so runtime MQTT adds work even without initial config.
-        let mqtt_pool = TransportPool::new();
-        if !parsed_mqtt_peers.is_empty() {
-            let mut join_set = tokio::task::JoinSet::new();
-            for parsed_peer in parsed_mqtt_peers.iter().cloned() {
-                join_set.spawn(async move {
-                    let mut mqtt_config = MqttTargetConfig::new(&parsed_peer.url);
-                    if let Some(ref client_id) = parsed_peer.client_id {
-                        mqtt_config = mqtt_config.with_client_id(client_id);
-                    }
-                    if let Some(ref auth) = parsed_peer.auth {
-                        mqtt_config = mqtt_config.with_auth(&auth.0, &auth.1);
-                    }
-                    if let Some(ref label) = parsed_peer.common.label {
-                        mqtt_config = mqtt_config.with_label(label);
-                    }
-                    if let Some(ref prefix) = parsed_peer.topic_prefix {
-                        mqtt_config = mqtt_config.with_topic_prefix(prefix);
-                    }
-                    let priority_u8 = if parsed_peer.common.priority > 255 {
-                        warn!(
-                            url = %parsed_peer.url,
-                            configured = parsed_peer.common.priority,
-                            "MQTT priority exceeds u8 range, clamping to 255"
-                        );
-                        255u8
-                    } else {
-                        #[allow(clippy::cast_possible_truncation)]
-                        {
-                            parsed_peer.common.priority as u8
-                        }
-                    };
-                    mqtt_config = mqtt_config.with_priority(priority_u8);
-                    (
-                        parsed_peer.url.clone(),
-                        MqttTarget::connect(mqtt_config).await,
-                    )
-                });
-            }
-
-            while let Some(result) = join_set.join_next().await {
-                match result {
-                    Ok((_, Ok(target))) => {
-                        mqtt_pool.add_target(target);
-                    }
-                    Ok((url, Err(e))) => {
-                        warn!(
-                            url = %url,
-                            error = %e,
-                            "Failed to connect to MQTT broker, skipping"
-                        );
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "MQTT connection task panicked");
-                    }
-                }
-            }
-        }
-        let mqtt_pool_arc = Arc::new(mqtt_pool);
+        let mqtt_pool_arc = build_mqtt_pool(&parsed_mqtt_peers).await;
         coordinator.set_mqtt_pool_arc(mqtt_pool_arc.clone());
 
         // Note: Embedded node is intentionally NOT added to the coordinator.
@@ -697,42 +522,8 @@ impl App<'_> {
         // TODO: Avoid creating a polling subscription when pool has only SEND-capable
         // targets (no FETCH targets) — currently produces harmless "no fetchable targets" logs
 
-        let mut direct_peer_ids: Vec<(TargetId, Option<String>)> = Vec::new();
-        for peer in &config.direct_peers {
-            let target_config = HttpTargetConfig::new(&peer.address, TargetKind::Ephemeral)
-                .with_label(peer.name.as_deref().unwrap_or(&peer.address));
-
-            match HttpTarget::new(target_config) {
-                Ok(target) => {
-                    info!(
-                        address = %peer.address,
-                        name = peer.name.as_deref().unwrap_or("(unnamed)"),
-                        "Added direct peer"
-                    );
-                    direct_peer_ids.push((target.id().clone(), peer.name.clone()));
-                    coordinator.add_http_target(target);
-                }
-                Err(e) => {
-                    warn!(
-                        address = %peer.address,
-                        error = %e,
-                        "Failed to add direct peer, skipping"
-                    );
-                }
-            }
-        }
-
-        // Ensure we have at least one transport (or discovery can add them later).
-        // Only allow empty pools when discovery is enabled AND the controller will
-        // actually spawn (auto_direct_known_contacts = true). Otherwise, we'd boot
-        // into a client with no usable transport and no way to acquire one.
-        if !coordinator.has_transports() {
-            if config.lan_discovery.enabled && config.lan_discovery.auto_direct_known_contacts {
-                warn!("No transports configured yet — LAN discovery may add peers at runtime");
-            } else {
-                return Err("No transports configured. Add HTTP nodes and/or MQTT brokers.".into());
-            }
-        }
+        let direct_peer_ids = add_direct_peers(&config, &coordinator);
+        validate_transports(&config, &coordinator)?;
 
         // Subscribe to incoming messages before wrapping in Arc
         let our_routing_key = identity.public_id().routing_key();
@@ -743,34 +534,16 @@ impl App<'_> {
         // Create transport registry as read-only view of coordinator pools
         let registry = Arc::new(TransportRegistry::with_coordinator(&coordinator));
 
-        // Register HTTP targets with their tier/label information
-        for parsed_peer in &parsed_http_peers {
-            let id = TargetId::http(&parsed_peer.url);
-            let tier = match parsed_peer.common.tier {
-                reme_config::ConfiguredTier::Quorum => DeliveryTier::Quorum,
-                reme_config::ConfiguredTier::BestEffort => DeliveryTier::BestEffort,
-            };
-            registry.register_stable(id, parsed_peer.common.label.clone(), tier);
-        }
-
-        // Register MQTT brokers for display
-        for parsed_peer in &parsed_mqtt_peers {
-            let id = TargetId::mqtt(&parsed_peer.url);
-            let tier = match parsed_peer.common.tier {
-                reme_config::ConfiguredTier::Quorum => DeliveryTier::Quorum,
-                reme_config::ConfiguredTier::BestEffort => DeliveryTier::BestEffort,
-            };
-            registry.register_stable(id, parsed_peer.common.label.clone(), tier);
-        }
-
-        // Register direct peers for display
-        for (id, label) in direct_peer_ids {
-            registry.register_stable(id, label, DeliveryTier::Direct);
-        }
+        register_configured_targets(
+            &registry,
+            &parsed_http_peers,
+            &parsed_mqtt_peers,
+            direct_peer_ids,
+        );
 
         // --- LAN Discovery ---
         let lan_discovery_enabled = config.lan_discovery.enabled;
-        let init_result = discovery::initialize(
+        let (discovery_state, lan_peer_count, discovery_status_msg) = init_discovery(
             &config,
             &identity,
             &storage,
@@ -778,18 +551,6 @@ impl App<'_> {
             registry.clone(),
         )
         .await;
-        let (discovery, lan_peer_count, discovery_status_msg) = match init_result {
-            discovery::InitResult::Disabled => (None, Arc::new(AtomicUsize::new(0)), None),
-            discovery::InitResult::Failed(reason) => (
-                None,
-                Arc::new(AtomicUsize::new(0)),
-                Some(format!("LAN discovery failed: {reason}")),
-            ),
-            discovery::InitResult::Ok(state) => {
-                let peer_count = state.peer_count.clone();
-                (Some(state), peer_count, None)
-            }
-        };
 
         // Build OutboxConfig from app config
         let ttl_ms = if config.outbox.ttl_days == 0 {
@@ -856,7 +617,7 @@ impl App<'_> {
             show_upstreams_popup: false,
             registry,
             outbox_tick_interval,
-            discovery,
+            discovery: discovery_state,
             lan_peer_count,
             lan_discovery_enabled,
             action_tx,
@@ -1050,7 +811,6 @@ impl App<'_> {
     ///
     /// This method is intentionally synchronous — all I/O happens in
     /// spawned tasks that send results back as [`Action`] variants.
-    #[allow(clippy::too_many_lines)] // Action handling has many cases
     fn update(&mut self, action: Action) {
         match action {
             Action::Key(key_event) => {
@@ -1058,72 +818,16 @@ impl App<'_> {
                     self.status = format!("Error: {e}");
                 }
             }
-            Action::Tick | Action::Resize(_, _) => {
-                // No-op: render happens after update; ratatui handles resize
-            }
+            Action::Tick | Action::Resize(_, _) => {}
             Action::SendComplete { send_id, result } => {
-                let status = match &result {
-                    Ok(phase) => DeliveryStatus::Sent(format_delivery_status(phase)),
-                    Err(e) => DeliveryStatus::Failed(e.clone()),
-                };
-
-                // Update status bar
-                self.status = match &status {
-                    DeliveryStatus::Sent(s) => s.clone(),
-                    DeliveryStatus::Failed(e) => format!("Send failed: {e}"),
-                    DeliveryStatus::None | DeliveryStatus::Sending => {
-                        unreachable!("SendComplete always produces Sent or Failed")
-                    }
-                };
-
-                // Update the optimistic message in visible messages
-                for msg in &mut self.messages {
-                    if msg.send_id == Some(send_id) {
-                        msg.status = status.clone();
-                        break;
-                    }
-                }
-
-                // Also update in cache (so switching conversations preserves status)
-                for cache in self.message_cache.values_mut() {
-                    for msg in cache.iter_mut() {
-                        if msg.send_id == Some(send_id) {
-                            msg.status = status;
-                            return;
-                        }
-                    }
-                }
+                self.handle_send_complete(send_id, &result);
             }
-            Action::MessageProcessed { result, source } => match result {
-                Ok(msg) => {
-                    let content = match &msg.content {
-                        Content::Text(t) => t.body.clone(),
-                        Content::Receipt(r) => format!("[Receipt: {:?}]", r.kind),
-                        _ => "[Unknown content]".to_string(),
-                    };
-                    self.handle_incoming_message(msg.from, content);
-                }
-                Err(e) => {
-                    let label = match source {
-                        MessageSource::Coordinator => "coordinator",
-                        MessageSource::EmbeddedNode => "embedded node",
-                    };
-                    warn!("Failed to process {} message: {}", label, e);
-                    self.status = format!("Message decrypt failed: {e}");
-                }
-            },
-            Action::OutboxTick(result) => match result {
-                Ok((retried, maintenance, expired)) => {
-                    if retried > 0 || maintenance > 0 || expired > 0 {
-                        info!(retried, maintenance, expired, "Outbox tick completed");
-                    } else {
-                        debug!("Outbox tick: no pending messages");
-                    }
-                }
-                Err(e) => {
-                    warn!(error = %e, "Outbox tick failed");
-                }
-            },
+            Action::MessageProcessed { result, source } => {
+                self.handle_message_processed(result, source);
+            }
+            Action::OutboxTick(result) => {
+                handle_outbox_tick(result);
+            }
             Action::NodeError(e) => {
                 self.status = format!("Node error: {e}");
             }
@@ -1131,16 +835,88 @@ impl App<'_> {
                 url,
                 transport_type,
                 result,
-            } => match result {
-                Ok(()) => {
-                    self.show_add_upstream_popup = false;
-                    self.add_upstream_popup.reset();
-                    self.status = format!("Added {} upstream: {}", transport_type.as_str(), url);
+            } => {
+                self.handle_upstream_added(&url, transport_type, result);
+            }
+        }
+    }
+
+    /// Handle a completed send operation by updating delivery status in messages and cache.
+    fn handle_send_complete(&mut self, send_id: u64, result: &Result<TieredDeliveryPhase, String>) {
+        let status = match result {
+            Ok(phase) => DeliveryStatus::Sent(format_delivery_status(phase)),
+            Err(e) => DeliveryStatus::Failed(e.clone()),
+        };
+
+        self.status = match &status {
+            DeliveryStatus::Sent(s) => s.clone(),
+            DeliveryStatus::Failed(e) => format!("Send failed: {e}"),
+            DeliveryStatus::None | DeliveryStatus::Sending => {
+                unreachable!("SendComplete always produces Sent or Failed")
+            }
+        };
+
+        // Update the optimistic message in visible messages
+        for msg in &mut self.messages {
+            if msg.send_id == Some(send_id) {
+                msg.status = status.clone();
+                break;
+            }
+        }
+
+        // Also update in cache (so switching conversations preserves status)
+        for cache in self.message_cache.values_mut() {
+            for msg in cache.iter_mut() {
+                if msg.send_id == Some(send_id) {
+                    msg.status = status;
+                    return;
                 }
-                Err(e) => {
-                    self.add_upstream_popup.error = Some(e);
-                }
-            },
+            }
+        }
+    }
+
+    /// Handle a processed incoming message or processing error.
+    fn handle_message_processed(
+        &mut self,
+        result: Result<ReceivedMessage, String>,
+        source: MessageSource,
+    ) {
+        match result {
+            Ok(msg) => {
+                let content = match &msg.content {
+                    Content::Text(t) => t.body.clone(),
+                    Content::Receipt(r) => format!("[Receipt: {:?}]", r.kind),
+                    _ => "[Unknown content]".to_string(),
+                };
+                self.handle_incoming_message(msg.from, content);
+            }
+            Err(e) => {
+                let label = match source {
+                    MessageSource::Coordinator => "coordinator",
+                    MessageSource::EmbeddedNode => "embedded node",
+                };
+                warn!("Failed to process {} message: {}", label, e);
+                self.status = format!("Message decrypt failed: {e}");
+            }
+        }
+    }
+
+    /// Handle the result of an upstream add operation.
+    fn handle_upstream_added(
+        &mut self,
+        url: &str,
+        transport_type: UpstreamType,
+        result: Result<(), String>,
+    ) {
+        match result {
+            Ok(()) => {
+                self.show_add_upstream_popup = false;
+                self.add_upstream_popup.reset();
+                self.status = format!("Added {} upstream: {url}", transport_type.as_str());
+            }
+            Err(e) => {
+                self.add_upstream_popup.error = Some(e);
+            }
         }
     }
 
@@ -1149,24 +925,10 @@ impl App<'_> {
     /// Cancels the discovery controller, awaits its task, then shuts down
     /// the mDNS backend to release network resources.
     async fn shutdown_discovery(&mut self) {
-        if let Some(state) = self.discovery.take() {
-            debug!("Cancelling discovery controller...");
-            state.cancel.cancel();
-
-            if let Some(task) = state.controller_task {
-                debug!("Waiting for discovery controller to stop...");
-                if let Err(e) = task.await {
-                    warn!(error = %e, "Discovery controller task panicked during shutdown");
-                }
-            }
-
-            debug!("Shutting down mDNS backend...");
-            if let Err(e) = state.backend.shutdown().await {
-                warn!(error = %e, "Failed to shutdown mDNS backend");
-            } else {
-                info!("mDNS backend shutdown complete");
-            }
-        }
+        let Some(state) = self.discovery.take() else {
+            return;
+        };
+        shutdown_discovery_state(state).await;
     }
 
     /// Shutdown the embedded node gracefully.
@@ -1174,22 +936,8 @@ impl App<'_> {
     /// First signals the node to shutdown via the handle, then awaits
     /// the background task to ensure it has fully completed.
     async fn shutdown_embedded_node(&mut self) {
-        if let Some(ref handle) = self.embedded_node_handle {
-            debug!("Shutting down embedded node...");
-            if let Err(e) = handle.shutdown().await {
-                warn!(error = %e, "Failed to signal embedded node shutdown");
-            }
-        }
-
-        // Await the background task to ensure it has fully completed
-        if let Some(join_handle) = self.embedded_node_task.take() {
-            debug!("Waiting for embedded node task to complete...");
-            if let Err(e) = join_handle.await {
-                warn!(error = %e, "Embedded node task panicked during shutdown");
-            } else {
-                info!("Embedded node shutdown complete");
-            }
-        }
+        signal_node_shutdown(self.embedded_node_handle.as_ref()).await;
+        await_optional_task(self.embedded_node_task.take(), "embedded node").await;
     }
 
     /// Get or create a conversation for a contact, returns the index
@@ -1262,7 +1010,10 @@ impl App<'_> {
     }
 
     /// Handle key events
-    #[allow(clippy::too_many_lines)] // Event handling has many cases
+    #[expect(
+        clippy::too_many_lines,
+        reason = "top-level key routing is easier to audit as a single dispatch table"
+    )]
     fn handle_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
         // Handle popups first if visible
         if self.show_add_contact_popup {
@@ -1289,6 +1040,7 @@ impl App<'_> {
         // Global shortcuts (Alt+key) - work from any focus
         // Note: Handle both lowercase and uppercase since some terminals send different cases
         if key.modifiers.contains(KeyModifiers::ALT) {
+            #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
             match key.code {
                 KeyCode::Char('a' | 'A') => {
                     // Alt+A: Add contact
@@ -1326,6 +1078,7 @@ impl App<'_> {
         }
 
         // Function key fallbacks for terminals where Alt doesn't work properly
+        #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
         match key.code {
             KeyCode::F(2) => {
                 // F2: Add contact (fallback for Alt+A)
@@ -1355,6 +1108,7 @@ impl App<'_> {
             _ => {}
         }
 
+        #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
         match key.code {
             KeyCode::Esc => {
                 if self.focus == Focus::Input {
@@ -1390,6 +1144,7 @@ impl App<'_> {
     /// Handle key events in conversation list
     #[allow(clippy::unnecessary_wraps)] // Returns Result for consistency with other handlers
     fn handle_conversation_key(&mut self, key: KeyEvent) -> AppResult<()> {
+        #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.selected_conversation > 0 {
@@ -1421,6 +1176,7 @@ impl App<'_> {
 
     /// Handle key events in message view
     fn handle_message_key(&mut self, key: KeyEvent) {
+        #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.message_scroll = self.message_scroll.saturating_add(1);
@@ -1519,8 +1275,7 @@ impl App<'_> {
             // Seed cache from storage if history hasn't been loaded yet.
             // Uses a separate flag so that in-session messages (which create
             // cache entries via cache_message()) don't prevent loading history.
-            if !self.history_loaded.contains(&public_id) {
-                self.history_loaded.insert(public_id);
+            if self.history_loaded.insert(public_id) {
                 match self.client.get_messages(contact_id, 50, None) {
                     Ok(stored) => {
                         let cache = self.message_cache.entry(public_id).or_default();
@@ -1569,6 +1324,7 @@ impl App<'_> {
 
     /// Handle key events when add contact popup is visible
     fn handle_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
+        #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
         match key.code {
             KeyCode::Esc => {
                 // Cancel and close popup
@@ -1672,6 +1428,7 @@ impl App<'_> {
     /// Handle key events when my ID popup is visible
     #[allow(clippy::unnecessary_wraps)] // Returns Result for consistency with other handlers
     fn handle_my_id_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
+        #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
         match key.code {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | 'i') => {
                 // Close popup
@@ -1685,6 +1442,7 @@ impl App<'_> {
     /// Handle key events when view upstreams popup is visible
     #[allow(clippy::unnecessary_wraps)] // Returns Result for consistency with other handlers
     fn handle_upstreams_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
+        #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
         match key.code {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | 'v') => {
                 // Close popup
@@ -1698,6 +1456,7 @@ impl App<'_> {
     /// Handle key events when add upstream popup is visible
     #[allow(clippy::unnecessary_wraps)] // Returns Result for consistency with other handlers
     fn handle_add_upstream_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
+        #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
         match key.code {
             KeyCode::Esc => {
                 // Cancel
@@ -1785,7 +1544,7 @@ impl App<'_> {
     }
 
     /// Add an HTTP upstream synchronously (no network I/O required).
-    fn add_upstream_http(&mut self, url: &str) -> Result<(), String> {
+    fn add_upstream_http(&self, url: &str) -> Result<(), String> {
         let tier = self.add_upstream_popup.tier;
         // TODO: Add UI fields for username/password when adding ephemeral HTTP upstreams
         // TODO: Create stable (FETCH + QUORUM_CREDIT) targets when user selects Quorum tier,
@@ -1799,6 +1558,451 @@ impl App<'_> {
         info!(url = %url, "Added ephemeral HTTP upstream");
         Ok(())
     }
+}
+
+/// Handle the result of an outbox tick (logging only, no UI state change).
+fn handle_outbox_tick(result: Result<(usize, usize, u64), String>) {
+    match result {
+        Err(e) => warn!("Outbox tick failed: {e}"),
+        Ok(counts) => log_outbox_tick_counts(counts),
+    }
+}
+
+/// Log outbox tick counts (no-op when all zero).
+fn log_outbox_tick_counts((retried, maintenance, expired): (usize, usize, u64)) {
+    if retried == 0 && maintenance == 0 && expired == 0 {
+        return;
+    }
+    info!("Outbox tick completed: retried={retried} maintenance={maintenance} expired={expired}");
+}
+
+/// Signal the embedded node to shutdown via its handle.
+async fn signal_node_shutdown(handle: Option<&EmbeddedNodeHandle>) {
+    let Some(handle) = handle else { return };
+    debug!("Shutting down embedded node...");
+    let result = handle.shutdown().await;
+    log_node_shutdown_result(result);
+}
+
+/// Log the embedded node shutdown result.
+fn log_node_shutdown_result(result: Result<(), reme_node_core::NodeError>) {
+    if let Err(e) = result {
+        warn!("Failed to signal embedded node shutdown: {e}");
+    }
+}
+
+/// Shutdown a discovery state: cancel controller, await task, shutdown backend.
+async fn shutdown_discovery_state(state: discovery::DiscoveryState) {
+    debug!("Cancelling discovery controller...");
+    state.cancel.cancel();
+    await_optional_task(state.controller_task, "discovery controller").await;
+    shutdown_mdns_backend(state.backend).await;
+}
+
+/// Await an optional task handle, logging panics.
+async fn await_optional_task(task: Option<tokio::task::JoinHandle<()>>, label: &str) {
+    let Some(handle) = task else { return };
+    debug!(task = label, "Waiting for task to stop");
+    log_task_join_result(handle.await, label);
+}
+
+/// Log the result of joining a task handle.
+fn log_task_join_result(result: Result<(), tokio::task::JoinError>, label: &str) {
+    if let Err(e) = result {
+        log_task_panic(label, &e);
+    } else {
+        log_task_stopped(label);
+    }
+}
+
+fn log_task_panic(label: &str, e: &tokio::task::JoinError) {
+    warn!(task = label, error = %e, "Task panicked during shutdown");
+}
+
+fn log_task_stopped(label: &str) {
+    info!(task = label, "Task shutdown complete");
+}
+
+/// Shutdown the mDNS backend, logging any errors.
+async fn shutdown_mdns_backend(backend: Arc<reme_discovery::mdns_sd::MdnsSdBackend>) {
+    debug!("Shutting down mDNS backend");
+    log_mdns_shutdown_result(backend.shutdown().await);
+}
+
+/// Log the result of mDNS backend shutdown.
+fn log_mdns_shutdown_result(result: Result<(), reme_discovery::DiscoveryError>) {
+    if let Err(e) = result {
+        log_mdns_shutdown_error(&e);
+    } else {
+        log_mdns_shutdown_ok();
+    }
+}
+
+fn log_mdns_shutdown_error(e: &reme_discovery::DiscoveryError) {
+    warn!(error = %e, "Failed to shutdown mDNS backend");
+}
+
+fn log_mdns_shutdown_ok() {
+    info!("mDNS backend shutdown complete");
+}
+
+/// Add direct peers as ephemeral HTTP targets, returning their IDs for registry.
+fn add_direct_peers(
+    config: &crate::config::AppConfig,
+    coordinator: &TransportCoordinator,
+) -> Vec<(TargetId, Option<String>)> {
+    config
+        .direct_peers
+        .iter()
+        .filter_map(|peer| add_single_direct_peer(peer, coordinator))
+        .collect()
+}
+
+/// Add a single direct peer, returning its ID and name on success.
+fn add_single_direct_peer(
+    peer: &crate::config::DirectPeerConfig,
+    coordinator: &TransportCoordinator,
+) -> Option<(TargetId, Option<String>)> {
+    let target_config = HttpTargetConfig::new(&peer.address, TargetKind::Ephemeral)
+        .with_label(peer.name.as_deref().unwrap_or(&peer.address));
+
+    let target = match HttpTarget::new(target_config) {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("Failed to add direct peer {}: {e}", peer.address);
+            return None;
+        }
+    };
+
+    log_direct_peer_added(&peer.address, peer.name.as_deref());
+    let id = (target.id().clone(), peer.name.clone());
+    coordinator.add_http_target(target);
+    Some(id)
+}
+
+/// Log successful direct peer addition.
+fn log_direct_peer_added(address: &str, name: Option<&str>) {
+    info!(
+        "Added direct peer: {} ({})",
+        address,
+        name.unwrap_or("unnamed")
+    );
+}
+
+/// Validate that at least one transport is configured (or discovery can provide one).
+fn validate_transports(
+    config: &crate::config::AppConfig,
+    coordinator: &TransportCoordinator,
+) -> AppResult<()> {
+    if coordinator.has_transports() {
+        return Ok(());
+    }
+    if config.lan_discovery.enabled && config.lan_discovery.auto_direct_known_contacts {
+        warn!("No transports configured yet — LAN discovery may add peers at runtime");
+        return Ok(());
+    }
+    Err("No transports configured. Add HTTP nodes and/or MQTT brokers.".into())
+}
+
+/// Convert a `ConfiguredTier` to `DeliveryTier`.
+const fn convert_tier(tier: reme_config::ConfiguredTier) -> DeliveryTier {
+    match tier {
+        reme_config::ConfiguredTier::Quorum => DeliveryTier::Quorum,
+        reme_config::ConfiguredTier::BestEffort => DeliveryTier::BestEffort,
+    }
+}
+
+/// Register all configured transports in the registry for UI display.
+fn register_configured_targets(
+    registry: &TransportRegistry,
+    http_peers: &[ParsedHttpPeer],
+    mqtt_peers: &[ParsedMqttPeer],
+    direct_peers: Vec<(TargetId, Option<String>)>,
+) {
+    for peer in http_peers {
+        registry.register_stable(
+            TargetId::http(&peer.url),
+            peer.common.label.clone(),
+            convert_tier(peer.common.tier),
+        );
+    }
+    for peer in mqtt_peers {
+        registry.register_stable(
+            TargetId::mqtt(&peer.url),
+            peer.common.label.clone(),
+            convert_tier(peer.common.tier),
+        );
+    }
+    for (id, label) in direct_peers {
+        registry.register_stable(id, label, DeliveryTier::Direct);
+    }
+}
+
+/// Initialize the LAN discovery subsystem, returning state + peer count + optional status message.
+async fn init_discovery(
+    config: &crate::config::AppConfig,
+    identity: &Identity,
+    storage: &Storage,
+    coordinator: Arc<TransportCoordinator>,
+    registry: Arc<TransportRegistry>,
+) -> (
+    Option<discovery::DiscoveryState>,
+    Arc<AtomicUsize>,
+    Option<String>,
+) {
+    match discovery::initialize(config, identity, storage, coordinator, registry).await {
+        discovery::InitResult::Disabled => (None, Arc::new(AtomicUsize::new(0)), None),
+        discovery::InitResult::Failed(reason) => (
+            None,
+            Arc::new(AtomicUsize::new(0)),
+            Some(format!("LAN discovery failed: {reason}")),
+        ),
+        discovery::InitResult::Ok(state) => {
+            let peer_count = state.peer_count.clone();
+            (Some(state), peer_count, None)
+        }
+    }
+}
+
+/// Build the HTTP transport pool from parsed peer configurations.
+fn build_http_pool(
+    parsed_peers: &[ParsedHttpPeer],
+) -> AppResult<Option<Arc<TransportPool<HttpTarget>>>> {
+    if parsed_peers.is_empty() {
+        return Ok(None);
+    }
+
+    let pool = TransportPool::new();
+    for peer in parsed_peers {
+        let target = build_http_target_from_config(peer)?;
+        pool.add_target(target);
+    }
+    Ok(Some(Arc::new(pool)))
+}
+
+/// Build a single HTTP target from a parsed peer configuration.
+fn build_http_target_from_config(peer: &ParsedHttpPeer) -> AppResult<HttpTarget> {
+    let mut config = HttpTargetConfig::stable(&peer.url);
+
+    if let Some(ref pin) = peer.cert_pin {
+        match reme_transport::CertPin::parse(&pin.to_pin_string()) {
+            Ok(transport_pin) => config = config.with_cert_pin(transport_pin),
+            Err(e) => {
+                warn!(url = %peer.url, error = %e, "Certificate pin conversion failed - this is a bug");
+            }
+        }
+    }
+
+    if let Some(ref label) = peer.common.label {
+        config = config.with_label(label.clone());
+    }
+
+    config = config.with_priority(clamp_priority(peer.common.priority, &peer.url));
+    config = config.with_node_pubkey_opt(peer.node_pubkey);
+
+    if let Some((username, password)) = &peer.auth {
+        config = config.with_auth(username, password);
+    }
+
+    Ok(HttpTarget::new(config)?)
+}
+
+/// Clamp a u16 priority to u8 range, warning on truncation.
+fn clamp_priority(priority: u16, url: &str) -> u8 {
+    if priority > 255 {
+        warn!(url = %url, configured = priority, "Priority exceeds 255, clamping");
+        255
+    } else {
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            priority as u8
+        }
+    }
+}
+
+/// Build the MQTT transport pool, connecting configured brokers in parallel.
+async fn build_mqtt_pool(parsed_peers: &[ParsedMqttPeer]) -> Arc<TransportPool<MqttTarget>> {
+    let pool = TransportPool::new();
+    connect_mqtt_peers(&pool, parsed_peers).await;
+    Arc::new(pool)
+}
+
+/// Spawn parallel MQTT connection tasks and collect results into the pool.
+async fn connect_mqtt_peers(pool: &TransportPool<MqttTarget>, parsed_peers: &[ParsedMqttPeer]) {
+    if parsed_peers.is_empty() {
+        return;
+    }
+
+    let mut join_set = spawn_mqtt_connections(parsed_peers);
+    collect_mqtt_results(pool, &mut join_set).await;
+}
+
+/// Spawn MQTT connection tasks for all configured peers.
+fn spawn_mqtt_connections(
+    parsed_peers: &[ParsedMqttPeer],
+) -> tokio::task::JoinSet<(String, Result<MqttTarget, reme_transport::TransportError>)> {
+    let mut join_set = tokio::task::JoinSet::new();
+    for parsed_peer in parsed_peers.iter().cloned() {
+        join_set.spawn(async move {
+            let config = build_mqtt_target_config(&parsed_peer);
+            (parsed_peer.url.clone(), MqttTarget::connect(config).await)
+        });
+    }
+    join_set
+}
+
+/// Collect MQTT connection results into the pool.
+async fn collect_mqtt_results(
+    pool: &TransportPool<MqttTarget>,
+    join_set: &mut tokio::task::JoinSet<(
+        String,
+        Result<MqttTarget, reme_transport::TransportError>,
+    )>,
+) {
+    while let Some(result) = join_set.join_next().await {
+        handle_mqtt_join_result(pool, result);
+    }
+}
+
+/// Handle a single MQTT connection join result.
+fn handle_mqtt_join_result(
+    pool: &TransportPool<MqttTarget>,
+    result: Result<
+        (String, Result<MqttTarget, reme_transport::TransportError>),
+        tokio::task::JoinError,
+    >,
+) {
+    let Ok((url, connect_result)) = result else {
+        warn!("MQTT connection task panicked");
+        return;
+    };
+    log_mqtt_connect_result(pool, &url, connect_result);
+}
+
+/// Log and apply the result of an MQTT connection attempt.
+fn log_mqtt_connect_result(
+    pool: &TransportPool<MqttTarget>,
+    url: &str,
+    result: Result<MqttTarget, reme_transport::TransportError>,
+) {
+    match result {
+        Ok(target) => pool.add_target(target),
+        Err(e) => warn!(broker = %url, error = %e, "Failed to connect to MQTT broker"),
+    }
+}
+
+/// Build MQTT target config from parsed peer configuration.
+fn build_mqtt_target_config(peer: &ParsedMqttPeer) -> MqttTargetConfig {
+    let config = MqttTargetConfig::new(&peer.url)
+        .with_priority(clamp_priority(peer.common.priority, &peer.url));
+    apply_mqtt_optional_fields(config, peer)
+}
+
+/// Apply optional fields to an MQTT target config.
+fn apply_mqtt_optional_fields(
+    mut config: MqttTargetConfig,
+    peer: &ParsedMqttPeer,
+) -> MqttTargetConfig {
+    if let Some(ref client_id) = peer.client_id {
+        config = config.with_client_id(client_id);
+    }
+    if let Some(ref auth) = peer.auth {
+        config = config.with_auth(&auth.0, &auth.1);
+    }
+    if let Some(ref label) = peer.common.label {
+        config = config.with_label(label);
+    }
+    if let Some(ref prefix) = peer.topic_prefix {
+        config = config.with_topic_prefix(prefix);
+    }
+    config
+}
+
+/// Set up the embedded node if enabled, including the HTTP server.
+async fn setup_embedded_node(
+    config: &crate::config::AppConfig,
+    identity: &Identity,
+    identity_bytes: &Zeroizing<[u8; 32]>,
+) -> AppResult<(
+    Option<EmbeddedNodeHandle>,
+    Option<tokio::task::JoinHandle<()>>,
+    Option<mpsc::Receiver<NodeEvent>>,
+)> {
+    if !config.embedded_node.enabled {
+        return Ok((None, None, None));
+    }
+
+    let (handle, join_handle, event_rx) = create_embedded_node(config)?;
+    start_embedded_http_server(config, identity, identity_bytes, &handle).await?;
+
+    Ok((Some(handle), Some(join_handle), Some(event_rx)))
+}
+
+/// Create and start the embedded node (without HTTP server).
+fn create_embedded_node(
+    config: &crate::config::AppConfig,
+) -> AppResult<(
+    EmbeddedNodeHandle,
+    tokio::task::JoinHandle<()>,
+    mpsc::Receiver<NodeEvent>,
+)> {
+    info!("Starting embedded node...");
+
+    let store_config = PersistentStoreConfig::new(
+        config.embedded_node.max_messages as usize,
+        config.embedded_node.default_ttl_secs,
+    )
+    .map_err(|e| format!("Invalid embedded node config: {e}"))?;
+
+    let mailbox_store = open_mailbox_store(config, store_config)?;
+
+    let (node, handle, event_rx) = EmbeddedNode::new(mailbox_store);
+    let join_handle = tokio::spawn(async move { node.run().await });
+    info!("Embedded node started");
+
+    Ok((handle, join_handle, event_rx))
+}
+
+/// Open the mailbox store from the configured data directory.
+fn open_mailbox_store(
+    config: &crate::config::AppConfig,
+    store_config: PersistentStoreConfig,
+) -> AppResult<PersistentMailboxStore> {
+    let mailbox_db_path = config.data_dir.join("mailbox.db");
+    let mailbox_db_str = mailbox_db_path
+        .to_str()
+        .ok_or("Mailbox database path contains invalid UTF-8 characters")?;
+    PersistentMailboxStore::open(mailbox_db_str, store_config)
+        .map_err(|e| format!("Failed to open mailbox store: {e}").into())
+}
+
+/// Start the embedded HTTP server for LAN P2P if configured.
+async fn start_embedded_http_server(
+    config: &crate::config::AppConfig,
+    identity: &Identity,
+    identity_bytes: &Zeroizing<[u8; 32]>,
+    handle: &EmbeddedNodeHandle,
+) -> AppResult<()> {
+    let Some(ref bind_addr) = config.embedded_node.http_bind else {
+        return Ok(());
+    };
+
+    let http_handle = handle.clone();
+    let our_routing_key = identity.public_id().routing_key();
+    let http_identity = Arc::new(Identity::from_bytes(identity_bytes)?);
+
+    let (listener, router) =
+        http_server::bind_server(bind_addr, http_handle, our_routing_key, http_identity)
+            .await
+            .map_err(|e| format!("Failed to start HTTP server: {e}"))?;
+
+    tokio::spawn(async move {
+        if let Err(e) = http_server::run_server(listener, router).await {
+            tracing::error!(error = %e, "Embedded HTTP server stopped unexpectedly");
+        }
+    });
+
+    Ok(())
 }
 
 /// Process an incoming envelope locally and notify the UI, then fire-and-forget the tombstone.
@@ -1865,7 +2069,8 @@ fn utc_time_now() -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    format_unix_timestamp(secs.cast_signed())
+    #[allow(clippy::cast_possible_wrap)]
+    format_unix_timestamp(secs as i64)
 }
 
 /// Format a unix timestamp (seconds) as HH:MM UTC
@@ -1873,7 +2078,8 @@ fn format_unix_timestamp(secs: i64) -> String {
     if secs < 0 {
         return "??:??".to_string();
     }
-    let secs = secs.cast_unsigned();
+    #[allow(clippy::cast_sign_loss)]
+    let secs = secs as u64;
     let hours = (secs % 86400) / 3600;
     let mins = (secs % 3600) / 60;
     format!("{hours:02}:{mins:02}")

@@ -74,7 +74,7 @@ fn parse_public_id(hex_str: &str) -> Result<PublicID, Box<dyn std::error::Error>
         hex::decode(hex_str).map_err(|e| format!("Invalid public ID: bad hex encoding: {e}"))?;
     let bytes: [u8; 32] = bytes
         .try_into()
-        .expect("64 hex chars always decode to 32 bytes");
+        .map_err(|_| "hex::decode of 64-char hex string did not produce 32 bytes")?;
     PublicID::try_from_bytes(&bytes)
         .map_err(|_| "Invalid public ID: rejected as low-order point".into())
 }
@@ -113,7 +113,7 @@ fn apply_filters(
 ) -> Vec<PendingMessage> {
     let mut filtered: Vec<PendingMessage> = messages
         .into_iter()
-        .filter(|m| since_ms.is_none_or(|cutoff| m.created_at_ms >= cutoff))
+        .filter(|m| since_ms.map_or(true, |cutoff| m.created_at_ms >= cutoff))
         .collect();
 
     // Messages are already ordered by created_at_ms ASC from storage
@@ -304,14 +304,14 @@ mod tests {
         let recipient = bob.public_id();
         for _ in 0..3 {
             storage
-                .outbox_enqueue(
+                .outbox_enqueue(reme_outbox::EnqueueParams {
                     recipient,
-                    [1u8; 8],
-                    MessageID::new(),
-                    &envelope_bytes,
-                    b"inner",
-                    None,
-                )
+                    content_id: [1u8; 8],
+                    message_id: MessageID::new(),
+                    envelope_bytes: &envelope_bytes,
+                    inner_bytes: b"inner",
+                    expires_at_ms: None,
+                })
                 .unwrap();
         }
 

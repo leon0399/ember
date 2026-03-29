@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From};
 use getset::Getters;
@@ -180,7 +181,7 @@ impl PublicID {
     }
 
     /// Get X25519 public key for encryption/DH
-    pub fn x25519_public(&self) -> &X25519PublicKey {
+    pub const fn x25519_public(&self) -> &X25519PublicKey {
         &self.x25519_public
     }
 
@@ -223,12 +224,12 @@ pub struct RoutingKey(pub [u8; 16]);
 
 impl RoutingKey {
     /// Create a new `RoutingKey` from raw bytes
-    pub fn from_bytes(bytes: [u8; 16]) -> Self {
+    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
         Self(bytes)
     }
 
     /// Get the raw bytes
-    pub fn as_bytes(&self) -> &[u8; 16] {
+    pub const fn as_bytes(&self) -> &[u8; 16] {
         &self.0
     }
 }
@@ -309,7 +310,7 @@ pub struct Identity {
 
 impl Identity {
     /// Get the X25519 secret key for DH operations
-    pub fn x25519_secret(&self) -> &X25519Secret {
+    pub const fn x25519_secret(&self) -> &X25519Secret {
         &self.x25519_secret
     }
 
@@ -324,11 +325,18 @@ impl Identity {
         xed_private.sign(message, OsRng)
     }
 
-    /// Generate a new identity from random bytes
+    /// Generate a new identity from random bytes.
+    ///
+    /// Uses a retry loop for correctness, though in practice random clamped
+    /// X25519 scalars never produce low-order public keys.
     pub fn generate() -> Self {
-        let mut bytes = [0u8; 32];
-        rand_core::RngCore::fill_bytes(&mut OsRng, &mut bytes);
-        Self::from_bytes(&bytes)
+        loop {
+            let mut bytes = [0u8; 32];
+            rand_core::RngCore::fill_bytes(&mut OsRng, &mut bytes);
+            if let Ok(identity) = Self::try_from_bytes(&bytes) {
+                return identity;
+            }
+        }
     }
 
     /// Create Identity from 32-byte secret key with validation.
@@ -359,12 +367,10 @@ impl Identity {
 
     /// Create Identity from 32-byte secret key.
     ///
-    /// # Panics
-    ///
-    /// Panics if the derived public key is a low-order point (mathematically
-    /// impossible with proper X25519 clamping - indicates a bug in crypto library).
-    pub fn from_bytes(bytes: &[u8; 32]) -> Self {
-        Self::try_from_bytes(bytes).expect("derived public key is low-order (crypto library bug)")
+    /// Returns `Err(InvalidPublicKey)` if the derived public key is a low-order
+    /// point (mathematically impossible with proper X25519 clamping).
+    pub fn from_bytes(bytes: &[u8; 32]) -> Result<Self, InvalidPublicKey> {
+        Self::try_from_bytes(bytes)
     }
 
     /// Return the 32-byte secret key for backup/serialization
@@ -394,8 +400,8 @@ mod tests {
     fn deterministic_derivation() {
         let bytes = [42u8; 32];
 
-        let id1 = Identity::from_bytes(&bytes);
-        let id2 = Identity::from_bytes(&bytes);
+        let id1 = Identity::from_bytes(&bytes).unwrap();
+        let id2 = Identity::from_bytes(&bytes).unwrap();
 
         // Same bytes should produce identical identities
         assert_eq!(id1.public_id(), id2.public_id());
@@ -409,7 +415,7 @@ mod tests {
         let bytes = id1.to_bytes();
 
         // Recreate from bytes
-        let id2 = Identity::from_bytes(&bytes);
+        let id2 = Identity::from_bytes(&bytes).unwrap();
 
         // Should have identical keys
         assert_eq!(id1.public_id(), id2.public_id());
@@ -421,7 +427,7 @@ mod tests {
 
         // to_bytes/from_bytes should work with 32-byte seed
         let bytes = id1.to_bytes();
-        let id2 = Identity::from_bytes(&bytes);
+        let id2 = Identity::from_bytes(&bytes).unwrap();
 
         assert_eq!(id1.public_id(), id2.public_id());
         assert_eq!(bytes.len(), 32);

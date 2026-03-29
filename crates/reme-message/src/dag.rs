@@ -25,8 +25,8 @@ pub enum GapResult {
 
 impl GapResult {
     /// Returns true if this result indicates no gaps (complete ancestry).
-    pub fn is_complete(&self) -> bool {
-        matches!(self, GapResult::Complete { .. })
+    pub const fn is_complete(&self) -> bool {
+        matches!(self, Self::Complete { .. })
     }
 }
 
@@ -251,7 +251,7 @@ impl SenderGapDetector {
     }
 
     /// Get all current heads (leaf nodes of our sent DAG).
-    pub fn heads(&self) -> &HashSet<ContentId> {
+    pub const fn heads(&self) -> &HashSet<ContentId> {
         &self.heads
     }
 

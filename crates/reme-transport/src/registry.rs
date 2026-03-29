@@ -14,7 +14,7 @@ use crate::delivery::DeliveryTier;
 use crate::http_target::HttpTarget;
 use crate::pool::TransportPool;
 use crate::query::{HealthSummary, TargetSnapshot, TransportQuery};
-use crate::target::{HealthState, TargetConfig, TargetId};
+use crate::target::{HealthData, HealthState, TargetConfig, TargetId};
 
 #[cfg(feature = "mqtt")]
 use crate::mqtt_target::MqttTarget;
@@ -81,13 +81,13 @@ impl TransportRegistry {
     }
 
     /// Get the HTTP transport pool.
-    pub fn http_pool(&self) -> Option<&Arc<TransportPool<HttpTarget>>> {
+    pub const fn http_pool(&self) -> Option<&Arc<TransportPool<HttpTarget>>> {
         self.http_pool.as_ref()
     }
 
     /// Get the MQTT transport pool.
     #[cfg(feature = "mqtt")]
-    pub fn mqtt_pool(&self) -> Option<&Arc<TransportPool<MqttTarget>>> {
+    pub const fn mqtt_pool(&self) -> Option<&Arc<TransportPool<MqttTarget>>> {
         self.mqtt_pool.as_ref()
     }
 
@@ -96,7 +96,9 @@ impl TransportRegistry {
     /// This records metadata (label, tier, ephemeral flag) for a target
     /// that was added to the coordinator at runtime.
     pub fn register_ephemeral(&self, id: TargetId, label: Option<String>, tier: DeliveryTier) {
-        let mut meta = self.target_meta.write().unwrap();
+        let Ok(mut meta) = self.target_meta.write() else {
+            return;
+        };
         meta.insert(
             id.clone(),
             EphemeralMeta {
@@ -112,7 +114,9 @@ impl TransportRegistry {
     ///
     /// Use this for targets from config files that aren't in pools.
     pub fn register_stable(&self, id: TargetId, label: Option<String>, tier: DeliveryTier) {
-        let mut meta = self.target_meta.write().unwrap();
+        let Ok(mut meta) = self.target_meta.write() else {
+            return;
+        };
         meta.insert(
             id.clone(),
             EphemeralMeta {
@@ -126,17 +130,22 @@ impl TransportRegistry {
 
     /// Remove metadata for a target (e.g. when a discovered peer is deregistered).
     pub fn remove_meta(&self, id: &TargetId) {
-        self.target_meta.write().unwrap().remove(id);
+        if let Ok(mut meta) = self.target_meta.write() {
+            meta.remove(id);
+        }
     }
 
     /// Get metadata for a target.
     pub fn get_ephemeral_meta(&self, id: &TargetId) -> Option<EphemeralMeta> {
-        self.target_meta.read().unwrap().get(id).cloned()
+        self.target_meta.read().ok()?.get(id).cloned()
     }
 
     /// List all targets with metadata.
     pub fn list_ephemeral(&self) -> Vec<EphemeralMeta> {
-        self.target_meta.read().unwrap().values().cloned().collect()
+        let Ok(meta) = self.target_meta.read() else {
+            return Vec::new();
+        };
+        meta.values().cloned().collect()
     }
 
     /// Get a combined list of all targets with tier and ephemeral metadata.
@@ -151,7 +160,9 @@ impl TransportRegistry {
     /// health. These are typically send-only targets without active polling.
     pub fn list_all_targets(&self) -> Vec<EnrichedSnapshot> {
         let mut results = Vec::new();
-        let meta = self.target_meta.read().unwrap();
+        let Ok(meta) = self.target_meta.read() else {
+            return results;
+        };
 
         // Collect IDs from pool snapshots for O(1) duplicate checking
         let mut seen_ids: HashSet<TargetId> = HashSet::new();
@@ -194,11 +205,10 @@ impl TransportRegistry {
                 // Health is Unknown since we don't have active health tracking for these
                 let snapshot = TargetSnapshot::from_config(
                     &TargetConfig::ephemeral(id.clone()),
-                    HealthState::Unknown,
-                    0,
-                    0,
-                    None,
-                    None,
+                    &HealthData {
+                        state: HealthState::Unknown,
+                        ..HealthData::default()
+                    },
                 );
                 results.push(EnrichedSnapshot {
                     snapshot,
@@ -228,7 +238,9 @@ impl Default for TransportRegistry {
 impl TransportQuery for TransportRegistry {
     fn list_targets(&self) -> Vec<TargetSnapshot> {
         let mut targets = Vec::new();
-        let meta = self.target_meta.read().unwrap();
+        let Ok(meta) = self.target_meta.read() else {
+            return targets;
+        };
 
         // Collect IDs from pool snapshots for O(1) duplicate checking
         let mut seen_ids: HashSet<TargetId> = HashSet::new();
@@ -256,11 +268,10 @@ impl TransportQuery for TransportRegistry {
             if !seen_ids.contains(id) {
                 let snapshot = TargetSnapshot::from_config(
                     &TargetConfig::ephemeral(id.clone()).with_label_opt(emeta.label.clone()),
-                    HealthState::Unknown,
-                    0,
-                    0,
-                    None,
-                    None,
+                    &HealthData {
+                        state: HealthState::Unknown,
+                        ..HealthData::default()
+                    },
                 );
                 targets.push(snapshot);
             }
@@ -291,7 +302,9 @@ impl TransportQuery for TransportRegistry {
         }
 
         // Count metadata-only targets (not in pools)
-        let meta = self.target_meta.read().unwrap();
+        let Ok(meta) = self.target_meta.read() else {
+            return summary;
+        };
         let metadata_only_count = meta.keys().filter(|id| !seen_ids.contains(*id)).count();
         if metadata_only_count > 0 {
             summary.total += metadata_only_count;
@@ -313,7 +326,7 @@ impl TransportQuery for TransportRegistry {
         // pool backing and report HealthState::Unknown. We still consider them
         // "available" because the coordinator routes sends through their ephemeral
         // HTTP connections directly.
-        let has_meta_targets = !self.target_meta.read().unwrap().is_empty();
+        let has_meta_targets = self.target_meta.read().is_ok_and(|meta| !meta.is_empty());
 
         http_available || mqtt_available || has_meta_targets
     }
@@ -391,7 +404,13 @@ mod tests {
     #[test]
     fn test_enriched_snapshot_display_label() {
         let config = TargetConfig::stable(TargetId::http("https://example.com"));
-        let snapshot = TargetSnapshot::from_config(&config, HealthState::Healthy, 0, 0, None, None);
+        let snapshot = TargetSnapshot::from_config(
+            &config,
+            &HealthData {
+                state: HealthState::Healthy,
+                ..HealthData::default()
+            },
+        );
 
         // No custom label - use snapshot
         let enriched = EnrichedSnapshot {

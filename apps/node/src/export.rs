@@ -80,9 +80,9 @@ fn parse_routing_key(hex_str: &str) -> Result<RoutingKey, Box<dyn std::error::Er
     }
     let bytes =
         hex::decode(hex_str).map_err(|e| format!("Invalid routing key: bad hex encoding: {e}"))?;
-    let bytes: [u8; 16] = bytes
-        .try_into()
-        .expect("32 hex chars always decode to 16 bytes");
+    let Ok(bytes): Result<[u8; 16], _> = bytes.try_into() else {
+        return Err("Invalid routing key: unexpected byte length after hex decode".into());
+    };
     Ok(RoutingKey::from_bytes(bytes))
 }
 

@@ -261,7 +261,9 @@ impl MqttTransport {
         }
 
         let prefix = if use_tls { "mqtts://" } else { "mqtt://" };
-        let rest = url.strip_prefix(prefix).unwrap();
+        let rest = url
+            .strip_prefix(prefix)
+            .ok_or_else(|| TransportError::Network(format!("Invalid MQTT URL scheme: {url}")))?;
         let default_port = if use_tls { 8883 } else { 1883 };
 
         // Parse host:port, handling IPv6 addresses in brackets
@@ -378,7 +380,7 @@ impl MqttTransport {
     }
 
     /// Get the seen cache for deduplication.
-    pub fn seen_cache(&self) -> &Arc<SharedSeenCache> {
+    pub const fn seen_cache(&self) -> &Arc<SharedSeenCache> {
         &self.seen_cache
     }
 

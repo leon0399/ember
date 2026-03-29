@@ -54,12 +54,12 @@ impl WirePayload {
             WireType::Message => {
                 let envelope: OuterEnvelope = postcard::from_bytes(&bytes[1..])
                     .map_err(|e| format!("Invalid message: {e}"))?;
-                Ok(WirePayload::Message(envelope))
+                Ok(Self::Message(envelope))
             }
             WireType::AckTombstone => {
                 let tombstone: SignedAckTombstone = postcard::from_bytes(&bytes[1..])
                     .map_err(|e| format!("Invalid ack tombstone: {e}"))?;
-                Ok(WirePayload::AckTombstone(tombstone))
+                Ok(Self::AckTombstone(tombstone))
             }
         }
     }
@@ -67,8 +67,8 @@ impl WirePayload {
     /// Encode wire payload to bytes
     pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
         let (wire_type, payload) = match self {
-            WirePayload::Message(envelope) => (WireType::Message, postcard::to_allocvec(envelope)?),
-            WirePayload::AckTombstone(tombstone) => {
+            Self::Message(envelope) => (WireType::Message, postcard::to_allocvec(envelope)?),
+            Self::AckTombstone(tombstone) => {
                 (WireType::AckTombstone, postcard::to_allocvec(tombstone)?)
             }
         };
@@ -80,18 +80,18 @@ impl WirePayload {
     }
 
     /// Get the routing key for this payload (only for Message)
-    pub fn routing_key(&self) -> Option<&RoutingKey> {
+    pub const fn routing_key(&self) -> Option<&RoutingKey> {
         match self {
-            WirePayload::Message(envelope) => Some(&envelope.routing_key),
-            WirePayload::AckTombstone(_) => None, // V2 tombstones don't have routing_key
+            Self::Message(envelope) => Some(&envelope.routing_key),
+            Self::AckTombstone(_) => None, // V2 tombstones don't have routing_key
         }
     }
 
     /// Get the `message_id` for this payload
-    pub fn message_id(&self) -> &MessageID {
+    pub const fn message_id(&self) -> &MessageID {
         match self {
-            WirePayload::Message(envelope) => &envelope.message_id,
-            WirePayload::AckTombstone(tombstone) => &tombstone.message_id,
+            Self::Message(envelope) => &envelope.message_id,
+            Self::AckTombstone(tombstone) => &tombstone.message_id,
         }
     }
 }

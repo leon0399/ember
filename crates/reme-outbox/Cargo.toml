@@ -3,6 +3,7 @@ name = "reme-outbox"
 version = "0.1.0"
 edition = "2021"
 description = "Client-side outbox for resilient message delivery"
+publish = false
 
 [lints]
 workspace = true

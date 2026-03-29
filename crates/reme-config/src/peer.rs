@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::ConfiguredTier;
 
 /// Default priority for peers within a tier.
-fn default_priority() -> u16 {
+const fn default_priority() -> u16 {
     100
 }
 

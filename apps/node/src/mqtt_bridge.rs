@@ -151,7 +151,7 @@ impl MqttBridge {
     /// before storing it, preventing duplicates from HTTP that were
     /// already received via MQTT.
     #[allow(dead_code)] // API for future deduplication integration
-    pub fn seen_cache(&self) -> &Arc<SharedSeenCache> {
+    pub const fn seen_cache(&self) -> &Arc<SharedSeenCache> {
         self.transport.seen_cache()
     }
 
@@ -188,59 +188,26 @@ impl MqttBridge {
         store: Arc<PersistentMailboxStore>,
         cancel: CancellationToken,
     ) -> Result<(), MqttBridgeError> {
-        info!(
-            "Starting MQTT subscriber for {}/messages/#",
-            self.topic_prefix
-        );
+        let (events, _handles) = self.create_subscriber().await?;
+        subscriber_event_loop(store, events, cancel).await;
+        Ok(())
+    }
 
-        // Create multi-broker receiver with shared seen cache
+    async fn create_subscriber(
+        &self,
+    ) -> Result<
+        (
+            mpsc::UnboundedReceiver<TransportEvent>,
+            Vec<reme_transport::MqttReceiverHandle>,
+        ),
+        MqttBridgeError,
+    > {
         let receiver = MultiBrokerReceiver::with_seen_cache(
             self.receiver_configs.clone(),
             self.transport.seen_cache().clone(),
         )
         .await?;
-
-        // Subscribe to all messages (wildcard)
-        let (mut events, _handles) = receiver.subscribe_all().await?;
-
-        info!("MQTT subscriber active, waiting for messages...");
-
-        // Process events
-        loop {
-            tokio::select! {
-                event = events.recv() => {
-                    let Some(event) = event else { break };
-                    match event {
-                        TransportEvent::Message(envelope) => {
-                            // Seen cache is already checked by the receiver,
-                            // so this message is new to us
-                            debug!(
-                                "Received message from MQTT: {:?} (routing_key: {:?})",
-                                envelope.message_id, envelope.routing_key
-                            );
-
-                            // Store in local mailbox
-                            let routing_key = envelope.routing_key;
-                            if let Err(e) = store.enqueue(routing_key, envelope) {
-                                error!("Failed to store MQTT message: {}", e);
-                                // Continue processing other messages
-                            }
-                        }
-                        TransportEvent::Error(e) => {
-                            warn!("MQTT receiver error: {}", e);
-                            // Continue - the receiver will handle reconnection
-                        }
-                    }
-                }
-                () = cancel.cancelled() => {
-                    info!("MQTT subscriber received shutdown signal");
-                    break;
-                }
-            }
-        }
-
-        info!("MQTT subscriber shut down");
-        Ok(())
+        receiver.subscribe_all().await.map_err(Into::into)
     }
 
     /// Create a channel for receiving MQTT messages.
@@ -283,6 +250,41 @@ impl MqttBridge {
         });
 
         Ok(rx)
+    }
+}
+
+async fn subscriber_event_loop(
+    store: Arc<PersistentMailboxStore>,
+    mut events: mpsc::UnboundedReceiver<TransportEvent>,
+    cancel: CancellationToken,
+) {
+    loop {
+        let event = tokio::select! {
+            event = events.recv() => event,
+            () = cancel.cancelled() => break,
+        };
+        let Some(event) = event else { break };
+        handle_transport_event(&store, event);
+    }
+}
+
+/// Handle a single transport event from the MQTT subscriber.
+fn handle_transport_event(store: &PersistentMailboxStore, event: TransportEvent) {
+    match event {
+        TransportEvent::Message(envelope) => store_mqtt_message(store, envelope),
+        TransportEvent::Error(e) => warn!("MQTT receiver error: {}", e),
+    }
+}
+
+fn store_mqtt_message(store: &PersistentMailboxStore, envelope: reme_message::OuterEnvelope) {
+    let routing_key = envelope.routing_key;
+    let result = store.enqueue(routing_key, envelope);
+    log_mqtt_store_result(result);
+}
+
+fn log_mqtt_store_result(result: Result<(), reme_node_core::NodeError>) {
+    if let Err(e) = result {
+        error!("Failed to store MQTT message: {}", e);
     }
 }
 

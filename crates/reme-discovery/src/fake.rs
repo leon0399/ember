@@ -54,7 +54,10 @@ impl Default for FakeDiscoveryBackend {
 #[async_trait::async_trait]
 impl DiscoveryBackend for FakeDiscoveryBackend {
     async fn start_advertising(&self, _spec: AdvertisementSpec) -> Result<(), DiscoveryError> {
-        let mut advertising = self.advertising.lock().unwrap();
+        let mut advertising = self
+            .advertising
+            .lock()
+            .map_err(|_| DiscoveryError::LockPoisoned)?;
         if *advertising {
             return Err(DiscoveryError::AlreadyAdvertising);
         }
@@ -63,7 +66,10 @@ impl DiscoveryBackend for FakeDiscoveryBackend {
     }
 
     async fn stop_advertising(&self) -> Result<(), DiscoveryError> {
-        let mut advertising = self.advertising.lock().unwrap();
+        let mut advertising = self
+            .advertising
+            .lock()
+            .map_err(|_| DiscoveryError::LockPoisoned)?;
         if !*advertising {
             return Err(DiscoveryError::NotAdvertising);
         }
@@ -76,7 +82,10 @@ impl DiscoveryBackend for FakeDiscoveryBackend {
     }
 
     async fn shutdown(&self) -> Result<(), DiscoveryError> {
-        *self.advertising.lock().unwrap() = false;
+        *self
+            .advertising
+            .lock()
+            .map_err(|_| DiscoveryError::LockPoisoned)? = false;
         Ok(())
     }
 }
@@ -111,7 +120,9 @@ mod tests {
             DiscoveryEvent::PeerDiscovered(peer) => {
                 assert_eq!(peer.instance_name, "alice");
             }
-            other => panic!("expected PeerDiscovered, got {other:?}"),
+            DiscoveryEvent::PeerUpdated(_) | DiscoveryEvent::PeerLost(_) => {
+                panic!("expected PeerDiscovered, got {event:?}")
+            }
         }
     }
 
@@ -125,7 +136,9 @@ mod tests {
         let event = rx.try_recv().unwrap();
         match event {
             DiscoveryEvent::PeerUpdated(peer) => assert_eq!(peer.instance_name, "alice"),
-            other => panic!("expected PeerUpdated, got {other:?}"),
+            DiscoveryEvent::PeerDiscovered(_) | DiscoveryEvent::PeerLost(_) => {
+                panic!("expected PeerUpdated, got {event:?}")
+            }
         }
     }
 
@@ -139,7 +152,9 @@ mod tests {
         let event = rx.try_recv().unwrap();
         match event {
             DiscoveryEvent::PeerLost(name) => assert_eq!(name, "bob"),
-            other => panic!("expected PeerLost, got {other:?}"),
+            DiscoveryEvent::PeerDiscovered(_) | DiscoveryEvent::PeerUpdated(_) => {
+                panic!("expected PeerLost, got {event:?}")
+            }
         }
     }
 

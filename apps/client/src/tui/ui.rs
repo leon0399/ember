@@ -421,7 +421,10 @@ fn render_my_id_popup(frame: &mut Frame, app: &App) {
 }
 
 /// Render the add upstream popup
-#[allow(clippy::too_many_lines)] // UI rendering function, refactoring would fragment layout logic
+#[expect(
+    clippy::too_many_lines,
+    reason = "popup layout is easier to follow when rendered in one place"
+)]
 fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
     // Fixed height: border(2) + margin(2) + instructions(1) + type(3) + tier(3) + url(3) + error(1) + hints(1) = 16
     let area = popup_area_fixed(frame.area(), 60, 16);
@@ -586,7 +589,10 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
 }
 
 /// Render the view upstreams popup
-#[allow(clippy::too_many_lines)] // UI rendering function, refactoring would fragment layout logic
+#[expect(
+    clippy::too_many_lines,
+    reason = "upstream list rendering is easier to audit as one layout pass"
+)]
 fn render_upstreams_popup(frame: &mut Frame, app: &App) {
     use reme_transport::HealthState;
 

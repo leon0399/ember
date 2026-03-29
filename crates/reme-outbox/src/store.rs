@@ -8,6 +8,25 @@ use reme_identity::PublicID;
 use reme_message::{ContentId, MessageID};
 use std::sync::Arc;
 
+/// Parameters for enqueueing a message to the outbox.
+///
+/// Groups the required fields to keep the `outbox_enqueue` signature under
+/// the `too-many-arguments` threshold.
+pub struct EnqueueParams<'a> {
+    /// Recipient's public identity
+    pub recipient: &'a PublicID,
+    /// Content ID for DAG tracking
+    pub content_id: ContentId,
+    /// Wire message ID
+    pub message_id: MessageID,
+    /// Serialized `OuterEnvelope`
+    pub envelope_bytes: &'a [u8],
+    /// Serialized `InnerEnvelope`
+    pub inner_bytes: &'a [u8],
+    /// Optional expiration timestamp (milliseconds since epoch)
+    pub expires_at_ms: Option<u64>,
+}
+
 /// Storage operations for the outbox.
 ///
 /// This trait is implemented by `reme-storage::Storage` to provide
@@ -19,15 +38,7 @@ pub trait OutboxStore {
     /// Add a new message to the outbox.
     ///
     /// Returns the database ID for the new entry.
-    fn outbox_enqueue(
-        &self,
-        recipient: &PublicID,
-        content_id: ContentId,
-        message_id: MessageID,
-        envelope_bytes: &[u8],
-        inner_bytes: &[u8],
-        expires_at_ms: Option<u64>,
-    ) -> Result<OutboxEntryId, Self::Error>;
+    fn outbox_enqueue(&self, params: EnqueueParams<'_>) -> Result<OutboxEntryId, Self::Error>;
 
     /// Get all pending messages (not confirmed, not expired).
     fn outbox_get_pending(&self) -> Result<Vec<PendingMessage>, Self::Error>;
@@ -162,23 +173,8 @@ pub trait OutboxStore {
 impl<T: OutboxStore> OutboxStore for Arc<T> {
     type Error = T::Error;
 
-    fn outbox_enqueue(
-        &self,
-        recipient: &PublicID,
-        content_id: ContentId,
-        message_id: MessageID,
-        envelope_bytes: &[u8],
-        inner_bytes: &[u8],
-        expires_at_ms: Option<u64>,
-    ) -> Result<OutboxEntryId, Self::Error> {
-        (**self).outbox_enqueue(
-            recipient,
-            content_id,
-            message_id,
-            envelope_bytes,
-            inner_bytes,
-            expires_at_ms,
-        )
+    fn outbox_enqueue(&self, params: EnqueueParams<'_>) -> Result<OutboxEntryId, Self::Error> {
+        (**self).outbox_enqueue(params)
     }
 
     fn outbox_get_pending(&self) -> Result<Vec<PendingMessage>, Self::Error> {

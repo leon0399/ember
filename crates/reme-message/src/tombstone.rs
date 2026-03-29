@@ -42,9 +42,8 @@ pub const CLOCK_SKEW_ALLOWANCE_HOURS: u32 = 1;
 fn serialize_sig<S: Serializer>(sig: &[u8; 64], serializer: S) -> Result<S::Ok, S::Error> {
     // Split into two [u8; 32] halves since serde only implements
     // Serialize/Deserialize for arrays up to 32 elements.
-    let (left, right) = sig.split_at(32);
-    let left: &[u8; 32] = left.try_into().unwrap();
-    let right: &[u8; 32] = right.try_into().unwrap();
+    let left: &[u8; 32] = sig[..32].try_into().map_err(serde::ser::Error::custom)?;
+    let right: &[u8; 32] = sig[32..].try_into().map_err(serde::ser::Error::custom)?;
     (left, right).serialize(serializer)
 }
 

@@ -13,25 +13,25 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// 5 minutes - default cleanup interval
-fn default_interval_secs() -> u64 {
+const fn default_interval_secs() -> u64 {
     300
 }
 
 /// 1 hour - tombstone cleanup delay
-fn default_tombstone_delay_secs() -> u64 {
+const fn default_tombstone_delay_secs() -> u64 {
     3600
 }
 
 /// 24 hours - orphan tombstone cleanup delay
-fn default_orphan_delay_secs() -> u64 {
+const fn default_orphan_delay_secs() -> u64 {
     86400
 }
 
 /// 1 hour - rate limit cleanup delay
-fn default_rate_limit_delay_secs() -> u64 {
+const fn default_rate_limit_delay_secs() -> u64 {
     3600
 }
 
@@ -75,23 +75,23 @@ pub struct CleanupConfig {
     pub rate_limit_delay_secs: u64,
 }
 
-fn default_enabled() -> bool {
+const fn default_enabled() -> bool {
     true
 }
 
 impl CleanupConfig {
     /// Log the cleanup configuration
     pub fn log_config(&self) {
-        if self.enabled {
-            info!("Cleanup: enabled");
-            info!("  Interval: {}s", self.interval_secs);
-        } else {
-            info!("Cleanup: disabled");
-        }
+        log_cleanup_config(self.enabled, self.interval_secs);
     }
 }
 
 /// Run the background cleanup task
+fn log_cleanup_config(enabled: bool, interval_secs: u64) {
+    let label = if enabled { "enabled" } else { "disabled" };
+    info!(enabled, interval_secs, "Cleanup: {label}");
+}
+
 ///
 /// Periodically cleans up expired data until `cancel` is triggered.
 /// Should be spawned as a background task using `tokio::spawn`.
@@ -111,39 +111,51 @@ pub async fn run_cleanup_task(
     cancel: CancellationToken,
 ) {
     if !config.enabled {
-        info!("Cleanup task disabled, exiting");
         return;
     }
 
     let interval = Duration::from_secs(config.interval_secs);
-    info!(
-        "Starting cleanup task with {}s interval",
-        config.interval_secs
-    );
+    cleanup_loop(&store, interval, &cancel).await;
+}
 
+async fn cleanup_loop(
+    store: &PersistentMailboxStore,
+    interval: Duration,
+    cancel: &CancellationToken,
+) {
     loop {
-        tokio::select! {
-            () = tokio::time::sleep(interval) => {}
-            () = cancel.cancelled() => {
-                info!("Cleanup task received shutdown signal");
-                break;
-            }
+        if wait_or_cancel(interval, cancel).await {
+            break;
         }
-
-        // Cleanup expired messages
-        match store.cleanup_expired() {
-            Ok(n) if n > 0 => info!("Cleaned {} expired messages", n),
-            Ok(_) => debug!("Message cleanup: nothing to clean"),
-            Err(e) => warn!("Message cleanup failed: {}", e),
-        }
-
-        // Checkpoint WAL periodically
-        if let Err(e) = store.checkpoint() {
-            warn!("WAL checkpoint failed: {}", e);
-        }
+        run_cleanup_cycle(store);
     }
+}
 
-    info!("Cleanup task shut down");
+/// Wait for the next cleanup interval or cancellation.
+/// Returns `true` if cancelled, `false` if the interval elapsed.
+async fn wait_or_cancel(interval: Duration, cancel: &CancellationToken) -> bool {
+    tokio::select! {
+        () = tokio::time::sleep(interval) => false,
+        () = cancel.cancelled() => true,
+    }
+}
+
+/// Execute a single cleanup cycle: expire messages and checkpoint WAL.
+fn run_cleanup_cycle(store: &PersistentMailboxStore) {
+    log_cleanup_result(store.cleanup_expired());
+    log_checkpoint_result(store.checkpoint());
+}
+
+fn log_cleanup_result(result: Result<usize, reme_node_core::NodeError>) {
+    if let Err(e) = result {
+        warn!("Message cleanup failed: {e}");
+    }
+}
+
+fn log_checkpoint_result(result: Result<(), reme_node_core::NodeError>) {
+    if let Err(e) = result {
+        warn!("WAL checkpoint failed: {e}");
+    }
 }
 
 #[cfg(test)]

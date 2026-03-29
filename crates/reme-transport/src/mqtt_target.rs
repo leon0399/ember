@@ -24,6 +24,11 @@ use crate::TransportError;
 /// Default topic prefix for REME messages.
 pub const DEFAULT_TOPIC_PREFIX: &str = "reme/v1";
 
+/// Parsed auth credentials and sanitized URL from an MQTT URL.
+///
+/// Tuple: (optional credentials, sanitized URL without userinfo).
+type MqttAuthResult = (Option<(String, String)>, String);
+
 /// Configuration for a single MQTT target.
 #[derive(Debug, Clone)]
 pub struct MqttTargetConfig {
@@ -86,7 +91,7 @@ impl MqttTargetConfig {
     }
 
     /// Set the priority.
-    pub fn with_priority(mut self, priority: u8) -> Self {
+    pub const fn with_priority(mut self, priority: u8) -> Self {
         self.base.priority = priority;
         self
     }
@@ -368,9 +373,7 @@ pub(crate) fn parse_mqtt_url_auth(url: &str) -> Result<Option<(String, String)>,
 ///
 /// Returns a tuple of (`auth`, `sanitized_url`) where `sanitized_url` has userinfo stripped.
 /// This prevents DNS resolution issues when URLs contain embedded credentials.
-pub(crate) fn parse_mqtt_url_with_auth(
-    url: &str,
-) -> Result<(Option<(String, String)>, String), TransportError> {
+pub(crate) fn parse_mqtt_url_with_auth(url: &str) -> Result<MqttAuthResult, TransportError> {
     let parsed = parse_url_with_auth(url)
         .map_err(|e| TransportError::Network(format!("Invalid MQTT URL: {e}")))?;
     Ok((parsed.auth, parsed.url))
@@ -388,7 +391,9 @@ pub(crate) fn parse_mqtt_url(url: &str) -> Result<ParsedMqttUrl, TransportError>
     }
 
     let prefix = if use_tls { "mqtts://" } else { "mqtt://" };
-    let rest = url.strip_prefix(prefix).unwrap();
+    let rest = url
+        .strip_prefix(prefix)
+        .ok_or_else(|| TransportError::Network(format!("Invalid MQTT URL scheme: {url}")))?;
     let default_port = if use_tls { 8883 } else { 1883 };
 
     // Parse host:port, handling IPv6 addresses in brackets

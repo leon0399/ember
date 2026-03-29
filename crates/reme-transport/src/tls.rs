@@ -40,12 +40,12 @@ pub enum PinParseError {
 impl fmt::Display for PinParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PinParseError::InvalidFormat => write!(
+            Self::InvalidFormat => write!(
                 f,
                 "Invalid pin format, expected 'spki//sha256/<base64>' or 'cert//sha256/<base64>'"
             ),
-            PinParseError::InvalidBase64 => write!(f, "Invalid base64 encoding"),
-            PinParseError::InvalidHashLength { expected, actual } => {
+            Self::InvalidBase64 => write!(f, "Invalid base64 encoding"),
+            Self::InvalidHashLength { expected, actual } => {
                 write!(
                     f,
                     "Invalid hash length: expected {expected} bytes, got {actual}"
@@ -73,10 +73,10 @@ impl CertPin {
     pub fn parse(pin_str: &str) -> Result<Self, PinParseError> {
         if let Some(hash_b64) = pin_str.strip_prefix("spki//sha256/") {
             let bytes = decode_hash(hash_b64)?;
-            Ok(CertPin::Spki { sha256: bytes })
+            Ok(Self::Spki { sha256: bytes })
         } else if let Some(hash_b64) = pin_str.strip_prefix("cert//sha256/") {
             let bytes = decode_hash(hash_b64)?;
-            Ok(CertPin::Cert { sha256: bytes })
+            Ok(Self::Cert { sha256: bytes })
         } else {
             Err(PinParseError::InvalidFormat)
         }
@@ -85,8 +85,8 @@ impl CertPin {
     /// Format the pin as a string.
     pub fn to_pin_string(&self) -> String {
         match self {
-            CertPin::Spki { sha256 } => format!("spki//sha256/{}", BASE64_STANDARD.encode(sha256)),
-            CertPin::Cert { sha256 } => format!("cert//sha256/{}", BASE64_STANDARD.encode(sha256)),
+            Self::Spki { sha256 } => format!("spki//sha256/{}", BASE64_STANDARD.encode(sha256)),
+            Self::Cert { sha256 } => format!("cert//sha256/{}", BASE64_STANDARD.encode(sha256)),
         }
     }
 
@@ -100,7 +100,7 @@ impl CertPin {
     /// Returns `Ok(())` if the pin matches, or `Err(actual_pin_string)` if it doesn't.
     pub fn verify_with_actual(&self, cert: &CertificateDer<'_>) -> Result<(), String> {
         match self {
-            CertPin::Spki { sha256 } => {
+            Self::Spki { sha256 } => {
                 let actual = compute_spki_hash(cert);
                 match actual {
                     Some(actual_hash) if &actual_hash == sha256 => Ok(()),
@@ -111,7 +111,7 @@ impl CertPin {
                     None => Err("[failed to compute SPKI hash]".to_string()),
                 }
             }
-            CertPin::Cert { sha256 } => {
+            Self::Cert { sha256 } => {
                 let actual = compute_cert_hash(cert);
                 if &actual == sha256 {
                     Ok(())

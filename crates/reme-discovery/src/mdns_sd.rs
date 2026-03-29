@@ -76,66 +76,121 @@ impl MdnsSdBackend {
         }
     }
 
+    /// Map an mDNS-SD service event to a [`DiscoveryEvent`], updating the known
+    /// peer set. Returns `None` for events we don't propagate (e.g.
+    /// `ServiceFound`, search-started/stopped).
+    #[allow(clippy::wildcard_enum_match_arm)] // ServiceEvent is #[non_exhaustive]
+    fn map_service_event(
+        event: mdns_sd::ServiceEvent,
+        known: &mut HashSet<String>,
+    ) -> Option<DiscoveryEvent> {
+        match event {
+            mdns_sd::ServiceEvent::ServiceFound(_stype, fullname) => {
+                debug!(fullname, "mDNS-SD: service found (awaiting resolution)");
+                None
+            }
+            mdns_sd::ServiceEvent::ServiceResolved(info) => {
+                Some(Self::handle_service_resolved(&info, known))
+            }
+            mdns_sd::ServiceEvent::ServiceRemoved(_stype, fullname) => {
+                Some(Self::handle_service_removed(fullname, known))
+            }
+            // ServiceEvent is #[non_exhaustive]; SearchStarted/SearchStopped
+            // and future variants are ignored.
+            _ => None,
+        }
+    }
+
+    fn handle_service_resolved(
+        info: &mdns_sd::ResolvedService,
+        known: &mut HashSet<String>,
+    ) -> DiscoveryEvent {
+        let peer = Self::resolved_to_peer(info);
+        let is_new = known.insert(info.fullname.clone());
+        Self::log_resolved(&info.fullname, is_new);
+        if is_new {
+            DiscoveryEvent::PeerDiscovered(peer)
+        } else {
+            DiscoveryEvent::PeerUpdated(peer)
+        }
+    }
+
+    fn log_resolved(fullname: &str, is_new: bool) {
+        let label = if is_new { "resolved" } else { "re-resolved" };
+        debug!(fullname, label, "mDNS-SD: service resolved/updated");
+    }
+
+    fn handle_service_removed(fullname: String, known: &mut HashSet<String>) -> DiscoveryEvent {
+        known.remove(&fullname);
+        debug!(fullname = %fullname, "mDNS-SD: service removed");
+        DiscoveryEvent::PeerLost(fullname)
+    }
+
+    /// Try to claim the browsing slot. Returns `true` if this call claimed it.
+    fn try_claim_browsing(&self) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            warn!("mDNS-SD: lock poisoned, cannot start browsing");
+            return false;
+        };
+        if state.browsing {
+            return false;
+        }
+        state.browsing = true;
+        true
+    }
+
+    /// Reset the browsing flag after a failed browse attempt.
+    fn reset_browsing_flag(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.browsing = false;
+        }
+    }
+
+    /// Store the browse thread handle so we can join it on shutdown.
+    fn store_browse_handle(&self, handle: std::thread::JoinHandle<()>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.browse_handle = Some(handle);
+        } else {
+            warn!("mDNS-SD: lock poisoned, browse handle will be leaked");
+        }
+    }
+
+    /// Spawn the browse-to-broadcast bridge thread.
+    fn spawn_browse_bridge(
+        browse_receiver: mdns_sd::Receiver<mdns_sd::ServiceEvent>,
+        tx: broadcast::Sender<DiscoveryEvent>,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let mut known = HashSet::<String>::new();
+            while let Ok(event) = browse_receiver.recv() {
+                if let Some(discovery_event) = Self::map_service_event(event, &mut known) {
+                    // Ignore errors — no active subscribers is fine.
+                    let _ = tx.send(discovery_event);
+                }
+            }
+        })
+    }
+
     /// Start the browse thread if not already running. Called on first subscribe.
     fn ensure_browsing(&self) {
         // M2: Claim the browsing slot under lock, then drop the lock before
         // calling daemon.browse() (which may block briefly on the internal
         // mpsc channel). If browse() fails, re-acquire and reset.
-        {
-            let mut state = self.state.lock().unwrap();
-            if state.browsing {
-                return;
-            }
-            state.browsing = true;
+        if !self.try_claim_browsing() {
+            return;
         }
 
         let browse_receiver = match self.daemon.browse(DEFAULT_SERVICE_TYPE) {
             Ok(r) => r,
             Err(e) => {
                 warn!("mDNS-SD: failed to start browsing: {e}");
-                let mut state = self.state.lock().unwrap();
-                state.browsing = false;
+                self.reset_browsing_flag();
                 return;
             }
         };
 
-        let tx = self.tx.clone();
-
-        // Bridge the std mpsc receiver from mdns-sd into our broadcast sender.
-        let handle = std::thread::spawn(move || {
-            let mut known = HashSet::<String>::new();
-            while let Ok(event) = browse_receiver.recv() {
-                let discovery_event = match event {
-                    mdns_sd::ServiceEvent::ServiceFound(_stype, fullname) => {
-                        debug!(fullname, "mDNS-SD: service found (awaiting resolution)");
-                        continue;
-                    }
-                    mdns_sd::ServiceEvent::ServiceResolved(info) => {
-                        let peer = Self::resolved_to_peer(&info);
-                        if known.insert(info.fullname.clone()) {
-                            debug!(fullname = %info.fullname, "mDNS-SD: service resolved");
-                            DiscoveryEvent::PeerDiscovered(peer)
-                        } else {
-                            debug!(fullname = %info.fullname, "mDNS-SD: service re-resolved");
-                            DiscoveryEvent::PeerUpdated(peer)
-                        }
-                    }
-                    mdns_sd::ServiceEvent::ServiceRemoved(_stype, fullname) => {
-                        known.remove(&fullname);
-                        debug!(fullname, "mDNS-SD: service removed");
-                        DiscoveryEvent::PeerLost(fullname)
-                    }
-                    _ => continue,
-                };
-
-                // Ignore errors — no active subscribers is fine.
-                let _ = tx.send(discovery_event);
-            }
-        });
-
-        // Store the handle so we can join it on shutdown.
-        let mut state = self.state.lock().unwrap();
-        state.browse_handle = Some(handle);
+        let handle = Self::spawn_browse_bridge(browse_receiver, self.tx.clone());
+        self.store_browse_handle(handle);
     }
 }
 
@@ -323,6 +378,7 @@ impl DiscoveryBackend for MdnsSdBackend {
 }
 
 #[cfg(test)]
+#[allow(clippy::print_stderr)]
 mod tests {
     use std::sync::Arc;
 

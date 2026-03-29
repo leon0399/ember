@@ -32,6 +32,17 @@ use crate::mqtt_target::MqttTarget;
 /// Type alias for boxed futures used in broadcast operations.
 type BoxedFuture = Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send>>;
 
+/// Result of a single quorum-tier delivery attempt to one target.
+///
+/// Contains the target ID, optional node public key (for receipt verification),
+/// the delivery result with raw receipt, and the measured latency.
+type QuorumTargetResult = (
+    TargetId,
+    Option<reme_identity::PublicID>,
+    Result<crate::target::RawReceipt, TransportError>,
+    Duration,
+);
+
 /// Routing strategy for outgoing messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RoutingStrategy {
@@ -161,7 +172,7 @@ impl TransportCoordinator {
     }
 
     /// Get the shared seen cache for deduplication.
-    pub fn seen_cache(&self) -> &Arc<SharedSeenCache> {
+    pub const fn seen_cache(&self) -> &Arc<SharedSeenCache> {
         &self.seen_cache
     }
 
@@ -171,13 +182,13 @@ impl TransportCoordinator {
     }
 
     /// Get a reference to the HTTP pool (for cases needing direct access).
-    pub fn http_pool(&self) -> Option<&Arc<TransportPool<HttpTarget>>> {
+    pub const fn http_pool(&self) -> Option<&Arc<TransportPool<HttpTarget>>> {
         self.http_pool.as_ref()
     }
 
     /// Get a reference to the MQTT pool (for cases needing direct access).
     #[cfg(feature = "mqtt")]
-    pub fn mqtt_pool(&self) -> Option<&Arc<TransportPool<MqttTarget>>> {
+    pub const fn mqtt_pool(&self) -> Option<&Arc<TransportPool<MqttTarget>>> {
         self.mqtt_pool.as_ref()
     }
 
@@ -251,7 +262,7 @@ impl TransportCoordinator {
 
         // Spawn HTTP polling if available
         if let Some(ref pool) = self.http_pool {
-            self.spawn_http_receiver(pool.clone(), routing_key, tx.clone(), cancel_token.clone());
+            self.spawn_http_receiver(pool.clone(), routing_key, tx, cancel_token.clone());
         }
 
         // MQTT subscription would be added here when MqttTarget supports receiving
@@ -431,27 +442,7 @@ impl TransportCoordinator {
             .filter_map(std::result::Result::err)
             .collect();
 
-        if success_count > 0 {
-            trace!("Broadcast succeeded on {} transport(s)", success_count);
-            if !errors.is_empty() {
-                warn!(
-                    "Some transports failed: {:?}",
-                    errors
-                        .iter()
-                        .map(std::string::ToString::to_string)
-                        .collect::<Vec<_>>()
-                );
-            }
-            Ok(())
-        } else {
-            Err(TransportError::Network(format!(
-                "All transports failed: {:?}",
-                errors
-                    .iter()
-                    .map(std::string::ToString::to_string)
-                    .collect::<Vec<_>>()
-            )))
-        }
+        evaluate_broadcast_results(success_count, &errors)
     }
 
     // ========================================================================
@@ -475,15 +466,12 @@ impl TransportCoordinator {
 
         // Tier 1: Direct (race all ephemeral targets)
         let direct_result = self.try_direct_tier(envelope, config).await;
-        let direct_success = direct_result.any_success();
         let direct_target = direct_result.first_success_target();
         all_results.extend(direct_result.results);
 
-        if direct_success {
-            if let Some(target) = direct_target {
-                debug!(target = %target, "Direct tier succeeded");
-                return DeliveryResult::direct_delivery(target, all_results);
-            }
+        if let Some(target) = direct_target {
+            debug!(target = %target, "Direct tier succeeded");
+            return DeliveryResult::direct_delivery(target, all_results);
         }
 
         // Tier 2: Quorum (broadcast all stable targets, require quorum)
@@ -492,34 +480,41 @@ impl TransportCoordinator {
         let total_targets = self.quorum_target_count(config);
         all_results.extend(quorum_result.results);
 
+        Self::evaluate_quorum(config, success_count, total_targets, all_results)
+    }
+
+    /// Evaluate quorum tier results and return the final `DeliveryResult`.
+    fn evaluate_quorum(
+        config: &TieredDeliveryConfig,
+        success_count: u32,
+        total_targets: u32,
+        all_results: Vec<TargetResult>,
+    ) -> DeliveryResult {
         let required = config.quorum.required_count(total_targets);
+        let satisfied = config.quorum.is_satisfied(success_count, total_targets);
+        let label = if satisfied {
+            "Quorum tier succeeded"
+        } else {
+            "Quorum not reached"
+        };
 
-        if config.quorum.is_satisfied(success_count, total_targets) {
-            debug!(
-                success = success_count,
-                required = required,
-                total = total_targets,
-                "Quorum tier succeeded"
-            );
-            return DeliveryResult::quorum_delivery(
-                success_count,
-                required,
-                DeliveryTier::Quorum,
-                all_results,
-            );
-        }
-
-        // Tier 3: Best-Effort (future - BLE, LoRa)
-        // Would add best-effort tier here when implemented
-
-        // Quorum not reached
         debug!(
             success = success_count,
             required = required,
             total = total_targets,
-            "Quorum not reached"
+            label,
         );
-        DeliveryResult::partial(success_count, required, all_results)
+
+        if satisfied {
+            DeliveryResult::quorum_delivery(
+                success_count,
+                required,
+                DeliveryTier::Quorum,
+                all_results,
+            )
+        } else {
+            DeliveryResult::partial(success_count, required, all_results)
+        }
     }
 
     /// Try Direct tier: race all ephemeral targets, return on first success.
@@ -634,7 +629,10 @@ impl TransportCoordinator {
     /// Submit envelope to Quorum tier targets (HTTP stable + MQTT) in parallel.
     ///
     /// If `filter_ids` is Some, only targets with matching IDs are attempted.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "quorum submission logic is easier to audit as one target collection and fanout flow"
+    )]
     async fn submit_to_quorum_targets(
         &self,
         envelope: &OuterEnvelope,
@@ -645,7 +643,6 @@ impl TransportCoordinator {
         use tokio::time::timeout;
 
         let mut tier_result = TierResult::new(DeliveryTier::Quorum);
-        let tier = DeliveryTier::Quorum;
         let tier_timeout = config.quorum_tier_timeout;
         let message_id = envelope.message_id;
 
@@ -659,7 +656,7 @@ impl TransportCoordinator {
                     .filter(|t| {
                         !config.is_excluded(t.id())
                             && t.is_available()
-                            && filter_ids.is_none_or(|ids| ids.contains(t.id()))
+                            && filter_ids.map_or(true, |ids| ids.contains(t.id()))
                     })
                     .collect()
             })
@@ -676,7 +673,7 @@ impl TransportCoordinator {
                     .filter(|t| {
                         !config.is_excluded(t.id())
                             && t.is_available()
-                            && filter_ids.is_none_or(|ids| ids.contains(t.id()))
+                            && filter_ids.map_or(true, |ids| ids.contains(t.id()))
                     })
                     .collect()
             })
@@ -736,38 +733,11 @@ impl TransportCoordinator {
         #[cfg(not(feature = "mqtt"))]
         let http_results = join_all(http_futures).await;
 
-        // Convert HTTP results with receipt verification
-        for (target_id, node_pubkey, result, latency) in http_results {
-            match result {
-                Ok(raw_receipt) => {
-                    let receipt_status = raw_receipt.verify(&message_id, node_pubkey.as_ref());
-                    tier_result.push(TargetResult::success(
-                        target_id,
-                        tier,
-                        latency,
-                        receipt_status,
-                    ));
-                }
-                Err(e) => tier_result.push(TargetResult::failed(target_id, tier, e)),
-            }
-        }
+        // Convert results with receipt verification
+        collect_quorum_results(&mut tier_result, http_results, message_id);
 
-        // Convert MQTT results (MQTT doesn't return receipts)
         #[cfg(feature = "mqtt")]
-        for (target_id, node_pubkey, result, latency) in mqtt_results {
-            match result {
-                Ok(raw_receipt) => {
-                    let receipt_status = raw_receipt.verify(&message_id, node_pubkey.as_ref());
-                    tier_result.push(TargetResult::success(
-                        target_id,
-                        tier,
-                        latency,
-                        receipt_status,
-                    ));
-                }
-                Err(e) => tier_result.push(TargetResult::failed(target_id, tier, e)),
-            }
-        }
+        collect_quorum_results(&mut tier_result, mqtt_results, message_id);
 
         tier_result
     }
@@ -810,6 +780,59 @@ impl TransportCoordinator {
         }
 
         ids
+    }
+}
+
+/// Convert raw delivery results into [`TargetResult`] entries with receipt verification.
+///
+/// Each `QuorumTargetResult` contains target ID, optional node pubkey, delivery result, and latency.
+/// Successful deliveries get their receipts verified; failures are recorded as-is.
+fn collect_quorum_results(
+    tier_result: &mut TierResult,
+    results: Vec<QuorumTargetResult>,
+    message_id: reme_message::MessageID,
+) {
+    let tier = DeliveryTier::Quorum;
+    for (target_id, node_pubkey, result, latency) in results {
+        match result {
+            Ok(raw_receipt) => {
+                let receipt_status = raw_receipt.verify(&message_id, node_pubkey.as_ref());
+                tier_result.push(TargetResult::success(
+                    target_id,
+                    tier,
+                    latency,
+                    receipt_status,
+                ));
+            }
+            Err(e) => tier_result.push(TargetResult::failed(target_id, tier, e)),
+        }
+    }
+}
+
+/// Evaluate broadcast results: succeed if at least one transport succeeded.
+///
+/// Logs partial failures and builds an aggregate error when all transports fail.
+fn evaluate_broadcast_results(
+    success_count: usize,
+    errors: &[TransportError],
+) -> Result<(), TransportError> {
+    let msgs: Vec<String> = errors.iter().map(ToString::to_string).collect();
+
+    if success_count == 0 {
+        return Err(TransportError::Network(format!(
+            "All transports failed: {msgs:?}"
+        )));
+    }
+
+    trace!("Broadcast succeeded on {} transport(s)", success_count);
+    log_partial_broadcast_failures(&msgs);
+    Ok(())
+}
+
+/// Log partial broadcast failures if any.
+fn log_partial_broadcast_failures(msgs: &[String]) {
+    if !msgs.is_empty() {
+        warn!("Some transports failed: {msgs:?}");
     }
 }
 

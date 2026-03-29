@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 //! reme-node-core: Core mailbox node functionality
 //!
 //! This crate provides the core logic for mailbox nodes, shared between:

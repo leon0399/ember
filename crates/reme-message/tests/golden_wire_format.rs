@@ -1,3 +1,11 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::missing_const_for_fn
+)]
 //! Golden reference tests for postcard wire format.
 //!
 //! These tests assert the exact byte encoding of each wire type.
@@ -388,9 +396,10 @@ fn golden_inner_text_decodes() {
 
     assert_eq!(inner.from.to_bytes(), TEST_PUBKEY);
     assert_eq!(inner.created_at_ms, 1_700_000_000_000);
+    #[allow(clippy::wildcard_enum_match_arm)] // Content is #[non_exhaustive]
     match &inner.content {
         Content::Text(t) => assert_eq!(t.body, "hi"),
-        other => panic!("Expected Text, got {other:?}"),
+        _ => panic!("Expected Text, got {:?}", inner.content),
     }
     assert_eq!(inner.prev_self, None);
     assert!(inner.observed_heads.is_empty());
@@ -402,12 +411,13 @@ fn golden_inner_text_decodes() {
 fn golden_inner_receipt_decodes() {
     let inner: InnerEnvelope = postcard::from_bytes(GOLDEN_INNER_RECEIPT).unwrap();
 
+    #[allow(clippy::wildcard_enum_match_arm)] // Content is #[non_exhaustive]
     match &inner.content {
         Content::Receipt(r) => {
             assert_eq!(*r.target_message_id.as_bytes(), TEST_MESSAGE_ID);
             assert!(matches!(r.kind, ReceiptKind::Delivered));
         }
-        other => panic!("Expected Receipt, got {other:?}"),
+        _ => panic!("Expected Receipt, got {:?}", inner.content),
     }
 }
 
@@ -566,12 +576,13 @@ fn compat_receipt_read_variant() {
     let bytes = postcard::to_allocvec(&inner).unwrap();
     let decoded: InnerEnvelope = postcard::from_bytes(&bytes).unwrap();
 
+    #[allow(clippy::wildcard_enum_match_arm)] // Content is #[non_exhaustive]
     match &decoded.content {
         Content::Receipt(r) => {
             assert!(matches!(r.kind, ReceiptKind::Read));
             assert_eq!(*r.target_message_id.as_bytes(), TEST_MESSAGE_ID);
         }
-        other => panic!("Expected Receipt, got {other:?}"),
+        _ => panic!("Expected Receipt, got {:?}", decoded.content),
     }
 }
 

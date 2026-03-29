@@ -1,3 +1,5 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 //! Resilient Messenger Client
 //!
 //! A terminal-based messenger client with a Telegram/WhatsApp-style interface.
@@ -42,8 +44,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .with_writer(log_file)
                 .with_ansi(false)
                 .finish();
-            tracing::subscriber::set_global_default(subscriber)
-                .expect("setting default subscriber failed");
+            if let Err(e) = tracing::subscriber::set_global_default(subscriber) {
+                eprintln!("Warning: failed to set tracing subscriber: {e}");
+            }
 
             tui::run(config).await
         }

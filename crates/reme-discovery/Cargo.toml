@@ -2,6 +2,7 @@
 name = "reme-discovery"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 [lints]
 workspace = true
@@ -12,7 +13,7 @@ test-utils = []
 
 [dependencies]
 async-trait = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "rt"] }
 thiserror = { workspace = true }
 hex = { workspace = true }
 tracing = { workspace = true }

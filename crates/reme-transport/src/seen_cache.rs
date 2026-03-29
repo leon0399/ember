@@ -183,34 +183,39 @@ impl SharedSeenCache {
     ///
     /// Returns `true` if the message was NOT seen before.
     /// Returns `false` if the message was already seen.
+    /// On lock poisoning: fail-open (returns `true`) to avoid dropping messages.
     pub fn check_and_mark(&self, message_id: &MessageID) -> bool {
-        self.0
-            .lock()
-            .expect("SeenCache lock poisoned")
-            .check_and_mark(message_id)
+        let Ok(mut guard) = self.0.lock() else {
+            tracing::warn!("SeenCache lock poisoned, fail-open: treating message as unseen");
+            return true;
+        };
+        guard.check_and_mark(message_id)
     }
 
     /// Check if a message was seen without marking it.
     pub fn was_seen(&self, message_id: &MessageID) -> bool {
-        self.0
-            .lock()
-            .expect("SeenCache lock poisoned")
-            .was_seen(message_id)
+        let Ok(guard) = self.0.lock() else {
+            return false;
+        };
+        guard.was_seen(message_id)
     }
 
     /// Mark a message as seen without checking first.
     ///
     /// Use this after successfully publishing a message to prevent duplicates.
     pub fn mark(&self, message_id: &MessageID) {
-        self.0
-            .lock()
-            .expect("SeenCache lock poisoned")
-            .mark(message_id);
+        let Ok(mut guard) = self.0.lock() else {
+            return;
+        };
+        guard.mark(message_id);
     }
 
     /// Get the current number of entries.
     pub fn len(&self) -> usize {
-        self.0.lock().expect("SeenCache lock poisoned").len()
+        let Ok(guard) = self.0.lock() else {
+            return 0;
+        };
+        guard.len()
     }
 
     /// Check if empty.
@@ -220,7 +225,10 @@ impl SharedSeenCache {
 
     /// Clear all entries.
     pub fn clear(&self) {
-        self.0.lock().expect("SeenCache lock poisoned").clear();
+        let Ok(mut guard) = self.0.lock() else {
+            return;
+        };
+        guard.clear();
     }
 }
 

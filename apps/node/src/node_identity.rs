@@ -60,7 +60,9 @@ fn load_identity(path: &Path) -> Result<Identity, NodeIdentityError> {
         return Err(NodeIdentityError::InvalidLength(data.len()));
     }
 
-    let bytes: [u8; 32] = data.try_into().expect("length already validated");
+    let Ok(bytes): Result<[u8; 32], _> = data.try_into() else {
+        return Err(NodeIdentityError::InvalidLength(0));
+    };
 
     Identity::try_from_bytes(&bytes).map_err(NodeIdentityError::InvalidKey)
 }
@@ -78,32 +80,14 @@ fn load_identity(path: &Path) -> Result<Identity, NodeIdentityError> {
 fn generate_and_save_identity(path: &Path) -> Result<Identity, NodeIdentityError> {
     let identity = Identity::generate();
 
-    // Ensure parent directory exists
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent).map_err(NodeIdentityError::CreateDirError)?;
-        }
-    }
+    ensure_parent_dir(path)?;
 
-    // Write to temp file first, then rename for atomicity.
-    // Use random suffix to avoid race conditions between processes.
-    let random_suffix: u64 = rand::random();
-    let temp_name = format!(
-        "{}.{:016x}.tmp",
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("identity"),
-        random_suffix
-    );
-    let temp_path = path.with_file_name(&temp_name);
-
-    // Write with restricted permissions to protect the secret key
+    let temp_path = build_temp_path(path);
     write_secret_file(&temp_path, &identity.to_bytes())?;
 
     // Check if another process created the file while we were generating.
     // If so, use their identity instead of overwriting it.
     if path.exists() {
-        // Clean up our temp file
         let _ = fs::remove_file(&temp_path);
         tracing::debug!("Identity file was created by another process, loading existing identity");
         return load_identity(path);
@@ -117,6 +101,27 @@ fn generate_and_save_identity(path: &Path) -> Result<Identity, NodeIdentityError
     );
 
     Ok(identity)
+}
+
+/// Ensure the parent directory of a path exists.
+fn ensure_parent_dir(path: &Path) -> Result<(), NodeIdentityError> {
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent).map_err(NodeIdentityError::CreateDirError)?;
+        }
+    }
+    Ok(())
+}
+
+/// Build a unique temporary file path next to the target path.
+fn build_temp_path(path: &Path) -> std::path::PathBuf {
+    let random_suffix: u64 = rand::random();
+    let base_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("identity");
+    let temp_name = format!("{base_name}.{random_suffix:016x}.tmp");
+    path.with_file_name(&temp_name)
 }
 
 /// Write secret key material to a file with restricted permissions.
@@ -200,7 +205,7 @@ impl NodeIdentity {
 
     /// Get the underlying Identity.
     #[allow(dead_code)] // API for future identity operations
-    pub fn identity(&self) -> &Identity {
+    pub const fn identity(&self) -> &Identity {
         &self.identity
     }
 
@@ -235,7 +240,6 @@ impl NodeIdentity {
     /// - The ECDH result is all-zero (defense-in-depth)
     pub fn derive_shared_secret(&self, ephemeral_public: &[u8; 32]) -> Option<[u8; 32]> {
         // Pre-validation: reject known low-order points before ECDH
-        // This matches the validation in reme-encryption::decrypt_with_mik
         if is_low_order_point(ephemeral_public) {
             tracing::debug!("Rejected low-order ephemeral key in derive_shared_secret");
             return None;
@@ -243,17 +247,20 @@ impl NodeIdentity {
 
         let ephemeral_key = X25519PublicKey::from(*ephemeral_public);
         let shared_secret = self.identity.x25519_secret().diffie_hellman(&ephemeral_key);
-
-        // Defense-in-depth: reject all-zero shared secrets (indicates small-order input)
-        // Use constant-time comparison to prevent timing side-channels
         let bytes = shared_secret.as_bytes();
-        if bool::from(bytes.ct_eq(&[0u8; 32])) {
-            tracing::debug!("Rejected all-zero shared secret in derive_shared_secret");
-            return None;
-        }
 
-        Some(*bytes)
+        // Defense-in-depth: reject all-zero shared secrets (small-order input)
+        validate_nonzero_secret(bytes)
     }
+}
+
+/// Return the shared secret bytes if non-zero, else None (constant-time).
+fn validate_nonzero_secret(bytes: &[u8; 32]) -> Option<[u8; 32]> {
+    if bool::from(bytes.ct_eq(&[0u8; 32])) {
+        tracing::debug!("Rejected all-zero shared secret in derive_shared_secret");
+        return None;
+    }
+    Some(*bytes)
 }
 
 #[cfg(test)]

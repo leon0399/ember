@@ -23,6 +23,24 @@ use tracing::{debug, info, trace, warn};
 use crate::error::NodeError;
 use crate::time::{now_secs, timestamp_to_i64};
 
+/// Raw DB row fields for a message, used to pass between helper functions.
+struct RawMessageRow {
+    id: i64,
+    data: Vec<u8>,
+    routing_key_bytes: Vec<u8>,
+    expires_at: i64,
+    created_at: i64,
+}
+
+/// Raw DB row fields for classification during fetch.
+struct RawFetchRow {
+    id: i64,
+    data: Vec<u8>,
+    msg_id: Option<Vec<u8>>,
+    expires_at: i64,
+    created_at: i64,
+}
+
 /// 7 days in seconds - default message TTL
 const fn default_ttl_secs() -> u64 {
     7 * 24 * 60 * 60
@@ -355,15 +373,11 @@ impl PersistentMailboxStore {
         let mut ids = Vec::new();
         for row in rows {
             let bytes = row?;
-            if bytes.len() == 16 {
-                let arr: [u8; 16] = bytes.try_into().unwrap();
-                ids.push(MessageID::from_bytes(arr));
-            } else {
-                warn!(
-                    len = bytes.len(),
-                    "invalid message_id length in database, expected 16 bytes"
-                );
-            }
+            let Ok(arr): Result<[u8; 16], _> = bytes.try_into() else {
+                warn!("invalid message_id length in database, expected 16 bytes");
+                continue;
+            };
+            ids.push(MessageID::from_bytes(arr));
         }
 
         Ok(ids)
@@ -405,29 +419,54 @@ impl PersistentMailboxStore {
         match Self::deserialize_envelope(&data) {
             Ok(envelope) => Ok(Some(envelope)),
             Err(e) => {
-                warn!(message_id = ?message_id, error = %e, "corrupt message found, quarantining");
-                let routing_key: [u8; 16] = if let Ok(bytes) = routing_key_bytes.try_into() {
-                    bytes
-                } else {
-                    warn!(
-                        message_id = ?message_id,
-                        "routing_key has unexpected length, using zeroed key for quarantine"
-                    );
-                    [0u8; 16]
-                };
-                let routing_key = RoutingKey::from_bytes(routing_key);
-                let corrupt = CorruptRow {
-                    id,
-                    message_id: Some(message_id_bytes.to_vec()),
-                    envelope_data: data,
-                    error: e.to_string(),
-                    expires_at,
-                    created_at,
-                };
-                Self::quarantine_rows(&conn, &routing_key, &[corrupt])?;
+                Self::quarantine_corrupt_message(
+                    &conn,
+                    &e,
+                    message_id_bytes,
+                    RawMessageRow {
+                        id,
+                        data,
+                        routing_key_bytes,
+                        expires_at,
+                        created_at,
+                    },
+                )?;
                 Ok(None)
             }
         }
+    }
+
+    /// Build a `CorruptRow` from raw DB fields and quarantine it.
+    fn quarantine_corrupt_message(
+        conn: &Connection,
+        error: &NodeError,
+        message_id_bytes: &[u8],
+        row: RawMessageRow,
+    ) -> Result<(), NodeError> {
+        let RawMessageRow {
+            id,
+            data,
+            routing_key_bytes,
+            expires_at,
+            created_at,
+        } = row;
+        warn!(message_id = ?message_id_bytes, error = %error, "corrupt message found, quarantining");
+
+        let routing_key_arr: [u8; 16] = routing_key_bytes.try_into().unwrap_or_else(|_| {
+            warn!("routing_key has unexpected length, using zeroed key for quarantine");
+            [0u8; 16]
+        });
+        let routing_key = RoutingKey::from_bytes(routing_key_arr);
+
+        let corrupt = CorruptRow {
+            id,
+            message_id: Some(message_id_bytes.to_vec()),
+            envelope_data: data,
+            error: error.to_string(),
+            expires_at,
+            created_at,
+        };
+        Self::quarantine_rows(conn, &routing_key, &[corrupt])
     }
 
     /// Delete a message by ID (for tombstone support)
@@ -553,12 +592,74 @@ impl PersistentMailboxStore {
         Ok(envelopes)
     }
 
+    /// Deserialize a row, pushing it to `entries` on success or `corrupt` on failure.
+    fn classify_row(
+        row: RawFetchRow,
+        entries: &mut Vec<FetchPageEntry>,
+        corrupt: &mut Vec<CorruptRow>,
+    ) {
+        let RawFetchRow {
+            id,
+            data,
+            msg_id,
+            expires_at,
+            created_at,
+        } = row;
+        match Self::deserialize_envelope(&data) {
+            Ok(envelope) => entries.push(FetchPageEntry {
+                row_id: id,
+                envelope,
+            }),
+            Err(e) => {
+                warn!(id = id, error = %e, "failed to deserialize envelope, quarantining");
+                corrupt.push(CorruptRow {
+                    id,
+                    message_id: msg_id,
+                    envelope_data: data,
+                    error: e.to_string(),
+                    expires_at,
+                    created_at,
+                });
+            }
+        }
+    }
+
     /// Checkpoint WAL to main database file
     pub fn checkpoint(&self) -> Result<(), NodeError> {
         let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
         debug!("WAL checkpoint completed");
         Ok(())
+    }
+
+    /// Delete expired messages and return the count.
+    fn delete_expired_messages(conn: &Connection, now_i64: i64) -> Result<usize, NodeError> {
+        let deleted = conn.execute(
+            "DELETE FROM mailbox_messages WHERE expires_at <= ?",
+            params![now_i64],
+        )?;
+        if deleted > 0 {
+            debug!(deleted = deleted, "expired messages cleaned up");
+        }
+        Ok(deleted)
+    }
+
+    /// Delete expired quarantined rows and return the count.
+    fn delete_expired_quarantined(
+        conn: &Connection,
+        now_i64: i64,
+        default_ttl_secs: u64,
+    ) -> Result<usize, NodeError> {
+        let fallback_ttl = timestamp_to_i64(default_ttl_secs);
+        let deleted = conn.execute(
+            "DELETE FROM quarantined_messages
+             WHERE COALESCE(original_expires_at, quarantined_at + ?) <= ?",
+            params![fallback_ttl, now_i64],
+        )?;
+        if deleted > 0 {
+            debug!(deleted = deleted, "expired quarantined rows cleaned up");
+        }
+        Ok(deleted)
     }
 }
 
@@ -705,23 +806,17 @@ impl MailboxStore for PersistentMailboxStore {
                 fetched_row_count += 1;
                 batch_last_id = Some(id);
 
-                match Self::deserialize_envelope(&data) {
-                    Ok(envelope) => entries.push(FetchPageEntry {
-                        row_id: id,
-                        envelope,
-                    }),
-                    Err(e) => {
-                        warn!(id = id, error = %e, "failed to deserialize envelope, quarantining");
-                        corrupt_rows.push(CorruptRow {
-                            id,
-                            message_id: msg_id,
-                            envelope_data: data,
-                            error: e.to_string(),
-                            expires_at,
-                            created_at,
-                        });
-                    }
-                }
+                Self::classify_row(
+                    RawFetchRow {
+                        id,
+                        data,
+                        msg_id,
+                        expires_at,
+                        created_at,
+                    },
+                    &mut entries,
+                    &mut corrupt_rows,
+                );
 
                 if entries.len() >= scan_limit {
                     break;
@@ -779,45 +874,21 @@ impl MailboxStore for PersistentMailboxStore {
 
     fn delete_message(&self, message_id: &MessageID) -> Result<bool, NodeError> {
         // Delegate to the inherent method
-        PersistentMailboxStore::delete_message(self, message_id)
+        Self::delete_message(self, message_id)
     }
 
     fn get_ack_hash(&self, message_id: &MessageID) -> Result<Option<[u8; 16]>, NodeError> {
         // Delegate to the inherent method
-        PersistentMailboxStore::get_ack_hash(self, message_id)
+        Self::get_ack_hash(self, message_id)
     }
 
     fn cleanup_expired(&self) -> Result<usize, NodeError> {
-        let now = now_secs();
-        let now_i64 = timestamp_to_i64(now);
-
+        let now_i64 = timestamp_to_i64(now_secs());
         let conn = self.conn.lock().map_err(|_| NodeError::LockPoisoned)?;
 
-        let deleted = conn.execute(
-            "DELETE FROM mailbox_messages WHERE expires_at <= ?",
-            params![now_i64],
-        )?;
-
-        if deleted > 0 {
-            debug!(deleted = deleted, "expired messages cleaned up");
-        }
-
-        // Clean up expired quarantined rows.
-        // Rows with original_expires_at use that value.
-        // Rows with NULL original_expires_at use quarantined_at + default_ttl as fallback.
-        let fallback_ttl = timestamp_to_i64(self.config.default_ttl_secs);
-        let quarantine_deleted = conn.execute(
-            "DELETE FROM quarantined_messages
-             WHERE COALESCE(original_expires_at, quarantined_at + ?) <= ?",
-            params![fallback_ttl, now_i64],
-        )?;
-
-        if quarantine_deleted > 0 {
-            debug!(
-                deleted = quarantine_deleted,
-                "expired quarantined rows cleaned up"
-            );
-        }
+        let deleted = Self::delete_expired_messages(&conn, now_i64)?;
+        let quarantine_deleted =
+            Self::delete_expired_quarantined(&conn, now_i64, self.config.default_ttl_secs)?;
 
         Ok(deleted + quarantine_deleted)
     }
@@ -1168,7 +1239,13 @@ mod tests {
                     "unexpected error message: {message}"
                 );
             }
-            other => panic!("expected invalid config, got {other:?}"),
+            NodeError::Database(_)
+            | NodeError::Serialization(_)
+            | NodeError::Deserialization(_)
+            | NodeError::LockPoisoned
+            | NodeError::MailboxFull
+            | NodeError::InvalidMessage(_)
+            | NodeError::ChannelClosed => panic!("expected InvalidConfig, got {error:?}"),
         }
     }
 
@@ -1204,7 +1281,7 @@ mod tests {
         let envelope = create_test_envelope(routing_key, Some(1));
         let message_id = envelope.message_id;
 
-        store.enqueue(routing_key, envelope.clone()).unwrap();
+        store.enqueue(routing_key, envelope).unwrap();
 
         // Should find existing message
         let found = store.get_message(&message_id).unwrap();

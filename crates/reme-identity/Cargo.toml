@@ -2,6 +2,7 @@
 name = "reme-identity"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 [lints]
 workspace = true
@@ -33,3 +34,5 @@ chacha20poly1305 = { workspace = true }
 
 # secure memory handling
 zeroize = "1"
+
+tracing = { workspace = true }

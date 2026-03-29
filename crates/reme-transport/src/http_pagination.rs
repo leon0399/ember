@@ -7,9 +7,7 @@ use crate::TransportError;
 ///
 /// Non-message payloads (e.g. tombstones) are silently skipped, matching
 /// the server-side filter that only stores `WirePayload::Message` envelopes.
-pub(crate) fn decode_fetch_payloads(
-    payloads: Vec<String>,
-) -> Result<Vec<OuterEnvelope>, TransportError> {
+pub fn decode_fetch_payloads(payloads: Vec<String>) -> Result<Vec<OuterEnvelope>, TransportError> {
     let mut envelopes = Vec::with_capacity(payloads.len());
     for blob in payloads {
         let wire_bytes = BASE64_STANDARD
@@ -26,7 +24,7 @@ pub(crate) fn decode_fetch_payloads(
     Ok(envelopes)
 }
 
-pub(crate) fn validate_next_cursor(
+pub fn validate_next_cursor(
     next_cursor: &str,
     previous_cursor: Option<i64>,
 ) -> Result<i64, TransportError> {

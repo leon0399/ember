@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
     ChaCha20Poly1305, Nonce,
@@ -760,6 +761,7 @@ mod tests {
         )
         .expect("Large message decryption should succeed");
 
+        #[allow(clippy::wildcard_enum_match_arm)] // Content is #[non_exhaustive]
         match dec_output.inner.content {
             Content::Text(text) => {
                 assert_eq!(
@@ -890,6 +892,7 @@ mod tests {
         )
         .expect("Empty message decryption should succeed");
 
+        #[allow(clippy::wildcard_enum_match_arm)] // Content is #[non_exhaustive]
         match dec_output.inner.content {
             Content::Text(text) => assert_eq!(text.body, "", "Decrypted body should be empty"),
             _ => panic!("Expected text content"),

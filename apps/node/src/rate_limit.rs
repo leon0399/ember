@@ -111,15 +111,13 @@ fn make_ip_config(rps: u32, burst: u32) -> Option<Arc<IpGovernorConfig>> {
     }
     // Default burst to rps if burst is 0 (burst=0 is invalid for governor)
     let burst = if burst == 0 { rps } else { burst };
-    Some(Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(u64::from(rps))
-            .burst_size(burst)
-            .key_extractor(SmartIpKeyExtractor)
-            .use_headers()
-            .finish()
-            .expect("valid governor config"),
-    ))
+    let config = GovernorConfigBuilder::default()
+        .per_second(u64::from(rps))
+        .burst_size(burst)
+        .key_extractor(SmartIpKeyExtractor)
+        .use_headers()
+        .finish()?;
+    Some(Arc::new(config))
 }
 
 /// Create a routing-key based governor config for fetch endpoint.
@@ -129,15 +127,13 @@ fn make_fetch_key_config(rps: u32, burst: u32) -> Option<Arc<RoutingKeyGovernorC
     }
     // Default burst to rps if burst is 0 (burst=0 is invalid for governor)
     let burst = if burst == 0 { rps } else { burst };
-    Some(Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(u64::from(rps))
-            .burst_size(burst)
-            .key_extractor(RoutingKeyExtractor)
-            .use_headers()
-            .finish()
-            .expect("valid governor config"),
-    ))
+    let config = GovernorConfigBuilder::default()
+        .per_second(u64::from(rps))
+        .burst_size(burst)
+        .key_extractor(RoutingKeyExtractor)
+        .use_headers()
+        .finish()?;
+    Some(Arc::new(config))
 }
 
 /// Create a keyed rate limiter for inline checking (submit handler).

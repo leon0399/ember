@@ -76,7 +76,7 @@ pub struct Cli {
 
 impl Cli {
     /// Returns the TUI args if the command is `Tui` (or `None` when no subcommand).
-    pub fn tui_args(&self) -> Option<&TuiArgs> {
+    pub const fn tui_args(&self) -> Option<&TuiArgs> {
         match &self.command {
             Some(Commands::Tui(args)) => Some(args),
             _ => None,
@@ -198,21 +198,21 @@ pub struct ImportArgs {
 // Outbox default value helpers (for serde and derivative Default)
 // =============================================================================
 
-fn default_outbox_tick_interval() -> u64 {
+const fn default_outbox_tick_interval() -> u64 {
     5
 }
-fn default_outbox_ttl_days() -> u64 {
+const fn default_outbox_ttl_days() -> u64 {
     7
 }
 /// 1 minute - attempt timeout
-fn default_outbox_attempt_timeout() -> u64 {
+const fn default_outbox_attempt_timeout() -> u64 {
     60
 }
-fn default_outbox_retry_initial_delay() -> u64 {
+const fn default_outbox_retry_initial_delay() -> u64 {
     5
 }
 /// 5 minutes - max retry delay
-fn default_outbox_retry_max_delay() -> u64 {
+const fn default_outbox_retry_max_delay() -> u64 {
     300
 }
 
@@ -267,19 +267,14 @@ impl QuorumStrategyConfig {
     /// Returns an error message if the configuration is invalid.
     pub fn validate(&self) -> Result<(), String> {
         match self {
-            QuorumStrategyConfig::Count(n) if *n == 0 => {
-                Err("Quorum count must be > 0".to_string())
-            }
-            QuorumStrategyConfig::Fraction(f) if f.is_nan() || f.is_infinite() => Err(format!(
+            Self::Count(n) if *n == 0 => Err("Quorum count must be > 0".to_string()),
+            Self::Fraction(f) if f.is_nan() || f.is_infinite() => Err(format!(
                 "Invalid quorum fraction {f}: must be a finite number"
             )),
-            QuorumStrategyConfig::Fraction(f) if *f <= 0.0 || *f > 1.0 => Err(format!(
+            Self::Fraction(f) if *f <= 0.0 || *f > 1.0 => Err(format!(
                 "Quorum fraction {f} out of range: must be in (0.0, 1.0]"
             )),
-            QuorumStrategyConfig::Any
-            | QuorumStrategyConfig::All
-            | QuorumStrategyConfig::Count(_)
-            | QuorumStrategyConfig::Fraction(_) => Ok(()),
+            Self::Any | Self::All | Self::Count(_) | Self::Fraction(_) => Ok(()),
         }
     }
 }
@@ -288,28 +283,28 @@ impl QuorumStrategyConfig {
 // Delivery default value helpers (for serde and derivative Default)
 // =============================================================================
 
-fn default_urgent_initial_delay() -> u64 {
+const fn default_urgent_initial_delay() -> u64 {
     5
 }
 /// 1 minute - max urgent delay
-fn default_urgent_max_delay() -> u64 {
+const fn default_urgent_max_delay() -> u64 {
     60
 }
-fn default_urgent_backoff_multiplier() -> f32 {
+const fn default_urgent_backoff_multiplier() -> f32 {
     2.0
 }
 /// 4 hours - maintenance interval
-fn default_maintenance_interval_hours() -> u64 {
+const fn default_maintenance_interval_hours() -> u64 {
     4
 }
-fn default_maintenance_enabled() -> bool {
+const fn default_maintenance_enabled() -> bool {
     true
 }
 /// 500ms - direct tier timeout
-fn default_direct_tier_timeout_ms() -> u64 {
+const fn default_direct_tier_timeout_ms() -> u64 {
     500
 }
-fn default_quorum_tier_timeout_secs() -> u64 {
+const fn default_quorum_tier_timeout_secs() -> u64 {
     5
 }
 
@@ -411,14 +406,14 @@ impl From<QuorumStrategyConfig> for QuorumStrategy {
         // Validate and log warnings for invalid values
         if let Err(e) = config.validate() {
             tracing::warn!("Invalid quorum strategy config: {} - using default", e);
-            return QuorumStrategy::Any;
+            return Self::Any;
         }
 
         match config {
-            QuorumStrategyConfig::Any => QuorumStrategy::Any,
-            QuorumStrategyConfig::Count(n) => QuorumStrategy::Count(n),
-            QuorumStrategyConfig::Fraction(f) => QuorumStrategy::Fraction(f),
-            QuorumStrategyConfig::All => QuorumStrategy::All,
+            QuorumStrategyConfig::Any => Self::Any,
+            QuorumStrategyConfig::Count(n) => Self::Count(n),
+            QuorumStrategyConfig::Fraction(f) => Self::Fraction(f),
+            QuorumStrategyConfig::All => Self::All,
         }
     }
 }
@@ -432,7 +427,7 @@ impl From<DeliveryAppConfig> for TieredDeliveryConfig {
             tracing::warn!("Delivery config warning: {}", error);
         }
 
-        TieredDeliveryConfig {
+        Self {
             quorum: config.quorum.into(),
             urgent_initial_delay: Duration::from_secs(config.urgent_initial_delay_secs),
             urgent_max_delay: Duration::from_secs(config.urgent_max_delay_secs),
@@ -450,11 +445,11 @@ impl From<DeliveryAppConfig> for TieredDeliveryConfig {
 // Embedded node default value helpers (for serde and derivative Default)
 // =============================================================================
 
-fn default_embedded_max_messages() -> u32 {
+const fn default_embedded_max_messages() -> u32 {
     1000
 }
 /// 24 hours - default TTL for embedded node
-fn default_embedded_ttl_secs() -> u64 {
+const fn default_embedded_ttl_secs() -> u64 {
     86400
 }
 
@@ -463,7 +458,7 @@ fn default_embedded_ttl_secs() -> u64 {
 /// When enabled, the client runs an embedded mailbox node that can:
 /// - Store messages locally for direct LAN P2P delivery
 /// - Optionally expose an HTTP server for peers on the same network
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Derivative)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Derivative)]
 #[derivative(Default)]
 pub struct EmbeddedNodeConfig {
     /// Enable the embedded node (default: false).
@@ -489,7 +484,7 @@ pub struct EmbeddedNodeConfig {
 }
 
 /// LAN discovery configuration for mDNS-based peer discovery.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct LanDiscoveryConfig {
     /// Enable mDNS/LAN peer discovery (default: false).
     #[serde(default)]
@@ -531,15 +526,15 @@ impl Default for LanDiscoveryConfig {
     }
 }
 
-fn default_auto_direct_known_contacts() -> bool {
+const fn default_auto_direct_known_contacts() -> bool {
     DEFAULT_LAN_ALLOW_DIRECT
 }
 
-fn default_max_peers() -> usize {
+const fn default_max_peers() -> usize {
     DEFAULT_LAN_MAX_PEERS
 }
 
-fn default_refresh_interval() -> u64 {
+const fn default_refresh_interval() -> u64 {
     DEFAULT_LAN_REFRESH_INTERVAL_SECS
 }
 
@@ -547,7 +542,7 @@ fn default_refresh_interval() -> u64 {
 ///
 /// Peers configured here are added as ephemeral targets with high priority,
 /// enabling direct message delivery without going through quorum nodes.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DirectPeerConfig {
     /// The peer's public ID (base64-encoded 32-byte public key).
     /// Optional - reserved for Phase 6: routing messages to specific peers.
@@ -698,47 +693,13 @@ struct RawDeliveryConfig {
 /// 2. Environment variables (REME_*)
 /// 3. Config file
 /// 4. Built-in defaults
-#[allow(clippy::too_many_lines)] // Config loading requires many steps
 pub fn load_config_from(
     cli: &Cli,
     tui_args: Option<&TuiArgs>,
 ) -> Result<AppConfig, config::ConfigError> {
-    // Start with defaults
     let defaults = AppConfig::default();
+    let config = build_layered_config(cli, &defaults)?;
 
-    let mut builder = Config::builder()
-        // Layer 1: Built-in defaults (lowest priority)
-        .set_default("data_dir", defaults.data_dir.to_string_lossy().to_string())?
-        .set_default("log_level", defaults.log_level)?;
-
-    // Layer 2: Config file
-    // Try custom config path from CLI, then default location
-    let config_path = cli.config.clone().or_else(default_config_path);
-    if let Some(path) = config_path {
-        if path.exists() {
-            builder = builder.add_source(File::from(path).format(FileFormat::Toml).required(false));
-        }
-    }
-
-    // Layer 3: Environment variables (REME_*)
-    builder = builder.add_source(
-        Environment::with_prefix("REME")
-            .separator("_")
-            .try_parsing(true),
-    );
-
-    // Layer 4: CLI arguments (highest priority)
-    // Only override if explicitly provided (skip None values)
-    if let Some(ref data_dir) = cli.data_dir {
-        builder = builder.set_override("data_dir", data_dir.to_string_lossy().to_string())?;
-    }
-    if let Some(ref log_level) = cli.log_level {
-        builder = builder.set_override("log_level", log_level.clone())?;
-    }
-
-    let config = builder.build()?;
-
-    // Get other config values first (before consuming config)
     let data_dir_str: String = config
         .get("data_dir")
         .unwrap_or_else(|_| defaults.data_dir.to_string_lossy().to_string());
@@ -746,146 +707,15 @@ pub fn load_config_from(
         .get("log_level")
         .unwrap_or_else(|_| "info".to_string());
 
-    // Deserialize raw config for file-based settings
     let raw: RawConfig = config.try_deserialize().unwrap_or_default();
+    let mut peers = resolve_peers(&raw);
+    apply_tui_peer_overrides(&mut peers, tui_args);
 
-    // Build PeersConfig from multiple sources (evaluated in order):
-    // 1. Config file [peers] section or REME_PEERS env (primary source)
-    // 3. CLI args (--http-url, --mqtt-url) - ADDITIVE (appended to above)
-    // 4. Default if none of the above
-    let mut peers = if let Some(peers_config) = raw.peers {
-        peers_config
-    } else if let Ok(peers_json) = std::env::var("REME_PEERS") {
-        // Parse REME_PEERS if present
-        match serde_json::from_str(&peers_json) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("Failed to parse REME_PEERS as JSON: {} - using defaults", e);
-                default_peers()
-            }
-        }
-    } else {
-        // Use default
-        default_peers()
-    };
-
-    // Apply TUI-specific CLI arguments on top of all other sources
-    if let Some(tui) = tui_args {
-        // Handle HTTP URLs with cert pins
-        if let Some(urls) = &tui.http_url {
-            // TODO: Add --http-username and --http-password CLI flags for HTTP authentication
-            // Currently only config-based HTTP peers support authentication
-            let cert_pins = tui.http_cert_pin.as_deref();
-            let (http_peers, warnings) = HttpPeerConfig::from_cli_urls(urls, cert_pins, None, None);
-
-            for warning in warnings {
-                warn!("{}", warning);
-            }
-
-            peers.http.extend(http_peers);
-        }
-
-        // Handle MQTT URLs with client IDs
-        if let Some(urls) = &tui.mqtt_url {
-            // TODO: Add --mqtt-username and --mqtt-password CLI flags for MQTT authentication
-            // Currently only config-based MQTT peers support authentication
-            let client_ids = tui.mqtt_client_id.as_deref();
-            let (mqtt_peers, warnings) =
-                MqttPeerConfig::from_cli_urls(urls, client_ids, None, None);
-
-            for warning in warnings {
-                warn!("{}", warning);
-            }
-
-            peers.mqtt.extend(mqtt_peers);
-        }
-    }
-
-    // Expand ~ in data_dir path
     let data_dir = expand_tilde(&data_dir_str);
-
-    // Build outbox config with priority: CLI > config file > defaults
-    let outbox = OutboxAppConfig {
-        tick_interval_secs: tui_args
-            .and_then(|t| t.outbox_tick_interval)
-            .or(raw.outbox.tick_interval_secs)
-            .unwrap_or_else(default_outbox_tick_interval),
-        ttl_days: tui_args
-            .and_then(|t| t.outbox_ttl_days)
-            .or(raw.outbox.ttl_days)
-            .unwrap_or_else(default_outbox_ttl_days),
-        attempt_timeout_secs: tui_args
-            .and_then(|t| t.outbox_attempt_timeout)
-            .or(raw.outbox.attempt_timeout_secs)
-            .unwrap_or_else(default_outbox_attempt_timeout),
-        retry_initial_delay_secs: tui_args
-            .and_then(|t| t.outbox_retry_initial_delay)
-            .or(raw.outbox.retry_initial_delay_secs)
-            .unwrap_or_else(default_outbox_retry_initial_delay),
-        retry_max_delay_secs: tui_args
-            .and_then(|t| t.outbox_retry_max_delay)
-            .or(raw.outbox.retry_max_delay_secs)
-            .unwrap_or_else(default_outbox_retry_max_delay),
-    };
-
-    // Build delivery config from config file > defaults (no CLI args for delivery)
-    let delivery = DeliveryAppConfig {
-        quorum: raw.delivery.quorum.unwrap_or_default(),
-        urgent_initial_delay_secs: raw
-            .delivery
-            .urgent_initial_delay_secs
-            .unwrap_or_else(default_urgent_initial_delay),
-        urgent_max_delay_secs: raw
-            .delivery
-            .urgent_max_delay_secs
-            .unwrap_or_else(default_urgent_max_delay),
-        urgent_backoff_multiplier: raw
-            .delivery
-            .urgent_backoff_multiplier
-            .unwrap_or_else(default_urgent_backoff_multiplier),
-        maintenance_interval_hours: raw
-            .delivery
-            .maintenance_interval_hours
-            .unwrap_or_else(default_maintenance_interval_hours),
-        maintenance_enabled: raw
-            .delivery
-            .maintenance_enabled
-            .unwrap_or_else(default_maintenance_enabled),
-        direct_tier_timeout_ms: raw
-            .delivery
-            .direct_tier_timeout_ms
-            .unwrap_or_else(default_direct_tier_timeout_ms),
-        quorum_tier_timeout_secs: raw
-            .delivery
-            .quorum_tier_timeout_secs
-            .unwrap_or_else(default_quorum_tier_timeout_secs),
-    };
-
-    // Resolve embedded node config with priority: CLI > config file > defaults
-    let embedded_node_file = raw.embedded_node.unwrap_or_default();
-    let embedded_node = if let Some(tui) = tui_args {
-        EmbeddedNodeConfig {
-            // CLI flags take priority: --embedded-node enables, --no-embedded-node disables
-            enabled: match (tui.embedded_node, tui.no_embedded_node) {
-                (true, _) => true,
-                (_, true) => false,
-                _ => embedded_node_file.enabled,
-            },
-            http_bind: tui
-                .embedded_http_bind
-                .clone()
-                .or(embedded_node_file.http_bind),
-            max_messages: embedded_node_file.max_messages,
-            default_ttl_secs: embedded_node_file.default_ttl_secs,
-        }
-    } else {
-        embedded_node_file
-    };
-
-    // Resolve direct peers from config file > defaults (empty)
+    let outbox = build_outbox_config(tui_args, &raw.outbox);
+    let delivery = build_delivery_config(&raw.delivery);
+    let embedded_node = resolve_embedded_node(tui_args, raw.embedded_node);
     let direct_peers = raw.direct_peers.unwrap_or_default();
-
-    // Resolve LAN discovery config from config file > defaults
     let lan_discovery = raw.lan_discovery.unwrap_or_default();
 
     Ok(AppConfig {
@@ -898,6 +728,153 @@ pub fn load_config_from(
         delivery,
         lan_discovery,
     })
+}
+
+/// Build the layered config (defaults < file < env < CLI).
+fn build_layered_config(cli: &Cli, defaults: &AppConfig) -> Result<Config, config::ConfigError> {
+    let mut builder = Config::builder()
+        .set_default("data_dir", defaults.data_dir.to_string_lossy().to_string())?
+        .set_default("log_level", defaults.log_level.clone())?;
+
+    let config_path = cli.config.clone().or_else(default_config_path);
+    if let Some(path) = config_path {
+        if path.exists() {
+            builder = builder.add_source(File::from(path).format(FileFormat::Toml).required(false));
+        }
+    }
+
+    builder = builder.add_source(
+        Environment::with_prefix("REME")
+            .separator("_")
+            .try_parsing(true),
+    );
+
+    if let Some(ref data_dir) = cli.data_dir {
+        builder = builder.set_override("data_dir", data_dir.to_string_lossy().to_string())?;
+    }
+    if let Some(ref log_level) = cli.log_level {
+        builder = builder.set_override("log_level", log_level.clone())?;
+    }
+
+    builder.build()
+}
+
+/// Resolve peers from config file or `REME_PEERS` env, falling back to defaults.
+fn resolve_peers(raw: &RawConfig) -> PeersConfig {
+    if let Some(ref peers_config) = raw.peers {
+        return peers_config.clone();
+    }
+    if let Ok(peers_json) = std::env::var("REME_PEERS") {
+        match serde_json::from_str(&peers_json) {
+            Ok(p) => return p,
+            Err(e) => {
+                warn!("Failed to parse REME_PEERS as JSON: {} - using defaults", e);
+            }
+        }
+    }
+    default_peers()
+}
+
+/// Apply TUI-specific CLI peer arguments (HTTP and MQTT URLs).
+fn apply_tui_peer_overrides(peers: &mut PeersConfig, tui_args: Option<&TuiArgs>) {
+    let Some(tui) = tui_args else { return };
+    apply_http_cli_peers(peers, tui);
+    apply_mqtt_cli_peers(peers, tui);
+}
+
+fn apply_http_cli_peers(peers: &mut PeersConfig, tui: &TuiArgs) {
+    let Some(urls) = &tui.http_url else { return };
+    let cert_pins = tui.http_cert_pin.as_deref();
+    let (http_peers, warnings) = HttpPeerConfig::from_cli_urls(urls, cert_pins, None, None);
+    for warning in warnings {
+        warn!("{}", warning);
+    }
+    peers.http.extend(http_peers);
+}
+
+fn apply_mqtt_cli_peers(peers: &mut PeersConfig, tui: &TuiArgs) {
+    let Some(urls) = &tui.mqtt_url else { return };
+    let client_ids = tui.mqtt_client_id.as_deref();
+    let (mqtt_peers, warnings) = MqttPeerConfig::from_cli_urls(urls, client_ids, None, None);
+    for warning in warnings {
+        warn!("{}", warning);
+    }
+    peers.mqtt.extend(mqtt_peers);
+}
+
+/// Build outbox config with priority: CLI > config file > defaults.
+fn build_outbox_config(tui_args: Option<&TuiArgs>, raw: &RawOutboxConfig) -> OutboxAppConfig {
+    OutboxAppConfig {
+        tick_interval_secs: tui_args
+            .and_then(|t| t.outbox_tick_interval)
+            .or(raw.tick_interval_secs)
+            .unwrap_or_else(default_outbox_tick_interval),
+        ttl_days: tui_args
+            .and_then(|t| t.outbox_ttl_days)
+            .or(raw.ttl_days)
+            .unwrap_or_else(default_outbox_ttl_days),
+        attempt_timeout_secs: tui_args
+            .and_then(|t| t.outbox_attempt_timeout)
+            .or(raw.attempt_timeout_secs)
+            .unwrap_or_else(default_outbox_attempt_timeout),
+        retry_initial_delay_secs: tui_args
+            .and_then(|t| t.outbox_retry_initial_delay)
+            .or(raw.retry_initial_delay_secs)
+            .unwrap_or_else(default_outbox_retry_initial_delay),
+        retry_max_delay_secs: tui_args
+            .and_then(|t| t.outbox_retry_max_delay)
+            .or(raw.retry_max_delay_secs)
+            .unwrap_or_else(default_outbox_retry_max_delay),
+    }
+}
+
+/// Build delivery config from config file values with defaults.
+fn build_delivery_config(raw: &RawDeliveryConfig) -> DeliveryAppConfig {
+    DeliveryAppConfig {
+        quorum: raw.quorum.clone().unwrap_or_default(),
+        urgent_initial_delay_secs: raw
+            .urgent_initial_delay_secs
+            .unwrap_or_else(default_urgent_initial_delay),
+        urgent_max_delay_secs: raw
+            .urgent_max_delay_secs
+            .unwrap_or_else(default_urgent_max_delay),
+        urgent_backoff_multiplier: raw
+            .urgent_backoff_multiplier
+            .unwrap_or_else(default_urgent_backoff_multiplier),
+        maintenance_interval_hours: raw
+            .maintenance_interval_hours
+            .unwrap_or_else(default_maintenance_interval_hours),
+        maintenance_enabled: raw
+            .maintenance_enabled
+            .unwrap_or_else(default_maintenance_enabled),
+        direct_tier_timeout_ms: raw
+            .direct_tier_timeout_ms
+            .unwrap_or_else(default_direct_tier_timeout_ms),
+        quorum_tier_timeout_secs: raw
+            .quorum_tier_timeout_secs
+            .unwrap_or_else(default_quorum_tier_timeout_secs),
+    }
+}
+
+/// Resolve embedded node config with priority: CLI > config file > defaults.
+fn resolve_embedded_node(
+    tui_args: Option<&TuiArgs>,
+    raw: Option<EmbeddedNodeConfig>,
+) -> EmbeddedNodeConfig {
+    let file_config = raw.unwrap_or_default();
+    let Some(tui) = tui_args else {
+        return file_config;
+    };
+    EmbeddedNodeConfig {
+        enabled: match (tui.embedded_node, tui.no_embedded_node) {
+            (true, _) => true,
+            (_, true) => false,
+            _ => file_config.enabled,
+        },
+        http_bind: tui.embedded_http_bind.clone().or(file_config.http_bind),
+        max_messages: file_config.max_messages,
+        default_ttl_secs: file_config.default_ttl_secs,
+    }
 }
 
 /// Expand ~ to home directory in paths
@@ -916,7 +893,11 @@ fn dirs_home() -> Option<PathBuf> {
 }
 
 /// Generate a default config file content
-#[allow(clippy::too_many_lines, dead_code)] // Template generation, may be used for init command
+#[expect(
+    clippy::too_many_lines,
+    reason = "default config template is clearer as one contiguous rendered document"
+)]
+#[allow(dead_code)] // Template generation, may be used for init command
 pub fn default_config_toml() -> String {
     let defaults = AppConfig::default();
     let quorum_str = match &defaults.delivery.quorum {
@@ -1176,7 +1157,9 @@ mod tests {
         let transport: QuorumStrategy = config.into();
         match transport {
             QuorumStrategy::Fraction(f) => assert!((f - 0.75).abs() < 0.001),
-            _ => panic!("Expected Fraction"),
+            QuorumStrategy::Any | QuorumStrategy::Count(_) | QuorumStrategy::All => {
+                panic!("Expected Fraction")
+            }
         }
 
         // Test All
