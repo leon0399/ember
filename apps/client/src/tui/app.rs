@@ -1679,25 +1679,67 @@ fn add_direct_peers(
 }
 
 /// Add a single direct peer, returning its ID and name on success.
+///
+/// Delegates construction to [`build_direct_peer_target`] and registers
+/// the result with the coordinator.
 fn add_single_direct_peer(
     peer: &crate::config::DirectPeerConfig,
     coordinator: &TransportCoordinator,
 ) -> Option<(TargetId, Option<String>)> {
-    let target_config = HttpTargetConfig::new(&peer.address, TargetKind::Ephemeral)
-        .with_label(peer.name.as_deref().unwrap_or(&peer.address));
-
-    let target = match HttpTarget::new(target_config) {
-        Ok(t) => t,
-        Err(e) => {
-            warn!("Failed to add direct peer {}: {e}", peer.address);
-            return None;
-        }
-    };
+    let target = build_direct_peer_target(peer)?;
 
     log_direct_peer_added(&peer.address, peer.name.as_deref());
     let id = (target.id().clone(), peer.name.clone());
     coordinator.add_http_target(target);
     Some(id)
+}
+
+/// Build an [`HttpTarget`] from a [`DirectPeerConfig`], parsing and wiring
+/// the optional `public_id` into `node_pubkey`.
+///
+/// Returns `None` (with a warning) if `public_id` is present but invalid,
+/// or if the target cannot be constructed.
+fn build_direct_peer_target(peer: &crate::config::DirectPeerConfig) -> Option<HttpTarget> {
+    let Ok(node_pubkey) = parse_direct_peer_pubkey(peer) else {
+        return None;
+    };
+
+    let target_config = HttpTargetConfig::new(&peer.address, TargetKind::Ephemeral)
+        .with_label(peer.name.as_deref().unwrap_or(&peer.address))
+        .with_node_pubkey_opt(node_pubkey);
+
+    match HttpTarget::new(target_config) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            warn!("Failed to add direct peer {}: {e}", peer.address);
+            None
+        }
+    }
+}
+
+/// Parse the optional `public_id` field from a [`DirectPeerConfig`] into a
+/// [`PublicID`].
+///
+/// Returns `Ok(None)` when no `public_id` is configured, `Ok(Some(pk))` on
+/// valid parse, or `Err(())` (with a warning logged) when parsing fails.
+fn parse_direct_peer_pubkey(
+    peer: &crate::config::DirectPeerConfig,
+) -> Result<Option<PublicID>, ()> {
+    let Some(id_str) = peer.public_id.as_deref() else {
+        return Ok(None);
+    };
+
+    match reme_config::parse_node_pubkey(id_str) {
+        Ok(pk) => Ok(Some(pk)),
+        Err(e) => {
+            // TODO: emit UI notification event once app-level event bus exists
+            warn!(
+                "Skipping direct peer {}: invalid public_id: {e}",
+                peer.address
+            );
+            Err(())
+        }
+    }
 }
 
 /// Log successful direct peer addition.
@@ -2135,8 +2177,13 @@ fn format_delivery_status(phase: &TieredDeliveryPhase) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{action_requires_render, Action};
+    use super::{action_requires_render, build_direct_peer_target, Action};
+    use crate::config::DirectPeerConfig;
+    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+    use base64::Engine as _;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use reme_identity::PublicID;
+    use reme_transport::target::TransportTarget;
 
     #[test]
     fn outbox_tick_does_not_require_render() {
@@ -2161,5 +2208,76 @@ mod tests {
         assert!(action_requires_render(&Action::NodeError(
             "boom".to_string(),
         )));
+    }
+
+    #[test]
+    fn direct_peer_with_valid_public_id_wires_node_pubkey() {
+        let pk = PublicID::try_from_bytes(&[7u8; 32]).unwrap();
+        let pk_b64 = BASE64_STANDARD.encode(pk.to_bytes());
+
+        let peer = DirectPeerConfig {
+            public_id: Some(pk_b64),
+            address: "http://127.0.0.1:9999".to_string(),
+            name: Some("test-peer".to_string()),
+        };
+
+        let target = build_direct_peer_target(&peer).expect("peer should build successfully");
+        assert_eq!(target.config().node_pubkey, Some(pk));
+    }
+
+    #[test]
+    fn direct_peer_without_public_id_has_no_node_pubkey() {
+        let peer = DirectPeerConfig {
+            public_id: None,
+            address: "http://127.0.0.1:9999".to_string(),
+            name: None,
+        };
+
+        let target = build_direct_peer_target(&peer).expect("peer should build successfully");
+        assert_eq!(target.config().node_pubkey, None);
+    }
+
+    #[test]
+    fn direct_peer_with_invalid_public_id_is_skipped() {
+        let peer = DirectPeerConfig {
+            public_id: Some("not-valid-base64!!!".to_string()),
+            address: "http://127.0.0.1:9999".to_string(),
+            name: Some("bad-peer".to_string()),
+        };
+
+        assert!(
+            build_direct_peer_target(&peer).is_none(),
+            "peer with invalid public_id should be skipped"
+        );
+    }
+
+    #[test]
+    fn direct_peer_with_wrong_length_public_id_is_skipped() {
+        let short_key = BASE64_STANDARD.encode([1u8; 16]); // 16 bytes, not 32
+
+        let peer = DirectPeerConfig {
+            public_id: Some(short_key),
+            address: "http://127.0.0.1:9999".to_string(),
+            name: None,
+        };
+
+        assert!(
+            build_direct_peer_target(&peer).is_none(),
+            "peer with wrong-length public_id should be skipped"
+        );
+    }
+
+    #[test]
+    fn direct_peer_with_empty_public_id_is_skipped() {
+        let peer = DirectPeerConfig {
+            public_id: Some(String::new()),
+            address: "http://127.0.0.1:9999".to_string(),
+            name: None,
+        };
+
+        assert!(
+            build_direct_peer_target(&peer).is_none(),
+            "peer with empty public_id should be treated as invalid, not absent"
+        );
     }
 }
