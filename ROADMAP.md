@@ -12,8 +12,8 @@ Build an outage-resilient, end-to-end encrypted messaging system that works when
 ## Guiding principles
 
 1. **Client-side resilience first**: Messages never disappear silently
-2. **DTN tolerance**: No session state, independent message processing
-3. **Transport agnostic**: Same encrypted payload across HTTP, BLE, LoRa
+2. **DTN tolerance**: Stateless encryption as universal fallback; session encryption where peers have connectivity
+3. **Transport agnostic**: Same envelope format across HTTP, BLE, LoRa — relay nodes route without decryption
 4. **Cryptographic soundness**: Conservative primitives, defense in depth
 5. **Privacy by design**: No IP leakage to DHTs, minimal metadata exposure
 
@@ -23,22 +23,22 @@ Build an outage-resilient, end-to-end encrypted messaging system that works when
 
 ```mermaid
 flowchart LR
-    subgraph "Direct transports"
+    subgraph "Foundation"
         v03["v0.3 ✅<br/>Tiered Delivery"]
         v04["v0.4 ✅<br/>mDNS Discovery"]
         PC["Postcard ✅<br/>(internal)"]
         v05["v0.5 ✅<br/>Sneakernet Export"]
         v06["v0.6<br/>LAN Relay"]
-        v07["v0.7<br/>BLE Direct"]
-        v08["v0.8<br/>Meshtastic Direct"]
+        v07["v0.7<br/>Session Encryption"]
     end
 
-    subgraph "Bridge & relay"
-        v09["v0.9<br/>Bridge to Quorum"]
+    subgraph "Constrained transports"
+        v08["v0.8<br/>BLE Direct"]
+        v09["v0.9<br/>Meshtastic Direct"]
         v010["v0.10<br/>Multi-Transport Relay"]
     end
 
-    v10["v1.0<br/>Forward Secrecy"]
+    v10["v1.0<br/>Production Ready"]
     v03 --> v04 --> PC --> v05 --> v06 --> v07 --> v08 --> v09 --> v010 --> v10
 ```
 
@@ -265,9 +265,102 @@ Your message reaches the outside world through any peer that has connectivity, e
 
 ---
 
-## v0.7: BLE direct
+## v0.7: Session encryption
 
-Point-to-point encrypted messaging over BLE. Two devices in proximity exchange messages directly, no Internet or infrastructure needed.
+Async Noise XX handshake for forward secrecy and compact envelope format. **Prerequisite for all constrained transports** — the stateless envelope (~212 bytes with `FLAG_DETACHED`) exceeds LoRa/BLE MTU budgets; the session envelope (~41 bytes overhead) makes them viable.
+
+### Why before BLE/LoRa
+
+The stateless envelope overhead breakdown:
+- Ephemeral key: 32B, signature: 64B, sender identity: 32B, ack_hash: 16B — all redundant when a session exists
+- Session mode drops overhead from ~212B to ~41B per message
+- On LoRa SF7 (222B MTU): stateless gives 10B content; session gives **181B content**
+- On LoRa SF12 (51B MTU): stateless doesn't fit at all; session gives ~10B content
+
+Sessions are typically established over relatively unconstrained transports (HTTP, LAN, or any link that can carry a few full stateless envelopes — including BLE with chunking). In BLE direct "no infrastructure" scenarios, peers can run the Noise XX handshake over BLE itself using chunked stateless envelopes, then switch to the compact session envelope for subsequent messages. Relay nodes forward session-encrypted envelopes unchanged — they only need the `routing_key` to route.
+
+### Protocol: Async Noise XX handshake
+
+Implements DTN-safe forward secrecy without prekey servers. See `docs/drafts/session-encryption.md` for full specification.
+
+### Features
+
+#### 1. Encrypted sender in OuterEnvelope
+
+**Problem:** Recipient can't identify sender when session keys lost.
+
+**Solution:**
+- `encrypted_sender: [u8; 48]` in OuterEnvelope
+- Always decryptable by recipient MIK
+- Enables key-loss recovery
+
+#### 2. Sign-all-bytes
+
+**Problem:** Static field signatures break on version upgrades.
+
+**Solution:**
+- Sign all serialized InnerEnvelope bytes
+- Forward/backward compatible
+
+#### 3. Noise XX handshake
+
+**Problem:** MIK-only lacks forward secrecy and is too large for constrained transports.
+
+**Solution:**
+- Mutual authentication with ephemeral DH
+- Either party can initiate
+- Epoch-based replay protection
+- MIK fallback when session unavailable
+
+#### 4. Session envelope variant
+
+**Problem:** Stateless envelope (~212B) exceeds constrained transport MTUs.
+
+**Solution:**
+- Session-encrypted `EnvelopePayload::Session` variant with `session_tag` (4B) + `counter` (8B) + AEAD ciphertext
+- Same `routing_key` prefix as stateless — relay nodes route identically
+- Universal format: one envelope traverses LoRa relay → HTTP mailbox → recipient unchanged
+
+#### 5. DAG-integrated key lifecycle
+
+**Problem:** When to delete old session keys?
+
+**Solution:**
+- Delete key only after all messages acknowledged via DAG
+- Conservative retention during gaps
+- Bounded memory (max 10 retained keys)
+
+#### 6. Key loss recovery
+
+**Problem:** Recipient loses session keys.
+
+**Solution:**
+- Decrypt `encrypted_sender` to identify peer
+- Request re-send with MIK encryption
+- Automatic without manual intervention
+
+**Deliverables:**
+- [ ] `EnvelopePayload` enum with `Stateless` and `Session` variants
+- [ ] Noise XX handshake piggybacked in `InnerEnvelope.handshake` field
+- [ ] Session key storage in `reme-storage`
+- [ ] `encrypted_sender` in OuterEnvelope
+- [ ] Sign-all-bytes signature scheme
+- [ ] MIK fallback decryption path
+- [ ] Key lifecycle with DAG-integrated deletion
+- [ ] Session negotiation tests (handshake, re-key, key loss recovery)
+
+**Success criteria:**
+- Session established between two clients over HTTP
+- Session-encrypted messages decrypt correctly
+- MIK fallback works when session key lost
+- Session envelope fits within BLE/LoRa MTU budgets
+- Relay nodes forward session envelopes without modification
+
+---
+
+## v0.8: BLE direct
+
+Point-to-point encrypted messaging over BLE. Two devices in proximity exchange messages directly, no Internet or infrastructure needed. **Requires v0.7 session encryption** for viable payload size.
 
 ### BLE proximity exchange
 
@@ -275,12 +368,12 @@ Point-to-point encrypted messaging over BLE. Two devices in proximity exchange m
 
 **Solution:**
 - BLE GATT server advertising routing key
-- Scan for nearby peers, exchange envelopes over BLE characteristics
+- Scan for nearby peers, exchange session-encrypted envelopes over BLE characteristics
 - Detached messages (no DAG overhead) for constrained payloads
 
 ### Transport-layer chunking
 
-BLE MTU (20-512 bytes) may be smaller than an OuterEnvelope (~200+ bytes). Chunking splits envelopes at the transport layer without re-encryption. Any node can split/reassemble (no keys needed).
+BLE MTU (20-512 bytes) may be smaller than a session-encrypted OuterEnvelope. Chunking splits envelopes at the transport layer without re-encryption. Any node can split/reassemble (no keys needed).
 
 | Field | Size | Description |
 |-------|------|-------------|
@@ -289,7 +382,7 @@ BLE MTU (20-512 bytes) may be smaller than an OuterEnvelope (~200+ bytes). Chunk
 | chunk_total | 1 byte | Total chunk count |
 | payload | variable | Raw bytes of the OuterEnvelope fragment |
 
-Reused by Meshtastic transport in v0.8.
+Reused by Meshtastic transport in v0.9.
 
 **Deliverables:**
 - [ ] `btleplug` integration
@@ -308,22 +401,22 @@ Reused by Meshtastic transport in v0.8.
 
 ---
 
-## v0.8: Meshtastic direct
+## v0.9: Meshtastic direct
 
-Point-to-point encrypted messaging over LoRa via Meshtastic. Two devices with Meshtastic hardware exchange messages directly, no Internet needed. Meshtastic handles LoRa radio management; reme treats it as an opaque transport.
+Point-to-point encrypted messaging over LoRa via Meshtastic. Two devices with Meshtastic hardware exchange messages directly, no Internet needed. Meshtastic handles LoRa radio management; reme treats it as an opaque transport. **Requires v0.7 session encryption** for viable payload size.
 
 ### Meshtastic transport
 
 **Problem:** BLE requires physical proximity (~10m). For disaster response, remote areas, or censorship resistance, we need communication over kilometers without any Internet infrastructure.
 
-**Solution:** Integrate with Meshtastic via its serial/BLE API. Reme sends and receives chunked OuterEnvelopes; Meshtastic handles duty cycle, hop counts, and mesh routing.
+**Solution:** Integrate with Meshtastic via its serial/BLE API. Reme sends and receives chunked session-encrypted envelopes; Meshtastic handles duty cycle, hop counts, and mesh routing.
 
 Reme does **not** implement its own LoRa mesh protocol. Meshtastic already solves this. Plain LoRa (without Meshtastic) is deferred unless there's a concrete need.
 
 **Deliverables:**
 - [ ] Meshtastic serial/BLE protocol integration
 - [ ] Meshtastic transport adapter (send/receive chunked envelopes)
-- [ ] Reuse v0.7 TransportChunk for LoRa MTU (~200 bytes)
+- [ ] Reuse v0.8 TransportChunk for LoRa MTU (51–222 bytes)
 - [ ] Detached messages by default (minimize overhead)
 - [ ] Integration with existing transport coordinator
 
@@ -337,47 +430,21 @@ Reme does **not** implement its own LoRa mesh protocol. Meshtastic already solve
 
 ---
 
-## v0.9: Bridge to Quorum
+## v0.10: Multi-transport relay
 
-Devices that receive envelopes via BLE or Meshtastic can bridge them to Quorum via the v0.6 relay queue.
-
-BLE bridging works the same way as LAN HTTP relay: the BLE peer is an ephemeral target, envelopes enter the relay queue, and the node's TransportCoordinator delivers via its available tiers (Direct, Quorum, BestEffort). No special "BLE ingress adapter" needed — the relay queue already accepts envelopes from any transport.
-
-Meshtastic bridging requires a Meshtastic-specific ingress adapter since envelopes arrive chunked via the Meshtastic serial/BLE API and need reassembly before entering the relay queue.
+Cross-transport bridging: relay queue can ingest from and egress to BLE and Meshtastic peers, not just HTTP.
 
 ### Ingress adapters
 
-**Deliverables:**
-- [ ] Meshtastic ingress adapter (reassemble chunked envelopes → relay queue)
-- [ ] Relay capability advertisement in BLE service data
-
-**Success criteria:**
-- Alice (BLE only) → Bob's phone (BLE + Internet) → relay queue → Quorum → Charlie
-- Alice (Meshtastic only) → Bob's node (Meshtastic + Internet) → relay queue → Quorum → Charlie
-- Same relay status/tracking as LAN relay
-
----
-
-## v0.10: Multi-transport relay
-
-Cross-transport bridging: relay queue can egress via Meshtastic and BLE peers, not just HTTP.
+BLE bridging works the same way as LAN HTTP relay: the BLE peer is an ephemeral target, envelopes enter the relay queue, and the node's TransportCoordinator delivers via its available tiers. Meshtastic bridging requires a Meshtastic-specific ingress adapter since envelopes arrive chunked via the Meshtastic serial/BLE API and need reassembly.
 
 ### BLE relay via discovered peers
 
 Relay queued messages to discovered BLE peers — same model as LAN HTTP relay. BLE peers are registered as ephemeral targets; the relay queue submits envelopes to them, and each peer re-submits via its own available transports. This is not a BLE mesh protocol — it's opportunistic relay to nearby devices, hoping they can reach the recipient or bridge to Quorum.
 
-**Deliverables:**
-- [ ] BLE egress adapter for relay queue
-- [ ] Duplicate suppression (skip envelopes already sent to this peer)
-
 ### Meshtastic egress
 
 Forward queued messages over Meshtastic for off-grid recipients. This enables the "Starlink Relay" scenario.
-
-**Deliverables:**
-- [ ] Meshtastic egress adapter for relay queue
-- [ ] Headless relay mode (no TUI, minimal resources)
-- [ ] Relay statistics/monitoring endpoint
 
 ### The "Starlink Relay" scenario
 
@@ -406,6 +473,15 @@ flowchart LR
 **Community relay network:**
 The same scenario works with **any** Internet-connected Meshtastic node running reme bridge software. A neighbor's node, a community relay on a hilltop, or a stranger's device can all bridge your messages. No plaintext trust is required because the payload is end-to-end encrypted, but metadata and availability remain sensitive, so these bridge nodes must stay in an untrusted relay role unless explicitly configured as trusted peers.
 
+**Deliverables:**
+- [ ] BLE egress adapter for relay queue
+- [ ] Meshtastic ingress adapter (reassemble chunked envelopes → relay queue)
+- [ ] Meshtastic egress adapter for relay queue
+- [ ] Headless relay mode (no TUI, minimal resources)
+- [ ] Relay statistics/monitoring endpoint
+- [ ] Relay capability advertisement in BLE service data
+- [ ] Duplicate suppression (skip envelopes already sent to this peer)
+
 **Success criteria:**
 - Starlink relay scenario works (HTTP → Meshtastic egress without decryption)
 - BLE relay extends reach via discovered peers (same model as LAN HTTP relay)
@@ -414,9 +490,9 @@ The same scenario works with **any** Internet-connected Meshtastic node running 
 
 ---
 
-## v1.0: Forward secrecy (breaking release)
+## v1.0: Production ready (breaking release)
 
-Production-ready with session-based forward secrecy and stable wire format.
+Stable wire format and production hardening.
 
 > **Breaking changes:** v1.0 is the last planned breaking release. Wire format migrates from Postcard to Protobuf for cross-language compatibility and long-term schema evolution. All pre-1.0 clients will be incompatible.
 
@@ -433,57 +509,6 @@ Production-ready with session-based forward secrecy and stable wire format.
 - Size budgets validated on constrained transports (LoRa, BLE)
 - Field ordering and optionality patterns established
 - Schema evolution needs identified from v0.x development
-
-### Protocol: Async Noise XX handshake
-
-Implements DTN-safe forward secrecy without prekey servers.
-
-### Features
-
-#### 1. Encrypted sender in OuterEnvelope
-
-**Problem:** Recipient can't identify sender when session keys lost.
-
-**Solution:**
-- `encrypted_sender: [u8; 48]` in OuterEnvelope
-- Always decryptable by recipient MIK
-- Enables key-loss recovery
-
-#### 2. Sign-all-bytes
-
-**Problem:** Static field signatures break on version upgrades.
-
-**Solution:**
-- Sign all serialized InnerEnvelope bytes
-- Forward/backward compatible
-
-#### 3. Noise XX handshake
-
-**Problem:** MIK-only lacks forward secrecy.
-
-**Solution:**
-- Mutual authentication with ephemeral DH
-- Either party can initiate
-- Epoch-based replay protection
-- MIK fallback when session unavailable
-
-#### 4. DAG-integrated key lifecycle
-
-**Problem:** When to delete old session keys?
-
-**Solution:**
-- Delete key only after all messages acknowledged via DAG
-- Conservative retention during gaps
-- Bounded memory (max 10 retained keys)
-
-#### 5. Key loss recovery
-
-**Problem:** Recipient loses session keys.
-
-**Solution:**
-- Decrypt `encrypted_sender` to identify peer
-- Request re-send with MIK encryption
-- Automatic without manual intervention
 
 ---
 
@@ -552,26 +577,28 @@ Implements DTN-safe forward secrecy without prekey servers.
 - Relay path visible in delivery status
 
 ### v0.7
-- BLE direct exchange <30s between two nearby devices
-- Works without any Internet connectivity
+- Session established between two clients over HTTP
+- Session-encrypted messages decrypt correctly
+- MIK fallback works when session key lost
+- Session envelope overhead ≤45 bytes
 
 ### v0.8
+- BLE direct exchange <30s between two nearby devices
+- Works without any Internet connectivity
+- Session-encrypted envelopes fit within BLE MTU
+
+### v0.9
 - Meshtastic direct exchange over 5+ km with line-of-sight
 - Works with off-the-shelf Meshtastic hardware
 
-### v0.9
-- BLE/Meshtastic → relay queue → Quorum bridging works
-- Same relay status/tracking as LAN relay
-
 ### v0.10
 - Starlink relay scenario works (HTTP → Meshtastic egress)
-- BLE relay extends reach via discovered peers (same relay model as LAN HTTP)
+- BLE/Meshtastic → relay queue → Quorum bridging works
 - Cross-transport relay (e.g., BLE → relay queue → HTTP, HTTP → relay queue → Meshtastic)
 
 ### v1.0
 - Protobuf wire format (breaking change)
-- Session-based forward secrecy
-- Automatic key-loss recovery
+- Automatic key-loss recovery refinements
 - Production-ready security audit
 - Mobile apps (Android/iOS)
 
