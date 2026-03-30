@@ -1,6 +1,6 @@
 # Merkle DAG: Message Ordering and Gap Detection
 
-This document describes how the Resilient Messenger uses a Merkle DAG (Directed Acyclic Graph) to establish causal ordering between messages, detect missing messages, and trigger automatic resends — all without a central sequencer or reliable transport.
+This document describes how Ember uses a Merkle DAG (Directed Acyclic Graph) to establish causal ordering between messages, detect missing messages, and trigger automatic resends — all without a central sequencer or reliable transport.
 
 ## Overview
 
@@ -39,7 +39,7 @@ Each message gets a deterministic 8-byte identifier computed as a truncated BLAK
 
 ```text
 ContentId = BLAKE3(
-    "reme-content-id-v1"
+    "ember-content-id-v1"
     || InnerEnvelope.from.to_bytes()          // PublicID as 32 raw bytes
     || InnerEnvelope.created_at_ms.to_le()    // u64 little-endian
     || postcard::to_allocvec(content)          // postcard-serialized Content

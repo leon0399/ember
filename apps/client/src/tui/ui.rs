@@ -14,7 +14,7 @@ use ratatui::{
 };
 
 use super::app::{AddContactField, AddUpstreamField, App, DeliveryStatus, Focus, UpstreamType};
-use reme_transport::DeliveryTier;
+use ember_transport::DeliveryTier;
 
 /// Render the entire UI
 pub fn render(frame: &mut Frame, app: &App) {
@@ -594,7 +594,7 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
     reason = "upstream list rendering is easier to audit as one layout pass"
 )]
 fn render_upstreams_popup(frame: &mut Frame, app: &App) {
-    use reme_transport::HealthState;
+    use ember_transport::HealthState;
 
     // Query the registry for current targets
     let targets = app.registry.list_all_targets();

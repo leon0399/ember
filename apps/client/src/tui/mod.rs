@@ -30,7 +30,7 @@ pub async fn run(config: AppConfig) -> AppResult<()> {
     fs::create_dir_all(&config.data_dir)?;
 
     // === PHASE 1: Identity setup (normal terminal mode) ===
-    let identity_path = config.data_dir.join("identity.reme");
+    let identity_path = config.data_dir.join("identity.ember");
     let identity = crate::identity::load_or_create(&identity_path)?;
 
     // === PHASE 2: TUI mode ===

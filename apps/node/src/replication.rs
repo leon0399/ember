@@ -21,9 +21,9 @@
 
 use crate::node_identity::NodeIdentity;
 use crate::signed_headers::SignedHeaders;
-use reme_bundle::encode_body;
-use reme_config::ParsedHttpPeer;
-use reme_transport::sanitize_url_for_logging;
+use ember_bundle::encode_body;
+use ember_config::ParsedHttpPeer;
+use ember_transport::sanitize_url_for_logging;
 use reqwest::Client;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -130,7 +130,7 @@ impl ReplicationClient {
                 }
 
                 request = request
-                    .header("Content-Type", "application/vnd.reme.bundle")
+                    .header("Content-Type", "application/vnd.ember.bundle")
                     .body(bundle_body.clone());
 
                 // Add Basic Auth if credentials are configured
@@ -268,7 +268,7 @@ fn extract_host_from_url(url_str: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{format_peer_log_entry, sanitize_reqwest_error_for_logging};
-    use reme_config::{ParsedHttpPeer, PeerCommon};
+    use ember_config::{ParsedHttpPeer, PeerCommon};
 
     #[test]
     fn format_peer_log_entry_redacts_embedded_credentials() {

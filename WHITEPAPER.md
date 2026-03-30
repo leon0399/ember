@@ -1,4 +1,4 @@
-# Resilient Messenger (reme)
+# Ember Messenger
 
 ## A Delay-Tolerant, End-to-End Encrypted Messaging Protocol
 
@@ -9,7 +9,7 @@
 
 ## Abstract
 
-Resilient Messenger (reme) is an outage-resilient, end-to-end encrypted messaging system for environments where network connectivity is intermittent, constrained, or adversarial. Unlike traditional messengers that depend on always-on Internet connectivity, reme uses a hybrid transport architecture: HTTP mailboxes, LoRa mesh networks, BLE proximity exchange, and other constrained transports.
+Ember Messenger is an outage-resilient, end-to-end encrypted messaging system for environments where network connectivity is intermittent, constrained, or adversarial. Unlike traditional messengers that depend on always-on Internet connectivity, ember uses a hybrid transport architecture: HTTP mailboxes, LoRa mesh networks, BLE proximity exchange, and other constrained transports.
 
 The protocol uses XEdDSA signatures, X25519 key exchange, and ChaCha20-Poly1305 authenticated encryption, while keeping a minimal wire format suitable for bandwidth-constrained channels. A Merkle DAG message ordering system tracks causal ordering without centralized coordination, allowing gap detection and state recovery across disconnected operation periods.
 
@@ -46,7 +46,7 @@ Modern secure messaging systems protect message content well through end-to-end 
 - **Remote areas** lack reliable connectivity for conventional messaging
 - **Infrastructure attacks** can disable communications for entire regions
 
-Reme takes a different approach: designing for intermittent, constrained, and potentially adversarial network conditions from the start, rather than treating them as edge cases.
+Ember takes a different approach: designing for intermittent, constrained, and potentially adversarial network conditions from the start, rather than treating them as edge cases.
 
 ### 1.1 What's different
 
@@ -64,7 +64,7 @@ Reme takes a different approach: designing for intermittent, constrained, and po
 
 | Term | Definition |
 |------|------------|
-| **DTN** (Delay-Tolerant Networking) | A network architecture where end-to-end connectivity is intermittent or never available. Messages are stored and forwarded hop-by-hop. Reme is designed for DTN conditions: no session state, independent message processing, tolerance for loss and reordering. |
+| **DTN** (Delay-Tolerant Networking) | A network architecture where end-to-end connectivity is intermittent or never available. Messages are stored and forwarded hop-by-hop. Ember is designed for DTN conditions: no session state, independent message processing, tolerance for loss and reordering. |
 | **Stateless encryption** | Each message carries its own key exchange material (ephemeral X25519 keypair). No session establishment, no prekeys, no ratchet state. Any single message can be decrypted independently. The tradeoff: no per-message forward secrecy until session encryption (Noise XX) is added. |
 | **MIK** (Master Identity Key) | A user's long-term X25519 keypair. Used for both encryption (ECDH) and signatures (XEdDSA). One key per identity. |
 | **PublicID** | The public half of a MIK. 32 bytes. Acts as both the user's address and encryption target. |
@@ -77,8 +77,8 @@ Reme takes a different approach: designing for intermittent, constrained, and po
 | **Epoch** | A per-conversation counter in the DAG. Incremented on intentional history clear. Messages from different epochs are not causally linked. |
 | **Detached message** | A message sent without DAG references (`prev_self: None`, `observed_heads: []`, `FLAG_DETACHED`). Used on constrained transports (BLE, LoRa) to save ~16 bytes of overhead. Does not trigger state-reset detection. |
 | **Tombstone** | A 96-byte signed authorization token targeting a specific message. Contains only a MessageID, ack_secret, and XEdDSA signature. Relay nodes use tombstones to clear their caches. The recipient uses tombstones to acknowledge delivery; the sender can also use them to retract an undelivered message. |
-| **ack_secret** | A 16-byte value derived from the ECDH shared secret: `BLAKE3_KDF("reme-ack-v1", shared_secret \|\| message_id)[0..16]`. Only the sender and recipient can compute it. Included in a tombstone to prove the creator was cryptographically bound to that specific message. |
-| **ack_hash** | `BLAKE3_KDF("reme-ack-hash-v1", ack_secret)[0..16]`. Stored in the OuterEnvelope so relay nodes can verify tombstone authorization in O(1) without knowing any identity. |
+| **ack_secret** | A 16-byte value derived from the ECDH shared secret: `BLAKE3_KDF("ember-ack-v1", shared_secret \|\| message_id)[0..16]`. Only the sender and recipient can compute it. Included in a tombstone to prove the creator was cryptographically bound to that specific message. |
+| **ack_hash** | `BLAKE3_KDF("ember-ack-hash-v1", ack_secret)[0..16]`. Stored in the OuterEnvelope so relay nodes can verify tombstone authorization in O(1) without knowing any identity. |
 | **Transport** | A mechanism for moving OuterEnvelopes between nodes: HTTP, MQTT, BLE, LoRa, or sneakernet. Transports are interchangeable; the same encrypted envelope works on any of them. |
 | **Mailbox node** | An always-on server that stores and forwards OuterEnvelopes for recipients, indexed by RoutingKey. The primary Internet-based infrastructure. |
 | **Peer relay** | A store-and-forward queue on a peer device that bridges transports (e.g., BLE-received messages forwarded to Quorum over HTTP). Unlike mailbox nodes, peer relays are transient and run on end-user devices. See §11.5. |
@@ -94,9 +94,9 @@ Reme takes a different approach: designing for intermittent, constrained, and po
 
 ### 3.1 Limitations of existing systems
 
-Traditional secure messengers have architectural limitations that reme addresses:
+Traditional secure messengers have architectural limitations that ember addresses:
 
-| System  | Limitation                                                   | reme Solution                                             |
+| System  | Limitation                                                   | ember Solution                                             |
 |---------|--------------------------------------------------------------|-----------------------------------------------------------|
 | Signal  | Requires server-mediated key exchange, phone number identity | Self-sovereign identity, stateless encryption             |
 | Session | Onion routing adds latency, large node requirements          | Direct mailbox routing with privacy-preserving addressing |
@@ -105,7 +105,7 @@ Traditional secure messengers have architectural limitations that reme addresses
 
 ### 3.2 Threat model
 
-reme is designed to resist these adversaries:
+ember is designed to resist these adversaries:
 
 **Network-level adversaries:**
 - Passive observers attempting traffic analysis
@@ -241,7 +241,7 @@ This gives us:
 
 ### 6.1 Single-key identity
 
-reme uses a single X25519 key for both encryption and signatures (via XEdDSA). This means:
+ember uses a single X25519 key for both encryption and signatures (via XEdDSA). This means:
 
 - **32-byte addresses**: Compact, human-verifiable identities
 - **Simplified backup**: Single secret key backs up entire identity
@@ -278,16 +278,16 @@ The current version uses stateless encryption where each message includes its ow
 ```
 1. Generate ephemeral keypair (e, E)
 2. shared_secret = X25519(e, recipient_MIK)
-3. enc_key = BLAKE3_KDF("reme-encryption-key-v0", E || recipient_MIK || shared_secret)
-4. nonce = BLAKE3_KDF("reme-nonce-v0", message_id || recipient_MIK)[0:12]
+3. enc_key = BLAKE3_KDF("ember-encryption-key-v0", E || recipient_MIK || shared_secret)
+4. nonce = BLAKE3_KDF("ember-nonce-v0", message_id || recipient_MIK)[0:12]
 5. ciphertext = ChaCha20Poly1305_Encrypt(enc_key, nonce, plaintext, AAD=message_id)
 ```
 
 **Decryption (recipient):**
 ```
 1. shared_secret = X25519(mik_private, ephemeral_key)
-2. enc_key = BLAKE3_KDF("reme-encryption-key-v0", ephemeral_key || mik_public || shared_secret)
-3. nonce = BLAKE3_KDF("reme-nonce-v0", message_id || mik_public)[0:12]
+2. enc_key = BLAKE3_KDF("ember-encryption-key-v0", ephemeral_key || mik_public || shared_secret)
+3. nonce = BLAKE3_KDF("ember-nonce-v0", message_id || mik_public)[0:12]
 4. plaintext = ChaCha20Poly1305_Decrypt(enc_key, nonce, ciphertext, AAD=message_id)
 ```
 
@@ -309,7 +309,7 @@ This prevents:
 All key derivation uses BLAKE3 in KDF mode with context strings for domain separation:
 
 ```
-enc_key = BLAKE3_KDF("reme-encryption-key-v0", ephemeral_pub || recipient_pub || shared_secret)
+enc_key = BLAKE3_KDF("ember-encryption-key-v0", ephemeral_pub || recipient_pub || shared_secret)
 ```
 
 Including both public keys in the KDF input prevents key confusion attacks where an attacker might claim a ciphertext was intended for a different recipient.
@@ -387,7 +387,7 @@ Note: `0x01` was used by the V1 tombstone format and is no longer supported.
 
 ### 8.5 Timestamp design
 
-reme uses a dual-timestamp model for privacy:
+ember uses a dual-timestamp model for privacy:
 
 - **Outer envelope**: Hour-granularity (`u32`, ~490,000 year range)
 - **Inner envelope**: Millisecond precision (`u64`)
@@ -406,7 +406,7 @@ Hour granularity on the outer envelope:
 Each message has a content-addressed ID computed from immutable fields:
 
 ```
-content_id = BLAKE3("reme-content-id-v1" || sender_pubid || timestamp_ms || content)[0:8]
+content_id = BLAKE3("ember-content-id-v1" || sender_pubid || timestamp_ms || content)[0:8]
 ```
 
 **Design rationale:**
@@ -498,11 +498,11 @@ Both sender and recipient can create valid tombstones (both can derive `ack_secr
 
 ### 10.3 Security properties
 
-**Authorization without identity**: Relay nodes verify `BLAKE3_KDF("reme-ack-hash-v1", ack_secret)[0..16] == ack_hash` from the stored OuterEnvelope. This is an O(1) constant-time comparison that requires no knowledge of sender or recipient identity.
+**Authorization without identity**: Relay nodes verify `BLAKE3_KDF("ember-ack-hash-v1", ack_secret)[0..16] == ack_hash` from the stored OuterEnvelope. This is an O(1) constant-time comparison that requires no knowledge of sender or recipient identity.
 
 **Attribution**: Clients verify the XEdDSA signature against both the sender and recipient public keys to determine who created the tombstone. Three outcomes: Sender, Recipient, or Invalid.
 
-**Replay prevention**: The `ack_secret` is derived from `BLAKE3_KDF("reme-ack-v1", shared_secret || message_id)`, binding each tombstone to a specific message. A tombstone for message A cannot authorize clearing message B.
+**Replay prevention**: The `ack_secret` is derived from `BLAKE3_KDF("ember-ack-v1", shared_secret || message_id)`, binding each tombstone to a specific message. A tombstone for message A cannot authorize clearing message B.
 
 ---
 
@@ -532,8 +532,8 @@ Primary transport for reliable connectivity:
 - Session established over unconstrained transport (HTTP, LAN) before LoRa use
 - Uses detached messages (`FLAG_DETACHED`) to minimize overhead
 - Transport-layer chunking for messages exceeding a single LoRa packet
-- Meshtastic handles mesh routing; reme bridges between Meshtastic and other transports
-- Reme does not relay LoRa-to-LoRa itself
+- Meshtastic handles mesh routing; ember bridges between Meshtastic and other transports
+- Ember does not relay LoRa-to-LoRa itself
 - Acts as both relay ingress and egress (see §11.5)
 - **Duty cycle constraints**: Regulatory limits (e.g., 1% duty cycle at EU 868 MHz) mean multi-chunk messages may take several minutes to transmit. Users should expect short-text-only messaging with minutes of latency on LoRa transports.
 
@@ -544,7 +544,7 @@ Primary transport for reliable connectivity:
 - RSSI-informed relay timing: randomized backoff with RSSI as a scheduling hint (weaker-signal nodes bias toward earlier rebroadcast). BLE at 2.4 GHz has high RSSI variance indoors (multipath, body absorption), so RSSI cannot be used as a deterministic timer — unlike LoRa where Meshtastic uses this approach more reliably at lower frequencies.
 
 **Sneakernet (implemented in v0.5):**
-- `.reme` bundle files containing length-prefixed WirePayload frames with BLAKE3 checksum
+- `.ember` bundle files containing length-prefixed WirePayload frames with BLAKE3 checksum
 - Client export/import: offline outbox export, encrypted message import with dedup
 - Node export/import: opaque envelope storage, tombstone processing
 - Complete offline operation — no network required
@@ -678,7 +678,7 @@ sequenceDiagram
 
 ### 13.1 Signal Protocol
 
-| Aspect            | Signal                            | reme                                           |
+| Aspect            | Signal                            | ember                                           |
 |-------------------|-----------------------------------|------------------------------------------------|
 | Key Exchange      | X3DH with server-mediated prekeys | Direct MIK encryption, Noise XX (v1.0)         |
 | Forward Secrecy   | Double Ratchet                    | Stateless (MIK-only) + per-session Noise XX    |
@@ -688,7 +688,7 @@ sequenceDiagram
 
 ### 13.2 Session Protocol
 
-| Aspect           | Session                         | reme                |
+| Aspect           | Session                         | ember                |
 |------------------|---------------------------------|---------------------|
 | Routing          | Onion request via service nodes | Direct to mailbox   |
 | Latency          | Higher (onion routing)          | Lower (direct)      |
@@ -697,7 +697,7 @@ sequenceDiagram
 
 ### 13.3 Matrix Protocol
 
-| Aspect       | Matrix                 | reme                 |
+| Aspect       | Matrix                 | ember                 |
 |--------------|------------------------|----------------------|
 | Architecture | Federated servers      | Optional mailboxes   |
 | Room Model   | Multi-user rooms       | 1:1 (groups planned) |
@@ -706,7 +706,7 @@ sequenceDiagram
 
 ### 13.4 Briar
 
-| Aspect       | Briar            | reme                      |
+| Aspect       | Briar            | ember                      |
 |--------------|------------------|---------------------------|
 | Network      | Tor, BT, WiFi    | HTTP, LoRa, BLE (planned) |
 | Desktop      | Android only     | Cross-platform (Rust)     |
@@ -752,11 +752,11 @@ sequenceDiagram
 
 ## 15. Conclusion
 
-Reme is a different approach to secure messaging for adversarial network conditions. It combines stateless encryption (each message is independently processable), Merkle DAG ordering (decentralized causality), transport-agnostic design (constrained channels work), and cryptographic tombstones (verifiable acknowledgments).
+Ember is a different approach to secure messaging for adversarial network conditions. It combines stateless encryption (each message is independently processable), Merkle DAG ordering (decentralized causality), transport-agnostic design (constrained channels work), and cryptographic tombstones (verifiable acknowledgments).
 
 The dual-mode encryption design — stateless MIK for unconstrained transports, session-based Noise XX for constrained transports and forward secrecy — provides both DTN tolerance and bandwidth efficiency. The modular Rust implementation can be embedded in command-line tools, mobile apps, and embedded devices.
 
-The tradeoff is explicit: reme uses stateless encryption as the universal fallback (any message decryptable without session state) and session encryption where peers have established connectivity (forward secrecy + compact envelope for constrained transports). This layered approach avoids the false choice between DTN tolerance and forward secrecy.
+The tradeoff is explicit: ember uses stateless encryption as the universal fallback (any message decryptable without session state) and session encryption where peers have established connectivity (forward secrecy + compact envelope for constrained transports). This layered approach avoids the false choice between DTN tolerance and forward secrecy.
 
 ---
 
@@ -801,7 +801,7 @@ The tradeoff is explicit: reme uses stateless encryption as the universal fallba
 
 ---
 
-*This document describes Resilient Messenger version 0.4 (LAN Discovery). The protocol is under active development; specifications may change.*
+*This document describes Ember version 0.5 (Sneakernet Export). The protocol is under active development; specifications may change.*
 
 ## Appendix D. Current implementation status (v0.4)
 
@@ -848,7 +848,7 @@ The tradeoff is explicit: reme uses stateless encryption as the universal fallba
 - Client-as-relay capability (embedded node)
 
 **LAN discovery (v0.4):**
-- mDNS/Bonjour LAN discovery (`mdns-sd` crate, `_reme._tcp.local.`)
+- mDNS/Bonjour LAN discovery (`mdns-sd` crate, `_ember._tcp.local.`)
 - Challenge-response identity verification in discovery flow
 - Background identity refresh with circuit breaker (configurable interval)
 - Periodic peer re-verification with stale-peer removal
@@ -859,7 +859,7 @@ The tradeoff is explicit: reme uses stateless encryption as the universal fallba
 ### Planned features (see ROADMAP.md)
 
 **v0.5 (complete):**
-- Sneakernet export/import via `.reme` bundle files
+- Sneakernet export/import via `.ember` bundle files
 - Client and node CLI subcommands for offline message transfer
 
 **v0.6:**

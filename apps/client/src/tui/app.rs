@@ -7,24 +7,24 @@ use crate::tui::http_server;
 use crate::tui::ui;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
-use ratatui::prelude::*;
-use reme_config::{ParsedHttpPeer, ParsedMqttPeer};
-use reme_core::{AddContactOutcome, Client, ReceivedMessage};
-use reme_discovery::DiscoveryBackend as _;
-use reme_identity::{Identity, PublicID};
-use reme_message::Content;
-use reme_node_core::{
+use ember_config::{ParsedHttpPeer, ParsedMqttPeer};
+use ember_core::{AddContactOutcome, Client, ReceivedMessage};
+use ember_discovery::DiscoveryBackend as _;
+use ember_identity::{Identity, PublicID};
+use ember_message::Content;
+use ember_node_core::{
     EmbeddedNode, EmbeddedNodeHandle, NodeEvent, PersistentMailboxStore, PersistentStoreConfig,
 };
-use reme_outbox::{OutboxConfig, TieredDeliveryPhase, TransportRetryPolicy};
-use reme_storage::Storage;
-use reme_transport::http_target::{HttpTarget, HttpTargetConfig};
-use reme_transport::pool::TransportPool;
-use reme_transport::target::TargetKind;
-use reme_transport::{
+use ember_outbox::{OutboxConfig, TieredDeliveryPhase, TransportRetryPolicy};
+use ember_storage::Storage;
+use ember_transport::http_target::{HttpTarget, HttpTargetConfig};
+use ember_transport::pool::TransportPool;
+use ember_transport::target::TargetKind;
+use ember_transport::{
     CoordinatorConfig, CoordinatorHandle, DeliveryTier, MqttTarget, MqttTargetConfig, TargetId,
     TransportCoordinator, TransportEvent, TransportRegistry, TransportTarget,
 };
+use ratatui::prelude::*;
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -954,7 +954,7 @@ impl App<'_> {
 
     /// Get or create a conversation for a contact, returns the index
     fn get_or_create_conversation(&mut self, public_id: PublicID) -> usize {
-        // Get contact info from storage (reme-core auto-adds on message receive)
+        // Get contact info from storage (ember-core auto-adds on message receive)
         // Single call to avoid duplicate lookups
         let (contact_id, display_name) = match self.client.get_contact(&public_id) {
             Ok(contact) => {
@@ -1217,7 +1217,7 @@ impl App<'_> {
             if !text.trim().is_empty() {
                 if let Some(conv) = self.conversations.get(self.selected_conversation) {
                     let public_id = conv.public_id;
-                    let content = Content::Text(reme_message::TextContent { body: text.clone() });
+                    let content = Content::Text(ember_message::TextContent { body: text.clone() });
 
                     match self.client.prepare_message(&public_id, content, false) {
                         Ok(prepared) => {
@@ -1303,7 +1303,7 @@ impl App<'_> {
                                 continue;
                             }
                             let content = msg.body.clone().unwrap_or_default();
-                            let is_sent = msg.direction == reme_storage::MessageDirection::Sent;
+                            let is_sent = msg.direction == ember_storage::MessageDirection::Sent;
                             cache.push_back(Message {
                                 from_me: is_sent,
                                 sender_name: if is_sent {
@@ -1612,7 +1612,7 @@ async fn signal_node_shutdown(handle: Option<&EmbeddedNodeHandle>) {
 }
 
 /// Log the embedded node shutdown result.
-fn log_node_shutdown_result(result: Result<(), reme_node_core::NodeError>) {
+fn log_node_shutdown_result(result: Result<(), ember_node_core::NodeError>) {
     if let Err(e) = result {
         warn!("Failed to signal embedded node shutdown: {e}");
     }
@@ -1651,13 +1651,13 @@ fn log_task_stopped(label: &str) {
 }
 
 /// Shutdown the mDNS backend, logging any errors.
-async fn shutdown_mdns_backend(backend: Arc<reme_discovery::mdns_sd::MdnsSdBackend>) {
+async fn shutdown_mdns_backend(backend: Arc<ember_discovery::mdns_sd::MdnsSdBackend>) {
     debug!("Shutting down mDNS backend");
     log_mdns_shutdown_result(backend.shutdown().await);
 }
 
 /// Log the result of mDNS backend shutdown.
-fn log_mdns_shutdown_result(result: Result<(), reme_discovery::DiscoveryError>) {
+fn log_mdns_shutdown_result(result: Result<(), ember_discovery::DiscoveryError>) {
     if let Err(e) = result {
         log_mdns_shutdown_error(&e);
     } else {
@@ -1665,7 +1665,7 @@ fn log_mdns_shutdown_result(result: Result<(), reme_discovery::DiscoveryError>) 
     }
 }
 
-fn log_mdns_shutdown_error(e: &reme_discovery::DiscoveryError) {
+fn log_mdns_shutdown_error(e: &ember_discovery::DiscoveryError) {
     warn!(error = %e, "Failed to shutdown mDNS backend");
 }
 
@@ -1736,7 +1736,7 @@ fn parse_direct_peer_pubkey(
         return Ok(None);
     };
 
-    match reme_config::parse_node_pubkey(id_str) {
+    match ember_config::parse_node_pubkey(id_str) {
         Ok(pk) => Ok(Some(pk)),
         Err(e) => {
             // TODO: emit UI notification event once app-level event bus exists
@@ -1774,10 +1774,10 @@ fn validate_transports(
 }
 
 /// Convert a `ConfiguredTier` to `DeliveryTier`.
-const fn convert_tier(tier: reme_config::ConfiguredTier) -> DeliveryTier {
+const fn convert_tier(tier: ember_config::ConfiguredTier) -> DeliveryTier {
     match tier {
-        reme_config::ConfiguredTier::Quorum => DeliveryTier::Quorum,
-        reme_config::ConfiguredTier::BestEffort => DeliveryTier::BestEffort,
+        ember_config::ConfiguredTier::Quorum => DeliveryTier::Quorum,
+        ember_config::ConfiguredTier::BestEffort => DeliveryTier::BestEffort,
     }
 }
 
@@ -1854,7 +1854,7 @@ fn build_http_target_from_config(peer: &ParsedHttpPeer) -> AppResult<HttpTarget>
     let mut config = HttpTargetConfig::stable(&peer.url);
 
     if let Some(ref pin) = peer.cert_pin {
-        match reme_transport::CertPin::parse(&pin.to_pin_string()) {
+        match ember_transport::CertPin::parse(&pin.to_pin_string()) {
             Ok(transport_pin) => config = config.with_cert_pin(transport_pin),
             Err(e) => {
                 warn!(url = %peer.url, error = %e, "Certificate pin conversion failed - this is a bug");
@@ -1909,7 +1909,7 @@ async fn connect_mqtt_peers(pool: &TransportPool<MqttTarget>, parsed_peers: &[Pa
 /// Spawn MQTT connection tasks for all configured peers.
 fn spawn_mqtt_connections(
     parsed_peers: &[ParsedMqttPeer],
-) -> tokio::task::JoinSet<(String, Result<MqttTarget, reme_transport::TransportError>)> {
+) -> tokio::task::JoinSet<(String, Result<MqttTarget, ember_transport::TransportError>)> {
     let mut join_set = tokio::task::JoinSet::new();
     for parsed_peer in parsed_peers.iter().cloned() {
         join_set.spawn(async move {
@@ -1925,7 +1925,7 @@ async fn collect_mqtt_results(
     pool: &TransportPool<MqttTarget>,
     join_set: &mut tokio::task::JoinSet<(
         String,
-        Result<MqttTarget, reme_transport::TransportError>,
+        Result<MqttTarget, ember_transport::TransportError>,
     )>,
 ) {
     while let Some(result) = join_set.join_next().await {
@@ -1937,7 +1937,7 @@ async fn collect_mqtt_results(
 fn handle_mqtt_join_result(
     pool: &TransportPool<MqttTarget>,
     result: Result<
-        (String, Result<MqttTarget, reme_transport::TransportError>),
+        (String, Result<MqttTarget, ember_transport::TransportError>),
         tokio::task::JoinError,
     >,
 ) {
@@ -1952,7 +1952,7 @@ fn handle_mqtt_join_result(
 fn log_mqtt_connect_result(
     pool: &TransportPool<MqttTarget>,
     url: &str,
-    result: Result<MqttTarget, reme_transport::TransportError>,
+    result: Result<MqttTarget, ember_transport::TransportError>,
 ) {
     match result {
         Ok(target) => pool.add_target(target),
@@ -2080,7 +2080,7 @@ async fn start_embedded_http_server(
 fn process_and_notify(
     client: &Arc<Client<TransportCoordinator>>,
     tx: &mpsc::UnboundedSender<Action>,
-    envelope: &reme_message::OuterEnvelope,
+    envelope: &ember_message::OuterEnvelope,
     source: MessageSource,
 ) -> Result<(), ()> {
     match client.process_message_local(envelope) {
@@ -2169,7 +2169,7 @@ fn format_display_name(name: Option<&str>, public_id: &PublicID) -> String {
 
 /// Format a [`TieredDeliveryPhase`] into a human-readable status message.
 fn format_delivery_status(phase: &TieredDeliveryPhase) -> String {
-    use reme_transport::DeliveryConfidence;
+    use ember_transport::DeliveryConfidence;
     match phase {
         TieredDeliveryPhase::Urgent => "Sent (queued, awaiting delivery)".to_string(),
         TieredDeliveryPhase::Distributed { confidence, .. } => match confidence {
@@ -2189,8 +2189,8 @@ mod tests {
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
     use base64::Engine as _;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use reme_identity::PublicID;
-    use reme_transport::target::TransportTarget;
+    use ember_identity::PublicID;
+    use ember_transport::target::TransportTarget;
 
     #[test]
     fn outbox_tick_does_not_require_render() {

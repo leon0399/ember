@@ -7,9 +7,9 @@
 //!
 //! ## Subcommands
 //!
-//! - `reme` or `reme tui` -- Launch the interactive TUI (default)
-//! - `reme export <FILE>` -- Export pending messages to a .reme bundle
-//! - `reme import <FILE>` -- Import messages from a .reme bundle
+//! - `ember` or `ember tui` -- Launch the interactive TUI (default)
+//! - `ember export <FILE>` -- Export pending messages to a .ember bundle
+//! - `ember import <FILE>` -- Import messages from a .ember bundle
 
 mod config;
 mod discovery;

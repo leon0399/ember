@@ -4,20 +4,20 @@ Terminal-based messenger with Telegram/WhatsApp-style interface. Built on ratatu
 
 ## CLI Structure
 
-The binary uses clap subcommands. Bare `reme` defaults to the TUI.
+The binary uses clap subcommands. Bare `ember` defaults to the TUI.
 
 ```
-reme [OPTIONS] [SUBCOMMAND]
+ember [OPTIONS] [SUBCOMMAND]
 
 Global options (available to all subcommands):
-  -d, --data-dir <PATH>    Data directory (env: REME_DATA_DIR)
-  -c, --config <PATH>      Config file path (env: REME_CONFIG)
-  -l, --log-level <LEVEL>  Log level (env: REME_LOG_LEVEL)
+  -d, --data-dir <PATH>    Data directory (env: EMBER_DATA_DIR)
+  -c, --config <PATH>      Config file path (env: EMBER_CONFIG)
+  -l, --log-level <LEVEL>  Log level (env: EMBER_LOG_LEVEL)
 
 Subcommands:
   tui       Launch the interactive TUI (default when no subcommand)
-  export    Export pending messages to a .reme bundle file (stub)
-  import    Import messages from a .reme bundle file (stub)
+  export    Export pending messages to a .ember bundle file (stub)
+  import    Import messages from a .ember bundle file (stub)
 ```
 
 TUI-specific flags (`--http-url`, `--mqtt-url`, `--outbox-*`, `--embedded-*`) are only available under the `tui` subcommand.
@@ -35,8 +35,8 @@ TUI-specific flags (`--http-url`, `--mqtt-url`, `--outbox-*`, `--embedded-*`) ar
 cargo run --bin client                                                  # TUI with defaults
 cargo run --bin client -- tui --http-url https://node:23003             # TUI with custom node
 cargo run --bin client -- --data-dir data/clients/alice --config data/clients/alice/config.toml  # Named local instance
-cargo run --bin client -- export out.reme                               # Export (stub)
-cargo run --bin client -- import bundle.reme                            # Import (stub)
+cargo run --bin client -- export out.ember                               # Export (stub)
+cargo run --bin client -- import bundle.ember                            # Import (stub)
 ```
 
 ## Module Map
@@ -44,7 +44,7 @@ cargo run --bin client -- import bundle.reme                            # Import
 | File                      | Purpose                                                                            |
 |---------------------------|------------------------------------------------------------------------------------|
 | `main.rs`                 | Entry point, CLI parsing, subcommand dispatch                                      |
-| `config.rs`               | `Cli`/`Commands`/`TuiArgs` structs, env vars (`REME_*`), TOML config, layered merge |
+| `config.rs`               | `Cli`/`Commands`/`TuiArgs` structs, env vars (`EMBER_*`), TOML config, layered merge |
 | `tui/app.rs`              | Main app state, event loop, keyboard handling                                      |
 | `tui/ui.rs`               | Ratatui widget rendering (conversations, messages, popups)                         |
 | `tui/event.rs`            | Crossterm event polling, background tick timer                                     |
@@ -57,7 +57,7 @@ cargo run --bin client -- import bundle.reme                            # Import
 
 ```
 ┌──────────────┐     ┌───────────────────┐     ┌──────────────┐
-│  TUI (app)   │────▶│  reme-core Client │────▶│  Transports  │
+│  TUI (app)   │────▶│  ember-core Client │────▶│  Transports  │
 │  ratatui     │     │  (orchestrator)   │     │  HTTP / MQTT │
 └──────────────┘     └───────────────────┘     └──────────────┘
        │                                              ▲
@@ -84,9 +84,9 @@ cargo run --bin client -- import bundle.reme                            # Import
 
 ## Config File
 
-`~/.config/reme/config.toml` — see `config.rs` module docs for full reference including peers, LAN discovery, embedded node.
+`~/.config/ember/config.toml` — see `config.rs` module docs for full reference including peers, LAN discovery, embedded node.
 
-Env prefix: `REME_*` (e.g., `REME_PEERS`).
+Env prefix: `EMBER_*` (e.g., `EMBER_PEERS`).
 
 ## Non-obvious Patterns
 

@@ -1,17 +1,17 @@
 # Session Encryption (Async Noise XX)
 
-Session-based encryption with forward secrecy for reme, using an asynchronous adaptation of the Noise XX handshake pattern designed for delay-tolerant networks.
+Session-based encryption with forward secrecy for ember, using an asynchronous adaptation of the Noise XX handshake pattern designed for delay-tolerant networks.
 
 ## Overview
 
-Session encryption establishes ephemeral shared keys between two peers via a 4-message Noise XX handshake carried inside standard reme envelopes. Once established, a session key replaces per-message MIK-based sealed boxes, providing forward secrecy.
+Session encryption establishes ephemeral shared keys between two peers via a 4-message Noise XX handshake carried inside standard ember envelopes. Once established, a session key replaces per-message MIK-based sealed boxes, providing forward secrecy.
 
-The protocol is fully asynchronous and DTN-safe: every handshake message is a normal reme envelope that can tolerate arbitrary delays, reordering, and loss. MIK-based stateless encryption remains the fallback for first contact and key loss recovery.
+The protocol is fully asynchronous and DTN-safe: every handshake message is a normal ember envelope that can tolerate arbitrary delays, reordering, and loss. MIK-based stateless encryption remains the fallback for first contact and key loss recovery.
 
 ### Protocol name
 
 ```
-reme-session-xx-v1-25519-chapoly-blake3
+ember-session-xx-v1-25519-chapoly-blake3
 ```
 
 This identifies the exact combination of primitives: Noise XX pattern, X25519 DH, ChaCha20Poly1305 AEAD, BLAKE3 for hashing and KDF. The protocol name is used as the initial handshake hash (see [Handshake state](#handshake-state)).
@@ -45,7 +45,7 @@ Note: `encrypted_sender` provides a more efficient metadata extraction path upon
 
 The sender's MIK public key (32 bytes) is encrypted to the recipient using ChaCha20Poly1305:
 
-- **Key:** `BLAKE3_KDF("reme-outer-sender-v1", DH(ephemeral_secret, recipient_mik) || message_id)`
+- **Key:** `BLAKE3_KDF("ember-outer-sender-v1", DH(ephemeral_secret, recipient_mik) || message_id)`
 - **Nonce:** `[0u8; 12]` (fixed zero nonce — safe because the key is unique per message via `message_id` inclusion)
 - **Plaintext:** sender's MIK public key (32 bytes)
 - **Output:** 48 bytes (32 bytes ciphertext + 16 bytes Poly1305 tag)
@@ -129,7 +129,7 @@ In session mode, per-message XEdDSA signatures are omitted. Authentication is pr
 
 ## Handshake protocol
 
-The session handshake follows the Noise XX pattern adapted for asynchronous, delay-tolerant delivery. All four messages are carried inside standard reme envelopes (MIK-encrypted), so relay nodes handle them identically to normal messages.
+The session handshake follows the Noise XX pattern adapted for asynchronous, delay-tolerant delivery. All four messages are carried inside standard ember envelopes (MIK-encrypted), so relay nodes handle them identically to normal messages.
 
 ### Noise XX pattern
 
@@ -142,7 +142,7 @@ XX:
   -> s, se
 ```
 
-In reme's adaptation:
+In ember's adaptation:
 - Static keys (`s`) are not transmitted in the handshake because both parties' MIKs are pre-known (contacts). Instead, static proofs use `EncryptAndHash` of the sender's MIK public key.
 - The `s` tokens are replaced by AEAD-encrypted static proofs that bind the MIK to the handshake transcript.
 - Forward secrecy is unconditional: the `ee` DH with zeroized ephemeral private keys protects session keys even if both MIKs are later compromised (see [Forward secrecy analysis](#forward-secrecy-analysis)).
@@ -161,7 +161,7 @@ Note: the term "epoch" in this document refers to the handshake epoch counter, n
 | Operation | Definition |
 |---|---|
 | `MixHash(data)` | `h = BLAKE3(h \|\| data)` |
-| `MixKey(dh_output)` | `output = BLAKE3::new_derive_key("reme-noise-ck-v1").update(ck \|\| dh_output).finalize_xof().read(64)`; `ck = output[0..32]`; `k = output[32..64]`. Uses BLAKE3 in XOF mode to produce 64 bytes from a single derivation, then splits into new chaining key and symmetric key. |
+| `MixKey(dh_output)` | `output = BLAKE3::new_derive_key("ember-noise-ck-v1").update(ck \|\| dh_output).finalize_xof().read(64)`; `ck = output[0..32]`; `k = output[32..64]`. Uses BLAKE3 in XOF mode to produce 64 bytes from a single derivation, then splits into new chaining key and symmetric key. |
 | `EncryptAndHash(k, plaintext)` | `ct = ChaCha20Poly1305(key=k, nonce=[0u8; 12], plaintext, aad=h)`, then `MixHash(ct)`. Returns `ct`. Each `k` is used for exactly one `EncryptAndHash` — if a future extension needs multiple AEAD ops per step, derive a fresh `k` via an additional `MixKey`. |
 | `DecryptAndHash(k, ciphertext)` | Reverse of `EncryptAndHash`: decrypt with `aad=h`, then `MixHash(ciphertext)`. |
 
@@ -218,7 +218,7 @@ Successful decryption proves: (a) the peer holds the MIK private key (required f
 After message 3, the final chaining key `ck` is split into two directional session keys using the same XOF mechanism as `MixKey`:
 
 ```
-output = BLAKE3::new_derive_key("reme-noise-split-v1").update(ck).finalize_xof().read(64)
+output = BLAKE3::new_derive_key("ember-noise-split-v1").update(ck).finalize_xof().read(64)
 initiator_to_responder_key = output[0..32]
 responder_to_initiator_key = output[32..64]
 ```
@@ -252,13 +252,13 @@ All received X25519 public keys (ephemeral keys in Hello/ResponderHello, MIK pub
 - Reject all-zero public keys
 - Abort the handshake on validation failure
 
-This inherits the existing low-order point validation from `reme-encryption` (WHITEPAPER §7.1).
+This inherits the existing low-order point validation from `ember-encryption` (WHITEPAPER §7.1).
 
 ### Recipient binding
 
 The `recipient_binding` in `Hello` prevents replay attacks where an attacker captures a `Hello` and forwards it to a different recipient:
 
-- **Derivation:** `BLAKE3_KDF("reme-hello-binding-v1", DH(ephemeral_secret, recipient_mik) || epoch_le_bytes)`
+- **Derivation:** `BLAKE3_KDF("ember-hello-binding-v1", DH(ephemeral_secret, recipient_mik) || epoch_le_bytes)`
 - **Verification:** Only the intended recipient can verify (requires their MIK private key)
 - **Epoch inclusion:** Prevents cross-handshake replay of the binding
 
@@ -433,7 +433,7 @@ Session encryption uses four layers of replay defense:
 | Layer                    | Mechanism                                                             | Protects against                     |
 |--------------------------|-----------------------------------------------------------------------|--------------------------------------|
 | Epoch monotonicity       | Reject `Hello` with `epoch <= last_completed_epoch`                   | Replay of old handshakes             |
-| Recipient binding        | `BLAKE3_KDF("reme-hello-binding-v1", DH(eph, recipient_mik) \|\| epoch)` in `Hello` | Replay of `Hello` to wrong recipient |
+| Recipient binding        | `BLAKE3_KDF("ember-hello-binding-v1", DH(eph, recipient_mik) \|\| epoch)` in `Hello` | Replay of `Hello` to wrong recipient |
 | Message ID deduplication | LRU cache of recently seen `MessageID` values with TTL (recommended: 30 days, matching `max_retention`) | Replay of identical messages         |
 | Nonce sliding window     | Per-session sliding window (configurable, default 1024) for session-mode counter nonces | Replay of session-encrypted messages |
 | Static proof freshness   | Proofs include chaining key derived from fresh ephemerals             | Reuse of proofs across handshakes    |
@@ -617,7 +617,7 @@ DAG-based key retention (delete only after acknowledgment). Acknowledgment track
 
 ## Open questions
 
-- **Formal verification:** The protocol should be modeled in Tamarin or ProVerif before production use. The protocol name (`reme-session-xx-v1-25519-chapoly-blake3`) is designed to be compatible with Noise Explorer tooling.
+- **Formal verification:** The protocol should be modeled in Tamarin or ProVerif before production use. The protocol name (`ember-session-xx-v1-25519-chapoly-blake3`) is designed to be compatible with Noise Explorer tooling.
 - **Post-quantum:** The handshake uses X25519, which is not quantum-resistant. A future version could add a hybrid KEM (e.g., X25519 + ML-KEM-768) to the chaining key via an additional `MixKey` step.
 - **Multi-device:** This spec assumes one device per identity. Multi-device support (multiple devices sharing a MIK) would require significant changes to epoch management, nonce tracking, and session state coordination. Out of scope for V1.
 - **Transcript binding of extra fields:** The handshake fields `epoch`, `recipient_binding`, and `key_loss_info` are authenticated by the MIK envelope but not mixed into the Noise transcript hash `h`. Binding them via `MixHash(epoch || recipient_binding)` after the ephemeral key would strengthen the transcript at the cost of diverging further from canonical Noise XX. To be evaluated during implementation.

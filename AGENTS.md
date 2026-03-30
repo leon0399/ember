@@ -1,10 +1,10 @@
-# Agents instruction for `reme`
+# Agents instruction for `ember`
 
 This file provides guidance to AI coding agents when working with code in this repository.
 
 ## Project Overview
 
-Resilient Messenger (reme) is an outage-resilient, end-to-end encrypted messaging system built in Rust. It uses a hybrid transport architecture (HTTP mailboxes, future: LoRa/Meshtastic, BLE) with Session V1-style stateless encryption and XEdDSA signatures for secure 1:1 messaging.
+Ember Messenger is an outage-resilient, end-to-end encrypted messaging system built in Rust. It uses a hybrid transport architecture (HTTP mailboxes, future: LoRa/Meshtastic, BLE) with Session V1-style stateless encryption and XEdDSA signatures for secure 1:1 messaging.
 
 ## Build Commands
 
@@ -12,9 +12,9 @@ Resilient Messenger (reme) is an outage-resilient, end-to-end encrypted messagin
 cargo build                                               # Build all crates and apps
 cargo build --release                                     # Build release binaries
 cargo test                                                # Run all tests
-cargo test -p reme-core                                   # Run tests for a specific crate
-cargo test -p reme-core test_two_client_messaging         # Run a single test
-cargo test -p reme-core --test integration                # Run integration tests only
+cargo test -p ember-core                                   # Run tests for a specific crate
+cargo test -p ember-core test_two_client_messaging         # Run a single test
+cargo test -p ember-core --test integration                # Run integration tests only
 cargo fmt --all -- --check                                # Check formatting
 cargo clippy --all-targets --all-features -- -D warnings  # Lint
 ```
@@ -39,16 +39,16 @@ cargo run --bin client -- --node-url http://localhost:3001
 
 ```
 crates/
-├── reme-identity    # Identity (X25519/XEdDSA), PublicID (32-byte address)
-├── reme-encryption  # MIK-based stateless encryption (Session V1-style)
-├── reme-message     # Wire formats: OuterEnvelope, InnerEnvelope, Tombstone, DAG
-├── reme-transport   # Transport trait, HttpTransport, MqttTransport, TransportCoordinator
-├── reme-storage     # SQLite persistence for contacts, messages
-├── reme-outbox      # Tiered delivery, retry policies, delivery state tracking
-├── reme-node-core   # Shared node/relay logic, embedded HTTP server
-├── reme-config      # Layered configuration (CLI args > env vars > config file > defaults)
-├── reme-discovery   # mDNS/LAN peer discovery (backend trait, TXT helpers, fake + mdns-sd backends)
-└── reme-core        # High-level Client API orchestrating all above
+├── ember-identity    # Identity (X25519/XEdDSA), PublicID (32-byte address)
+├── ember-encryption  # MIK-based stateless encryption (Session V1-style)
+├── ember-message     # Wire formats: OuterEnvelope, InnerEnvelope, Tombstone, DAG
+├── ember-transport   # Transport trait, HttpTransport, MqttTransport, TransportCoordinator
+├── ember-storage     # SQLite persistence for contacts, messages
+├── ember-outbox      # Tiered delivery, retry policies, delivery state tracking
+├── ember-node-core   # Shared node/relay logic, embedded HTTP server
+├── ember-config      # Layered configuration (CLI args > env vars > config file > defaults)
+├── ember-discovery   # mDNS/LAN peer discovery (backend trait, TXT helpers, fake + mdns-sd backends)
+└── ember-core        # High-level Client API orchestrating all above
 
 apps/
 ├── node/            # Mailbox server (Axum, store-and-forward)
@@ -59,7 +59,7 @@ apps/
 
 When `lan_discovery.enabled = true`, the client:
 
-1. Creates an mDNS-SD backend browsing for `_reme._tcp.local.` services
+1. Creates an mDNS-SD backend browsing for `_ember._tcp.local.` services
 2. Advertises own presence if embedded HTTP server is bound (`embedded_node.http_bind`)
 3. If `auto_direct_known_contacts = true` (default): spawns a discovery controller that matches peers by routing key against contacts, verifies identity via HTTP challenge-response, and registers verified peers as ephemeral HTTP targets (SEND-only, no FETCH)
 4. If `auto_direct_known_contacts = false`: mDNS browsing/advertising runs but no peers are verified or registered
@@ -115,9 +115,9 @@ Messages include DAG fields for ordering and gap detection:
 
 Both node and client support layered config (CLI args > env vars > config file > defaults):
 
-- Node config: `~/.config/reme/node.toml`
-- Client config: `~/.config/reme/config.toml`
-- Env prefix: `REME_NODE_*` / `REME_*`
+- Node config: `~/.config/ember/node.toml`
+- Client config: `~/.config/ember/config.toml`
+- Env prefix: `EMBER_NODE_*` / `EMBER_*`
 
 ### Transport Authentication
 
@@ -191,6 +191,12 @@ When writing or reviewing Rust code, consult these skills:
 
 - `/rust-best-practices` — borrowing vs cloning, error handling, clippy, testing conventions
 - `/rust-async-patterns` — Tokio patterns, CancellationToken, channels, graceful shutdown
+
+When creating git commits in this repository:
+
+- Use Conventional Commits for commit subjects (for example `feat(contact): add trust levels` or `fix(discovery): avoid blocking storage write`)
+- Keep the subject line imperative and scoped when the affected area is clear
+- Preserve any required trailers such as `Co-Authored-By`
 
 ## Quality gates
 

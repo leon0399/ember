@@ -1,6 +1,6 @@
 # Resilient Messenger Node Configuration
-# Default location: ~/.config/reme/node.toml (Linux/macOS)
-#                   %APPDATA%\reme\node.toml (Windows)
+# Default location: ~/.config/ember/node.toml (Linux/macOS)
+#                   %APPDATA%\ember\node.toml (Windows)
 
 # Peer nodes for replication
 # Each peer can have different authentication and verification settings
@@ -26,10 +26,10 @@ max_messages = 100000
 default_ttl = 604800  # 7 days in seconds
 
 # Storage
-storage_path = "/var/lib/reme/messages.db"
+storage_path = "/var/lib/ember/messages.db"
 
 # Node identity for signed headers (auto-generated if not exists)
-identity_path = "/etc/reme/node-identity.key"
+identity_path = "/etc/ember/node-identity.key"
 
 # Public hostname for signature verification (required when node has an identity)
 # Without this, the node refuses to start when an identity is present
@@ -61,19 +61,19 @@ cleanup_interval_secs = 3600
 # TLS configuration
 [tls]
 enabled = true
-cert_path = "/etc/reme/cert.pem"
-key_path = "/etc/reme/key.pem"
+cert_path = "/etc/ember/cert.pem"
+key_path = "/etc/ember/key.pem"
 
 # MQTT bridge configuration (optional)
 # Note: MQTT uses system root certificates (no certificate pinning support)
 [mqtt]
-topic_prefix = "reme/v1"
+topic_prefix = "ember/v1"
 
 # Example 1: Explicit credentials (recommended)
 [[mqtt.brokers]]
 url = "mqtts://broker.example.com:8883"
 client_id = "node-1"
-username = "reme-node"
+username = "ember-node"
 password = "secret123"
 
 # Example 2: URL-embedded credentials

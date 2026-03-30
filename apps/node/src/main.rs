@@ -25,8 +25,8 @@
 //! (highest to lowest):
 //!
 //! 1. **CLI arguments** - `-p`, `--port`, `--bind-addr`, etc.
-//! 2. **Environment variables** - `REME_NODE_PORT`, `REME_NODE_BIND_ADDR`, etc.
-//! 3. **Config file** - `~/.config/reme/node.toml`
+//! 2. **Environment variables** - `EMBER_NODE_PORT`, `EMBER_NODE_BIND_ADDR`, etc.
+//! 3. **Config file** - `~/.config/ember/node.toml`
 //! 4. **Built-in defaults**
 //!
 //! See `--help` for all CLI options.
@@ -65,12 +65,12 @@ use api::AppState;
 use clap::Parser;
 use cleanup::run_cleanup_task;
 use config::{default_identity_path, load_config_from, Cli, Commands};
+use ember_config::ParsedHttpPeer;
+use ember_discovery::{DiscoveryBackend as _, MdnsSdBackend};
+use ember_node_core::{PersistentMailboxStore, PersistentStoreConfig};
 use mqtt_bridge::MqttBridge;
 use node_identity::NodeIdentity;
 use rate_limit::RateLimiters;
-use reme_config::ParsedHttpPeer;
-use reme_discovery::{DiscoveryBackend as _, MdnsSdBackend};
-use reme_node_core::{PersistentMailboxStore, PersistentStoreConfig};
 use replication::ReplicationClient;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -234,11 +234,11 @@ async fn start_mdns_advertising(
 
     let port = bound_addr.port();
     let routing_key: [u8; 16] = node_identity.routing_key().into();
-    let txt = reme_discovery::encode_txt_with_caps(&routing_key, port, Some(&["relay", "store"]));
+    let txt = ember_discovery::encode_txt_with_caps(&routing_key, port, Some(&["relay", "store"]));
 
-    let spec = reme_discovery::AdvertisementSpec {
+    let spec = ember_discovery::AdvertisementSpec {
         txt_records: txt,
-        ..reme_discovery::AdvertisementSpec::new(port, routing_key)
+        ..ember_discovery::AdvertisementSpec::new(port, routing_key)
     };
 
     if let Err(e) = backend.start_advertising(spec).await {

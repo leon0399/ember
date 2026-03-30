@@ -1,1 +1,11 @@
 * text=auto eol=lf
+
+# Symlinks - preserve as symlinks on all platforms
+# Agent config symlinks
+CLAUDE.md symlink
+GEMINI.md symlink
+apps/*/CLAUDE.md symlink
+apps/*/GEMINI.md symlink
+
+# Skill directory symlinks
+.claude/skills/* symlink

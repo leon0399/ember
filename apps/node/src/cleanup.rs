@@ -8,7 +8,7 @@
 //! cleanup across all mailboxes periodically.
 
 use derivative::Derivative;
-use reme_node_core::{MailboxStore, PersistentMailboxStore};
+use ember_node_core::{MailboxStore, PersistentMailboxStore};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -146,13 +146,13 @@ fn run_cleanup_cycle(store: &PersistentMailboxStore) {
     log_checkpoint_result(store.checkpoint());
 }
 
-fn log_cleanup_result(result: Result<usize, reme_node_core::NodeError>) {
+fn log_cleanup_result(result: Result<usize, ember_node_core::NodeError>) {
     if let Err(e) = result {
         warn!("Message cleanup failed: {e}");
     }
 }
 
-fn log_checkpoint_result(result: Result<(), reme_node_core::NodeError>) {
+fn log_checkpoint_result(result: Result<(), ember_node_core::NodeError>) {
     if let Err(e) = result {
         warn!("WAL checkpoint failed: {e}");
     }
@@ -176,12 +176,12 @@ mod tests {
     async fn test_cleanup_task_stops_on_cancel() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let store_config = reme_node_core::PersistentStoreConfig {
+        let store_config = ember_node_core::PersistentStoreConfig {
             max_messages_per_mailbox: 100,
             default_ttl_secs: 3600,
         };
         let store = Arc::new(
-            reme_node_core::PersistentMailboxStore::open(db_path.to_str().unwrap(), store_config)
+            ember_node_core::PersistentMailboxStore::open(db_path.to_str().unwrap(), store_config)
                 .unwrap(),
         );
 

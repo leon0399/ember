@@ -1,10 +1,10 @@
-//! Configuration management for the reme client.
+//! Configuration management for the ember client.
 //!
 //! ## Configuration Sources (in priority order)
 //!
 //! 1. **CLI arguments** - Append to configured peers (highest priority for individual values)
-//! 2. **Environment variables** - `REME_PEERS` (JSON)
-//! 3. **Config file** - `~/.config/reme/config.toml` (default location)
+//! 2. **Environment variables** - `EMBER_PEERS` (JSON)
+//! 3. **Config file** - `~/.config/ember/config.toml` (default location)
 //! 4. **Defaults** - Fallback values
 //!
 //! ## Config File Format
@@ -29,7 +29,7 @@
 //! client_id = "my-client"            # Optional
 //! tier = "quorum"
 //!
-//! data_dir = "~/.local/share/reme"
+//! data_dir = "~/.local/share/ember"
 //! log_level = "info"
 //!
 //! # LAN Discovery — automatic peer detection on local network
@@ -46,8 +46,8 @@ use clap::{Parser, Subcommand};
 use config::{Config, Environment, File, FileFormat};
 use derivative::Derivative;
 use directories::ProjectDirs;
-use reme_config::{ConfiguredTier, HttpPeerConfig, MqttPeerConfig, PeerCommon, PeersConfig};
-use reme_transport::{QuorumStrategy, TieredDeliveryConfig};
+use ember_config::{ConfiguredTier, HttpPeerConfig, MqttPeerConfig, PeerCommon, PeersConfig};
+use ember_transport::{QuorumStrategy, TieredDeliveryConfig};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -55,22 +55,22 @@ use tracing::warn;
 
 /// Top-level CLI parser with optional subcommand
 #[derive(Parser, Debug, Clone)]
-#[command(name = "reme")]
+#[command(name = "ember")]
 #[command(author, version, about = "Resilient Messenger")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
 
     /// Directory for storing identity, keys, and messages
-    #[arg(short = 'd', long, env = "REME_DATA_DIR")]
+    #[arg(short = 'd', long, env = "EMBER_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
 
-    /// Path to config file (default: ~/.config/reme/config.toml)
-    #[arg(short = 'c', long, env = "REME_CONFIG")]
+    /// Path to config file (default: ~/.config/ember/config.toml)
+    #[arg(short = 'c', long, env = "EMBER_CONFIG")]
     pub config: Option<PathBuf>,
 
     /// Log level (trace, debug, info, warn, error)
-    #[arg(short = 'l', long, env = "REME_LOG_LEVEL")]
+    #[arg(short = 'l', long, env = "EMBER_LOG_LEVEL")]
     pub log_level: Option<String>,
 }
 
@@ -89,9 +89,9 @@ impl Cli {
 pub enum Commands {
     /// Launch the interactive TUI (default when no subcommand given)
     Tui(TuiArgs),
-    /// Export pending messages to a .reme bundle file
+    /// Export pending messages to a .ember bundle file
     Export(ExportArgs),
-    /// Import messages from a .reme bundle file
+    /// Import messages from a .ember bundle file
     Import(ImportArgs),
 }
 
@@ -124,29 +124,29 @@ pub struct TuiArgs {
     pub mqtt_client_id: Option<Vec<String>>,
 
     /// Outbox retry check interval in seconds
-    #[arg(long, env = "REME_OUTBOX_TICK_INTERVAL")]
+    #[arg(long, env = "EMBER_OUTBOX_TICK_INTERVAL")]
     pub outbox_tick_interval: Option<u64>,
 
     /// Message TTL in days (0 = never expire)
-    #[arg(long, env = "REME_OUTBOX_TTL_DAYS")]
+    #[arg(long, env = "EMBER_OUTBOX_TTL_DAYS")]
     pub outbox_ttl_days: Option<u64>,
 
     /// Attempt timeout in seconds (how long before retry)
-    #[arg(long, env = "REME_OUTBOX_ATTEMPT_TIMEOUT")]
+    #[arg(long, env = "EMBER_OUTBOX_ATTEMPT_TIMEOUT")]
     pub outbox_attempt_timeout: Option<u64>,
 
     /// Initial retry delay in seconds
-    #[arg(long, env = "REME_OUTBOX_RETRY_INITIAL_DELAY")]
+    #[arg(long, env = "EMBER_OUTBOX_RETRY_INITIAL_DELAY")]
     pub outbox_retry_initial_delay: Option<u64>,
 
     /// Maximum retry delay in seconds
-    #[arg(long, env = "REME_OUTBOX_RETRY_MAX_DELAY")]
+    #[arg(long, env = "EMBER_OUTBOX_RETRY_MAX_DELAY")]
     pub outbox_retry_max_delay: Option<u64>,
 
     /// Enable the embedded node for LAN P2P messaging
     ///
     /// When enabled, the client runs an in-process mailbox node
-    #[arg(long, env = "REME_EMBEDDED_NODE")]
+    #[arg(long, env = "EMBER_EMBEDDED_NODE")]
     pub embedded_node: bool,
 
     /// Disable the embedded node (overrides config file)
@@ -156,14 +156,14 @@ pub struct TuiArgs {
     /// HTTP bind address for embedded node (enables HTTP server)
     ///
     /// Example: --embedded-http-bind 0.0.0.0:23004
-    #[arg(long, env = "REME_EMBEDDED_HTTP_BIND")]
+    #[arg(long, env = "EMBER_EMBEDDED_HTTP_BIND")]
     pub embedded_http_bind: Option<String>,
 }
 
 /// Arguments for the export subcommand
 #[derive(Parser, Debug, Clone)]
 pub struct ExportArgs {
-    /// Output path for the .reme bundle
+    /// Output path for the .ember bundle
     pub file: PathBuf,
 
     /// Export only messages for this recipient (hex-encoded public ID)
@@ -190,7 +190,7 @@ pub struct ExportArgs {
 /// Arguments for the import subcommand
 #[derive(Parser, Debug, Clone)]
 pub struct ImportArgs {
-    /// Path to a .reme bundle file to import
+    /// Path to a .ember bundle file to import
     pub file: PathBuf,
 }
 
@@ -628,16 +628,16 @@ impl Default for AppConfig {
 
 /// Get the default data directory based on platform conventions
 fn default_data_dir() -> PathBuf {
-    if let Some(proj_dirs) = ProjectDirs::from("com", "branch", "reme") {
+    if let Some(proj_dirs) = ProjectDirs::from("chat", "getember", "ember") {
         proj_dirs.data_dir().to_path_buf()
     } else {
-        PathBuf::from("./reme_data")
+        PathBuf::from("./ember_data")
     }
 }
 
 /// Get the default config file path based on platform conventions
 fn default_config_path() -> Option<PathBuf> {
-    ProjectDirs::from("com", "branch", "reme").map(|dirs| dirs.config_dir().join("config.toml"))
+    ProjectDirs::from("chat", "getember", "ember").map(|dirs| dirs.config_dir().join("config.toml"))
 }
 
 /// Intermediate config for deserializing from file
@@ -686,13 +686,13 @@ struct RawDeliveryConfig {
 /// Load configuration from pre-parsed CLI args.
 ///
 /// `tui_args` should be `Some` only when running the `tui` subcommand.
-/// When `None` (including bare `reme` with no subcommand), TUI-specific
+/// When `None` (including bare `ember` with no subcommand), TUI-specific
 /// CLI overrides (transport URLs, outbox tuning, embedded node flags) are
 /// skipped — config file and env vars still apply.
 ///
 /// Priority (highest to lowest):
 /// 1. CLI arguments
-/// 2. Environment variables (REME_*)
+/// 2. Environment variables (EMBER_*)
 /// 3. Config file
 /// 4. Built-in defaults
 pub fn load_config_from(
@@ -746,7 +746,7 @@ fn build_layered_config(cli: &Cli, defaults: &AppConfig) -> Result<Config, confi
     }
 
     builder = builder.add_source(
-        Environment::with_prefix("REME")
+        Environment::with_prefix("EMBER")
             .separator("_")
             .try_parsing(true),
     );
@@ -761,16 +761,19 @@ fn build_layered_config(cli: &Cli, defaults: &AppConfig) -> Result<Config, confi
     builder.build()
 }
 
-/// Resolve peers from config file or `REME_PEERS` env, falling back to defaults.
+/// Resolve peers from config file or `EMBER_PEERS` env, falling back to defaults.
 fn resolve_peers(raw: &RawConfig) -> PeersConfig {
     if let Some(ref peers_config) = raw.peers {
         return peers_config.clone();
     }
-    if let Ok(peers_json) = std::env::var("REME_PEERS") {
+    if let Ok(peers_json) = std::env::var("EMBER_PEERS") {
         match serde_json::from_str(&peers_json) {
             Ok(p) => return p,
             Err(e) => {
-                warn!("Failed to parse REME_PEERS as JSON: {} - using defaults", e);
+                warn!(
+                    "Failed to parse EMBER_PEERS as JSON: {} - using defaults",
+                    e
+                );
             }
         }
     }
@@ -912,11 +915,11 @@ pub fn default_config_toml() -> String {
         r#"# Resilient Messenger Client Configuration
 #
 # This file is loaded from:
-#   Linux/macOS: ~/.config/reme/config.toml
-#   Windows: %APPDATA%\reme\config.toml
+#   Linux/macOS: ~/.config/ember/config.toml
+#   Windows: %APPDATA%\ember\config.toml
 #
 # All settings can be overridden by:
-#   1. Environment variables: REME_HTTP='[{{"url":"...", "cert_pin":"..."}}]'
+#   1. Environment variables: EMBER_HTTP='[{{"url":"...", "cert_pin":"..."}}]'
 #   2. CLI arguments: --http-url <url> --http-cert-pin <pin>
 
 # HTTP endpoint configuration with optional certificate pinning
@@ -1363,22 +1366,22 @@ mod tests {
 
     #[test]
     fn test_cli_no_subcommand_defaults_to_none() {
-        let cli = Cli::try_parse_from(["reme"]).unwrap();
+        let cli = Cli::try_parse_from(["ember"]).unwrap();
         assert!(cli.command.is_none());
     }
 
     #[test]
     fn test_cli_tui_subcommand() {
-        let cli = Cli::try_parse_from(["reme", "tui"]).unwrap();
+        let cli = Cli::try_parse_from(["ember", "tui"]).unwrap();
         assert!(matches!(cli.command, Some(Commands::Tui(_))));
     }
 
     #[test]
     fn test_cli_export_subcommand_stub() {
-        let cli = Cli::try_parse_from(["reme", "export", "out.reme"]).unwrap();
+        let cli = Cli::try_parse_from(["ember", "export", "out.ember"]).unwrap();
         match cli.command {
             Some(Commands::Export(ref args)) => {
-                assert_eq!(args.file, PathBuf::from("out.reme"));
+                assert_eq!(args.file, PathBuf::from("out.ember"));
             }
             _ => panic!("Expected Export subcommand"),
         }
@@ -1387,7 +1390,7 @@ mod tests {
     #[test]
     fn test_export_args_full() {
         let cli = Cli::try_parse_from([
-            "reme",
+            "ember",
             "export",
             "--to",
             "abcd1234",
@@ -1397,12 +1400,12 @@ mod tests {
             "50",
             "--since",
             "24h",
-            "out.reme",
+            "out.ember",
         ])
         .unwrap();
         match cli.command {
             Some(Commands::Export(ref args)) => {
-                assert_eq!(args.file, PathBuf::from("out.reme"));
+                assert_eq!(args.file, PathBuf::from("out.ember"));
                 assert_eq!(args.to, Some("abcd1234".to_string()));
                 assert!(args.force);
                 assert!(args.include_sent);
@@ -1415,10 +1418,10 @@ mod tests {
 
     #[test]
     fn test_export_args_defaults() {
-        let cli = Cli::try_parse_from(["reme", "export", "out.reme"]).unwrap();
+        let cli = Cli::try_parse_from(["ember", "export", "out.ember"]).unwrap();
         match cli.command {
             Some(Commands::Export(ref args)) => {
-                assert_eq!(args.file, PathBuf::from("out.reme"));
+                assert_eq!(args.file, PathBuf::from("out.ember"));
                 assert!(args.to.is_none());
                 assert!(!args.force);
                 assert!(!args.include_sent);
@@ -1431,10 +1434,10 @@ mod tests {
 
     #[test]
     fn test_cli_import_subcommand_stub() {
-        let cli = Cli::try_parse_from(["reme", "import", "in.reme"]).unwrap();
+        let cli = Cli::try_parse_from(["ember", "import", "in.ember"]).unwrap();
         match cli.command {
             Some(Commands::Import(ref args)) => {
-                assert_eq!(args.file, PathBuf::from("in.reme"));
+                assert_eq!(args.file, PathBuf::from("in.ember"));
             }
             _ => panic!("Expected Import subcommand"),
         }
@@ -1443,7 +1446,7 @@ mod tests {
     #[test]
     fn test_cli_global_args_with_subcommand() {
         let cli = Cli::try_parse_from([
-            "reme",
+            "ember",
             "--data-dir",
             "/tmp/test",
             "--log-level",
@@ -1458,7 +1461,7 @@ mod tests {
 
     #[test]
     fn test_cli_global_args_without_subcommand() {
-        let cli = Cli::try_parse_from(["reme", "--data-dir", "/tmp/test"]).unwrap();
+        let cli = Cli::try_parse_from(["ember", "--data-dir", "/tmp/test"]).unwrap();
         assert_eq!(cli.data_dir, Some(PathBuf::from("/tmp/test")));
         assert!(cli.command.is_none());
     }
@@ -1466,7 +1469,7 @@ mod tests {
     #[test]
     fn test_cli_tui_specific_args() {
         let cli = Cli::try_parse_from([
-            "reme",
+            "ember",
             "tui",
             "--http-url",
             "https://node:23003",
@@ -1484,14 +1487,14 @@ mod tests {
 
     #[test]
     fn test_load_config_from_global_only() {
-        let cli = Cli::try_parse_from(["reme", "--data-dir", "/tmp/reme-test"]).unwrap();
+        let cli = Cli::try_parse_from(["ember", "--data-dir", "/tmp/ember-test"]).unwrap();
         let config = load_config_from(&cli, None).unwrap();
-        assert_eq!(config.data_dir, PathBuf::from("/tmp/reme-test"));
+        assert_eq!(config.data_dir, PathBuf::from("/tmp/ember-test"));
     }
 
     #[test]
     fn test_load_config_from_with_tui_args() {
-        let cli = Cli::try_parse_from(["reme", "tui", "--embedded-node"]).unwrap();
+        let cli = Cli::try_parse_from(["ember", "tui", "--embedded-node"]).unwrap();
         let Some(Commands::Tui(ref tui_args)) = &cli.command else {
             panic!("Expected Tui")
         };

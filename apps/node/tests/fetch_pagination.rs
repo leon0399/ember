@@ -2,9 +2,9 @@
 //! Integration tests for paginated mailbox fetch responses.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use ember_identity::RoutingKey;
+use ember_message::{OuterEnvelope, WirePayload};
 use node::{api, replication, MailboxStore, PersistentMailboxStore, PersistentStoreConfig};
-use reme_identity::RoutingKey;
-use reme_message::{OuterEnvelope, WirePayload};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::{net::TcpListener, task::JoinHandle};

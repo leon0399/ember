@@ -4,7 +4,7 @@ Automatic peer discovery and verified P2P messaging on local networks using mDNS
 
 ## Overview
 
-When two reme clients are on the same LAN, they can discover each other automatically and exchange messages directly —
+When two ember clients are on the same LAN, they can discover each other automatically and exchange messages directly —
 no mailbox node required. The discovery system uses mDNS (multicast DNS) to advertise presence and DNS-SD (Service
 Discovery) to find peers. Before a discovered peer is used for message delivery, its identity is verified via a
 cryptographic challenge-response protocol.
@@ -12,7 +12,7 @@ cryptographic challenge-response protocol.
 ```mermaid
 flowchart TD
     subgraph "LAN (mDNS multicast)"
-        SVC["_reme._tcp.local.<br/>TXT: v=1, rk=…, port=…"]
+        SVC["_ember._tcp.local.<br/>TXT: v=1, rk=…, port=…"]
     end
 
     subgraph "Client"
@@ -40,7 +40,7 @@ LAN discovery has two modes controlled by the `auto_direct_known_contacts` confi
 Both advertising and browsing are active. The client:
 
 1. **Advertises** its own presence via mDNS (if embedded HTTP server is enabled)
-2. **Browses** for other `_reme._tcp.local.` services on the LAN
+2. **Browses** for other `_ember._tcp.local.` services on the LAN
 3. **Matches** discovered peers against the contact list by routing key
 4. **Verifies** identity of matched peers via challenge-response
 5. **Registers** verified peers as ephemeral Direct-tier transport targets
@@ -67,17 +67,17 @@ browsing without processing discoveries would be wasteful.
 
 ### Service type
 
-All reme clients advertise as `_reme._tcp.local.` services.
+All ember clients advertise as `_ember._tcp.local.` services.
 
 ### Instance name
 
 The mDNS instance name is derived from the client's routing key:
 
-```
-reme-{hex(routing_key)}
+```text
+ember-{hex(routing_key)}
 ```
 
-For example: `reme-deadbeef0123456789abcdeffedcba98`
+For example: `ember-deadbeef0123456789abcdeffedcba98`
 
 This is 37 characters — within the 63-byte DNS label limit. The routing key is already broadcast in the TXT records, so
 the instance name leaks no additional information beyond what's already public. Using the routing key instead of the
@@ -85,7 +85,7 @@ machine hostname prevents leaking the device name or PID to LAN observers.
 
 ### Host FQDN
 
-Similarly derived: `reme-{hex(routing_key)}.local.`
+Similarly derived: `ember-{hex(routing_key)}.local.`
 
 ### TXT records
 
@@ -137,7 +137,7 @@ sequenceDiagram
 
     Alice->>Alice: generate 32-byte random challenge
     Alice->>Bob: GET /api/v1/identity?challenge={base64}
-    Bob->>Bob: sign_data = "reme-identity-v1:" || challenge || node_pubkey
+    Bob->>Bob: sign_data = "ember-identity-v1:" || challenge || node_pubkey
     Bob->>Bob: signature = XEdDSA(sign_data, identity_key)
     Bob-->>Alice: { "signature": "{base64}" }
     Alice->>Alice: verify signature against candidate PublicIDs
@@ -145,7 +145,7 @@ sequenceDiagram
 
 1. Alice generates a 32-byte random challenge
 2. Alice sends `GET /api/v1/identity?challenge={base64}` to Bob's advertised address
-3. Bob signs `"reme-identity-v1:" || challenge || node_pubkey` using XEdDSA with his identity key
+3. Bob signs `"ember-identity-v1:" || challenge || node_pubkey` using XEdDSA with his identity key
 4. Alice verifies the signature against each candidate PublicID for the routing key
 5. If any candidate matches, the peer is verified
 
@@ -255,7 +255,7 @@ information.
 
 ### Instance name cross-session tracking
 
-The instance name `reme-{hex(routing_key)}` is stable across restarts (same identity = same name). A passive LAN
+The instance name `ember-{hex(routing_key)}` is stable across restarts (same identity = same name). A passive LAN
 observer can correlate advertisements across sessions and networks. This is a known trade-off — the routing key is
 already in the TXT records, so the instance name adds no new information, but the stable name makes correlation trivial
 rather than requiring TXT parsing.
@@ -278,7 +278,7 @@ For the full threat analysis, see [threat-model.md](threat-model.md).
 ### Crate structure
 
 ```
-crates/reme-discovery/
+crates/ember-discovery/
 ├── backend.rs       # DiscoveryBackend trait (start_advertising, stop_advertising, subscribe, shutdown)
 ├── types.rs         # RawDiscoveredPeer, DiscoveryEvent, AdvertisementSpec
 ├── txt.rs           # TXT record encode/decode (v, rk, port)
@@ -294,11 +294,11 @@ apps/client/src/discovery/
 
 | Type                  | Location         | Purpose                                                           |
 |-----------------------|------------------|-------------------------------------------------------------------|
-| `DiscoveryBackend`    | `reme-discovery` | Trait for pluggable backends (mDNS, BLE future)                   |
-| `MdnsSdBackend`       | `reme-discovery` | Production mDNS implementation                                    |
-| `RawDiscoveredPeer`   | `reme-discovery` | Instance name, addresses, port, TXT records                       |
-| `DiscoveryEvent`      | `reme-discovery` | PeerDiscovered / PeerUpdated / PeerLost                           |
-| `AdvertisementSpec`   | `reme-discovery` | Service type, port, TXT records, routing key                      |
+| `DiscoveryBackend`    | `ember-discovery` | Trait for pluggable backends (mDNS, BLE future)                   |
+| `MdnsSdBackend`       | `ember-discovery` | Production mDNS implementation                                    |
+| `RawDiscoveredPeer`   | `ember-discovery` | Instance name, addresses, port, TXT records                       |
+| `DiscoveryEvent`      | `ember-discovery` | PeerDiscovered / PeerUpdated / PeerLost                           |
+| `AdvertisementSpec`   | `ember-discovery` | Service type, port, TXT records, routing key                      |
 | `DiscoveryController` | `client`         | Event loop with contact matching, verification, target management |
 | `SpawnConfig`         | `client`         | Controller initialization parameters                              |
 

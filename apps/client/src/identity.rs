@@ -3,7 +3,9 @@
 //! Extracted from the TUI module so that both the interactive TUI and CLI
 //! subcommands (import, export) can share identity loading logic.
 
-use reme_identity::{is_encrypted, load_identity, save_identity, EncryptedIdentityError, Identity};
+use ember_identity::{
+    is_encrypted, load_identity, save_identity, EncryptedIdentityError, Identity,
+};
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;

@@ -14,7 +14,7 @@
 //! # Receipt Signatures
 //!
 //! On first successful message submission, the server returns a signed receipt:
-//! - `signature`: `XEdDSA` signature over `"reme-receipt-v1:" || signer_pubkey || message_id`
+//! - `signature`: `XEdDSA` signature over `"ember-receipt-v1:" || signer_pubkey || message_id`
 //! - `ack_secret`: Only present if ECDH derivation succeeds (proves decryption capability)
 //!
 //! The signature proves the node received the message, while `ack_secret` proves the node
@@ -29,11 +29,11 @@ use axum::{
     Router,
 };
 use base64::prelude::*;
-use reme_bundle::parse_body;
-use reme_encryption::{build_identity_sign_data, build_receipt_sign_data, derive_ack_secret};
-use reme_identity::{is_low_order_point, Identity};
-use reme_message::{MessageID, OuterEnvelope, RoutingKey, WirePayload};
-use reme_node_core::{EmbeddedNodeHandle, NodeError};
+use ember_bundle::parse_body;
+use ember_encryption::{build_identity_sign_data, build_receipt_sign_data, derive_ack_secret};
+use ember_identity::{is_low_order_point, Identity};
+use ember_message::{MessageID, OuterEnvelope, RoutingKey, WirePayload};
+use ember_node_core::{EmbeddedNodeHandle, NodeError};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -128,7 +128,7 @@ impl HttpServerState {
     }
 
     /// Store a message and notify the client.
-    pub fn store_message(&self, envelope: OuterEnvelope) -> Result<(), reme_node_core::NodeError> {
+    pub fn store_message(&self, envelope: OuterEnvelope) -> Result<(), ember_node_core::NodeError> {
         self.node_handle.notify_message_received(envelope)
     }
 
@@ -140,7 +140,7 @@ impl HttpServerState {
     /// Generate a signed receipt for an envelope.
     ///
     /// The receipt includes:
-    /// - `signature`: Always present - `XEdDSA` signature over `"reme-receipt-v1:" || signer_pubkey || message_id`
+    /// - `signature`: Always present - `XEdDSA` signature over `"ember-receipt-v1:" || signer_pubkey || message_id`
     /// - `ack_secret`: Only if ECDH derivation succeeds (not a low-order point, not all-zero result)
     ///
     /// Crypto operations (ECDH and `XEdDSA` signing) are offloaded to a blocking thread pool
@@ -172,7 +172,7 @@ impl HttpServerState {
                 }
             };
 
-            // Sign: "reme-receipt-v1:" || signer_pubkey || message_id
+            // Sign: "ember-receipt-v1:" || signer_pubkey || message_id
             // Note: signature does NOT include ack_secret (allows signing even when ECDH fails)
             let signer_pubkey = identity.public_id().to_bytes();
             let mut sign_data = build_receipt_sign_data(&signer_pubkey, &message_id);
@@ -204,7 +204,7 @@ struct Receipt {
     /// Base64-encoded 16-byte `ack_secret` (only if ECDH derivation succeeds)
     ack_secret: Option<String>,
     /// Base64-encoded 64-byte `XEdDSA` signature over:
-    /// `"reme-receipt-v1:" || signer_pubkey || message_id`
+    /// `"ember-receipt-v1:" || signer_pubkey || message_id`
     signature: String,
 }
 
@@ -363,7 +363,7 @@ fn log_duplicate_message(mid: MessageID) {
     debug!(message_id = ?mid, "Duplicate message, already stored");
 }
 
-fn log_duplicate_check_error(mid: MessageID, e: &reme_node_core::NodeError) {
+fn log_duplicate_check_error(mid: MessageID, e: &ember_node_core::NodeError) {
     warn!(message_id = ?mid, error = %e, "Duplicate check failed");
 }
 
@@ -431,7 +431,7 @@ fn is_duplicate_after_store_failure(
     // Re-check if message exists - if a concurrent request stored it, treat as success
     // We create a temporary envelope just for the lookup (only routing_key + message_id matter)
     let check_envelope = OuterEnvelope {
-        version: reme_message::CURRENT_VERSION,
+        version: ember_message::CURRENT_VERSION,
         routing_key: *state.our_routing_key(),
         message_id: *message_id,
         timestamp_hours: 0,
@@ -463,7 +463,7 @@ async fn health_handler() -> impl IntoResponse {
 /// ## Response
 ///
 /// Returns `IdentityResponse` with:
-/// - `signature`: Base64-encoded 64-byte `XEdDSA` signature over `"reme-identity-v1:" || challenge || node_pubkey`
+/// - `signature`: Base64-encoded 64-byte `XEdDSA` signature over `"ember-identity-v1:" || challenge || node_pubkey`
 ///
 /// The node's public key is NOT returned for privacy (prevents identity enumeration).
 /// Clients verify the signature against known contacts' public keys.
@@ -514,7 +514,7 @@ async fn get_identity(
             .into_response();
     };
     let result = tokio::task::spawn_blocking(move || {
-        // Sign: "reme-identity-v1:" || challenge || node_pubkey
+        // Sign: "ember-identity-v1:" || challenge || node_pubkey
         // Note: node_pubkey is still included in signed data for cryptographic binding,
         // but not returned in response (privacy: prevents identity enumeration)
         let node_pubkey = identity.public_id().to_bytes();
@@ -641,11 +641,11 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
-    use reme_encryption::encrypt_to_mik;
-    use reme_message::{
+    use ember_encryption::encrypt_to_mik;
+    use ember_message::{
         Content, InnerEnvelope, MessageID, OuterEnvelope, TextContent, CURRENT_VERSION,
     };
-    use reme_node_core::{EmbeddedNode, PersistentMailboxStore, PersistentStoreConfig};
+    use ember_node_core::{EmbeddedNode, PersistentMailboxStore, PersistentStoreConfig};
     use tower::ServiceExt;
 
     /// Create a simple test envelope with zeroed ephemeral key (won't validate for `ack_secret`)
@@ -666,7 +666,7 @@ mod tests {
     #[allow(clippy::cast_possible_truncation)] // Test helper, ms since epoch fits in u64
     fn create_encrypted_envelope(
         sender: &Identity,
-        recipient_pubkey: &reme_identity::PublicID,
+        recipient_pubkey: &ember_identity::PublicID,
     ) -> (OuterEnvelope, [u8; 16]) {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -721,14 +721,14 @@ mod tests {
         let envelope = create_test_envelope(our_routing_key);
         let wire_payload = WirePayload::Message(envelope);
         let wire_bytes = wire_payload.encode().unwrap();
-        let bundle_body = reme_bundle::encode_body(&[&wire_bytes]);
+        let bundle_body = ember_bundle::encode_body(&[&wire_bytes]);
 
         let response = app
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/submit")
-                    .header("content-type", "application/vnd.reme.bundle")
+                    .header("content-type", "application/vnd.ember.bundle")
                     .body(Body::from(bundle_body))
                     .unwrap(),
             )
@@ -758,14 +758,14 @@ mod tests {
         let envelope = create_test_envelope(wrong_routing_key);
         let wire_payload = WirePayload::Message(envelope);
         let wire_bytes = wire_payload.encode().unwrap();
-        let bundle_body = reme_bundle::encode_body(&[&wire_bytes]);
+        let bundle_body = ember_bundle::encode_body(&[&wire_bytes]);
 
         let response = app
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/submit")
-                    .header("content-type", "application/vnd.reme.bundle")
+                    .header("content-type", "application/vnd.ember.bundle")
                     .body(Body::from(bundle_body))
                     .unwrap(),
             )
@@ -790,7 +790,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reject_tombstone() {
-        use reme_message::SignedAckTombstone;
+        use ember_message::SignedAckTombstone;
 
         let config = PersistentStoreConfig::default();
         let store = PersistentMailboxStore::in_memory(config).unwrap();
@@ -814,14 +814,14 @@ mod tests {
         );
         let wire_payload = WirePayload::AckTombstone(tombstone);
         let wire_bytes = wire_payload.encode().unwrap();
-        let bundle_body = reme_bundle::encode_body(&[&wire_bytes]);
+        let bundle_body = ember_bundle::encode_body(&[&wire_bytes]);
 
         let response = app
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/submit")
-                    .header("content-type", "application/vnd.reme.bundle")
+                    .header("content-type", "application/vnd.ember.bundle")
                     .body(Body::from(bundle_body))
                     .unwrap(),
             )
@@ -891,7 +891,7 @@ mod tests {
         let envelope = create_test_envelope(our_routing_key);
         let wire_payload = WirePayload::Message(envelope);
         let wire_bytes = wire_payload.encode().unwrap();
-        let bundle_body = reme_bundle::encode_body(&[&wire_bytes]);
+        let bundle_body = ember_bundle::encode_body(&[&wire_bytes]);
 
         // First submission should succeed
         let response1 = app
@@ -900,7 +900,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/submit")
-                    .header("content-type", "application/vnd.reme.bundle")
+                    .header("content-type", "application/vnd.ember.bundle")
                     .body(Body::from(bundle_body.clone()))
                     .unwrap(),
             )
@@ -914,7 +914,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/submit")
-                    .header("content-type", "application/vnd.reme.bundle")
+                    .header("content-type", "application/vnd.ember.bundle")
                     .body(Body::from(bundle_body))
                     .unwrap(),
             )
@@ -926,7 +926,7 @@ mod tests {
     /// Test: Embedded node returns valid signed receipt for properly encrypted messages
     #[tokio::test]
     async fn test_returns_signed_receipt_for_encrypted_message() {
-        use reme_encryption::{derive_ack_hash, RECEIPT_DOMAIN_SEP};
+        use ember_encryption::{derive_ack_hash, RECEIPT_DOMAIN_SEP};
 
         let config = PersistentStoreConfig::default();
         let store = PersistentMailboxStore::in_memory(config).unwrap();
@@ -952,7 +952,7 @@ mod tests {
 
         let wire_payload = WirePayload::Message(envelope);
         let wire_bytes = wire_payload.encode().unwrap();
-        let bundle_body = reme_bundle::encode_body(&[&wire_bytes]);
+        let bundle_body = ember_bundle::encode_body(&[&wire_bytes]);
 
         // Submit message
         let response = app
@@ -960,7 +960,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/submit")
-                    .header("content-type", "application/vnd.reme.bundle")
+                    .header("content-type", "application/vnd.ember.bundle")
                     .body(Body::from(bundle_body))
                     .unwrap(),
             )
@@ -1016,7 +1016,7 @@ mod tests {
             .expect("Wrong signature length");
 
         // Reconstruct signed message with domain separation
-        // Format: "reme-receipt-v1:" || signer_pubkey || message_id (NO ack_secret)
+        // Format: "ember-receipt-v1:" || signer_pubkey || message_id (NO ack_secret)
         let mut sign_data = Vec::with_capacity(RECEIPT_DOMAIN_SEP.len() + 32 + 16);
         sign_data.extend_from_slice(RECEIPT_DOMAIN_SEP);
         sign_data.extend_from_slice(&recipient_pubkey.to_bytes());
@@ -1032,7 +1032,7 @@ mod tests {
     /// Test: Low-order ephemeral key returns no `ack_secret` but still returns signature
     #[tokio::test]
     async fn test_low_order_ephemeral_key_returns_no_ack_secret_but_returns_signature() {
-        use reme_encryption::RECEIPT_DOMAIN_SEP;
+        use ember_encryption::RECEIPT_DOMAIN_SEP;
 
         let config = PersistentStoreConfig::default();
         let store = PersistentMailboxStore::in_memory(config).unwrap();
@@ -1053,14 +1053,14 @@ mod tests {
         let message_id = envelope.message_id;
         let wire_payload = WirePayload::Message(envelope);
         let wire_bytes = wire_payload.encode().unwrap();
-        let bundle_body = reme_bundle::encode_body(&[&wire_bytes]);
+        let bundle_body = ember_bundle::encode_body(&[&wire_bytes]);
 
         let response = app
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/submit")
-                    .header("content-type", "application/vnd.reme.bundle")
+                    .header("content-type", "application/vnd.ember.bundle")
                     .body(Body::from(bundle_body))
                     .unwrap(),
             )
@@ -1131,7 +1131,7 @@ mod tests {
         let (envelope, _) = create_encrypted_envelope(&sender, &recipient_pubkey);
         let wire_payload = WirePayload::Message(envelope);
         let wire_bytes = wire_payload.encode().unwrap();
-        let bundle_body = reme_bundle::encode_body(&[&wire_bytes]);
+        let bundle_body = ember_bundle::encode_body(&[&wire_bytes]);
 
         // First submission - should have ack_secret
         let response1 = app
@@ -1140,7 +1140,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/submit")
-                    .header("content-type", "application/vnd.reme.bundle")
+                    .header("content-type", "application/vnd.ember.bundle")
                     .body(Body::from(bundle_body.clone()))
                     .unwrap(),
             )
@@ -1164,7 +1164,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/submit")
-                    .header("content-type", "application/vnd.reme.bundle")
+                    .header("content-type", "application/vnd.ember.bundle")
                     .body(Body::from(bundle_body))
                     .unwrap(),
             )

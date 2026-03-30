@@ -1,6 +1,6 @@
 # Tiered Delivery with Quorum Semantics
 
-This document describes the tiered delivery system implemented in the Resilient Messenger client. Messages flow through multiple delivery tiers with configurable quorum requirements, ensuring reliable message delivery even when some transports fail.
+This document describes the tiered delivery system implemented in the Ember client. Messages flow through multiple delivery tiers with configurable quorum requirements, ensuring reliable message delivery even when some transports fail.
 
 ## Overview
 
@@ -67,7 +67,7 @@ The Best-Effort tier provides fire-and-forget delivery over constrained networks
 - **Targets**: BLE broadcast, LoRa/Meshtastic (not yet implemented)
 - **Strategy**: Fire and forget
 - **Success**: Submission succeeds (delivery responsibility is handed off)
-- **Note**: BLE and LoRa can serve **any tier** depending on context. Discovered recipient → Direct. Known relay peer → relay queue (same as LAN HTTP relay). Blind broadcast → BestEffort. Meshtastic handles its own mesh retransmit; reme treats it as fire-and-forget. There is no "BLE mesh protocol" — BLE relay is opportunistic forwarding to discovered peers.
+- **Note**: BLE and LoRa can serve **any tier** depending on context. Discovered recipient → Direct. Known relay peer → relay queue (same as LAN HTTP relay). Blind broadcast → BestEffort. Meshtastic handles its own mesh retransmit; ember treats it as fire-and-forget. There is no "BLE mesh protocol" — BLE relay is opportunistic forwarding to discovered peers.
 
 ## Quorum Strategies
 
