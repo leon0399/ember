@@ -466,7 +466,7 @@ impl DiscoveryController {
             match res {
                 Ok((name, Ok(Some(verified)))) => {
                     self.record_refresh_success(&name);
-                    self.persist_verified_contact(&verified);
+                    self.persist_verified_contact(&verified).await;
                 }
                 Ok((name, Ok(None) | Err(_))) => {
                     if self.record_refresh_failure(&name) {
@@ -531,17 +531,26 @@ impl DiscoveryController {
                 },
                 coordinator,
             );
-            self.persist_verified_contact(&verified);
+            self.persist_verified_contact(&verified).await;
         }
     }
 
-    fn persist_verified_contact(&self, public_id: &PublicID) {
-        if let Err(error) = self
-            .storage
-            .mark_contact_verified(public_id, now_secs_i64())
-        {
+    async fn persist_verified_contact(&self, public_id: &PublicID) {
+        let public_id = *public_id;
+
+        if let Err(error) = self.persist_verified_contact_impl(public_id).await {
             warn!("Verified peer {public_id} but failed to persist trust state: {error}");
         }
+    }
+
+    async fn persist_verified_contact_impl(&self, public_id: PublicID) -> Result<(), String> {
+        let storage = Arc::clone(&self.storage);
+
+        tokio::task::spawn_blocking(move || storage.mark_contact_verified(&public_id, now_secs_i64()))
+            .await
+            .map_err(|error| format!("persistence task failed: {error}"))?
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
     /// Register or update a verified peer in indices and coordinator.
@@ -1007,8 +1016,8 @@ mod tests {
         controller.handle_lost("nonexistent", &coordinator);
     }
 
-    #[test]
-    fn verification_persists_verified_contact_state() {
+    #[tokio::test]
+    async fn verification_persists_verified_contact_state() {
         let storage = test_storage();
         let identity = Identity::generate();
         let pubkey = *identity.public_id();
@@ -1025,7 +1034,7 @@ mod tests {
         )
         .unwrap();
 
-        controller.persist_verified_contact(&pubkey);
+        controller.persist_verified_contact(&pubkey).await;
 
         let contact = storage.get_contact(&pubkey).unwrap();
         assert_eq!(contact.trust_level, TrustLevel::Verified);

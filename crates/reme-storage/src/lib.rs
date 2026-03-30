@@ -736,39 +736,15 @@ impl Storage {
     ) -> Result<Vec<Contact>, StorageError> {
         let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let mut stmt = conn.prepare(sql)?;
-        let mut contacts = Vec::new();
-        if let Some(level) = min_trust {
-            let rows = stmt.query_map(params![level as u8], |row| {
-                Ok(RawContactRow {
-                    id: row.get::<_, i64>(0)?,
-                    public_id_bytes: row.get::<_, Vec<u8>>(1)?,
-                    routing_key_bytes: row.get::<_, Vec<u8>>(2)?,
-                    name: row.get::<_, Option<String>>(3)?,
-                    trust_level_raw: row.get::<_, i64>(4)?,
-                    verified_at: row.get::<_, Option<i64>>(5)?,
-                    created_at: row.get::<_, i64>(6)?,
-                })
-            })?;
-
-            for row in rows {
-                contacts.push(Self::decode_contact_row(row?)?);
-            }
+        let mut rows = if let Some(level) = min_trust {
+            stmt.query(params![level as u8])?
         } else {
-            let rows = stmt.query_map([], |row| {
-                Ok(RawContactRow {
-                    id: row.get::<_, i64>(0)?,
-                    public_id_bytes: row.get::<_, Vec<u8>>(1)?,
-                    routing_key_bytes: row.get::<_, Vec<u8>>(2)?,
-                    name: row.get::<_, Option<String>>(3)?,
-                    trust_level_raw: row.get::<_, i64>(4)?,
-                    verified_at: row.get::<_, Option<i64>>(5)?,
-                    created_at: row.get::<_, i64>(6)?,
-                })
-            })?;
+            stmt.query([])?
+        };
 
-            for row in rows {
-                contacts.push(Self::decode_contact_row(row?)?);
-            }
+        let mut contacts = Vec::new();
+        while let Some(row) = rows.next()? {
+            contacts.push(Self::decode_contact_row(Self::read_contact_row(row)?)?);
         }
 
         Ok(contacts)
