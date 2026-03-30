@@ -1,0 +1,10 @@
+# Git blame ignore revs
+#
+# This file lists commits that should be ignored by git blame to avoid noise
+# from mass refactorings, formatting changes, and renames.
+#
+# To use: git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# feat!: rename project from reme to ember
+# Complete project rename affecting all crates, modules, env vars, and wire protocol
+527d426b9b05c2ed0cf2838ca47b85bb5ffd3d3e
