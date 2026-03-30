@@ -14,7 +14,7 @@
 use crate::node_identity::NodeIdentity;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::prelude::*;
-use reme_identity::PublicID;
+use ember_identity::PublicID;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Header names for signed node requests (lowercase for HTTP compliance)
@@ -449,7 +449,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reme_identity::Identity;
+    use ember_identity::Identity;
 
     fn test_identity() -> NodeIdentity {
         let identity = Identity::generate();

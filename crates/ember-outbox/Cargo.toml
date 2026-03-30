@@ -1,0 +1,23 @@
+[package]
+name = "ember-outbox"
+version.workspace = true
+edition.workspace = true
+description = "Client-side outbox for resilient message delivery"
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ember-identity = { workspace = true }
+ember-message = { workspace = true }
+ember-transport = { workspace = true }
+
+derivative = { workspace = true }
+strum = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }

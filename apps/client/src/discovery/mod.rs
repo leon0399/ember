@@ -4,12 +4,12 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use crate::config::AppConfig;
-use reme_discovery::mdns_sd::MdnsSdBackend;
-use reme_discovery::DiscoveryBackend as _;
-use reme_identity::{Identity, PublicID};
-use reme_storage::{Storage, TrustLevel};
-use reme_transport::coordinator::TransportCoordinator;
-use reme_transport::registry::TransportRegistry;
+use ember_discovery::mdns_sd::MdnsSdBackend;
+use ember_discovery::DiscoveryBackend as _;
+use ember_identity::{Identity, PublicID};
+use ember_storage::{Storage, TrustLevel};
+use ember_transport::coordinator::TransportCoordinator;
+use ember_transport::registry::TransportRegistry;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -209,10 +209,10 @@ async fn start_advertising_if_configured(
         .unwrap_or(23004);
 
     let our_rk: [u8; 16] = identity.public_id().routing_key().into();
-    let txt = reme_discovery::encode_txt(&our_rk, port);
-    let spec = reme_discovery::AdvertisementSpec {
+    let txt = ember_discovery::encode_txt(&our_rk, port);
+    let spec = ember_discovery::AdvertisementSpec {
         txt_records: txt,
-        ..reme_discovery::AdvertisementSpec::new(port, our_rk)
+        ..ember_discovery::AdvertisementSpec::new(port, our_rk)
     };
 
     if let Err(e) = backend.start_advertising(spec).await {
@@ -223,8 +223,8 @@ async fn start_advertising_if_configured(
 #[cfg(test)]
 mod tests {
     use super::load_contacts_for_discovery;
-    use reme_identity::Identity;
-    use reme_storage::{Storage, TrustLevel};
+    use ember_identity::Identity;
+    use ember_storage::{Storage, TrustLevel};
 
     #[test]
     fn load_contacts_for_discovery_filters_out_strangers() {

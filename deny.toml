@@ -1,4 +1,4 @@
-# deny.toml — cargo-deny policy for reme workspace
+# deny.toml — cargo-deny policy for ember workspace
 # Docs: https://embarkstudios.github.io/cargo-deny/
 #
 # Policy goals (derived from WHITEPAPER.md):
@@ -38,6 +38,9 @@ ignore = [
 # ──────────────────────────────────────────────
 [licenses]
 allow = [
+    # Workspace license
+    "GPL-3.0-or-later",
+    # Permissive licenses (dependencies)
     "MIT",
     "Apache-2.0",
     "BSD-2-Clause",
@@ -56,9 +59,6 @@ allow = [
     "MIT-0",
 ]
 confidence-threshold = 0.8
-
-[licenses.private]
-ignore = true
 
 [[licenses.clarify]]
 crate = "ring"

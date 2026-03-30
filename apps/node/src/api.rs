@@ -28,11 +28,11 @@ use axum::{
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
-use reme_bundle::parse_body;
-use reme_encryption::{build_identity_sign_data, build_receipt_sign_data, derive_ack_secret};
-use reme_identity::PublicID;
-use reme_message::{OuterEnvelope, RoutingKey, WirePayload};
-use reme_node_core::{FetchPage, MailboxStore, PersistentMailboxStore};
+use ember_bundle::parse_body;
+use ember_encryption::{build_identity_sign_data, build_receipt_sign_data, derive_ack_secret};
+use ember_identity::PublicID;
+use ember_message::{OuterEnvelope, RoutingKey, WirePayload};
+use ember_node_core::{FetchPage, MailboxStore, PersistentMailboxStore};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
@@ -414,7 +414,7 @@ struct Receipt {
     /// Base64-encoded 16-byte `ack_secret` (only if node is intended recipient)
     ack_secret: Option<String>,
     /// Base64-encoded 64-byte `XEdDSA` signature over:
-    /// `"reme-receipt-v1:" || signer_pubkey || message_id`
+    /// `"ember-receipt-v1:" || signer_pubkey || message_id`
     signature: String,
 }
 
@@ -423,7 +423,7 @@ struct Receipt {
 /// Returns `Some(Receipt)` if node has an identity configured.
 ///
 /// The receipt includes:
-/// - `signature`: Always present - `XEdDSA` signature over `"reme-receipt-v1:" || signer_pubkey || message_id`
+/// - `signature`: Always present - `XEdDSA` signature over `"ember-receipt-v1:" || signer_pubkey || message_id`
 /// - `ack_secret`: Only if this node is the intended recipient and can decrypt
 ///
 /// Crypto operations (`XEdDSA` signing, optional ECDH) are offloaded to a blocking thread pool
@@ -450,7 +450,7 @@ async fn generate_receipt(
             None
         };
 
-        // Sign: "reme-receipt-v1:" || signer_pubkey || message_id
+        // Sign: "ember-receipt-v1:" || signer_pubkey || message_id
         // Note: signature does NOT include ack_secret (allows signing even as relay)
         let signer_pubkey = identity.public_id().to_bytes();
         let mut sign_data = build_receipt_sign_data(&signer_pubkey, &message_id);
@@ -641,7 +641,7 @@ fn check_submit_rate_limit(state: &AppState, routing_key: &RoutingKey) -> Option
 fn check_duplicate(
     state: &AppState,
     routing_key: &RoutingKey,
-    message_id: &reme_message::MessageID,
+    message_id: &ember_message::MessageID,
 ) -> Option<FrameResult> {
     let exists = match state.store.has_message(routing_key, message_id) {
         Ok(exists) => exists,
@@ -699,7 +699,7 @@ fn receipt_to_frame_result(receipt: Option<Receipt>) -> FrameResult {
 /// Handle an `AckTombstone` frame, returning a `FrameResult`.
 fn handle_tombstone(
     state: &AppState,
-    tombstone: &reme_message::SignedAckTombstone,
+    tombstone: &ember_message::SignedAckTombstone,
     wire_frame_bytes: &[u8],
     from_node: Option<String>,
 ) -> FrameResult {
@@ -712,7 +712,7 @@ fn handle_tombstone(
 
 fn delete_and_replicate_tombstone(
     state: &AppState,
-    tombstone: &reme_message::SignedAckTombstone,
+    tombstone: &ember_message::SignedAckTombstone,
     wire_frame_bytes: &[u8],
     from_node: Option<String>,
 ) -> FrameResult {
@@ -732,7 +732,7 @@ fn delete_and_replicate_tombstone(
 /// Returns `Some(error)` if authorization fails, `None` if authorized.
 fn verify_tombstone_auth(
     state: &AppState,
-    tombstone: &reme_message::SignedAckTombstone,
+    tombstone: &ember_message::SignedAckTombstone,
 ) -> Option<FrameResult> {
     let ack_hash = match lookup_ack_hash(state, &tombstone.message_id) {
         Ok(hash) => hash,
@@ -749,7 +749,7 @@ fn verify_tombstone_auth(
 /// Look up the `ack_hash` for a message.
 fn lookup_ack_hash(
     state: &AppState,
-    message_id: &reme_message::MessageID,
+    message_id: &ember_message::MessageID,
 ) -> Result<[u8; 16], FrameResult> {
     match state.store.get_ack_hash(message_id) {
         Ok(Some(hash)) => Ok(hash),
@@ -837,7 +837,7 @@ async fn get_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 /// ## Response
 ///
 /// Returns `IdentityResponse` with:
-/// - `signature`: Base64-encoded 64-byte `XEdDSA` signature over `"reme-identity-v1:" || challenge || node_pubkey`
+/// - `signature`: Base64-encoded 64-byte `XEdDSA` signature over `"ember-identity-v1:" || challenge || node_pubkey`
 ///
 /// The node's public key is NOT returned for privacy (prevents identity enumeration).
 /// Clients verify the signature against known contacts' public keys.
@@ -900,7 +900,7 @@ async fn get_identity(
             .into_response();
     };
     let result = tokio::task::spawn_blocking(move || {
-        // Sign: "reme-identity-v1:" || challenge || node_pubkey
+        // Sign: "ember-identity-v1:" || challenge || node_pubkey
         // Note: node_pubkey is still included in signed data for cryptographic binding,
         // but not returned in response (privacy: prevents identity enumeration)
         let node_pubkey = identity.public_id().to_bytes();

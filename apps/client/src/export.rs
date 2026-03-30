@@ -1,16 +1,16 @@
-//! Export pending outbox messages to a `.reme` bundle file.
+//! Export pending outbox messages to a `.ember` bundle file.
 //!
 //! This is a read-only offline operation — no network, no transport.
 //! Opens storage directly and writes through [`BundleWriter`].
 
 use crate::config::{AppConfig, ExportArgs};
-use reme_bundle::BundleWriter;
-use reme_identity::PublicID;
-use reme_message::wire::WirePayload;
-use reme_message::OuterEnvelope;
-use reme_outbox::store::OutboxStore;
-use reme_outbox::PendingMessage;
-use reme_storage::Storage;
+use ember_bundle::BundleWriter;
+use ember_identity::PublicID;
+use ember_message::wire::WirePayload;
+use ember_message::OuterEnvelope;
+use ember_outbox::store::OutboxStore;
+use ember_outbox::PendingMessage;
+use ember_storage::Storage;
 use std::fs;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -263,7 +263,7 @@ mod tests {
     }
 
     fn make_test_pending(created_at_ms: u64) -> PendingMessage {
-        use reme_message::MessageID;
+        use ember_message::MessageID;
         use std::collections::HashSet;
 
         PendingMessage {
@@ -279,7 +279,7 @@ mod tests {
             next_retry_at_ms: None,
             confirmation: None,
             successful_targets: HashSet::new(),
-            tiered_phase: reme_outbox::TieredDeliveryPhase::Urgent,
+            tiered_phase: ember_outbox::TieredDeliveryPhase::Urgent,
         }
     }
 
@@ -287,9 +287,9 @@ mod tests {
     /// read back with `BundleReader`, verify checksum and frame contents.
     #[test]
     fn test_export_round_trip_with_storage() {
-        use reme_bundle::BundleReader;
-        use reme_identity::Identity;
-        use reme_message::{MessageID, OuterEnvelope};
+        use ember_bundle::BundleReader;
+        use ember_identity::Identity;
+        use ember_message::{MessageID, OuterEnvelope};
         use std::io::Cursor;
         // Create in-memory storage
         let storage = Storage::open(":memory:").unwrap();
@@ -304,7 +304,7 @@ mod tests {
         let recipient = bob.public_id();
         for _ in 0..3 {
             storage
-                .outbox_enqueue(reme_outbox::EnqueueParams {
+                .outbox_enqueue(ember_outbox::EnqueueParams {
                     recipient,
                     content_id: [1u8; 8],
                     message_id: MessageID::new(),
@@ -320,7 +320,7 @@ mod tests {
         assert_eq!(messages.len(), 3);
 
         let out_path =
-            std::env::temp_dir().join(format!("reme-test-export-{}.reme", std::process::id()));
+            std::env::temp_dir().join(format!("ember-test-export-{}.ember", std::process::id()));
         let count = write_bundle(&out_path, &messages).unwrap();
         assert_eq!(count, 3);
 

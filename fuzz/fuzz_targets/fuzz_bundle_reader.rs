@@ -1,6 +1,6 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use reme_bundle::BundleReader;
+use ember_bundle::BundleReader;
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(mut reader) = BundleReader::open(data) {

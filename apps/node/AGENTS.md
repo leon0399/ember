@@ -16,7 +16,7 @@ cargo run --bin node -- --tls-enabled --tls-cert cert.pem --tls-key key.pem
 |---------------------|-----------------------------------------------------------------------|
 | `main.rs`           | Entry point, config loading, server startup, graceful shutdown        |
 | `api.rs`            | Axum router + all HTTP handlers                                       |
-| `config.rs`         | CLI args (clap), env vars (`REME_NODE_*`), TOML config, layered merge |
+| `config.rs`         | CLI args (clap), env vars (`EMBER_NODE_*`), TOML config, layered merge |
 | `cleanup.rs`        | Background task: TTL expiration of old messages                       |
 | `mqtt_bridge.rs`    | Optional MQTT subscriber/publisher bridge                             |
 | `replication.rs`    | Fire-and-forget replication to peer nodes                             |
@@ -36,9 +36,9 @@ cargo run --bin node -- --tls-enabled --tls-cert cert.pem --tls-key key.pem
 
 ## Config File
 
-`~/.config/reme/node.toml` — see `config.rs` module docs for full reference including TLS, MQTT, peers, rate limits.
+`~/.config/ember/node.toml` — see `config.rs` module docs for full reference including TLS, MQTT, peers, rate limits.
 
-Env prefix: `REME_NODE_*` (e.g., `REME_NODE_BIND_ADDR`, `REME_NODE_STORAGE_PATH`).
+Env prefix: `EMBER_NODE_*` (e.g., `EMBER_NODE_BIND_ADDR`, `EMBER_NODE_STORAGE_PATH`).
 
 ## Non-obvious Patterns
 

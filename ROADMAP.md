@@ -1,4 +1,4 @@
-# Resilient Messenger Roadmap
+# Ember Roadmap
 
 **Current Version:** v0.5 (Sneakernet Export)
 **Target Version:** v1.0 (Production Ready)
@@ -7,7 +7,7 @@
 
 ## Vision
 
-Build an outage-resilient, end-to-end encrypted messaging system that works when traditional infrastructure fails. Reme prioritizes resilience over convenience so people can communicate during network failures, infrastructure attacks, or censorship.
+Build an outage-resilient, end-to-end encrypted messaging system that works when traditional infrastructure fails. Ember prioritizes resilience over convenience so people can communicate during network failures, infrastructure attacks, or censorship.
 
 ## Guiding principles
 
@@ -64,7 +64,7 @@ flowchart LR
 | **Receipt Signing**  | ✅ Complete |
 | **LAN Discovery**    | ✅ Complete |
 | **Identity Verification** | ✅ Complete |
-| **Bundle Format**    | ✅ Complete (reme-bundle crate) |
+| **Bundle Format**    | ✅ Complete (ember-bundle crate) |
 | **Sneakernet Export/Import** | ✅ Complete (client + node) |
 | **CLI Subcommands**  | ✅ Complete (client + node) |
 
@@ -81,7 +81,7 @@ Automatic peer discovery and verified P2P messaging on local networks.
 **Problem:** Manual peer configuration is tedious for LAN scenarios.
 
 **Solution:**
-- Advertise client presence via mDNS (`_reme._tcp.local`)
+- Advertise client presence via mDNS (`_ember._tcp.local.`)
 - TXT records: `id=<routing_key>`, `port=<http_port>`
 - Background scanning for discovered peers
 - Automatic registration as Direct tier targets
@@ -171,18 +171,18 @@ Air-gapped messaging via file transfer.
 **Problem:** Sometimes there's no network at all, not even BLE range. Need a way to physically transport encrypted messages between air-gapped systems.
 
 **Solution:**
-- Export pending outbox messages to `.reme` bundle file
+- Export pending outbox messages to `.ember` bundle file
 - Import received bundles and process as normal messages
 - Bundle format: versioned header, length-prefixed WirePayload frames, BLAKE3 checksum
 - Archive format reusable by future transports (BLE, LoRa)
 
 **Deliverables:**
-- [x] `reme-bundle` crate — archive format implementation (PR #181)
-- [x] Client CLI subcommands — `reme tui`, `reme export`, `reme import` (PR #185)
+- [x] `ember-bundle` crate — archive format implementation (PR #181)
+- [x] Client CLI subcommands — `ember tui`, `ember export`, `ember import` (PR #185)
 - [x] Client export — offline outbox export with `--to`, `--since`, `--limit`, `--force`, `--include-sent` (PR #189)
 - [x] Client import — decrypt and store self-addressed messages, idempotent (PR #190)
 - [x] Shared identity module — extracted from TUI for CLI reuse (PR #190)
-- [x] Node CLI subcommands — `reme-node serve`, `reme-node export`, `reme-node import` (PR #191)
+- [x] Node CLI subcommands — `ember-node serve`, `ember-node export`, `ember-node import` (PR #191)
 - [x] Node export/import — opaque envelope storage, tombstone processing (PR #191)
 - [x] Sneakernet round-trip integration tests — 7 tests covering full workflow (PR #201)
 - [ ] Archive format specification document — deferred (format not yet finalized)
@@ -342,7 +342,7 @@ Implements DTN-safe forward secrecy without prekey servers. See `docs/drafts/ses
 **Deliverables:**
 - [ ] `EnvelopePayload` enum with `Stateless` and `Session` variants
 - [ ] Noise XX handshake piggybacked in `InnerEnvelope.handshake` field
-- [ ] Session key storage in `reme-storage`
+- [ ] Session key storage in `ember-storage`
 - [ ] `encrypted_sender` in OuterEnvelope
 - [ ] Sign-all-bytes signature scheme
 - [ ] MIK fallback decryption path
@@ -403,15 +403,15 @@ Reused by Meshtastic transport in v0.9.
 
 ## v0.9: Meshtastic direct
 
-Point-to-point encrypted messaging over LoRa via Meshtastic. Two devices with Meshtastic hardware exchange messages directly, no Internet needed. Meshtastic handles LoRa radio management; reme treats it as an opaque transport. **Requires v0.7 session encryption** for viable payload size.
+Point-to-point encrypted messaging over LoRa via Meshtastic. Two devices with Meshtastic hardware exchange messages directly, no Internet needed. Meshtastic handles LoRa radio management; ember treats it as an opaque transport. **Requires v0.7 session encryption** for viable payload size.
 
 ### Meshtastic transport
 
 **Problem:** BLE requires physical proximity (~10m). For disaster response, remote areas, or censorship resistance, we need communication over kilometers without any Internet infrastructure.
 
-**Solution:** Integrate with Meshtastic via its serial/BLE API. Reme sends and receives chunked session-encrypted envelopes; Meshtastic handles duty cycle, hop counts, and mesh routing.
+**Solution:** Integrate with Meshtastic via its serial/BLE API. Ember sends and receives chunked session-encrypted envelopes; Meshtastic handles duty cycle, hop counts, and mesh routing.
 
-Reme does **not** implement its own LoRa mesh protocol. Meshtastic already solves this. Plain LoRa (without Meshtastic) is deferred unless there's a concrete need.
+Ember does **not** implement its own LoRa mesh protocol. Meshtastic already solves this. Plain LoRa (without Meshtastic) is deferred unless there's a concrete need.
 
 **Deliverables:**
 - [ ] Meshtastic serial/BLE protocol integration
@@ -471,7 +471,7 @@ flowchart LR
 5. Your off-grid device receives chunks, reassembles, decrypts
 
 **Community relay network:**
-The same scenario works with **any** Internet-connected Meshtastic node running reme bridge software. A neighbor's node, a community relay on a hilltop, or a stranger's device can all bridge your messages. No plaintext trust is required because the payload is end-to-end encrypted, but metadata and availability remain sensitive, so these bridge nodes must stay in an untrusted relay role unless explicitly configured as trusted peers.
+The same scenario works with **any** Internet-connected Meshtastic node running ember bridge software. A neighbor's node, a community relay on a hilltop, or a stranger's device can all bridge your messages. No plaintext trust is required because the payload is end-to-end encrypted, but metadata and availability remain sensitive, so these bridge nodes must stay in an untrusted relay role unless explicitly configured as trusted peers.
 
 **Deliverables:**
 - [ ] BLE egress adapter for relay queue
@@ -544,7 +544,7 @@ Stable wire format and production hardening.
 
 **Status:** Rejected due to privacy concerns
 
-**Problem:** Iroh's DHT-based peer discovery leaks IP addresses to anyone querying the DHT. This conflicts with reme's privacy-by-design principle.
+**Problem:** Iroh's DHT-based peer discovery leaks IP addresses to anyone querying the DHT. This conflicts with ember's privacy-by-design principle.
 
 **Alternatives considered:**
 - Private DHT with authenticated peers only

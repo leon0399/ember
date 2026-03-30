@@ -4,32 +4,32 @@
 //! (highest to lowest):
 //!
 //! 1. **CLI arguments** - Explicit user input (highest priority)
-//! 2. **Environment variables** - Prefixed with `REME_NODE_`
-//! 3. **Config file** - TOML file at `~/.config/reme/node.toml` or custom path
+//! 2. **Environment variables** - Prefixed with `EMBER_NODE_`
+//! 3. **Config file** - TOML file at `~/.config/ember/node.toml` or custom path
 //! 4. **Built-in defaults** - Hardcoded fallback values (lowest priority)
 //!
 //! ## Environment Variables
 //!
-//! All environment variables are prefixed with `REME_NODE_`:
-//! - `REME_NODE_BIND_ADDR` - Address to bind HTTP server (e.g., "0.0.0.0:23003")
-//! - `REME_NODE_MAX_MESSAGES` - Maximum messages per mailbox
-//! - `REME_NODE_DEFAULT_TTL` - Default message TTL in seconds
-//! - `REME_NODE_LOG_LEVEL` - Log level (trace, debug, info, warn, error)
-//! - `REME_NODE_STORAGE_PATH` - Path to `SQLite` database file (`:memory:` for in-memory)
-//! - `REME_NODE_TLS_ENABLED` - Enable TLS/HTTPS (true/false)
-//! - `REME_NODE_TLS_CERT` - Path to PEM certificate file
-//! - `REME_NODE_TLS_KEY` - Path to PEM private key file
-//! - `REME_NODE_MQTT_BROKER` - Comma-separated MQTT broker URLs
-//! - `REME_NODE_MQTT_CLIENT_ID` - Comma-separated client IDs (paired with broker URLs)
-//! - `REME_NODE_MQTT_TOPIC_PREFIX` - MQTT topic prefix (default: "reme/v1")
-//! - `REME_NODE_IDENTITY_PATH` - Path to node identity key file
-//! - `REME_NODE_PUBLIC_HOST` - Canonical public hostname for signature verification
-//! - `REME_NODE_ADDITIONAL_HOSTS` - Comma-separated additional valid hostnames
+//! All environment variables are prefixed with `EMBER_NODE_`:
+//! - `EMBER_NODE_BIND_ADDR` - Address to bind HTTP server (e.g., "0.0.0.0:23003")
+//! - `EMBER_NODE_MAX_MESSAGES` - Maximum messages per mailbox
+//! - `EMBER_NODE_DEFAULT_TTL` - Default message TTL in seconds
+//! - `EMBER_NODE_LOG_LEVEL` - Log level (trace, debug, info, warn, error)
+//! - `EMBER_NODE_STORAGE_PATH` - Path to `SQLite` database file (`:memory:` for in-memory)
+//! - `EMBER_NODE_TLS_ENABLED` - Enable TLS/HTTPS (true/false)
+//! - `EMBER_NODE_TLS_CERT` - Path to PEM certificate file
+//! - `EMBER_NODE_TLS_KEY` - Path to PEM private key file
+//! - `EMBER_NODE_MQTT_BROKER` - Comma-separated MQTT broker URLs
+//! - `EMBER_NODE_MQTT_CLIENT_ID` - Comma-separated client IDs (paired with broker URLs)
+//! - `EMBER_NODE_MQTT_TOPIC_PREFIX` - MQTT topic prefix (default: "ember/v1")
+//! - `EMBER_NODE_IDENTITY_PATH` - Path to node identity key file
+//! - `EMBER_NODE_PUBLIC_HOST` - Canonical public hostname for signature verification
+//! - `EMBER_NODE_ADDITIONAL_HOSTS` - Comma-separated additional valid hostnames
 //!
 //! ## Config File
 //!
-//! Default location: `~/.config/reme/node.toml` (Linux/macOS) or
-//! `%APPDATA%\reme\node.toml` (Windows)
+//! Default location: `~/.config/ember/node.toml` (Linux/macOS) or
+//! `%APPDATA%\ember\node.toml` (Windows)
 //!
 //! ```toml
 //! # Peer nodes for message replication
@@ -53,10 +53,10 @@
 //! max_messages = 1000
 //! default_ttl = 604800
 //! log_level = "info"
-//! storage_path = "/var/lib/reme/mailbox.db"  # Optional: enables persistent storage
+//! storage_path = "/var/lib/ember/mailbox.db"  # Optional: enables persistent storage
 //!
 //! # Node identity for signed headers (auto-generated if not exists)
-//! identity_path = "/etc/reme/node-identity.key"
+//! identity_path = "/etc/ember/node-identity.key"
 //!
 //! # Public hostname for signature verification (required for secure mode)
 //! public_host = "node1.example.com:3000"
@@ -64,13 +64,13 @@
 //!
 //! [tls]
 //! enabled = true
-//! cert_path = "/etc/reme/cert.pem"
-//! key_path = "/etc/reme/key.pem"
+//! cert_path = "/etc/ember/cert.pem"
+//! key_path = "/etc/ember/key.pem"
 //!
 //! # MQTT bridge configuration (enabled when brokers are configured)
 //! # Note: MQTT uses system root certificates (no certificate pinning support)
 //! [mqtt]
-//! topic_prefix = "reme/v1"  # Optional, defaults to "reme/v1"
+//! topic_prefix = "ember/v1"  # Optional, defaults to "ember/v1"
 //!
 //! [[mqtt.brokers]]
 //! url = "mqtts://broker.example.com:8883"
@@ -83,7 +83,7 @@ use clap::{Parser, Subcommand};
 use config::{Config, Environment, File, FileFormat};
 use derivative::Derivative;
 use directories::ProjectDirs;
-use reme_config::{HttpPeerConfig, PeersConfig};
+use ember_config::{HttpPeerConfig, PeersConfig};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::info;
@@ -199,7 +199,7 @@ pub struct MqttBridgeConfig {
     /// MQTT brokers to connect to (bridge enabled if non-empty)
     #[serde(default)]
     pub brokers: Vec<MqttBrokerConfig>,
-    /// Topic prefix (default: "reme/v1")
+    /// Topic prefix (default: "ember/v1")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topic_prefix: Option<String>,
 }
@@ -223,7 +223,7 @@ impl MqttBridgeConfig {
 
     /// Get the topic prefix, using default if not specified
     pub fn topic_prefix(&self) -> &str {
-        self.topic_prefix.as_deref().unwrap_or("reme/v1")
+        self.topic_prefix.as_deref().unwrap_or("ember/v1")
     }
 }
 
@@ -253,23 +253,23 @@ fn log_limiter(label: &str, rps: u32, burst: u32) {
 
 /// Top-level CLI parser with optional subcommand
 #[derive(Parser, Debug, Clone)]
-#[command(name = "reme-node")]
+#[command(name = "ember-node")]
 #[command(author, version, about = "Branch Messenger Mailbox Node")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
 
-    /// Path to config file (default: ~/.config/reme/node.toml)
-    #[arg(short = 'c', long, env = "REME_NODE_CONFIG")]
+    /// Path to config file (default: ~/.config/ember/node.toml)
+    #[arg(short = 'c', long, env = "EMBER_NODE_CONFIG")]
     pub config: Option<PathBuf>,
 
     /// Log level (trace, debug, info, warn, error)
-    #[arg(short = 'l', long, env = "REME_NODE_LOG_LEVEL")]
+    #[arg(short = 'l', long, env = "EMBER_NODE_LOG_LEVEL")]
     pub log_level: Option<String>,
 
     /// Path to `SQLite` database file (default: :memory:)
     /// Use ":memory:" for in-memory storage, or a file path for persistence
-    #[arg(long, env = "REME_NODE_STORAGE_PATH")]
+    #[arg(long, env = "EMBER_NODE_STORAGE_PATH")]
     pub storage_path: Option<String>,
 }
 
@@ -288,9 +288,9 @@ impl Cli {
 pub enum Commands {
     /// Start the mailbox server (default when no subcommand given)
     Serve(Box<ServeArgs>),
-    /// Export messages to a .reme bundle file
+    /// Export messages to a .ember bundle file
     Export(ExportArgs),
-    /// Import messages from a .reme bundle file
+    /// Import messages from a .ember bundle file
     Import(ImportArgs),
 }
 
@@ -298,151 +298,151 @@ pub enum Commands {
 #[derive(Parser, Debug, Clone)]
 pub struct ServeArgs {
     /// Address to bind HTTP server (e.g., "0.0.0.0:23003")
-    #[arg(short = 'b', long, env = "REME_NODE_BIND_ADDR")]
+    #[arg(short = 'b', long, env = "EMBER_NODE_BIND_ADDR")]
     pub bind_addr: Option<String>,
 
     /// Port to bind (shorthand for `bind_addr` with 0.0.0.0)
-    #[arg(short = 'p', long, env = "REME_NODE_PORT")]
+    #[arg(short = 'p', long, env = "EMBER_NODE_PORT")]
     pub port: Option<u16>,
 
     /// Maximum messages per mailbox
-    #[arg(short = 'm', long, env = "REME_NODE_MAX_MESSAGES")]
+    #[arg(short = 'm', long, env = "EMBER_NODE_MAX_MESSAGES")]
     pub max_messages: Option<usize>,
 
     /// Default message TTL in seconds
-    #[arg(short = 't', long, env = "REME_NODE_DEFAULT_TTL")]
+    #[arg(short = 't', long, env = "EMBER_NODE_DEFAULT_TTL")]
     pub default_ttl: Option<u32>,
 
     /// Unique node ID for replication (defaults to random UUID)
-    #[arg(long, env = "REME_NODE_ID")]
+    #[arg(long, env = "EMBER_NODE_ID")]
     pub node_id: Option<String>,
 
     /// Peer node URLs for replication (comma-separated).
     /// Overrides configured peers and supports only URL-level settings.
     /// Use config/env peer entries for cert pins, node public keys, and explicit auth fields.
-    #[arg(short = 'P', long, env = "REME_NODE_PEERS", value_delimiter = ',')]
+    #[arg(short = 'P', long, env = "EMBER_NODE_PEERS", value_delimiter = ',')]
     pub peers: Option<Vec<String>>,
 
     /// Disable background cleanup task
-    #[arg(long, env = "REME_NODE_CLEANUP_DISABLED")]
+    #[arg(long, env = "EMBER_NODE_CLEANUP_DISABLED")]
     pub cleanup_disabled: bool,
 
     /// Cleanup task interval in seconds (default: 300)
-    #[arg(long, env = "REME_NODE_CLEANUP_INTERVAL")]
+    #[arg(long, env = "EMBER_NODE_CLEANUP_INTERVAL")]
     pub cleanup_interval: Option<u64>,
 
     /// Tombstone cleanup delay in seconds (default: 3600)
-    #[arg(long, env = "REME_NODE_CLEANUP_TOMBSTONE_DELAY")]
+    #[arg(long, env = "EMBER_NODE_CLEANUP_TOMBSTONE_DELAY")]
     pub cleanup_tombstone_delay: Option<u64>,
 
     /// Orphan tombstone cleanup delay in seconds (default: 86400)
-    #[arg(long, env = "REME_NODE_CLEANUP_ORPHAN_DELAY")]
+    #[arg(long, env = "EMBER_NODE_CLEANUP_ORPHAN_DELAY")]
     pub cleanup_orphan_delay: Option<u64>,
 
     /// Username for HTTP Basic Auth (optional)
     /// If set along with `auth_password`, incoming requests must authenticate
-    #[arg(long, env = "REME_NODE_AUTH_USERNAME")]
+    #[arg(long, env = "EMBER_NODE_AUTH_USERNAME")]
     pub auth_username: Option<String>,
 
     /// Password for HTTP Basic Auth (optional)
     /// If set along with `auth_username`, incoming requests must authenticate
-    #[arg(long, env = "REME_NODE_AUTH_PASSWORD")]
+    #[arg(long, env = "EMBER_NODE_AUTH_PASSWORD")]
     pub auth_password: Option<String>,
 
     // Rate limiting: Submit endpoint
     /// Submit endpoint: per-IP requests per second (0 = disabled, default: 10)
-    #[arg(long, env = "REME_NODE_RATE_LIMIT_SUBMIT_IP_RPS")]
+    #[arg(long, env = "EMBER_NODE_RATE_LIMIT_SUBMIT_IP_RPS")]
     pub rate_limit_submit_ip_rps: Option<u32>,
     /// Submit endpoint: per-IP burst capacity (0 = use rps value, default: 10)
-    #[arg(long, env = "REME_NODE_RATE_LIMIT_SUBMIT_IP_BURST")]
+    #[arg(long, env = "EMBER_NODE_RATE_LIMIT_SUBMIT_IP_BURST")]
     pub rate_limit_submit_ip_burst: Option<u32>,
     /// Submit endpoint: per-routing-key requests per second (0 = disabled, default: 5)
-    #[arg(long, env = "REME_NODE_RATE_LIMIT_SUBMIT_KEY_RPS")]
+    #[arg(long, env = "EMBER_NODE_RATE_LIMIT_SUBMIT_KEY_RPS")]
     pub rate_limit_submit_key_rps: Option<u32>,
     /// Submit endpoint: per-routing-key burst capacity (0 = use rps value, default: 20)
-    #[arg(long, env = "REME_NODE_RATE_LIMIT_SUBMIT_KEY_BURST")]
+    #[arg(long, env = "EMBER_NODE_RATE_LIMIT_SUBMIT_KEY_BURST")]
     pub rate_limit_submit_key_burst: Option<u32>,
 
     // Rate limiting: Fetch endpoint
     /// Fetch endpoint: per-IP requests per second (0 = disabled, default: 20)
-    #[arg(long, env = "REME_NODE_RATE_LIMIT_FETCH_IP_RPS")]
+    #[arg(long, env = "EMBER_NODE_RATE_LIMIT_FETCH_IP_RPS")]
     pub rate_limit_fetch_ip_rps: Option<u32>,
     /// Fetch endpoint: per-IP burst capacity (0 = use rps value, default: 50)
-    #[arg(long, env = "REME_NODE_RATE_LIMIT_FETCH_IP_BURST")]
+    #[arg(long, env = "EMBER_NODE_RATE_LIMIT_FETCH_IP_BURST")]
     pub rate_limit_fetch_ip_burst: Option<u32>,
     /// Fetch endpoint: per-routing-key requests per second (0 = disabled, default: 10)
-    #[arg(long, env = "REME_NODE_RATE_LIMIT_FETCH_KEY_RPS")]
+    #[arg(long, env = "EMBER_NODE_RATE_LIMIT_FETCH_KEY_RPS")]
     pub rate_limit_fetch_key_rps: Option<u32>,
     /// Fetch endpoint: per-routing-key burst capacity (0 = use rps value, default: 30)
-    #[arg(long, env = "REME_NODE_RATE_LIMIT_FETCH_KEY_BURST")]
+    #[arg(long, env = "EMBER_NODE_RATE_LIMIT_FETCH_KEY_BURST")]
     pub rate_limit_fetch_key_burst: Option<u32>,
 
     // TLS configuration
     /// Enable TLS (HTTPS) for the server
-    #[arg(long, env = "REME_NODE_TLS_ENABLED")]
+    #[arg(long, env = "EMBER_NODE_TLS_ENABLED")]
     pub tls_enabled: Option<bool>,
 
     /// Path to PEM-encoded TLS certificate file
-    #[arg(long, env = "REME_NODE_TLS_CERT")]
+    #[arg(long, env = "EMBER_NODE_TLS_CERT")]
     pub tls_cert: Option<PathBuf>,
 
     /// Path to PEM-encoded TLS private key file
-    #[arg(long, env = "REME_NODE_TLS_KEY")]
+    #[arg(long, env = "EMBER_NODE_TLS_KEY")]
     pub tls_key: Option<PathBuf>,
 
     // MQTT bridge configuration
     /// MQTT broker URLs (comma-separated, enables MQTT bridge)
     /// Example: mqtts://broker1:8883,mqtts://broker2:8883
-    #[arg(long, env = "REME_NODE_MQTT_BROKER", value_delimiter = ',')]
+    #[arg(long, env = "EMBER_NODE_MQTT_BROKER", value_delimiter = ',')]
     pub mqtt_broker: Option<Vec<String>>,
 
     /// MQTT client IDs (comma-separated, matched with `mqtt_broker`)
     /// If not specified, random client IDs will be generated
-    #[arg(long, env = "REME_NODE_MQTT_CLIENT_ID", value_delimiter = ',')]
+    #[arg(long, env = "EMBER_NODE_MQTT_CLIENT_ID", value_delimiter = ',')]
     pub mqtt_client_id: Option<Vec<String>>,
 
-    /// MQTT topic prefix (default: reme/v1)
-    #[arg(long, env = "REME_NODE_MQTT_TOPIC_PREFIX")]
+    /// MQTT topic prefix (default: ember/v1)
+    #[arg(long, env = "EMBER_NODE_MQTT_TOPIC_PREFIX")]
     pub mqtt_topic_prefix: Option<String>,
 
     // Node identity configuration
     /// Path to node identity key file (32 bytes X25519 secret key)
-    /// Auto-generated if not exists. Default: ~/.config/reme/node-identity.key
-    #[arg(long, env = "REME_NODE_IDENTITY_PATH")]
+    /// Auto-generated if not exists. Default: ~/.config/ember/node-identity.key
+    #[arg(long, env = "EMBER_NODE_IDENTITY_PATH")]
     pub identity_path: Option<PathBuf>,
 
     /// Canonical public hostname for signature verification
     /// Required for secure signature verification. Example: "node1.example.com:3000"
-    #[arg(long, env = "REME_NODE_PUBLIC_HOST")]
+    #[arg(long, env = "EMBER_NODE_PUBLIC_HOST")]
     pub public_host: Option<String>,
 
     /// Additional valid hostnames (comma-separated)
     /// For multi-homed servers, dev, or migration scenarios
-    #[arg(long, env = "REME_NODE_ADDITIONAL_HOSTS", value_delimiter = ',')]
+    #[arg(long, env = "EMBER_NODE_ADDITIONAL_HOSTS", value_delimiter = ',')]
     pub additional_hosts: Option<Vec<String>>,
 
     /// Allow running with identity but without `public_host` (insecure: disables destination verification).
-    /// Env var: `REME_NODE_ALLOW_INSECURE_DESTINATION=true` (handled by config crate, not clap).
+    /// Env var: `EMBER_NODE_ALLOW_INSECURE_DESTINATION=true` (handled by config crate, not clap).
     #[arg(long)]
     pub allow_insecure_destination: bool,
 
     /// Maximum request body size in bytes
-    #[arg(long, env = "REME_NODE_MAX_BODY_SIZE")]
+    #[arg(long, env = "EMBER_NODE_MAX_BODY_SIZE")]
     pub max_body_size: Option<usize>,
 
     /// Maximum frames per submit request
-    #[arg(long, env = "REME_NODE_MAX_BATCH_SIZE")]
+    #[arg(long, env = "EMBER_NODE_MAX_BATCH_SIZE")]
     pub max_batch_size: Option<u32>,
 
     /// Enable LAN advertisement (mDNS service broadcast)
-    #[arg(long, env = "REME_NODE_LAN_ADVERTISEMENT")]
+    #[arg(long, env = "EMBER_NODE_LAN_ADVERTISEMENT")]
     pub lan_advertisement: Option<bool>,
 }
 
 /// Arguments for the export subcommand
 #[derive(Parser, Debug, Clone)]
 pub struct ExportArgs {
-    /// Output path for the .reme bundle
+    /// Output path for the .ember bundle
     pub file: PathBuf,
 
     /// Export only messages for this routing key (hex-encoded, 32 hex chars = 16 bytes)
@@ -465,7 +465,7 @@ pub struct ExportArgs {
 /// Arguments for the import subcommand
 #[derive(Parser, Debug, Clone)]
 pub struct ImportArgs {
-    /// Path to a .reme bundle file to import
+    /// Path to a .ember bundle file to import
     pub file: PathBuf,
 }
 
@@ -553,7 +553,7 @@ pub struct NodeConfig {
 impl Default for NodeConfig {
     fn default() -> Self {
         Self {
-            // REME -> (leetspeak) 23M3 -> Treat M as roman 1000 -> 23 * 1000 + 3 = 23003
+            // EMBER port number: 23M3 -> Treat M as roman 1000 -> 23 * 1000 + 3 = 23003
             bind_addr: "0.0.0.0:23003".to_string(),
             max_messages: 1000,
             default_ttl: 7 * 24 * 60 * 60, // 7 days
@@ -580,12 +580,12 @@ impl Default for NodeConfig {
 
 /// Get the default config file path based on platform conventions
 fn default_config_path() -> Option<PathBuf> {
-    ProjectDirs::from("com", "branch", "reme").map(|dirs| dirs.config_dir().join("node.toml"))
+    ProjectDirs::from("chat", "getember", "ember").map(|dirs| dirs.config_dir().join("node.toml"))
 }
 
 /// Get the default identity file path based on platform conventions
 pub fn default_identity_path() -> Option<PathBuf> {
-    ProjectDirs::from("com", "branch", "reme")
+    ProjectDirs::from("chat", "getember", "ember")
         .map(|dirs| dirs.config_dir().join("node-identity.key"))
 }
 
@@ -612,7 +612,7 @@ fn i64_to_usize_clamped(v: i64) -> usize {
 ///
 /// Priority (highest to lowest):
 /// 1. CLI arguments
-/// 2. Environment variables (`REME_NODE`_*)
+/// 2. Environment variables (`EMBER_NODE`_*)
 /// 3. Config file
 /// 4. Built-in defaults
 #[allow(clippy::cast_possible_wrap)] // Config loading uses i64 intermediates
@@ -732,9 +732,9 @@ fn build_layered_config(
         }
     }
 
-    // Environment variables (REME_NODE_*)
+    // Environment variables (EMBER_NODE_*)
     builder = builder.add_source(
-        Environment::with_prefix("REME_NODE")
+        Environment::with_prefix("EMBER_NODE")
             .separator("_")
             .try_parsing(true),
     );
@@ -1062,7 +1062,7 @@ mod tests {
     #[test]
     #[allow(clippy::items_after_statements)]
     fn test_peers_config_deserialization() {
-        use reme_config::ConfiguredTier;
+        use ember_config::ConfiguredTier;
 
         // Test new [[peers.http]] format deserialization
         let toml = r#"

@@ -17,9 +17,9 @@
 //! credentials if available.
 
 use crate::config::{MqttBridgeConfig, MqttBrokerConfig};
-use reme_message::OuterEnvelope;
-use reme_node_core::{MailboxStore, PersistentMailboxStore};
-use reme_transport::{
+use ember_message::OuterEnvelope;
+use ember_node_core::{MailboxStore, PersistentMailboxStore};
+use ember_transport::{
     url_auth::parse_url_with_auth, MqttBrokerSpec, MqttReceiverConfig, MqttTransport,
     MultiBrokerReceiver, SharedSeenCache, Transport, TransportEvent,
 };
@@ -32,10 +32,10 @@ use tracing::{debug, error, info, warn};
 #[derive(Debug, thiserror::Error)]
 pub enum MqttBridgeError {
     #[error("Transport error: {0}")]
-    Transport(#[from] reme_transport::TransportError),
+    Transport(#[from] ember_transport::TransportError),
 
     #[error("Store error: {0}")]
-    Store(#[from] reme_node_core::NodeError),
+    Store(#[from] ember_node_core::NodeError),
 }
 
 /// MQTT Bridge for bidirectional HTTP <-> MQTT message exchange.
@@ -198,7 +198,7 @@ impl MqttBridge {
     ) -> Result<
         (
             mpsc::UnboundedReceiver<TransportEvent>,
-            Vec<reme_transport::MqttReceiverHandle>,
+            Vec<ember_transport::MqttReceiverHandle>,
         ),
         MqttBridgeError,
     > {
@@ -276,13 +276,13 @@ fn handle_transport_event(store: &PersistentMailboxStore, event: TransportEvent)
     }
 }
 
-fn store_mqtt_message(store: &PersistentMailboxStore, envelope: reme_message::OuterEnvelope) {
+fn store_mqtt_message(store: &PersistentMailboxStore, envelope: ember_message::OuterEnvelope) {
     let routing_key = envelope.routing_key;
     let result = store.enqueue(routing_key, envelope);
     log_mqtt_store_result(result);
 }
 
-fn log_mqtt_store_result(result: Result<(), reme_node_core::NodeError>) {
+fn log_mqtt_store_result(result: Result<(), ember_node_core::NodeError>) {
     if let Err(e) = result {
         error!("Failed to store MQTT message: {}", e);
     }
@@ -432,11 +432,11 @@ mod tests {
             password: Some("pass".to_string()),
         }];
 
-        let configs = MqttBridge::config_to_receiver_configs(&brokers, "reme/v1");
+        let configs = MqttBridge::config_to_receiver_configs(&brokers, "ember/v1");
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].url, "mqtt://broker:1883");
         assert_eq!(configs[0].client_id, Some("test-client".to_string()));
-        assert_eq!(configs[0].topic_prefix, "reme/v1");
+        assert_eq!(configs[0].topic_prefix, "ember/v1");
         assert_eq!(
             configs[0].auth,
             Some(("user".to_string(), "pass".to_string()))
@@ -452,7 +452,7 @@ mod tests {
             password: None,
         }];
 
-        let configs = MqttBridge::config_to_receiver_configs(&brokers, "reme/v1");
+        let configs = MqttBridge::config_to_receiver_configs(&brokers, "ember/v1");
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].auth, None);
     }

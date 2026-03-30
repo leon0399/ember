@@ -1,4 +1,4 @@
-//! Import messages from a `.reme` bundle file.
+//! Import messages from a `.ember` bundle file.
 //!
 //! Reads a bundle, decodes each frame, and processes self-addressed messages
 //! via `Client::process_message_local`. Messages for other routing keys are
@@ -6,13 +6,13 @@
 //! Conflicting duplicates (same ID, different content) emit a warning.
 
 use crate::config::{AppConfig, ImportArgs};
-use reme_bundle::BundleReader;
-use reme_core::{Client, ClientError};
-use reme_message::wire::WirePayload;
-use reme_message::OuterEnvelope;
-use reme_message::SignedAckTombstone;
-use reme_storage::Storage;
-use reme_transport::{Transport, TransportError};
+use ember_bundle::BundleReader;
+use ember_core::{Client, ClientError};
+use ember_message::wire::WirePayload;
+use ember_message::OuterEnvelope;
+use ember_message::SignedAckTombstone;
+use ember_storage::Storage;
+use ember_transport::{Transport, TransportError};
 use std::fs::File;
 use std::sync::Arc;
 
@@ -47,9 +47,9 @@ pub fn run_import(config: &AppConfig, args: &ImportArgs) -> Result<(), Box<dyn s
     }
 
     // Load identity
-    let identity_path = config.data_dir.join("identity.reme");
+    let identity_path = config.data_dir.join("identity.ember");
     if !identity_path.exists() {
-        return Err("No identity found. Run `reme` first to create one.".into());
+        return Err("No identity found. Run `ember` first to create one.".into());
     }
     let identity = crate::identity::load_existing(&identity_path)?;
 
@@ -166,10 +166,10 @@ fn print_summary(s: &ImportSummary) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reme_bundle::BundleWriter;
-    use reme_identity::Identity;
-    use reme_message::MessageID;
-    use reme_message::OuterEnvelope;
+    use ember_bundle::BundleWriter;
+    use ember_identity::Identity;
+    use ember_message::MessageID;
+    use ember_message::OuterEnvelope;
     use std::io::Cursor;
 
     fn make_test_envelope(identity: &Identity) -> OuterEnvelope {

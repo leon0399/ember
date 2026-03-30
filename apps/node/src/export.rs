@@ -1,4 +1,4 @@
-//! Node export: dump mailbox messages to a `.reme` bundle file.
+//! Node export: dump mailbox messages to a `.ember` bundle file.
 //!
 //! Unlike client export, the node never decrypts — it stores opaque envelopes
 //! and writes them directly as `WirePayload::Message` frames.
@@ -7,10 +7,10 @@
 //! receipt (deleting the target message). There is no pending-tombstone store.
 
 use crate::config::{ExportArgs, NodeConfig};
-use reme_bundle::BundleWriter;
-use reme_identity::RoutingKey;
-use reme_message::wire::WirePayload;
-use reme_node_core::PersistentMailboxStore;
+use ember_bundle::BundleWriter;
+use ember_identity::RoutingKey;
+use ember_message::wire::WirePayload;
+use ember_node_core::PersistentMailboxStore;
 use std::fs;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

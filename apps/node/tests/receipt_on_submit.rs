@@ -10,12 +10,12 @@
 //! Tests that nodes return cryptographic receipts proving they can decrypt messages.
 
 use base64::prelude::*;
+use ember_encryption::{derive_ack_hash, encrypt_to_mik, RECEIPT_DOMAIN_SEP};
+use ember_identity::Identity;
+use ember_message::{Content, InnerEnvelope, MessageID, OuterEnvelope, TextContent};
 use node::{
     api, node_identity::NodeIdentity, replication, PersistentMailboxStore, PersistentStoreConfig,
 };
-use reme_encryption::{derive_ack_hash, encrypt_to_mik, RECEIPT_DOMAIN_SEP};
-use reme_identity::Identity;
-use reme_message::{Content, InnerEnvelope, MessageID, OuterEnvelope, TextContent};
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -112,7 +112,7 @@ async fn start_test_node(
 #[allow(clippy::cast_possible_truncation)] // Test helper, ms since epoch fits in u64
 fn create_encrypted_envelope(
     sender: &Identity,
-    recipient_pubkey: &reme_identity::PublicID,
+    recipient_pubkey: &ember_identity::PublicID,
 ) -> (OuterEnvelope, [u8; 16]) {
     // Create inner envelope
     let now_ms = SystemTime::now()
@@ -155,13 +155,13 @@ fn create_encrypted_envelope(
 /// Submit envelope to node and parse response
 async fn submit_envelope(url: &str, envelope: OuterEnvelope) -> FrameResult {
     let client = reqwest::Client::new();
-    let wire_payload = reme_message::WirePayload::Message(envelope);
+    let wire_payload = ember_message::WirePayload::Message(envelope);
     let wire_bytes = wire_payload.encode().unwrap();
-    let bundle_body = reme_bundle::encode_body(&[&wire_bytes]);
+    let bundle_body = ember_bundle::encode_body(&[&wire_bytes]);
 
     let response = client
         .post(format!("{url}/api/v1/submit"))
-        .header("Content-Type", "application/vnd.reme.bundle")
+        .header("Content-Type", "application/vnd.ember.bundle")
         .body(bundle_body)
         .send()
         .await
@@ -238,7 +238,7 @@ async fn test_recipient_returns_ack_secret() {
         .expect("Wrong signature length");
 
     // Reconstruct signed message with domain separation
-    // Format: "reme-receipt-v1:" || signer_pubkey || message_id (NO ack_secret)
+    // Format: "ember-receipt-v1:" || signer_pubkey || message_id (NO ack_secret)
     let mut sign_data = Vec::with_capacity(RECEIPT_DOMAIN_SEP.len() + 32 + 16);
     sign_data.extend_from_slice(RECEIPT_DOMAIN_SEP);
     sign_data.extend_from_slice(&node_pubkey.to_bytes());
@@ -293,7 +293,7 @@ async fn test_relay_returns_signature_but_no_ack_secret() {
         .try_into()
         .expect("Wrong signature length");
 
-    // Format: "reme-receipt-v1:" || signer_pubkey || message_id (NO ack_secret)
+    // Format: "ember-receipt-v1:" || signer_pubkey || message_id (NO ack_secret)
     let mut sign_data = Vec::with_capacity(RECEIPT_DOMAIN_SEP.len() + 32 + 16);
     sign_data.extend_from_slice(RECEIPT_DOMAIN_SEP);
     sign_data.extend_from_slice(&node_pubkey.to_bytes());
@@ -425,7 +425,7 @@ async fn test_low_order_ephemeral_key_returns_signature_but_no_ack_secret() {
         .try_into()
         .expect("Wrong signature length");
 
-    // Format: "reme-receipt-v1:" || signer_pubkey || message_id (NO ack_secret)
+    // Format: "ember-receipt-v1:" || signer_pubkey || message_id (NO ack_secret)
     let mut sign_data = Vec::with_capacity(RECEIPT_DOMAIN_SEP.len() + 32 + 16);
     sign_data.extend_from_slice(RECEIPT_DOMAIN_SEP);
     sign_data.extend_from_slice(&node_pubkey.to_bytes());
@@ -459,23 +459,23 @@ async fn test_batch_submit_multiple_messages() {
     let (envelope3, _) = create_encrypted_envelope(&sender3, &node_pubkey);
 
     // Encode all 3 as a single bundle
-    let wire1 = reme_message::WirePayload::Message(envelope1.clone())
+    let wire1 = ember_message::WirePayload::Message(envelope1.clone())
         .encode()
         .unwrap();
-    let wire2 = reme_message::WirePayload::Message(envelope2.clone())
+    let wire2 = ember_message::WirePayload::Message(envelope2.clone())
         .encode()
         .unwrap();
-    let wire3 = reme_message::WirePayload::Message(envelope3.clone())
+    let wire3 = ember_message::WirePayload::Message(envelope3.clone())
         .encode()
         .unwrap();
 
-    let bundle_body = reme_bundle::encode_body(&[&wire1, &wire2, &wire3]);
+    let bundle_body = ember_bundle::encode_body(&[&wire1, &wire2, &wire3]);
 
     // Submit batch
     let client = reqwest::Client::new();
     let response = client
         .post(format!("{url}/api/v1/submit"))
-        .header("Content-Type", "application/vnd.reme.bundle")
+        .header("Content-Type", "application/vnd.ember.bundle")
         .body(bundle_body)
         .send()
         .await
@@ -507,7 +507,7 @@ async fn test_batch_submit_multiple_messages() {
 
     // Verify all 3 messages are fetchable
     let transport =
-        reme_transport::pool::TransportPool::<reme_transport::http_target::HttpTarget>::single(
+        ember_transport::pool::TransportPool::<ember_transport::http_target::HttpTarget>::single(
             &url,
         )
         .unwrap();

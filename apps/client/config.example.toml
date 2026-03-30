@@ -1,5 +1,5 @@
 # Resilient Messenger Client Configuration
-# Default location: ~/.config/reme/config.toml
+# Default location: ~/.config/ember/config.toml
 
 # HTTP Mailbox Peers
 [[peers.http]]
@@ -19,7 +19,7 @@ label = "Backup Mailbox"
 # MQTT Broker Peers (optional)
 [[peers.mqtt]]
 url = "mqtts://broker.example.com:8883"
-username = "reme_client"
+username = "ember_client"
 password = "secret_password"
 client_id = "my-device-id"
 tier = "quorum"
@@ -32,7 +32,7 @@ label = "Authenticated MQTT Broker"
 # tier = "quorum"
 
 # Application settings
-data_dir = "~/.local/share/reme"
+data_dir = "~/.local/share/ember"
 log_level = "info"
 
 # Embedded node (for LAN P2P)

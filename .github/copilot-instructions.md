@@ -18,7 +18,7 @@ This codebase is a security-critical encrypted messaging system. Extra scrutiny 
 - Hardcoded secrets or test keys leaking into production paths
 - Missing input validation on externally received envelopes or wire formats
 - Improper error handling that could leak cryptographic material (e.g., returning the raw key in an error message)
-- Changes to `reme-encryption` or `reme-identity` that alter the wire format without bumping the protocol version
+- Changes to `ember-encryption` or `ember-identity` that alter the wire format without bumping the protocol version
 - Identity verification bypass in discovery: peers must be verified via challenge-response before being registered as ephemeral targets
 
 ### Correctness Issues
@@ -35,17 +35,17 @@ This codebase is a security-critical encrypted messaging system. Extra scrutiny 
 
 ### Architecture & Patterns
 
-- Code that violates the layered crate dependency order: `reme-core` depends on everything; lower-level crates must not depend on higher-level crates
+- Code that violates the layered crate dependency order: `ember-core` depends on everything; lower-level crates must not depend on higher-level crates
 - Error types must use `thiserror` — all library crates use `thiserror` for structured error enums, not `anyhow`
 - Async blocking: no `std::thread::sleep`, blocking I/O, or CPU-bound work on the tokio async executor without `spawn_blocking`
 - Transport registration: ephemeral targets (mDNS-discovered peers) are SEND-only; registering them with FETCH or QUORUM_CREDIT capability is wrong
 - Wire format changes: `bincode v2` is used for all wire formats — adding/removing/reordering fields in serialized structs without a version gate breaks wire compatibility
-- Improper trait implementations on public types in `reme-transport` or `reme-message` that could allow misuse
+- Improper trait implementations on public types in `ember-transport` or `ember-message` that could allow misuse
 
 ## Project-Specific Context
 
 - Pure Rust cargo workspace; no JavaScript or frontend code
-- Core crates: `reme-identity`, `reme-encryption`, `reme-message`, `reme-transport`, `reme-storage`, `reme-outbox`, `reme-node-core`, `reme-config`, `reme-discovery`, `reme-core`
+- Core crates: `ember-identity`, `ember-encryption`, `ember-message`, `ember-transport`, `ember-storage`, `ember-outbox`, `ember-node-core`, `ember-config`, `ember-discovery`, `ember-core`
 - Apps: `apps/node` (Axum mailbox server), `apps/client` (ratatui TUI)
 - Error handling: `thiserror` with structured error enums in all `crates/`; no `anyhow` in library code
 - Async runtime: tokio

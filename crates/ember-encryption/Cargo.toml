@@ -1,0 +1,23 @@
+[package]
+name = "ember-encryption"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ember-message = { workspace = true }
+ember-identity = { workspace = true }
+thiserror = { workspace = true }
+postcard = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+blake3 = { workspace = true }
+uuid = { workspace = true }
+x25519-dalek = { workspace = true, features = ["static_secrets"] }
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+
+chacha20poly1305 = "0.10"
+xeddsa = { version = "1.0", features = ["xed25519"] }

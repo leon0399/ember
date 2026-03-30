@@ -4,17 +4,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use base64::prelude::*;
+use ember_discovery::{decode_txt, DiscoveryEvent, RawDiscoveredPeer};
+use ember_encryption::build_identity_sign_data;
+use ember_identity::PublicID;
+use ember_node_core::now_secs_i64;
+use ember_storage::Storage;
+use ember_transport::coordinator::TransportCoordinator;
+use ember_transport::delivery::DeliveryTier;
+use ember_transport::http_target::{HttpTarget, HttpTargetConfig};
+use ember_transport::registry::TransportRegistry;
+use ember_transport::target::TargetId;
 use percent_encoding::{percent_encode, NON_ALPHANUMERIC};
-use reme_discovery::{decode_txt, DiscoveryEvent, RawDiscoveredPeer};
-use reme_encryption::build_identity_sign_data;
-use reme_identity::PublicID;
-use reme_node_core::now_secs_i64;
-use reme_storage::Storage;
-use reme_transport::coordinator::TransportCoordinator;
-use reme_transport::delivery::DeliveryTier;
-use reme_transport::http_target::{HttpTarget, HttpTargetConfig};
-use reme_transport::registry::TransportRegistry;
-use reme_transport::target::TargetId;
 use serde::Deserialize;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::{JoinHandle, JoinSet};
@@ -280,7 +280,7 @@ fn find_matching_candidate(
 }
 
 /// Extract routing key from peer TXT records, logging on failure.
-fn extract_routing_key(peer: &reme_discovery::RawDiscoveredPeer) -> Option<[u8; 16]> {
+fn extract_routing_key(peer: &ember_discovery::RawDiscoveredPeer) -> Option<[u8; 16]> {
     match decode_txt(&peer.txt_records) {
         Ok(fields) => Some(fields.routing_key),
         Err(e) => {
@@ -505,7 +505,7 @@ impl DiscoveryController {
     /// Handle a discovered or updated peer from mDNS events.
     async fn handle_discovered(
         &mut self,
-        peer: reme_discovery::RawDiscoveredPeer,
+        peer: ember_discovery::RawDiscoveredPeer,
         coordinator: &TransportCoordinator,
     ) {
         let Some(routing_key) = extract_routing_key(&peer) else {
@@ -569,7 +569,7 @@ impl DiscoveryController {
     }
 
     /// Cache a peer whose routing key doesn't match any known contact.
-    fn cache_stranger(&mut self, peer: reme_discovery::RawDiscoveredPeer, routing_key: [u8; 16]) {
+    fn cache_stranger(&mut self, peer: ember_discovery::RawDiscoveredPeer, routing_key: [u8; 16]) {
         let is_known = self.stranger_cache.contains_key(&peer.instance_name);
 
         if !is_known && !self.has_stranger_capacity() {
@@ -591,7 +591,7 @@ impl DiscoveryController {
     /// Insert a peer into the stranger cache.
     fn insert_stranger(
         &mut self,
-        peer: reme_discovery::RawDiscoveredPeer,
+        peer: ember_discovery::RawDiscoveredPeer,
         routing_key: [u8; 16],
         is_update: bool,
     ) {
@@ -609,7 +609,7 @@ impl DiscoveryController {
     /// or is an update with unchanged address+routing key).
     fn should_process_peer(
         &self,
-        peer: &reme_discovery::RawDiscoveredPeer,
+        peer: &ember_discovery::RawDiscoveredPeer,
         routing_key: [u8; 16],
         _candidates: &[PublicID],
     ) -> bool {
@@ -636,7 +636,7 @@ impl DiscoveryController {
     /// Check if an already-tracked peer needs re-verification (address or TXT changed).
     fn needs_reverification(
         &self,
-        peer: &reme_discovery::RawDiscoveredPeer,
+        peer: &ember_discovery::RawDiscoveredPeer,
         routing_key: [u8; 16],
     ) -> bool {
         let Some(entry) = self.peer_index.get(&peer.instance_name) else {
@@ -659,7 +659,7 @@ impl DiscoveryController {
     /// Try each address in the peer until identity verification succeeds.
     async fn verify_any_address(
         &self,
-        peer: &reme_discovery::RawDiscoveredPeer,
+        peer: &ember_discovery::RawDiscoveredPeer,
         candidates: &[PublicID],
     ) -> Option<(PublicID, String)> {
         for &addr in &peer.addresses {
@@ -923,9 +923,9 @@ impl DiscoveryController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reme_identity::Identity;
-    use reme_storage::TrustLevel;
-    use reme_transport::coordinator::CoordinatorConfig;
+    use ember_identity::Identity;
+    use ember_storage::TrustLevel;
+    use ember_transport::coordinator::CoordinatorConfig;
     use std::net::IpAddr;
     use std::time::Instant;
 
@@ -1109,7 +1109,7 @@ mod tests {
             instance_name: instance_name.to_string(),
             addresses: vec!["192.168.1.50".parse().unwrap()],
             port: 23003,
-            txt_records: reme_discovery::encode_txt(rk, 23003),
+            txt_records: ember_discovery::encode_txt(rk, 23003),
             discovered_at: Instant::now(),
         }
     }
@@ -1214,7 +1214,7 @@ mod tests {
             instance_name: "stranger-a".to_string(),
             addresses: vec!["192.168.1.99".parse().unwrap()],
             port: 9999,
-            txt_records: reme_discovery::encode_txt(&rk_a, 9999),
+            txt_records: ember_discovery::encode_txt(&rk_a, 9999),
             discovered_at: Instant::now(),
         };
         controller.handle_discovered(updated, &coordinator).await;

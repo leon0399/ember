@@ -1,6 +1,6 @@
 # Threat Model
 
-Attack scenarios, mitigations, and residual risks for the reme messaging system.
+Attack scenarios, mitigations, and residual risks for the ember messaging system.
 
 ## LAN Discovery
 

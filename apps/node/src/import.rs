@@ -1,12 +1,12 @@
-//! Node import: read a `.reme` bundle and store envelopes / apply tombstones.
+//! Node import: read a `.ember` bundle and store envelopes / apply tombstones.
 //!
 //! Messages are stored via `MailboxStore::enqueue` (INSERT OR IGNORE = idempotent).
 //! Tombstones are verified against the stored `ack_hash` before deletion.
 
 use crate::config::{ImportArgs, NodeConfig};
-use reme_bundle::BundleReader;
-use reme_message::wire::WirePayload;
-use reme_node_core::{MailboxStore, PersistentMailboxStore};
+use ember_bundle::BundleReader;
+use ember_message::wire::WirePayload;
+use ember_node_core::{MailboxStore, PersistentMailboxStore};
 use std::fs::File;
 
 #[derive(Default)]

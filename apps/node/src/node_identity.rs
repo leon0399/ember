@@ -5,8 +5,8 @@
 //! - `XEdDSA` signatures on HTTP headers (proving message origin)
 //! - Cryptographic loop prevention (identifying self by public key)
 
-use reme_identity::{is_low_order_point, Identity, InvalidPublicKey, PublicID};
-use reme_message::RoutingKey;
+use ember_identity::{is_low_order_point, Identity, InvalidPublicKey, PublicID};
+use ember_message::RoutingKey;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::Path;

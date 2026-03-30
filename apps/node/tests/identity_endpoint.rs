@@ -4,11 +4,11 @@
 //! Tests that nodes correctly respond to challenge-response identity verification.
 
 use base64::prelude::*;
+use ember_encryption::build_identity_sign_data;
+use ember_identity::Identity;
 use node::{
     api, node_identity::NodeIdentity, replication, PersistentMailboxStore, PersistentStoreConfig,
 };
-use reme_encryption::build_identity_sign_data;
-use reme_identity::Identity;
 use serde::Deserialize;
 use std::sync::Arc;
 use tempfile::tempdir;
