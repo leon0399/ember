@@ -32,7 +32,7 @@ tokio-util = { workspace = true }
 futures = { workspace = true }
 
 # MQTT implementation
-rumqttc = { version = "0.24", features = ["use-rustls"], optional = true }
+rumqttc = { version = "0.25", features = ["use-rustls"], optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
 
 # Hex encoding (for routing keys)

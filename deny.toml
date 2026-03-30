@@ -1,16 +1,37 @@
 # deny.toml — cargo-deny policy for reme workspace
 # Docs: https://embarkstudios.github.io/cargo-deny/
+#
+# Policy goals (derived from WHITEPAPER.md):
+# 1. Enforce the specified crypto stack (X25519, XEdDSA, ChaCha20-Poly1305, BLAKE3)
+# 2. Prevent accidental introduction of alternative crypto backends
+# 3. Minimize metadata leakage via telemetry/analytics dependencies
+# 4. Maintain supply chain integrity (crates.io only, no unvetted git deps)
 
 [graph]
 all-features = true
+# Evaluate only the platforms we actually target.
+# Prevents false positives from UEFI-only deps (e.g., r-efi LGPL).
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
 
 # ──────────────────────────────────────────────
 # Advisories: fail on known vulnerabilities
 # ──────────────────────────────────────────────
 [advisories]
 yanked = "warn"
-unmaintained = "none"
-ignore = []
+# For a security-critical messenger, unmaintained direct deps deserve visibility.
+# "workspace" = error on direct deps only, ignore transitive ones we can't control.
+unmaintained = "workspace"
+ignore = [
+    # derivative is unmaintained, used across 6 workspace crates.
+    # Migration tracked in #220.
+    "RUSTSEC-2024-0388",
+]
 
 # ──────────────────────────────────────────────
 # Licenses: allowlist model (deny by default)
@@ -29,6 +50,10 @@ allow = [
     "OpenSSL",
     "MPL-2.0",
     "CDLA-Permissive-2.0",
+    # BSD-1-Clause: used by fiat-crypto (curve25519-dalek dependency)
+    "BSD-1-Clause",
+    # MIT-0: used by aws-lc-sys, constant_time_eq, dunce
+    "MIT-0",
 ]
 confidence-threshold = 0.8
 
@@ -49,11 +74,50 @@ wildcards = "deny"
 allow-wildcard-paths = true
 highlight = "lowest-version"
 
+# Crates that MUST NOT appear as direct dependencies.
+#
+# Crypto stack protection: the whitepaper specifies X25519 + XEdDSA +
+# ChaCha20-Poly1305 + BLAKE3. These bans prevent crypto stack drift by
+# blocking alternative crypto backends from being added directly.
+# Transitive usage (e.g., openssl via native-tls for TLS transport) is
+# allowed via wrappers — the deny applies to direct workspace imports.
+deny = [
+    # ── Alternative crypto backends ──
+    # We use RustCrypto + BLAKE3 + x25519-dalek. Block direct use of
+    # competing backends that would fragment the crypto surface.
+    { crate = "sodiumoxide", wrappers = [] },
+    { crate = "libsodium-sys", wrappers = [] },
+    { crate = "boring", wrappers = [] },
+    { crate = "boringssl", wrappers = [] },
+
+    # ── Telemetry / analytics ──
+    # Whitepaper §3.3 goal #5: metadata minimization.
+    # These crates phone home or collect usage data.
+    { crate = "sentry", wrappers = [] },
+    { crate = "sentry-core", wrappers = [] },
+    { crate = "datadog-apm", wrappers = [] },
+
+    # ── Deprecated / known-bad ──
+    { crate = "rust-crypto", wrappers = [] },  # Unmaintained, known vulnerabilities
+]
+
+# Known-acceptable version duplicates from transitive dependency chains.
+# Each entry documents WHY the duplicate exists so we can clean it up
+# when upstream consolidates.
+skip = [
+    # config 0.14 → ron → base64 0.21; everything else uses 0.22
+    { crate = "base64@0.21", reason = "config crate's ron dependency" },
+    # config 0.14 → convert_case 0.6; derive_more uses 0.10
+    { crate = "convert_case@0.6", reason = "config crate dependency" },
+]
+
 # ──────────────────────────────────────────────
 # Sources: only crates.io, no git deps in prod
 # ──────────────────────────────────────────────
 [sources]
 unknown-registry = "deny"
-unknown-git = "warn"
+# Git deps bypass crates.io integrity checks and can be swapped silently.
+# For a security-focused project, require explicit allowlisting.
+unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = []
