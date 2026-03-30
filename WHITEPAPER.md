@@ -65,7 +65,7 @@ Reme takes a different approach: designing for intermittent, constrained, and po
 | Term | Definition |
 |------|------------|
 | **DTN** (Delay-Tolerant Networking) | A network architecture where end-to-end connectivity is intermittent or never available. Messages are stored and forwarded hop-by-hop. Reme is designed for DTN conditions: no session state, independent message processing, tolerance for loss and reordering. |
-| **Stateless encryption** | Each message carries its own key exchange material (ephemeral X25519 keypair). No session establishment, no prekeys, no ratchet state. Any single message can be decrypted independently. The tradeoff: no per-message forward secrecy until v1.0 adds Noise XX sessions. |
+| **Stateless encryption** | Each message carries its own key exchange material (ephemeral X25519 keypair). No session establishment, no prekeys, no ratchet state. Any single message can be decrypted independently. The tradeoff: no per-message forward secrecy until session encryption (Noise XX) is added. |
 | **MIK** (Master Identity Key) | A user's long-term X25519 keypair. Used for both encryption (ECDH) and signatures (XEdDSA). One key per identity. |
 | **PublicID** | The public half of a MIK. 32 bytes. Acts as both the user's address and encryption target. |
 | **RoutingKey** | First 16 bytes of `BLAKE3(PublicID)`. Used for mailbox addressing so relay nodes never see the full PublicID. |
@@ -118,15 +118,15 @@ reme is designed to resist these adversaries:
 - Attackers attempting replay or reordering
 
 **Key compromise:**
-- Loss of device does not compromise past messages *(v1.0 target — in v0.x, MIK compromise exposes all messages encrypted to it; see §3.3 goal #4)*
-- Future security after key compromise (with session ratcheting in v1.0)
+- Loss of device does not compromise past messages *(session encryption target — in stateless mode, MIK compromise exposes all messages encrypted to it; see §3.3 goal #4)*
+- Future security after key compromise (with session encryption via Noise XX)
 
 ### 3.3 Security goals
 
 1. **Confidentiality**: Only intended recipients can read message content
 2. **Authenticity**: Recipients can verify sender identity
 3. **Integrity**: Any modification to messages is detectable
-4. **Forward secrecy** *(v1.0 target)*: v0.x has no forward secrecy — each message uses a fresh ephemeral ECDH exchange, but all exchanges are bound to the recipient's long-term MIK, so compromising the MIK exposes all past and future messages encrypted to it. The v1.0 Noise XX handshake will provide per-session forward secrecy where compromise of long-term keys does not expose past session-encrypted messages.
+4. **Forward secrecy** *(pre-constrained-transport target)*: Stateless mode has no forward secrecy — each message uses a fresh ephemeral ECDH exchange, but all exchanges are bound to the recipient's long-term MIK, so compromising the MIK exposes all past and future messages encrypted to it. The Async Noise XX handshake provides per-session forward secrecy where compromise of long-term keys does not expose past session-encrypted messages. Session encryption is a prerequisite for constrained transports (BLE, LoRa) because the session envelope (~41 bytes overhead) fits within constrained MTUs, while the stateless envelope (~212 bytes overhead) does not.
 5. **Metadata minimization**: Relay nodes learn minimal information about communication patterns
 6. **Authentication** *(non-repudiable)*: XEdDSA signatures in InnerEnvelope prove sender identity to the recipient, but are also verifiable by any third party who obtains the decrypted InnerEnvelope and the sender's PublicID. This provides non-repudiation, not deniability. Deniable authentication (e.g., symmetric MACs derived from shared ECDH secrets) is a potential future improvement.
 
@@ -145,10 +145,11 @@ reme is designed to resist these adversaries:
 ### 4.2 Design constraints
 
 **Wire format constraints:**
-- Outer envelope: ~102 bytes minimum overhead
-- Inner envelope: Scales with content (~62 bytes minimum for empty text)
-- LoRa MTU: ~200 bytes (requires fragmentation for larger messages)
-- Total encrypted text message: ~180-220 bytes typical
+- Stateless envelope: ~212 bytes minimum overhead (ephemeral key + signature + sender identity + DAG)
+- Session envelope: ~41 bytes minimum overhead (session_tag + counter + AEAD tag)
+- LoRa MTU: 51–222 bytes depending on spreading factor (SF12–SF7)
+- Stateless mode is viable only on unconstrained transports (HTTP, MQTT)
+- Session mode is required for constrained transports (BLE, LoRa) — established over unconstrained transport first
 
 **Operational constraints:**
 - No mandatory central servers (mailboxes are optional relays)
@@ -313,15 +314,22 @@ enc_key = BLAKE3_KDF("reme-encryption-key-v0", ephemeral_pub || recipient_pub ||
 
 Including both public keys in the KDF input prevents key confusion attacks where an attacker might claim a ciphertext was intended for a different recipient.
 
-### 7.4 Future: Async Noise handshake (v1.0)
+### 7.4 Async Noise handshake (session encryption)
 
-Version 1.0 will add the **Async DTN-Safe Noise XX Handshake** for forward secrecy and post-compromise security:
+The **Async DTN-Safe Noise XX Handshake** provides forward secrecy, post-compromise security, and — critically — the compact envelope format required for constrained transports:
 
 1. Encrypted sender in OuterEnvelope (+16 bytes)
 2. Either party can initiate (deterministic roles)
 3. Epoch-based replay protection
 4. DAG-integrated key lifecycle (delete after ACK)
 5. MIK fallback when session unavailable
+6. Session envelope variant (~41 bytes overhead vs ~212 bytes stateless)
+
+Session encryption is a prerequisite for BLE and LoRa transports. The stateless envelope (~212 bytes with `FLAG_DETACHED`) exceeds LoRa SF12's 51-byte MTU entirely and leaves only ~10 bytes of content on SF7's 222-byte MTU. The session envelope reduces overhead to ~41 bytes, making constrained transports viable (181 bytes content on SF7, ~10 bytes on SF12).
+
+Sessions are established over unconstrained transports (HTTP, LAN) before the constrained transport is used. A relay node (e.g., Starlink scenario) forwards session-encrypted envelopes without decryption — it only needs the `routing_key` (always present) to route.
+
+See `docs/drafts/session-encryption.md` for full protocol specification.
 
 ---
 
@@ -519,8 +527,11 @@ Primary transport for reliable connectivity:
 ### 11.3 Future transports
 
 **LoRa/Meshtastic:**
-- MTU: ~200 bytes, requires fragmentation for larger messages
-- Uses detached messages to minimize overhead
+- MTU: 51–222 bytes depending on spreading factor (SF12–SF7)
+- **Requires session encryption** — stateless envelope (~212 bytes) exceeds LoRa MTU; session envelope (~41 bytes overhead) fits
+- Session established over unconstrained transport (HTTP, LAN) before LoRa use
+- Uses detached messages (`FLAG_DETACHED`) to minimize overhead
+- Transport-layer chunking for messages exceeding a single LoRa packet
 - Meshtastic handles mesh routing; reme bridges between Meshtastic and other transports
 - Reme does not relay LoRa-to-LoRa itself
 - Acts as both relay ingress and egress (see §11.5)
@@ -635,9 +646,9 @@ sequenceDiagram
 
 ### 12.3 Forward secrecy
 
-**MIK-only (v0.3)**: No forward secrecy. Compromise of the MIK reveals all past and future messages encrypted to it. Each message uses a fresh ephemeral ECDH exchange, but the recipient side of every exchange is the long-term MIK.
+**Stateless mode (MIK-only)**: No forward secrecy. Compromise of the MIK reveals all past and future messages encrypted to it. Each message uses a fresh ephemeral ECDH exchange, but the recipient side of every exchange is the long-term MIK. Used on unconstrained transports and as fallback when no session exists.
 
-**Async Noise (v1.0)**: Will provide per-session forward secrecy through Noise XX handshake with DAG-integrated key lifecycle. Keys deleted after DAG acknowledgment.
+**Session mode (Async Noise XX)**: Per-session forward secrecy through Noise XX handshake with DAG-integrated key lifecycle. Keys deleted after DAG acknowledgment. Required for constrained transports (BLE, LoRa) due to ~5x overhead reduction vs stateless mode.
 
 ### 12.4 Replay protection
 
@@ -670,7 +681,7 @@ sequenceDiagram
 | Aspect            | Signal                            | reme                                           |
 |-------------------|-----------------------------------|------------------------------------------------|
 | Key Exchange      | X3DH with server-mediated prekeys | Direct MIK encryption, Noise XX (v1.0)         |
-| Forward Secrecy   | Double Ratchet                    | None in v0.3; per-session Noise XX (v1.0)      |
+| Forward Secrecy   | Double Ratchet                    | Stateless (MIK-only) + per-session Noise XX    |
 | Identity          | Phone number                      | Self-sovereign 32-byte key                     |
 | Server Dependency | Required for delivery             | Optional mailboxes                             |
 | Offline First     | No                                | Yes                                            |
@@ -708,7 +719,7 @@ sequenceDiagram
 
 ### 14.1 Version 1.0: Async Noise handshake
 
-- Noise XX session establishment (no prekey servers)
+- Noise XX session establishment (no prekey servers, prerequisite for constrained transports)
 - Encrypted sender field for key-loss recovery
 - DAG-integrated key lifecycle (delete after ACK)
 - Per-session forward secrecy
@@ -743,9 +754,9 @@ sequenceDiagram
 
 Reme is a different approach to secure messaging for adversarial network conditions. It combines stateless encryption (each message is independently processable), Merkle DAG ordering (decentralized causality), transport-agnostic design (constrained channels work), and cryptographic tombstones (verifiable acknowledgments).
 
-The current MIK-only implementation provides a solid foundation, with a clear upgrade path to Async Noise XX handshake for forward secrecy. The modular Rust implementation can be embedded in command-line tools, mobile apps, and embedded devices.
+The dual-mode encryption design — stateless MIK for unconstrained transports, session-based Noise XX for constrained transports and forward secrecy — provides both DTN tolerance and bandwidth efficiency. The modular Rust implementation can be embedded in command-line tools, mobile apps, and embedded devices.
 
-The tradeoff is explicit: reme prioritizes resilience and DTN tolerance over the per-message forward secrecy that Double Ratchet provides. For users who need messaging when infrastructure fails, this tradeoff makes sense.
+The tradeoff is explicit: reme uses stateless encryption as the universal fallback (any message decryptable without session state) and session encryption where peers have established connectivity (forward secrecy + compact envelope for constrained transports). This layered approach avoids the false choice between DTN tolerance and forward secrecy.
 
 ---
 
@@ -856,26 +867,27 @@ The tradeoff is explicit: reme prioritizes resilience and DTN tolerance over the
 - LAN relay mode (HTTP ingress/egress) for partial outage scenarios
 
 **v0.7:**
+- Async Noise XX session encryption (forward secrecy + compact envelope)
+- Session envelope variant (~41 bytes overhead for constrained transports)
+- MIK fallback when session unavailable
+
+**v0.8:**
 - BLE direct exchange (point-to-point, no relay)
 - Transport-layer chunking for constrained MTUs
 
-**v0.8:**
+**v0.9:**
 - Meshtastic direct exchange (point-to-point via Meshtastic hardware)
 - Kilometers-range messaging without Internet
 
-**v0.9:**
-- BLE and Meshtastic ingress adapters for relay queue
-- Bridge offline transports to Quorum
-
 **v0.10:**
-- BLE egress with RSSI-based relay timing
+- BLE and Meshtastic ingress/egress adapters for relay queue
+- Bridge offline transports to Quorum
 - Meshtastic egress (Starlink relay scenario)
 - Cross-transport relay
 
 **v1.0 (breaking release):**
 - Protobuf wire format for cross-language compatibility
-- Async Noise XX handshake for forward secrecy
-- DAG-integrated key lifecycle
+- DAG-integrated key lifecycle refinements
 
 **Post-v1.0:**
 - Group messaging (Sender Keys)
