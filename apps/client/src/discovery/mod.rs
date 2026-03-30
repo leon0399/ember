@@ -7,7 +7,7 @@ use crate::config::AppConfig;
 use reme_discovery::mdns_sd::MdnsSdBackend;
 use reme_discovery::DiscoveryBackend as _;
 use reme_identity::{Identity, PublicID};
-use reme_storage::Storage;
+use reme_storage::{Storage, TrustLevel};
 use reme_transport::coordinator::TransportCoordinator;
 use reme_transport::registry::TransportRegistry;
 use tokio::sync::mpsc;
@@ -49,7 +49,7 @@ pub enum InitResult {
 pub async fn initialize(
     config: &AppConfig,
     identity: &Identity,
-    storage: &Storage,
+    storage: Arc<Storage>,
     coordinator: Arc<TransportCoordinator>,
     registry: Arc<TransportRegistry>,
 ) -> InitResult {
@@ -88,7 +88,7 @@ struct PartialDiscoveryState {
 /// Build partial discovery state (controller + peer count + cancel token).
 fn build_discovery_state(
     config: &AppConfig,
-    storage: &Storage,
+    storage: Arc<Storage>,
     backend: &MdnsSdBackend,
     coordinator: Arc<TransportCoordinator>,
     registry: Arc<TransportRegistry>,
@@ -142,7 +142,7 @@ struct ControllerDeps {
 /// Spawn the discovery controller if `auto_direct_known_contacts` is enabled.
 fn spawn_controller(
     config: &AppConfig,
-    storage: &Storage,
+    storage: Arc<Storage>,
     backend: &MdnsSdBackend,
     deps: ControllerDeps,
     cancel: &CancellationToken,
@@ -157,13 +157,14 @@ fn spawn_controller(
         return (None, None);
     }
 
-    let contacts = load_contacts_for_discovery(storage);
+    let contacts = load_contacts_for_discovery(storage.as_ref());
     let events = backend.subscribe();
     let (contact_tx, contact_rx) = mpsc::unbounded_channel();
     let task = controller::spawn(controller::SpawnConfig {
         events,
         coordinator,
         registry,
+        storage,
         contacts,
         max_peers: config.lan_discovery.max_peers,
         refresh_interval_secs: config.lan_discovery.refresh_interval_secs,
@@ -177,16 +178,13 @@ fn spawn_controller(
 /// Load contacts from storage, mapping to (`PublicID`, `routing_key`) pairs.
 fn load_contacts_for_discovery(storage: &Storage) -> Vec<(PublicID, [u8; 16])> {
     storage
-        .list_contacts()
+        .list_contacts_with_min_trust(TrustLevel::Known)
         .unwrap_or_else(|e| {
             warn!("Failed to load contacts for discovery: {e}");
             Vec::new()
         })
         .into_iter()
-        .map(|(_, pubkey, _)| {
-            let rk: [u8; 16] = pubkey.routing_key().into();
-            (pubkey, rk)
-        })
+        .map(|contact| (contact.public_id, *contact.routing_key.as_bytes()))
         .collect()
 }
 
@@ -219,5 +217,31 @@ async fn start_advertising_if_configured(
 
     if let Err(e) = backend.start_advertising(spec).await {
         warn!("Failed to start mDNS advertising: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_contacts_for_discovery;
+    use reme_identity::Identity;
+    use reme_storage::{Storage, TrustLevel};
+
+    #[test]
+    fn load_contacts_for_discovery_filters_out_strangers() {
+        let storage = Storage::in_memory().unwrap();
+        let stranger = Identity::generate();
+        let known = Identity::generate();
+
+        storage
+            .create_contact(stranger.public_id(), Some("Stranger"), TrustLevel::Stranger)
+            .unwrap();
+        storage
+            .create_contact(known.public_id(), Some("Known"), TrustLevel::Known)
+            .unwrap();
+
+        let contacts = load_contacts_for_discovery(&storage);
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].0, *known.public_id());
+        assert_eq!(contacts[0].1, *known.public_id().routing_key().as_bytes());
     }
 }

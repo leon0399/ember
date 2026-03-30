@@ -8,6 +8,7 @@
 //! - Contact management
 //! - Resilient delivery via outbox with retry policies
 
+pub use reme_contact::{AddContactOutcome, Contact, TrustLevel};
 use reme_encryption::{decrypt_with_mik, encrypt_to_mik, EncryptionError};
 use reme_identity::{Identity, PublicID};
 use reme_message::{
@@ -68,14 +69,6 @@ pub enum ClientError {
 
     #[error("Lock poisoned")]
     LockPoisoned,
-}
-
-/// Represents a contact in the messenger
-#[derive(Debug, Clone)]
-pub struct Contact {
-    pub id: i64,
-    pub public_id: PublicID,
-    pub name: Option<String>,
 }
 
 /// Represents a decrypted received message
@@ -194,7 +187,7 @@ impl<T: Transport> Client<T> {
     ///
     /// Generates a random device ID for tombstone sequence management.
     /// Uses default outbox configuration.
-    pub fn new(identity: Identity, transport: Arc<T>, storage: Storage) -> Self {
+    pub fn new(identity: Identity, transport: Arc<T>, storage: Arc<Storage>) -> Self {
         Self::with_config(identity, transport, storage, OutboxConfig::default())
     }
 
@@ -202,7 +195,7 @@ impl<T: Transport> Client<T> {
     pub fn with_config(
         identity: Identity,
         transport: Arc<T>,
-        storage: Storage,
+        storage: Arc<Storage>,
         outbox_config: OutboxConfig,
     ) -> Self {
         Self::with_full_config(
@@ -218,11 +211,10 @@ impl<T: Transport> Client<T> {
     pub fn with_full_config(
         identity: Identity,
         transport: Arc<T>,
-        storage: Storage,
+        storage: Arc<Storage>,
         outbox_config: OutboxConfig,
         tiered_config: TieredDeliveryConfig,
     ) -> Self {
-        let storage = Arc::new(storage);
         let outbox = ClientOutbox::new(Arc::clone(&storage), outbox_config);
         let dag_state = load_persisted_dag_state(&storage);
 
@@ -431,7 +423,10 @@ impl<T: Transport> Client<T> {
             Ok(id) => Ok(id),
             Err(StorageError::NotFound) => {
                 info!("Adding new contact from incoming message");
-                Ok(self.storage.add_contact(sender_id, None)?)
+                Ok(self
+                    .storage
+                    .create_contact(sender_id, None, TrustLevel::Stranger)?
+                    .id)
             }
             Err(e) => Err(e.into()),
         }
@@ -475,37 +470,18 @@ impl<T: Transport> Client<T> {
         &self,
         public_id: &PublicID,
         name: Option<&str>,
-    ) -> Result<Contact, ClientError> {
-        let id = self.storage.add_contact(public_id, name)?;
-        Ok(Contact {
-            id,
-            public_id: *public_id,
-            name: name.map(String::from),
-        })
+    ) -> Result<AddContactOutcome, ClientError> {
+        Ok(self.storage.promote_manual_contact(public_id, name)?)
     }
 
     /// Get contact by public ID
     pub fn get_contact(&self, public_id: &PublicID) -> Result<Contact, ClientError> {
-        let id = self.storage.get_contact_id(public_id)?;
-        let name = self.storage.get_contact_name(id).ok().flatten();
-        Ok(Contact {
-            id,
-            public_id: *public_id,
-            name,
-        })
+        Ok(self.storage.get_contact(public_id)?)
     }
 
     /// List all contacts
     pub fn list_contacts(&self) -> Result<Vec<Contact>, ClientError> {
-        let contacts = self.storage.list_contacts()?;
-        Ok(contacts
-            .into_iter()
-            .map(|(id, public_id, name)| Contact {
-                id,
-                public_id,
-                name,
-            })
-            .collect())
+        Ok(self.storage.list_contacts()?)
     }
 
     /// Retrieve messages for a contact, ordered chronologically (oldest first).
@@ -1788,17 +1764,73 @@ mod tests {
     async fn test_add_contact() {
         let identity = Identity::generate();
         let transport = Arc::new(MockTransport::new());
-        let storage = Storage::in_memory().unwrap();
+        let storage = Arc::new(Storage::in_memory().unwrap());
 
-        let client = Client::new(identity, transport, storage);
+        let client = Client::new(identity, transport, Arc::clone(&storage));
 
         let contact_identity = Identity::generate();
-        let contact = client
+        let outcome = client
             .add_contact(contact_identity.public_id(), Some("Alice"))
             .unwrap();
 
+        let AddContactOutcome::Created(contact) = outcome else {
+            panic!("expected new contact to be created");
+        };
+
         assert_eq!(contact.public_id, *contact_identity.public_id());
         assert_eq!(contact.name, Some("Alice".to_string()));
+        assert_eq!(contact.trust_level, TrustLevel::Known);
+    }
+
+    #[tokio::test]
+    async fn test_add_contact_promotes_existing_stranger() {
+        let identity = Identity::generate();
+        let transport = Arc::new(MockTransport::new());
+        let storage = Arc::new(Storage::in_memory().unwrap());
+        let client = Client::new(identity, transport, Arc::clone(&storage));
+        let contact_identity = Identity::generate();
+
+        storage
+            .create_contact(contact_identity.public_id(), None, TrustLevel::Stranger)
+            .unwrap();
+
+        let outcome = client
+            .add_contact(contact_identity.public_id(), Some("Alice"))
+            .unwrap();
+
+        let AddContactOutcome::Promoted(contact) = outcome else {
+            panic!("expected stranger contact to be promoted");
+        };
+
+        assert_eq!(contact.trust_level, TrustLevel::Known);
+        assert_eq!(contact.name.as_deref(), Some("Alice"));
+    }
+
+    #[tokio::test]
+    async fn test_add_contact_returns_already_present_for_known_contact() {
+        let identity = Identity::generate();
+        let transport = Arc::new(MockTransport::new());
+        let storage = Arc::new(Storage::in_memory().unwrap());
+        let client = Client::new(identity, transport, Arc::clone(&storage));
+        let contact_identity = Identity::generate();
+
+        storage
+            .create_contact(
+                contact_identity.public_id(),
+                Some("Alice"),
+                TrustLevel::Verified,
+            )
+            .unwrap();
+
+        let outcome = client
+            .add_contact(contact_identity.public_id(), Some("Alice"))
+            .unwrap();
+
+        let AddContactOutcome::AlreadyPresent(contact) = outcome else {
+            panic!("expected known+ contact to return AlreadyPresent");
+        };
+
+        assert_eq!(contact.trust_level, TrustLevel::Verified);
     }
 
     #[tokio::test]
@@ -1806,7 +1838,7 @@ mod tests {
         // Create Alice
         let alice_identity = Identity::generate();
         let alice_transport = Arc::new(MockTransport::new());
-        let alice_storage = Storage::in_memory().unwrap();
+        let alice_storage = Arc::new(Storage::in_memory().unwrap());
         let alice = Client::new(alice_identity, alice_transport.clone(), alice_storage);
 
         // Create Bob identity (no need to initialize prekeys!)
@@ -1833,16 +1865,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_process_message_auto_creates_stranger_contact() {
+        let transport = Arc::new(MockTransport::new());
+        let alice_identity = Identity::generate();
+        let bob_identity = Identity::generate();
+        let alice = Client::new(
+            alice_identity,
+            Arc::clone(&transport),
+            Arc::new(Storage::in_memory().unwrap()),
+        );
+        let bob = Client::new(
+            bob_identity,
+            Arc::clone(&transport),
+            Arc::new(Storage::in_memory().unwrap()),
+        );
+
+        alice.add_contact(bob.public_id(), Some("Bob")).unwrap();
+        let prepared = alice
+            .prepare_message(
+                bob.public_id(),
+                Content::Text(TextContent {
+                    body: "Hello Bob".to_string(),
+                }),
+                false,
+            )
+            .unwrap();
+
+        bob.process_message(&prepared.outer).await.unwrap();
+
+        let contact = bob.get_contact(alice.public_id()).unwrap();
+        assert_eq!(contact.trust_level, TrustLevel::Stranger);
+        assert_eq!(contact.name, None);
+    }
+
+    #[tokio::test]
     async fn test_send_receive_roundtrip() {
         // Create Alice and Bob with shared transport
         let shared_transport = Arc::new(MockTransport::new());
 
         let alice_identity = Identity::generate();
-        let alice_storage = Storage::in_memory().unwrap();
+        let alice_storage = Arc::new(Storage::in_memory().unwrap());
         let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
 
         let bob_identity = Identity::generate();
-        let bob_storage = Storage::in_memory().unwrap();
+        let bob_storage = Arc::new(Storage::in_memory().unwrap());
         let bob = Client::new(bob_identity, shared_transport.clone(), bob_storage);
 
         // Alice adds Bob as contact and sends a message
@@ -1871,11 +1937,11 @@ mod tests {
         let shared_transport = Arc::new(MockTransport::new());
 
         let alice_identity = Identity::generate();
-        let alice_storage = Storage::in_memory().unwrap();
+        let alice_storage = Arc::new(Storage::in_memory().unwrap());
         let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
 
         let bob_identity = Identity::generate();
-        let bob_storage = Storage::in_memory().unwrap();
+        let bob_storage = Arc::new(Storage::in_memory().unwrap());
         let bob = Client::new(bob_identity, shared_transport.clone(), bob_storage);
 
         alice.add_contact(bob.public_id(), Some("Bob")).unwrap();
@@ -1911,11 +1977,11 @@ mod tests {
 
         let alice_identity = Identity::generate();
         let alice_private_key = alice_identity.to_bytes();
-        let alice_storage = Storage::in_memory().unwrap();
+        let alice_storage = Arc::new(Storage::in_memory().unwrap());
         let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
 
         let bob_identity = Identity::generate();
-        let bob_storage = Storage::in_memory().unwrap();
+        let bob_storage = Arc::new(Storage::in_memory().unwrap());
         let bob = Client::new(bob_identity, shared_transport.clone(), bob_storage);
 
         bob.add_contact(alice.public_id(), Some("Alice")).unwrap();
@@ -1969,11 +2035,11 @@ mod tests {
 
         let alice_identity = Identity::generate();
         let alice_private_key = alice_identity.to_bytes();
-        let alice_storage = Storage::in_memory().unwrap();
+        let alice_storage = Arc::new(Storage::in_memory().unwrap());
         let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
 
         let bob_identity = Identity::generate();
-        let bob_storage = Storage::in_memory().unwrap();
+        let bob_storage = Arc::new(Storage::in_memory().unwrap());
         let bob = Client::new(bob_identity, shared_transport.clone(), bob_storage);
 
         bob.add_contact(alice.public_id(), Some("Alice")).unwrap();
@@ -2028,16 +2094,16 @@ mod tests {
         let shared_transport = Arc::new(MockTransport::new());
 
         let alice_identity = Identity::generate();
-        let alice_storage = Storage::in_memory().unwrap();
+        let alice_storage = Arc::new(Storage::in_memory().unwrap());
         let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
 
         let bob_identity = Identity::generate();
-        let bob_storage = Storage::in_memory().unwrap();
+        let bob_storage = Arc::new(Storage::in_memory().unwrap());
         let bob = Client::new(bob_identity, shared_transport.clone(), bob_storage);
 
         // Create Eve (wrong recipient)
         let eve_identity = Identity::generate();
-        let eve_storage = Storage::in_memory().unwrap();
+        let eve_storage = Arc::new(Storage::in_memory().unwrap());
         let eve = Client::new(eve_identity, shared_transport.clone(), eve_storage);
 
         // Alice sends to Bob
@@ -2060,7 +2126,7 @@ mod tests {
         let shared_transport = Arc::new(MockTransport::new());
 
         let alice_identity = Identity::generate();
-        let alice_storage = Storage::in_memory().unwrap();
+        let alice_storage = Arc::new(Storage::in_memory().unwrap());
         let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
 
         let bob_identity = Identity::generate();
@@ -2100,7 +2166,7 @@ mod tests {
         let shared_transport = Arc::new(MockTransport::new());
 
         let alice_identity = Identity::generate();
-        let alice_storage = Storage::in_memory().unwrap();
+        let alice_storage = Arc::new(Storage::in_memory().unwrap());
         let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
 
         let bob_identity = Identity::generate();
@@ -2158,7 +2224,7 @@ mod tests {
         let shared_transport = Arc::new(MockTransport::new());
 
         let alice_identity = Identity::generate();
-        let alice_storage = Storage::in_memory().unwrap();
+        let alice_storage = Arc::new(Storage::in_memory().unwrap());
         let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
 
         let bob_identity = Identity::generate();
@@ -2207,7 +2273,7 @@ mod tests {
         let shared_transport = Arc::new(MockTransport::new());
 
         let alice_identity = Identity::generate();
-        let alice_storage = Storage::in_memory().unwrap();
+        let alice_storage = Arc::new(Storage::in_memory().unwrap());
         let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
 
         let bob_identity = Identity::generate();
@@ -2274,11 +2340,11 @@ mod tests {
 
         let alice_identity = Identity::generate();
         let alice_private_key = alice_identity.to_bytes(); // Capture before move
-        let alice_storage = Storage::in_memory().unwrap();
+        let alice_storage = Arc::new(Storage::in_memory().unwrap());
         let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
 
         let bob_identity = Identity::generate();
-        let bob_storage = Storage::in_memory().unwrap();
+        let bob_storage = Arc::new(Storage::in_memory().unwrap());
         let bob = Client::new(bob_identity, shared_transport.clone(), bob_storage);
 
         // Alice adds Bob, Bob adds Alice
@@ -2368,11 +2434,11 @@ mod tests {
 
         let alice_identity = Identity::generate();
         let alice_private_key = alice_identity.to_bytes(); // Capture before move
-        let alice_storage = Storage::in_memory().unwrap();
+        let alice_storage = Arc::new(Storage::in_memory().unwrap());
         let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
 
         let bob_identity = Identity::generate();
-        let bob_storage = Storage::in_memory().unwrap();
+        let bob_storage = Arc::new(Storage::in_memory().unwrap());
         let bob = Client::new(bob_identity, shared_transport.clone(), bob_storage);
 
         // Alice adds Bob, Bob adds Alice
@@ -2443,12 +2509,12 @@ mod tests {
         let shared_transport = Arc::new(MockTransport::new());
 
         let alice_identity = Identity::generate();
-        let alice_storage = Storage::in_memory().unwrap();
+        let alice_storage = Arc::new(Storage::in_memory().unwrap());
         let alice = Client::new(alice_identity, shared_transport.clone(), alice_storage);
 
         let bob_identity = Identity::generate();
         let bob_private_key = bob_identity.to_bytes(); // Capture before move
-        let bob_storage = Storage::in_memory().unwrap();
+        let bob_storage = Arc::new(Storage::in_memory().unwrap());
         let bob = Client::new(bob_identity, shared_transport.clone(), bob_storage);
 
         // Alice adds Bob, Bob adds Alice
@@ -2536,7 +2602,7 @@ mod tests {
         // --- Session 1: send a message to establish DAG state ---
         let first_head = {
             let alice = Identity::from_bytes(&alice_bytes).unwrap();
-            let storage = Storage::open(&db_path).unwrap();
+            let storage = Arc::new(Storage::open(&db_path).unwrap());
             let transport = Arc::new(MockTransport::new());
             let client = Client::new(alice, Arc::clone(&transport), storage);
 
@@ -2563,7 +2629,7 @@ mod tests {
         // --- Session 2: create a new Client from the same DB file ---
         {
             let alice = Identity::from_bytes(&alice_bytes).unwrap();
-            let storage = Storage::open(&db_path).unwrap();
+            let storage = Arc::new(Storage::open(&db_path).unwrap());
             let transport = Arc::new(MockTransport::new());
             let client = Client::new(alice, Arc::clone(&transport), storage);
 
@@ -2594,7 +2660,7 @@ mod tests {
         let alice = Identity::generate();
         let bob = Identity::generate();
 
-        let storage = Storage::in_memory().unwrap();
+        let storage = Arc::new(Storage::in_memory().unwrap());
         let transport = Arc::new(MockTransport::new());
         let client = Client::new(alice, Arc::clone(&transport), storage);
 

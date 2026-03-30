@@ -8,6 +8,8 @@ use percent_encoding::{percent_encode, NON_ALPHANUMERIC};
 use reme_discovery::{decode_txt, DiscoveryEvent, RawDiscoveredPeer};
 use reme_encryption::build_identity_sign_data;
 use reme_identity::PublicID;
+use reme_node_core::now_secs_i64;
+use reme_storage::Storage;
 use reme_transport::coordinator::TransportCoordinator;
 use reme_transport::delivery::DeliveryTier;
 use reme_transport::http_target::{HttpTarget, HttpTargetConfig};
@@ -46,6 +48,7 @@ pub struct DiscoveryController {
     http_client: reqwest::Client,
     /// Registry for tracking ephemeral target metadata (tier, labels).
     registry: Arc<TransportRegistry>,
+    storage: Arc<Storage>,
 }
 
 struct PeerEntry {
@@ -78,6 +81,8 @@ pub struct SpawnConfig {
     pub coordinator: Arc<TransportCoordinator>,
     /// Transport registry for tracking ephemeral target metadata.
     pub registry: Arc<TransportRegistry>,
+    /// Shared storage for persisting verification state.
+    pub storage: Arc<Storage>,
     /// Initial contacts to track (public key + routing key).
     pub contacts: Vec<(PublicID, [u8; 16])>,
     /// Maximum number of peers to track simultaneously.
@@ -112,6 +117,7 @@ pub fn spawn(config: SpawnConfig) -> JoinHandle<()> {
         mut events,
         coordinator,
         registry,
+        storage,
         contacts,
         max_peers,
         refresh_interval_secs,
@@ -120,7 +126,8 @@ pub fn spawn(config: SpawnConfig) -> JoinHandle<()> {
         peer_count,
     } = config;
     tokio::spawn(async move {
-        let mut controller = match DiscoveryController::new(contacts, max_peers, registry) {
+        let mut controller = match DiscoveryController::new(contacts, max_peers, registry, storage)
+        {
             Ok(c) => c,
             Err(e) => {
                 warn!("Failed to initialize discovery controller: {e}");
@@ -307,6 +314,7 @@ impl DiscoveryController {
         contacts: Vec<(PublicID, [u8; 16])>,
         max_peers: usize,
         registry: Arc<TransportRegistry>,
+        storage: Arc<Storage>,
     ) -> Result<Self, reqwest::Error> {
         let max_peers = if max_peers == 0 {
             warn!("max_peers was 0, clamping to 1");
@@ -331,6 +339,7 @@ impl DiscoveryController {
                 .timeout(std::time::Duration::from_secs(5))
                 .build()?,
             registry,
+            storage,
         })
     }
 
@@ -455,7 +464,10 @@ impl DiscoveryController {
         let mut to_remove = Vec::new();
         while let Some(res) = set.join_next().await {
             match res {
-                Ok((name, Ok(Some(_)))) => self.record_refresh_success(&name),
+                Ok((name, Ok(Some(verified)))) => {
+                    self.record_refresh_success(&name);
+                    self.persist_verified_contact(&verified);
+                }
                 Ok((name, Ok(None) | Err(_))) => {
                     if self.record_refresh_failure(&name) {
                         to_remove.push(name);
@@ -519,6 +531,16 @@ impl DiscoveryController {
                 },
                 coordinator,
             );
+            self.persist_verified_contact(&verified);
+        }
+    }
+
+    fn persist_verified_contact(&self, public_id: &PublicID) {
+        if let Err(error) = self
+            .storage
+            .mark_contact_verified(public_id, now_secs_i64())
+        {
+            warn!("Verified peer {public_id} but failed to persist trust state: {error}");
         }
     }
 
@@ -891,12 +913,17 @@ impl DiscoveryController {
 mod tests {
     use super::*;
     use reme_identity::Identity;
+    use reme_storage::TrustLevel;
     use reme_transport::coordinator::CoordinatorConfig;
     use std::net::IpAddr;
     use std::time::Instant;
 
     fn test_registry() -> Arc<TransportRegistry> {
         Arc::new(TransportRegistry::new())
+    }
+
+    fn test_storage() -> Arc<Storage> {
+        Arc::new(Storage::in_memory().unwrap())
     }
 
     #[test]
@@ -918,8 +945,9 @@ mod tests {
         let identity = Identity::generate();
         let pubkey = *identity.public_id();
         let rk = pubkey.routing_key();
-        let contacts = vec![(pubkey, *rk)];
-        let controller = DiscoveryController::new(contacts, 256, test_registry()).unwrap();
+        let contacts = vec![(pubkey, *rk.as_bytes())];
+        let controller =
+            DiscoveryController::new(contacts, 256, test_registry(), test_storage()).unwrap();
 
         let stranger_rk = [0xFFu8; 16];
         assert!(!controller.contact_index.contains_key(&stranger_rk));
@@ -934,7 +962,8 @@ mod tests {
 
         let rk = [0xAA; 16];
         let contacts = vec![(pk1, rk), (pk2, rk)];
-        let controller = DiscoveryController::new(contacts, 256, test_registry()).unwrap();
+        let controller =
+            DiscoveryController::new(contacts, 256, test_registry(), test_storage()).unwrap();
 
         let candidates = controller.contact_index.get(&rk).unwrap();
         assert_eq!(candidates.len(), 2);
@@ -942,7 +971,8 @@ mod tests {
 
     #[test]
     fn handle_lost_removes_peer() {
-        let mut controller = DiscoveryController::new(vec![], 256, test_registry()).unwrap();
+        let mut controller =
+            DiscoveryController::new(vec![], 256, test_registry(), test_storage()).unwrap();
         let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
 
         let peer_identity = *Identity::generate().public_id();
@@ -970,15 +1000,42 @@ mod tests {
 
     #[test]
     fn handle_lost_noop_for_unknown_peer() {
-        let mut controller = DiscoveryController::new(vec![], 256, test_registry()).unwrap();
+        let mut controller =
+            DiscoveryController::new(vec![], 256, test_registry(), test_storage()).unwrap();
         let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
 
         controller.handle_lost("nonexistent", &coordinator);
     }
 
     #[test]
+    fn verification_persists_verified_contact_state() {
+        let storage = test_storage();
+        let identity = Identity::generate();
+        let pubkey = *identity.public_id();
+
+        storage
+            .create_contact(identity.public_id(), None, TrustLevel::Known)
+            .unwrap();
+
+        let controller = DiscoveryController::new(
+            vec![(pubkey, *pubkey.routing_key().as_bytes())],
+            256,
+            test_registry(),
+            Arc::clone(&storage),
+        )
+        .unwrap();
+
+        controller.persist_verified_contact(&pubkey);
+
+        let contact = storage.get_contact(&pubkey).unwrap();
+        assert_eq!(contact.trust_level, TrustLevel::Verified);
+        assert!(contact.verified_at.is_some());
+    }
+
+    #[test]
     fn verified_peer_index_tracks_multi_device() {
-        let mut controller = DiscoveryController::new(vec![], 256, test_registry()).unwrap();
+        let mut controller =
+            DiscoveryController::new(vec![], 256, test_registry(), test_storage()).unwrap();
         let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
         let peer_identity = *Identity::generate().public_id();
 
@@ -1017,7 +1074,8 @@ mod tests {
 
     #[test]
     fn handle_update_noop_for_unknown_peer() {
-        let mut controller = DiscoveryController::new(vec![], 256, test_registry()).unwrap();
+        let mut controller =
+            DiscoveryController::new(vec![], 256, test_registry(), test_storage()).unwrap();
         let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
         let peer_identity = *Identity::generate().public_id();
 
@@ -1047,7 +1105,8 @@ mod tests {
 
     #[tokio::test]
     async fn handle_discovered_caches_stranger() {
-        let mut controller = DiscoveryController::new(vec![], 256, test_registry()).unwrap();
+        let mut controller =
+            DiscoveryController::new(vec![], 256, test_registry(), test_storage()).unwrap();
         let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
 
         let rk = [0xAAu8; 16];
@@ -1062,7 +1121,8 @@ mod tests {
 
     #[tokio::test]
     async fn peer_lost_cleans_stranger_cache() {
-        let mut controller = DiscoveryController::new(vec![], 256, test_registry()).unwrap();
+        let mut controller =
+            DiscoveryController::new(vec![], 256, test_registry(), test_storage()).unwrap();
         let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
 
         let rk = [0xAAu8; 16];
@@ -1077,7 +1137,8 @@ mod tests {
 
     #[test]
     fn drain_matching_strangers_returns_matches() {
-        let mut controller = DiscoveryController::new(vec![], 256, test_registry()).unwrap();
+        let mut controller =
+            DiscoveryController::new(vec![], 256, test_registry(), test_storage()).unwrap();
 
         let rk = [0xBBu8; 16];
         let peer = make_stranger_peer("cached-stranger", &rk);
@@ -1092,7 +1153,8 @@ mod tests {
 
     #[test]
     fn drain_matching_strangers_ignores_non_matches() {
-        let mut controller = DiscoveryController::new(vec![], 256, test_registry()).unwrap();
+        let mut controller =
+            DiscoveryController::new(vec![], 256, test_registry(), test_storage()).unwrap();
 
         let rk_a = [0xAAu8; 16];
         let rk_b = [0xBBu8; 16];
@@ -1107,7 +1169,8 @@ mod tests {
 
     #[tokio::test]
     async fn stranger_cache_respects_max_peers() {
-        let mut controller = DiscoveryController::new(vec![], 2, test_registry()).unwrap();
+        let mut controller =
+            DiscoveryController::new(vec![], 2, test_registry(), test_storage()).unwrap();
         let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
 
         for i in 0..3u8 {
@@ -1122,7 +1185,8 @@ mod tests {
 
     #[tokio::test]
     async fn stranger_cache_allows_updates_when_full() {
-        let mut controller = DiscoveryController::new(vec![], 2, test_registry()).unwrap();
+        let mut controller =
+            DiscoveryController::new(vec![], 2, test_registry(), test_storage()).unwrap();
         let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
 
         // Fill cache to capacity.
@@ -1152,7 +1216,8 @@ mod tests {
 
     #[test]
     fn failure_count_starts_at_zero() {
-        let mut controller = DiscoveryController::new(vec![], 256, test_registry()).unwrap();
+        let mut controller =
+            DiscoveryController::new(vec![], 256, test_registry(), test_storage()).unwrap();
         let coordinator = TransportCoordinator::new(CoordinatorConfig::default());
         let peer_identity = *Identity::generate().public_id();
 

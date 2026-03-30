@@ -128,7 +128,7 @@ fn offline_client(
     let client = Client::new(
         identity,
         Arc::new(NoopTransport),
-        Storage::in_memory().unwrap(),
+        Arc::new(Storage::in_memory().unwrap()),
     );
     client.add_contact(contact, Some(contact_name)).unwrap();
     client
@@ -141,7 +141,7 @@ fn online_client(
     contact: &PublicID,
     contact_name: &str,
 ) -> Client<TransportPool<HttpTarget>> {
-    let client = Client::new(identity, transport, Storage::in_memory().unwrap());
+    let client = Client::new(identity, transport, Arc::new(Storage::in_memory().unwrap()));
     client.add_contact(contact, Some(contact_name)).unwrap();
     client
 }

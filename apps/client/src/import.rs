@@ -64,7 +64,9 @@ pub fn run_import(config: &AppConfig, args: &ImportArgs) -> Result<(), Box<dyn s
     // Open storage and create client
     std::fs::create_dir_all(&config.data_dir)?;
     let db_path = config.data_dir.join("messages.db");
-    let storage = Storage::open(db_path.to_str().ok_or("Invalid database path (non-UTF8)")?)?;
+    let storage = Arc::new(Storage::open(
+        db_path.to_str().ok_or("Invalid database path (non-UTF8)")?,
+    )?);
     let client = Client::new(identity, Arc::new(NoopTransport), storage);
 
     // Process each frame
@@ -216,7 +218,7 @@ mod tests {
         let env1 = make_test_envelope(&alice);
         let env2 = make_test_envelope(&alice);
 
-        let storage = Storage::open(":memory:").unwrap();
+        let storage = Arc::new(Storage::open(":memory:").unwrap());
         let client = Client::new(alice, Arc::new(NoopTransport), storage);
 
         let frames_data = make_bundle_bytes(&[&env1, &env2]);
@@ -236,7 +238,7 @@ mod tests {
         // Create envelope for bob
         let env = make_test_envelope(&bob);
 
-        let storage = Storage::open(":memory:").unwrap();
+        let storage = Arc::new(Storage::open(":memory:").unwrap());
         let client = Client::new(alice, Arc::new(NoopTransport), storage);
 
         let frames_data = make_bundle_bytes(&[&env]);
@@ -252,7 +254,7 @@ mod tests {
         let alice = Identity::generate();
         let env = make_test_envelope(&alice);
 
-        let storage = Storage::open(":memory:").unwrap();
+        let storage = Arc::new(Storage::open(":memory:").unwrap());
         let client = Client::new(alice, Arc::new(NoopTransport), storage);
 
         let frames_data = make_bundle_bytes(&[&env]);
@@ -283,7 +285,7 @@ mod tests {
 
         let frames = read_frames_from_bytes(&buf);
 
-        let storage = Storage::open(":memory:").unwrap();
+        let storage = Arc::new(Storage::open(":memory:").unwrap());
         let client = Client::new(alice, Arc::new(NoopTransport), storage);
 
         let summary = process_frames(&client, &frames);

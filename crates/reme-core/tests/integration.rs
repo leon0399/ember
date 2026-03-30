@@ -284,12 +284,12 @@ async fn test_two_client_messaging() {
 
     // Create Alice's client (no prekey initialization needed!)
     let alice_identity = Identity::generate();
-    let alice_storage = Storage::in_memory().unwrap();
+    let alice_storage = Arc::new(Storage::in_memory().unwrap());
     let alice = Client::new(alice_identity, transport.clone(), alice_storage);
 
     // Create Bob's client (no prekey initialization needed!)
     let bob_identity = Identity::generate();
-    let bob_storage = Storage::in_memory().unwrap();
+    let bob_storage = Arc::new(Storage::in_memory().unwrap());
     let bob = Client::new(bob_identity, transport.clone(), bob_storage);
 
     println!("Alice ID: {}", hex::encode(alice.public_id().to_bytes()));
@@ -535,7 +535,7 @@ async fn test_outbox_message_queuing() {
     let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
 
     let alice_identity = Identity::generate();
-    let alice_storage = Storage::in_memory().unwrap();
+    let alice_storage = Arc::new(Storage::in_memory().unwrap());
     let alice = Client::new(alice_identity, transport.clone(), alice_storage);
 
     let bob_identity = Identity::generate();
@@ -579,12 +579,12 @@ async fn test_outbox_dag_confirmation() {
 
     // Create Alice
     let alice_identity = Identity::generate();
-    let alice_storage = Storage::in_memory().unwrap();
+    let alice_storage = Arc::new(Storage::in_memory().unwrap());
     let alice = Client::new(alice_identity, transport.clone(), alice_storage);
 
     // Create Bob
     let bob_identity = Identity::generate();
-    let bob_storage = Storage::in_memory().unwrap();
+    let bob_storage = Arc::new(Storage::in_memory().unwrap());
     let bob = Client::new(bob_identity, transport.clone(), bob_storage);
 
     // Alice adds Bob as contact
@@ -675,7 +675,7 @@ async fn test_outbox_cleanup() {
     };
 
     let alice_identity = Identity::generate();
-    let alice_storage = Storage::in_memory().unwrap();
+    let alice_storage = Arc::new(Storage::in_memory().unwrap());
     let alice = Client::with_config(
         alice_identity,
         transport.clone(),
@@ -685,7 +685,7 @@ async fn test_outbox_cleanup() {
 
     // Bob uses default config
     let bob_identity = Identity::generate();
-    let bob_storage = Storage::in_memory().unwrap();
+    let bob_storage = Arc::new(Storage::in_memory().unwrap());
     let bob = Client::new(bob_identity, transport.clone(), bob_storage);
 
     // Both add each other as contacts
@@ -779,7 +779,7 @@ async fn test_forged_signature_rejected_at_client_level() {
     // Create identities
     let alice = Identity::generate();
     let bob_identity = Identity::generate();
-    let bob_storage = Storage::in_memory().unwrap();
+    let bob_storage = Arc::new(Storage::in_memory().unwrap());
     let bob = Client::new(bob_identity, transport.clone(), bob_storage);
     let mallory = Identity::generate();
 
@@ -890,7 +890,7 @@ async fn test_outbox_retry_mechanism() {
     let transport = Arc::new(TransportPool::<HttpTarget>::single(server.url()).unwrap());
 
     let alice_identity = Identity::generate();
-    let alice_storage = Storage::in_memory().unwrap();
+    let alice_storage = Arc::new(Storage::in_memory().unwrap());
     let alice = Client::new(alice_identity, transport.clone(), alice_storage);
 
     let bob_identity = Identity::generate();
@@ -968,11 +968,11 @@ async fn test_auto_tombstone_on_receive() {
 
     // Create Alice and Bob
     let alice_identity = Identity::generate();
-    let alice_storage = Storage::in_memory().unwrap();
+    let alice_storage = Arc::new(Storage::in_memory().unwrap());
     let alice = Client::new(alice_identity, transport.clone(), alice_storage);
 
     let bob_identity = Identity::generate();
-    let bob_storage = Storage::in_memory().unwrap();
+    let bob_storage = Arc::new(Storage::in_memory().unwrap());
     let bob = Client::new(bob_identity, transport.clone(), bob_storage);
 
     println!("Alice ID: {}", hex::encode(alice.public_id().to_bytes()));
@@ -1030,7 +1030,7 @@ async fn test_sender_tombstone_retracts_message() {
 
     // Create Alice and Bob
     let alice_identity = Identity::generate();
-    let alice_storage = Storage::in_memory().unwrap();
+    let alice_storage = Arc::new(Storage::in_memory().unwrap());
     let alice = Client::new(alice_identity, transport.clone(), alice_storage);
 
     let bob_identity = Identity::generate();
@@ -1085,7 +1085,7 @@ async fn test_invalid_ack_secret_rejected() {
 
     // Create Alice and Bob
     let alice_identity = Identity::generate();
-    let alice_storage = Storage::in_memory().unwrap();
+    let alice_storage = Arc::new(Storage::in_memory().unwrap());
     let alice = Client::new(alice_identity, transport.clone(), alice_storage);
 
     let bob_identity = Identity::generate();
@@ -1213,7 +1213,7 @@ async fn test_detached_message_skips_tombstone() {
     println!("Sent detached message");
 
     // Bob processes the message (should NOT send auto-tombstone due to FLAG_DETACHED)
-    let bob_storage = Storage::in_memory().unwrap();
+    let bob_storage = Arc::new(Storage::in_memory().unwrap());
     let bob_client = Client::new(bob_identity, transport.clone(), bob_storage);
 
     let received = bob_client

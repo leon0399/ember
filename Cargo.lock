@@ -2646,6 +2646,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "reme-contact"
+version = "0.1.0"
+dependencies = [
+ "reme-identity",
+ "serde",
+]
+
+[[package]]
 name = "reme-core"
 version = "0.1.0"
 dependencies = [
@@ -2657,6 +2665,7 @@ dependencies = [
  "rand_core 0.6.4",
  "reme-bundle",
  "reme-config",
+ "reme-contact",
  "reme-encryption",
  "reme-identity",
  "reme-message",
@@ -2779,6 +2788,7 @@ name = "reme-storage"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "reme-contact",
  "reme-identity",
  "reme-message",
  "reme-node-core",
