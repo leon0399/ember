@@ -69,7 +69,7 @@ use mqtt_bridge::MqttBridge;
 use node_identity::NodeIdentity;
 use rate_limit::RateLimiters;
 use reme_config::ParsedHttpPeer;
-use reme_discovery::MdnsSdBackend;
+use reme_discovery::{DiscoveryBackend as _, MdnsSdBackend};
 use reme_node_core::{PersistentMailboxStore, PersistentStoreConfig};
 use replication::ReplicationClient;
 use std::net::SocketAddr;
@@ -204,6 +204,10 @@ fn ensure_storage_dir(storage_path: &str) {
 /// Start mDNS advertising if LAN discovery is enabled and identity is available.
 ///
 /// Returns an optional mDNS backend handle for graceful shutdown.
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "async desugaring inflates score; actual logic is linear with early returns"
+)]
 async fn start_mdns_advertising(
     lan_discovery_enabled: bool,
     identity: Option<&NodeIdentity>,
@@ -233,14 +237,11 @@ async fn start_mdns_advertising(
     let txt = reme_discovery::encode_txt_with_caps(&routing_key, port, Some(&["relay", "store"]));
 
     let spec = reme_discovery::AdvertisementSpec {
-        service_type: "_reme._tcp.local.".to_owned(),
-        port,
         txt_records: txt,
-        routing_key,
+        ..reme_discovery::AdvertisementSpec::new(port, routing_key)
     };
 
-    if let Err(e) = reme_discovery::DiscoveryBackend::start_advertising(backend.as_ref(), spec).await
-    {
+    if let Err(e) = backend.start_advertising(spec).await {
         warn!("Failed to start mDNS advertising: {e}");
         return None;
     }
@@ -250,12 +251,14 @@ async fn start_mdns_advertising(
 }
 
 /// Stop mDNS advertising gracefully.
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "async desugaring inflates score; body is trivially simple"
+)]
 async fn stop_mdns_advertising(backend: Option<Arc<MdnsSdBackend>>) {
     if let Some(backend) = backend {
         info!("Stopping mDNS advertisement");
-        if let Err(e) =
-            reme_discovery::DiscoveryBackend::stop_advertising(backend.as_ref()).await
-        {
+        if let Err(e) = backend.stop_advertising().await {
             warn!("Failed to stop mDNS advertising: {e}");
         }
     }
@@ -527,8 +530,7 @@ async fn main() {
 
         // Start mDNS advertising if enabled
         let mdns_backend =
-            start_mdns_advertising(lan_discovery_enabled, identity_for_mdns.as_deref(), addr)
-                .await;
+            start_mdns_advertising(lan_discovery_enabled, identity_for_mdns.as_deref(), addr).await;
 
         let handle = axum_server::Handle::new();
 

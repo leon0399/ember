@@ -660,7 +660,7 @@ pub fn load_config_from(
     let rate_limit = extract_rate_limit(&config, serve_args, &defaults);
     let tls = extract_tls(&config, serve_args, &defaults);
     let mqtt = extract_mqtt(&config, serve_args);
-    let lan_discovery = extract_lan_discovery(&config, serve_args);
+    let lan_discovery = extract_lan_discovery(&config);
     let (identity_path, public_host, additional_hosts) =
         extract_identity_config(&config, serve_args);
 
@@ -998,11 +998,9 @@ fn extract_mqtt(config: &Config, serve_args: Option<&ServeArgs>) -> MqttBridgeCo
     }
 }
 
-fn extract_lan_discovery(config: &Config, _serve_args: Option<&ServeArgs>) -> LanDiscoveryConfig {
+fn extract_lan_discovery(config: &Config) -> LanDiscoveryConfig {
     LanDiscoveryConfig {
-        enabled: config
-            .get::<bool>("lan_discovery.enabled")
-            .unwrap_or(false),
+        enabled: config.get::<bool>("lan_discovery.enabled").unwrap_or(false),
     }
 }
 
