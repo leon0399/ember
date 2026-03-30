@@ -1,24 +1,25 @@
 [package]
 name = "client"
-version = "0.1.0"
-edition = "2021"
-publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-reme-identity = { workspace = true }
-reme-message = { workspace = true }
-reme-encryption = { workspace = true }
-reme-transport = { workspace = true, features = ["mqtt", "embedded"] }
-reme-node-core = { workspace = true }
-reme-storage = { workspace = true }
-reme-outbox = { workspace = true }
-reme-core = { workspace = true }
-reme-bundle = { workspace = true }
-reme-config = { workspace = true, features = ["http", "mqtt"] }
-reme-discovery = { workspace = true, features = ["mdns-sd"] }
+ember-identity = { workspace = true }
+ember-message = { workspace = true }
+ember-encryption = { workspace = true }
+ember-transport = { workspace = true, features = ["mqtt", "embedded"] }
+ember-node-core = { workspace = true }
+ember-storage = { workspace = true }
+ember-outbox = { workspace = true }
+ember-core = { workspace = true }
+ember-bundle = { workspace = true }
+ember-config = { workspace = true, features = ["http", "mqtt"] }
+ember-discovery = { workspace = true, features = ["mdns-sd"] }
 
 async-trait = { workspace = true }
 thiserror = { workspace = true }

@@ -1,5 +1,5 @@
 [package]
-name = "reme-fuzz"
+name = "ember-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
@@ -9,8 +9,8 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-reme-message = { path = "../crates/reme-message" }
-reme-bundle = { path = "../crates/reme-bundle" }
+ember-message = { path = "../crates/ember-message" }
+ember-bundle = { path = "../crates/ember-bundle" }
 postcard = { version = "1.1", features = ["alloc"] }
 
 # Prevent this from interfering with workspaces

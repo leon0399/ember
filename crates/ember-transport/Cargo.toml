@@ -1,0 +1,68 @@
+[package]
+name = "ember-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ember-bundle = { workspace = true }
+ember-encryption = { workspace = true }
+ember-identity = { workspace = true }
+ember-message = { workspace = true }
+ember-node-core = { workspace = true, optional = true }
+
+derivative = { workspace = true }
+derive_more = { workspace = true, features = ["display"] }
+strum = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+base64 = "0.22"
+tracing = { workspace = true }
+url = "2"
+percent-encoding = "2"
+
+# HTTP implementation
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+
+# MQTT implementation
+rumqttc = { version = "0.25", features = ["use-rustls"], optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+
+# Hex encoding (for routing keys)
+hex = "0.4"
+
+# TLS + Certificate Pinning
+rustls = { workspace = true, features = ["ring"] }
+sha2 = { workspace = true }
+webpki-roots = "1"
+x509-parser = "0.17"
+
+# Challenge generation
+rand = { workspace = true }
+
+# Optional: for server implementation
+axum = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+
+[features]
+default = ["http-client"]
+http-client = []
+http-server = ["axum", "tower"]
+mqtt = ["rumqttc", "uuid"]
+embedded = ["ember-node-core"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+ember-encryption = { workspace = true }
+axum = { workspace = true }
+rand = { workspace = true }
+wiremock = "0.6"
+serde_json = "1"

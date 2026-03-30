@@ -1,0 +1,36 @@
+[package]
+name = "ember-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ember-contact = { workspace = true }
+ember-identity = { workspace = true }
+ember-message = { workspace = true }
+ember-encryption = { workspace = true }
+ember-transport = { workspace = true }
+ember-storage = { workspace = true }
+ember-outbox = { workspace = true }
+
+thiserror = { workspace = true }
+tracing = { workspace = true }
+postcard = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+hex = { workspace = true }
+node = { path = "../../apps/node" }
+axum = { workspace = true }
+ember-config = { workspace = true }
+ember-bundle = { workspace = true }
+ember-node-core = { workspace = true }

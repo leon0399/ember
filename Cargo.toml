@@ -5,20 +5,25 @@ members = [
     "apps/*",
 ]
 
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
 [workspace.dependencies]
-reme-contact = { path = "crates/reme-contact" }
-reme-identity = { path = "crates/reme-identity" }
-reme-message = { path = "crates/reme-message" }
-reme-encryption = { path = "crates/reme-encryption" }
-reme-transport = { path = "crates/reme-transport" }
-reme-storage = { path = "crates/reme-storage" }
-reme-core = { path = "crates/reme-core" }
-reme-outbox = { path = "crates/reme-outbox" }
-reme-node = { path = "crates/reme-node" }
-reme-node-core = { path = "crates/reme-node-core" }
-reme-config = { path = "crates/reme-config" }
-reme-discovery = { path = "crates/reme-discovery" }
-reme-bundle = { path = "crates/reme-bundle" }
+ember-contact = { path = "crates/ember-contact" }
+ember-identity = { path = "crates/ember-identity" }
+ember-message = { path = "crates/ember-message" }
+ember-encryption = { path = "crates/ember-encryption" }
+ember-transport = { path = "crates/ember-transport" }
+ember-storage = { path = "crates/ember-storage" }
+ember-core = { path = "crates/ember-core" }
+ember-outbox = { path = "crates/ember-outbox" }
+ember-node-core = { path = "crates/ember-node-core" }
+ember-config = { path = "crates/ember-config" }
+ember-discovery = { path = "crates/ember-discovery" }
+ember-bundle = { path = "crates/ember-bundle" }
 
 anyhow = "^1.0.99"
 thiserror = "^2.0.16"
