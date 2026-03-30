@@ -1,0 +1,12 @@
+[package]
+name = "reme-contact"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+reme-identity = { workspace = true }
+serde = { workspace = true, features = ["derive"] }

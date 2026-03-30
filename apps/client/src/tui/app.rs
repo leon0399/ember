@@ -9,7 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use ratatui::prelude::*;
 use reme_config::{ParsedHttpPeer, ParsedMqttPeer};
-use reme_core::{Client, ReceivedMessage};
+use reme_core::{AddContactOutcome, Client, ReceivedMessage};
 use reme_discovery::DiscoveryBackend as _;
 use reme_identity::{Identity, PublicID};
 use reme_message::Content;
@@ -459,7 +459,7 @@ impl App<'_> {
         let db_path_str = db_path
             .to_str()
             .ok_or("Database path contains invalid UTF-8 characters")?;
-        let storage = Storage::open(db_path_str)?;
+        let storage = Arc::new(Storage::open(db_path_str)?);
 
         // Parse and validate all HTTP peers
         let parsed_http_peers: Vec<ParsedHttpPeer> = config
@@ -544,7 +544,7 @@ impl App<'_> {
         let (discovery_state, lan_peer_count, discovery_status_msg) = init_discovery(
             &config,
             &identity,
-            &storage,
+            Arc::clone(&storage),
             coordinator.clone(),
             registry.clone(),
         )
@@ -570,8 +570,12 @@ impl App<'_> {
         };
 
         // Create client with coordinator transport
-        let mut client_inner =
-            Client::with_config(identity, coordinator.clone(), storage, outbox_config);
+        let mut client_inner = Client::with_config(
+            identity,
+            coordinator.clone(),
+            Arc::clone(&storage),
+            outbox_config,
+        );
 
         // Set HTTP transport retry policy
         client_inner.set_transport_policy("http:", retry_policy);
@@ -950,15 +954,6 @@ impl App<'_> {
 
     /// Get or create a conversation for a contact, returns the index
     fn get_or_create_conversation(&mut self, public_id: PublicID) -> usize {
-        // Check if conversation exists
-        if let Some(idx) = self
-            .conversations
-            .iter()
-            .position(|c| c.public_id == public_id)
-        {
-            return idx;
-        }
-
         // Get contact info from storage (reme-core auto-adds on message receive)
         // Single call to avoid duplicate lookups
         let (contact_id, display_name) = match self.client.get_contact(&public_id) {
@@ -969,8 +964,18 @@ impl App<'_> {
             Err(_) => (0, format_display_name(None, &public_id)),
         };
 
-        // Add to tracking
         self.contacts_by_id.insert(public_id, display_name.clone());
+        if let Some(idx) = self
+            .conversations
+            .iter()
+            .position(|conversation| conversation.public_id == public_id)
+        {
+            let conversation = &mut self.conversations[idx];
+            conversation.id = contact_id;
+            conversation.name = display_name;
+            return idx;
+        }
+
         self.conversations.push(Conversation {
             id: contact_id,
             public_id,
@@ -978,7 +983,6 @@ impl App<'_> {
             last_message: None,
             unread_count: 0,
         });
-
         self.conversations.len() - 1
     }
 
@@ -1392,30 +1396,33 @@ impl App<'_> {
             return Ok(());
         }
 
-        // Check if contact already exists
-        if self.client.get_contact(&public_id).is_ok() {
-            self.add_contact_popup.error = Some("Contact already exists".to_string());
-            return Ok(());
-        }
-
         // Add contact via client API
         match self.client.add_contact(&public_id, name.as_deref()) {
-            Ok(_) => {
+            Ok(outcome) => {
+                let (contact, status_prefix, notify_discovery) = match outcome {
+                    AddContactOutcome::Created(contact) => (contact, "Added contact", true),
+                    AddContactOutcome::Promoted(contact) => (contact, "Promoted contact", true),
+                    AddContactOutcome::AlreadyPresent(contact) => {
+                        (contact, "Contact already present", false)
+                    }
+                };
+
                 // Notify the discovery controller about the new contact (M12)
-                if let Some(ref state) = self.discovery {
-                    if let Some(ref tx) = state.contact_tx {
-                        let rk: [u8; 16] = public_id.routing_key().into();
-                        if let Err(e) = tx.send((public_id, rk)) {
-                            debug!("Discovery contact channel closed: {e}");
+                if notify_discovery {
+                    if let Some(ref state) = self.discovery {
+                        if let Some(ref tx) = state.contact_tx {
+                            let rk: [u8; 16] = *contact.routing_key.as_bytes();
+                            if let Err(e) = tx.send((contact.public_id, rk)) {
+                                debug!("Discovery contact channel closed: {e}");
+                            }
                         }
                     }
                 }
 
-                // Reuse get_or_create_conversation to add to UI (avoids duplication)
-                let conv_idx = self.get_or_create_conversation(public_id);
+                let conv_idx = self.get_or_create_conversation(contact.public_id);
                 let display_name = self.conversations[conv_idx].name.clone();
 
-                // Select the new contact and move to input
+                // Select the new or updated contact and move to input
                 self.selected_conversation = conv_idx;
                 self.load_conversation_messages();
                 self.focus = Focus::Input;
@@ -1423,7 +1430,7 @@ impl App<'_> {
                 // Close popup and show success
                 self.show_add_contact_popup = false;
                 self.add_contact_popup.reset();
-                self.status = format!("Added contact: {display_name}");
+                self.status = format!("{status_prefix}: {display_name}");
             }
             Err(e) => {
                 self.add_contact_popup.error = Some(format!("Failed to add contact: {e}"));
@@ -1804,7 +1811,7 @@ fn register_configured_targets(
 async fn init_discovery(
     config: &crate::config::AppConfig,
     identity: &Identity,
-    storage: &Storage,
+    storage: Arc<Storage>,
     coordinator: Arc<TransportCoordinator>,
     registry: Arc<TransportRegistry>,
 ) -> (

@@ -1,4 +1,5 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+pub use reme_contact::{AddContactOutcome, Contact, TrustLevel};
 use reme_identity::{InvalidPublicKey, PublicID};
 use reme_message::{Content, ContentId, MessageID, ReceiptContent, ReceiptKind};
 use reme_node_core::{
@@ -18,6 +19,8 @@ use tracing::{debug, trace};
 
 // Re-export mailbox types for embedded node functionality
 pub use reme_node_core::{MailboxStore, PersistentStoreStats};
+
+const CLIENT_SCHEMA_VERSION: i64 = 2;
 
 /// Direction of a stored message
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,10 +75,10 @@ pub enum StorageError {
 
     #[error("Lock poisoned")]
     LockPoisoned,
-}
 
-/// A contact entry: (database row ID, public identity, optional display name).
-pub type ContactEntry = (i64, PublicID, Option<String>);
+    #[error("Unsupported client schema: {0}")]
+    UnsupportedSchema(String),
+}
 
 /// Simple `SQLite` storage for desktop v0.1
 ///
@@ -87,6 +90,16 @@ pub struct Storage {
     conn: Mutex<Connection>,
     /// Path to the database file (None for in-memory)
     path: Option<PathBuf>,
+}
+
+struct RawContactRow {
+    id: i64,
+    public_id_bytes: Vec<u8>,
+    routing_key_bytes: Vec<u8>,
+    name: Option<String>,
+    trust_level_raw: i64,
+    verified_at: Option<i64>,
+    created_at: i64,
 }
 
 impl Storage {
@@ -126,7 +139,9 @@ impl Storage {
     /// Each message is encrypted with a fresh ephemeral key directly to the recipient's MIK.
     fn init_schema(&self) -> Result<(), StorageError> {
         let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        Self::validate_contacts_schema(&conn)?;
         Self::create_contact_and_message_tables(&conn)?;
+        Self::create_client_schema_version_table(&conn)?;
         Self::create_outbox_tables(&conn)?;
         Self::create_ack_and_dag_tables(&conn)?;
         Ok(())
@@ -139,9 +154,14 @@ impl Storage {
             CREATE TABLE IF NOT EXISTS contacts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 public_id BLOB NOT NULL UNIQUE,
+                routing_key BLOB NOT NULL,
                 name TEXT,
+                trust_level INTEGER NOT NULL,
+                verified_at INTEGER,
                 created_at INTEGER NOT NULL
             );
+
+            CREATE INDEX IF NOT EXISTS idx_contacts_routing_key ON contacts(routing_key);
 
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -162,6 +182,88 @@ impl Storage {
             ",
         )?;
         Ok(())
+    }
+
+    fn create_client_schema_version_table(conn: &Connection) -> Result<(), StorageError> {
+        conn.execute_batch(
+            r"
+            CREATE TABLE IF NOT EXISTS client_schema_version (
+                version INTEGER PRIMARY KEY
+            );
+            ",
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO client_schema_version (version) VALUES (?)",
+            params![CLIENT_SCHEMA_VERSION],
+        )?;
+        Ok(())
+    }
+
+    fn validate_contacts_schema(conn: &Connection) -> Result<(), StorageError> {
+        if !Self::table_exists(conn, "contacts")? {
+            return Ok(());
+        }
+
+        let mut stmt = conn.prepare("PRAGMA table_info(contacts)")?;
+        let rows = stmt.query_map([], |row| {
+            let name: String = row.get(1)?;
+            let data_type: String = row.get(2)?;
+            Ok((name, data_type))
+        })?;
+
+        let mut columns = Vec::new();
+        for row in rows {
+            columns.push(row?);
+        }
+
+        let expected = vec![
+            ("id".to_string(), "INTEGER".to_string()),
+            ("public_id".to_string(), "BLOB".to_string()),
+            ("routing_key".to_string(), "BLOB".to_string()),
+            ("name".to_string(), "TEXT".to_string()),
+            ("trust_level".to_string(), "INTEGER".to_string()),
+            ("verified_at".to_string(), "INTEGER".to_string()),
+            ("created_at".to_string(), "INTEGER".to_string()),
+        ];
+
+        if columns == expected {
+            return Self::validate_client_schema_version(conn);
+        }
+
+        Err(StorageError::UnsupportedSchema(format!(
+            "contacts table columns {columns:?} do not match schema v2"
+        )))
+    }
+
+    fn table_exists(conn: &Connection, table_name: &str) -> Result<bool, StorageError> {
+        let exists = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)",
+            params![table_name],
+            |row| row.get::<_, i64>(0),
+        )? == 1;
+        Ok(exists)
+    }
+
+    fn validate_client_schema_version(conn: &Connection) -> Result<(), StorageError> {
+        if !Self::table_exists(conn, "client_schema_version")? {
+            return Err(StorageError::UnsupportedSchema(
+                "missing client_schema_version table".to_string(),
+            ));
+        }
+
+        let mut stmt =
+            conn.prepare("SELECT version FROM client_schema_version ORDER BY version ASC")?;
+        let versions = stmt
+            .query_map([], |row| row.get::<_, i64>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if versions == [CLIENT_SCHEMA_VERSION] {
+            return Ok(());
+        }
+
+        Err(StorageError::UnsupportedSchema(format!(
+            "unsupported client schema versions: {versions:?}"
+        )))
     }
 
     /// Create outbox, successes, and attempts tables with indexes.
@@ -457,25 +559,102 @@ impl Storage {
     // Contact operations
     // ============================================
 
-    /// Add a contact
+    /// Add a manual contact as `Known`.
     pub fn add_contact(
         &self,
         public_id: &PublicID,
         name: Option<&str>,
     ) -> Result<i64, StorageError> {
-        debug!(name = ?name, "adding contact");
-        let public_id_bytes = public_id.to_bytes();
-        let now = now_secs_i64();
+        self.create_contact(public_id, name, TrustLevel::Known)
+            .map(|contact| contact.id)
+    }
 
+    pub fn create_contact(
+        &self,
+        public_id: &PublicID,
+        name: Option<&str>,
+        trust_level: TrustLevel,
+    ) -> Result<Contact, StorageError> {
+        debug!(name = ?name, ?trust_level, "creating contact");
         let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
-        conn.execute(
-            "INSERT INTO contacts (public_id, name, created_at) VALUES (?, ?, ?)",
-            params![&public_id_bytes[..], name, now],
-        )?;
+        Self::insert_contact(&conn, public_id, name, trust_level, None)
+    }
 
-        let id = conn.last_insert_rowid();
-        trace!(contact_id = id, "contact added");
-        Ok(id)
+    pub fn get_contact(&self, public_id: &PublicID) -> Result<Contact, StorageError> {
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        Self::query_contact_by_public_id(&conn, public_id)
+    }
+
+    pub fn find_contact_by_routing_key(
+        &self,
+        routing_key: &reme_identity::RoutingKey,
+    ) -> Result<Contact, StorageError> {
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        Self::query_contact_by_routing_key(&conn, routing_key)
+    }
+
+    pub fn promote_manual_contact(
+        &self,
+        public_id: &PublicID,
+        name: Option<&str>,
+    ) -> Result<AddContactOutcome, StorageError> {
+        let mut conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let tx = conn.transaction()?;
+
+        match Self::query_contact_by_public_id(&tx, public_id) {
+            Ok(existing) => {
+                if existing.trust_level >= TrustLevel::Known {
+                    tx.commit()?;
+                    return Ok(AddContactOutcome::AlreadyPresent(existing));
+                }
+
+                let updated_name = name
+                    .map(ToOwned::to_owned)
+                    .or_else(|| existing.name.clone());
+                let public_id_bytes = public_id.to_bytes();
+                tx.execute(
+                    "UPDATE contacts
+                     SET name = ?, trust_level = ?
+                     WHERE public_id = ?",
+                    params![
+                        updated_name.as_deref(),
+                        TrustLevel::Known as u8,
+                        &public_id_bytes[..]
+                    ],
+                )?;
+                let promoted = Self::query_contact_by_public_id(&tx, public_id)?;
+                tx.commit()?;
+                Ok(AddContactOutcome::Promoted(promoted))
+            }
+            Err(StorageError::NotFound) => {
+                let created = Self::insert_contact(&tx, public_id, name, TrustLevel::Known, None)?;
+                tx.commit()?;
+                Ok(AddContactOutcome::Created(created))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn mark_contact_verified(
+        &self,
+        public_id: &PublicID,
+        verified_at: i64,
+    ) -> Result<Contact, StorageError> {
+        let mut conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let tx = conn.transaction()?;
+        let existing = Self::query_contact_by_public_id(&tx, public_id)?;
+        let updated_trust = existing.trust_level.max(TrustLevel::Verified);
+        let public_id_bytes = public_id.to_bytes();
+
+        tx.execute(
+            "UPDATE contacts
+             SET trust_level = ?, verified_at = ?
+             WHERE public_id = ?",
+            params![updated_trust as u8, verified_at, &public_id_bytes[..]],
+        )?;
+        let contact = Self::query_contact_by_public_id(&tx, public_id)?;
+        tx.commit()?;
+        Ok(contact)
     }
 
     /// Get contact ID by public ID
@@ -528,34 +707,178 @@ impl Storage {
     }
 
     /// List all contacts
-    pub fn list_contacts(&self) -> Result<Vec<ContactEntry>, StorageError> {
-        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
-        let mut stmt =
-            conn.prepare("SELECT id, public_id, name FROM contacts ORDER BY name, id")?;
+    pub fn list_contacts(&self) -> Result<Vec<Contact>, StorageError> {
+        self.list_contacts_query(
+            "SELECT id, public_id, routing_key, name, trust_level, verified_at, created_at
+             FROM contacts
+             ORDER BY name, id",
+            None,
+        )
+    }
 
-        let rows = stmt.query_map([], |row| {
-            let id: i64 = row.get(0)?;
-            let public_id_bytes: Vec<u8> = row.get(1)?;
-            let name: Option<String> = row.get(2)?;
-            Ok((id, public_id_bytes, name))
-        })?;
+    pub fn list_contacts_with_min_trust(
+        &self,
+        min_trust: TrustLevel,
+    ) -> Result<Vec<Contact>, StorageError> {
+        self.list_contacts_query(
+            "SELECT id, public_id, routing_key, name, trust_level, verified_at, created_at
+             FROM contacts
+             WHERE trust_level >= ?
+             ORDER BY name, id",
+            Some(min_trust),
+        )
+    }
+
+    fn list_contacts_query(
+        &self,
+        sql: &str,
+        min_trust: Option<TrustLevel>,
+    ) -> Result<Vec<Contact>, StorageError> {
+        let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let mut stmt = conn.prepare(sql)?;
+        let mut rows = if let Some(level) = min_trust {
+            stmt.query(params![level as u8])?
+        } else {
+            stmt.query([])?
+        };
 
         let mut contacts = Vec::new();
-        for row in rows {
-            let (id, public_id_bytes, name) = row?;
-            if public_id_bytes.len() != 32 {
-                continue; // Skip invalid entries
-            }
-            let Ok(public_id_arr): Result<[u8; 32], _> = public_id_bytes.try_into() else {
-                continue; // Skip entries with unexpected length
-            };
-            // Skip contacts with invalid (low-order) public keys
-            if let Ok(public_id) = PublicID::try_from_bytes(&public_id_arr) {
-                contacts.push((id, public_id, name));
-            }
+        while let Some(row) = rows.next()? {
+            contacts.push(Self::decode_contact_row(Self::read_contact_row(row)?)?);
         }
 
         Ok(contacts)
+    }
+
+    fn decode_contact_row(raw: RawContactRow) -> Result<Contact, StorageError> {
+        let RawContactRow {
+            id,
+            public_id_bytes,
+            routing_key_bytes,
+            name,
+            trust_level_raw,
+            verified_at,
+            created_at,
+        } = raw;
+        let public_id_len = public_id_bytes.len();
+        let public_id_array: [u8; 32] = public_id_bytes.try_into().map_err(|_| {
+            StorageError::Serialization(format!("invalid public_id length: {public_id_len}"))
+        })?;
+        let public_id = PublicID::try_from_bytes(&public_id_array)?;
+
+        let routing_key_len = routing_key_bytes.len();
+        let routing_key_array: [u8; 16] = routing_key_bytes.try_into().map_err(|_| {
+            StorageError::Serialization(format!("invalid routing_key length: {routing_key_len}"))
+        })?;
+        let routing_key = reme_identity::RoutingKey::from_bytes(routing_key_array);
+
+        let trust_level = match trust_level_raw {
+            0 => TrustLevel::Stranger,
+            1 => TrustLevel::Known,
+            2 => TrustLevel::Verified,
+            3 => TrustLevel::Trusted,
+            value => {
+                return Err(StorageError::Serialization(format!(
+                    "invalid trust_level value: {value}"
+                )))
+            }
+        };
+
+        Ok(Contact {
+            id,
+            public_id,
+            routing_key,
+            name,
+            trust_level,
+            verified_at,
+            created_at,
+        })
+    }
+
+    fn insert_contact(
+        conn: &Connection,
+        public_id: &PublicID,
+        name: Option<&str>,
+        trust_level: TrustLevel,
+        verified_at: Option<i64>,
+    ) -> Result<Contact, StorageError> {
+        let public_id_bytes = public_id.to_bytes();
+        let routing_key = public_id.routing_key();
+        let now = now_secs_i64();
+
+        conn.execute(
+            "INSERT INTO contacts (public_id, routing_key, name, trust_level, verified_at, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
+            params![
+                &public_id_bytes[..],
+                &routing_key.as_bytes()[..],
+                name,
+                trust_level as u8,
+                verified_at,
+                now
+            ],
+        )?;
+
+        let id = conn.last_insert_rowid();
+        trace!(contact_id = id, "contact created");
+        Ok(Contact {
+            id,
+            public_id: *public_id,
+            routing_key,
+            name: name.map(ToOwned::to_owned),
+            trust_level,
+            verified_at,
+            created_at: now,
+        })
+    }
+
+    fn query_contact_by_public_id(
+        conn: &Connection,
+        public_id: &PublicID,
+    ) -> Result<Contact, StorageError> {
+        let public_id_bytes = public_id.to_bytes();
+        let row = conn
+            .query_row(
+                "SELECT id, public_id, routing_key, name, trust_level, verified_at, created_at
+                 FROM contacts
+                 WHERE public_id = ?",
+                params![&public_id_bytes[..]],
+                Self::read_contact_row,
+            )
+            .optional()?
+            .ok_or(StorageError::NotFound)?;
+
+        Self::decode_contact_row(row)
+    }
+
+    fn query_contact_by_routing_key(
+        conn: &Connection,
+        routing_key: &reme_identity::RoutingKey,
+    ) -> Result<Contact, StorageError> {
+        let row = conn
+            .query_row(
+                "SELECT id, public_id, routing_key, name, trust_level, verified_at, created_at
+                 FROM contacts
+                 WHERE routing_key = ?",
+                params![&routing_key.as_bytes()[..]],
+                Self::read_contact_row,
+            )
+            .optional()?
+            .ok_or(StorageError::NotFound)?;
+
+        Self::decode_contact_row(row)
+    }
+
+    fn read_contact_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawContactRow> {
+        Ok(RawContactRow {
+            id: row.get::<_, i64>(0)?,
+            public_id_bytes: row.get::<_, Vec<u8>>(1)?,
+            routing_key_bytes: row.get::<_, Vec<u8>>(2)?,
+            name: row.get::<_, Option<String>>(3)?,
+            trust_level_raw: row.get::<_, i64>(4)?,
+            verified_at: row.get::<_, Option<i64>>(5)?,
+            created_at: row.get::<_, i64>(6)?,
+        })
     }
 
     // ============================================
@@ -2144,7 +2467,170 @@ impl OutboxStore for Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reme_contact::{AddContactOutcome, TrustLevel};
     use reme_identity::Identity;
+    use rusqlite::Connection;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_create_contact_persists_routing_key_and_known_trust() {
+        let storage = Storage::in_memory().unwrap();
+        let identity = Identity::generate();
+
+        let contact = storage
+            .create_contact(identity.public_id(), Some("Alice"), TrustLevel::Known)
+            .unwrap();
+
+        assert!(contact.id > 0);
+        assert_eq!(contact.public_id, *identity.public_id());
+        assert_eq!(contact.routing_key, identity.public_id().routing_key());
+        assert_eq!(contact.name.as_deref(), Some("Alice"));
+        assert_eq!(contact.trust_level, TrustLevel::Known);
+        assert_eq!(contact.verified_at, None);
+        assert!(contact.created_at > 0);
+
+        let stored = storage.get_contact(identity.public_id()).unwrap();
+        assert_eq!(stored, contact);
+    }
+
+    #[test]
+    fn test_promote_manual_contact_upgrades_existing_stranger() {
+        let storage = Storage::in_memory().unwrap();
+        let identity = Identity::generate();
+
+        let stranger = storage
+            .create_contact(identity.public_id(), None, TrustLevel::Stranger)
+            .unwrap();
+
+        let outcome = storage
+            .promote_manual_contact(identity.public_id(), Some("Alice"))
+            .unwrap();
+
+        let AddContactOutcome::Promoted(contact) = outcome else {
+            panic!("expected stranger contact to be promoted");
+        };
+
+        assert_eq!(contact.id, stranger.id);
+        assert_eq!(contact.trust_level, TrustLevel::Known);
+        assert_eq!(contact.name.as_deref(), Some("Alice"));
+    }
+
+    #[test]
+    fn test_promote_manual_contact_returns_already_present_for_known_plus() {
+        let storage = Storage::in_memory().unwrap();
+        let identity = Identity::generate();
+
+        let known = storage
+            .create_contact(identity.public_id(), Some("Alice"), TrustLevel::Known)
+            .unwrap();
+
+        let outcome = storage
+            .promote_manual_contact(identity.public_id(), Some("Renamed"))
+            .unwrap();
+
+        let AddContactOutcome::AlreadyPresent(contact) = outcome else {
+            panic!("expected known contact to be returned without error");
+        };
+
+        assert_eq!(contact.id, known.id);
+        assert_eq!(contact.trust_level, TrustLevel::Known);
+    }
+
+    #[test]
+    fn test_mark_contact_verified_sets_timestamp_without_downgrading_trusted() {
+        let storage = Storage::in_memory().unwrap();
+        let identity = Identity::generate();
+        let verified_at = 1_700_000_000;
+
+        let trusted = storage
+            .create_contact(identity.public_id(), Some("Alice"), TrustLevel::Trusted)
+            .unwrap();
+
+        let updated = storage
+            .mark_contact_verified(identity.public_id(), verified_at)
+            .unwrap();
+
+        assert_eq!(updated.id, trusted.id);
+        assert_eq!(updated.trust_level, TrustLevel::Trusted);
+        assert_eq!(updated.verified_at, Some(verified_at));
+    }
+
+    #[test]
+    fn test_legacy_contacts_schema_is_rejected() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("legacy-client.db");
+        let conn = Connection::open(&db_path).unwrap();
+
+        conn.execute_batch(
+            r"
+            CREATE TABLE contacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                public_id BLOB NOT NULL UNIQUE,
+                name TEXT,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id BLOB NOT NULL UNIQUE,
+                contact_id INTEGER NOT NULL,
+                direction TEXT NOT NULL CHECK (direction IN ('sent', 'received')),
+                content_type TEXT NOT NULL,
+                body TEXT,
+                created_at INTEGER NOT NULL,
+                delivered_at INTEGER,
+                read_at INTEGER,
+                FOREIGN KEY (contact_id) REFERENCES contacts(id)
+            );
+            ",
+        )
+        .unwrap();
+        drop(conn);
+
+        let path = db_path.to_str().unwrap();
+        let Err(error) = Storage::open(path) else {
+            panic!("legacy contacts schema should be rejected");
+        };
+        assert!(matches!(error, StorageError::UnsupportedSchema(_)));
+    }
+
+    #[test]
+    fn test_wrong_client_schema_version_is_rejected() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("wrong-version.db");
+        let conn = Connection::open(&db_path).unwrap();
+
+        conn.execute_batch(
+            r"
+            CREATE TABLE contacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                public_id BLOB NOT NULL UNIQUE,
+                routing_key BLOB NOT NULL,
+                name TEXT,
+                trust_level INTEGER NOT NULL,
+                verified_at INTEGER,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE client_schema_version (
+                version INTEGER PRIMARY KEY
+            );
+            ",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO client_schema_version (version) VALUES (?)",
+            params![1_i64],
+        )
+        .unwrap();
+        drop(conn);
+
+        let path = db_path.to_str().unwrap();
+        let Err(error) = Storage::open(path) else {
+            panic!("wrong schema version should be rejected");
+        };
+        assert!(matches!(error, StorageError::UnsupportedSchema(_)));
+    }
 
     #[test]
     fn test_contact_operations() {
