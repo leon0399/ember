@@ -256,11 +256,13 @@ async fn start_mdns_advertising(
     reason = "async desugaring inflates score; body is trivially simple"
 )]
 async fn stop_mdns_advertising(backend: Option<Arc<MdnsSdBackend>>) {
-    if let Some(backend) = backend {
-        info!("Stopping mDNS advertisement");
-        if let Err(e) = backend.stop_advertising().await {
-            warn!("Failed to stop mDNS advertising: {e}");
-        }
+    let Some(backend) = backend else { return };
+    info!("Stopping mDNS advertisement");
+    if let Err(e) = backend.stop_advertising().await {
+        warn!("Failed to stop mDNS advertising: {e}");
+    }
+    if let Err(e) = backend.shutdown().await {
+        warn!("Failed to shut down mDNS backend: {e}");
     }
 }
 
@@ -537,10 +539,9 @@ async fn main() {
         // Spawn task to trigger graceful shutdown on cancel
         let tls_handle = handle.clone();
         let tls_cancel = cancel.clone();
-        let tls_mdns = mdns_backend.clone();
         tokio::spawn(async move {
             tls_cancel.cancelled().await;
-            stop_mdns_advertising(tls_mdns).await;
+            stop_mdns_advertising(mdns_backend).await;
             tls_handle.graceful_shutdown(Some(Duration::from_secs(10)));
         });
 
@@ -583,14 +584,13 @@ async fn main() {
         .await;
 
         let timeout_cancel = cancel.clone();
-        let http_mdns = mdns_backend.clone();
         let server = axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .with_graceful_shutdown(async move {
             cancel.cancelled().await;
-            stop_mdns_advertising(http_mdns).await;
+            stop_mdns_advertising(mdns_backend).await;
         });
 
         // Enforce 10s shutdown timeout to match TLS mode behavior
