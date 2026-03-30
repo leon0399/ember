@@ -204,6 +204,17 @@ pub struct MqttBridgeConfig {
     pub topic_prefix: Option<String>,
 }
 
+/// LAN discovery configuration for nodes
+///
+/// When enabled, the node advertises itself via mDNS for local discovery.
+/// Clients on the same LAN can discover the node without manual configuration.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(default)]
+pub struct LanDiscoveryConfig {
+    /// Enable mDNS advertisement (default: false)
+    pub enabled: bool,
+}
+
 impl MqttBridgeConfig {
     /// Returns true if MQTT bridge should be enabled (has brokers configured)
     pub fn is_enabled(&self) -> bool {
@@ -422,6 +433,10 @@ pub struct ServeArgs {
     /// Maximum frames per submit request
     #[arg(long, env = "REME_NODE_MAX_BATCH_SIZE")]
     pub max_batch_size: Option<u32>,
+
+    /// Enable LAN advertisement (mDNS service broadcast)
+    #[arg(long, env = "REME_NODE_LAN_ADVERTISEMENT")]
+    pub lan_advertisement: Option<bool>,
 }
 
 /// Arguments for the export subcommand
@@ -505,6 +520,10 @@ pub struct NodeConfig {
     #[serde(default)]
     pub mqtt: MqttBridgeConfig,
 
+    /// LAN discovery configuration
+    #[serde(default)]
+    pub lan_discovery: LanDiscoveryConfig,
+
     /// Path to node identity key file
     #[serde(default)]
     pub identity_path: Option<PathBuf>,
@@ -548,6 +567,7 @@ impl Default for NodeConfig {
             rate_limit: RateLimitConfig::default(),
             tls: TlsConfig::default(),
             mqtt: MqttBridgeConfig::default(),
+            lan_discovery: LanDiscoveryConfig::default(),
             identity_path: None, // None means use default location
             public_host: None,
             additional_hosts: Vec::new(),
@@ -640,6 +660,7 @@ pub fn load_config_from(
     let rate_limit = extract_rate_limit(&config, serve_args, &defaults);
     let tls = extract_tls(&config, serve_args, &defaults);
     let mqtt = extract_mqtt(&config, serve_args);
+    let lan_discovery = extract_lan_discovery(&config);
     let (identity_path, public_host, additional_hosts) =
         extract_identity_config(&config, serve_args);
 
@@ -657,6 +678,7 @@ pub fn load_config_from(
         rate_limit,
         tls,
         mqtt,
+        lan_discovery,
         identity_path,
         public_host,
         additional_hosts,
@@ -774,6 +796,9 @@ fn apply_serve_overrides(
     }
     if let Some(v) = serve.max_batch_size {
         builder = builder.set_override("max_batch_size", i64::from(v))?;
+    }
+    if let Some(v) = serve.lan_advertisement {
+        builder = builder.set_override("lan_discovery.enabled", v)?;
     }
     Ok(builder)
 }
@@ -970,6 +995,12 @@ fn extract_mqtt(config: &Config, serve_args: Option<&ServeArgs>) -> MqttBridgeCo
                 .unwrap_or_default(),
             topic_prefix,
         }
+    }
+}
+
+fn extract_lan_discovery(config: &Config) -> LanDiscoveryConfig {
+    LanDiscoveryConfig {
+        enabled: config.get::<bool>("lan_discovery.enabled").unwrap_or(false),
     }
 }
 

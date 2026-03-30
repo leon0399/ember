@@ -8,7 +8,10 @@ pub mod txt;
 pub mod types;
 
 pub use backend::DiscoveryBackend;
-pub use txt::{decode_txt, encode_txt, RoutingKey, TxtError, TxtFields};
+pub use txt::{decode_txt, encode_txt, encode_txt_with_caps, RoutingKey, TxtError, TxtFields};
 pub use types::{
     AdvertisementSpec, DiscoveryError, DiscoveryEvent, RawDiscoveredPeer, DEFAULT_SERVICE_TYPE,
 };
+
+#[cfg(feature = "mdns-sd")]
+pub use mdns_sd::MdnsSdBackend;
