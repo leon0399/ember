@@ -545,7 +545,9 @@ const fn default_refresh_interval() -> u64 {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DirectPeerConfig {
     /// The peer's public ID (base64-encoded 32-byte public key).
-    /// Optional - reserved for Phase 6: routing messages to specific peers.
+    /// When set, scopes Tier 1 routing so this peer is only tried for
+    /// messages whose routing key matches. When absent, the peer is
+    /// tried optimistically for all recipients.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_id: Option<String>,
 
