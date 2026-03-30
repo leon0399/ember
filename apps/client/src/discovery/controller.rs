@@ -546,11 +546,13 @@ impl DiscoveryController {
     async fn persist_verified_contact_impl(&self, public_id: PublicID) -> Result<(), String> {
         let storage = Arc::clone(&self.storage);
 
-        tokio::task::spawn_blocking(move || storage.mark_contact_verified(&public_id, now_secs_i64()))
-            .await
-            .map_err(|error| format!("persistence task failed: {error}"))?
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+        tokio::task::spawn_blocking(move || {
+            storage.mark_contact_verified(&public_id, now_secs_i64())
+        })
+        .await
+        .map_err(|error| format!("persistence task failed: {error}"))?
+        .map(|_| ())
+        .map_err(|error| error.to_string())
     }
 
     /// Register or update a verified peer in indices and coordinator.
