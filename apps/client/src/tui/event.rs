@@ -1,17 +1,15 @@
 //! Event handling for the TUI
 //!
-//! Provides async event handling for keyboard and tick events.
+//! Provides async event handling for terminal input and resize events.
 
 use crossterm::event::{Event as CrosstermEvent, EventStream, KeyEvent, KeyEventKind};
 use futures::{Stream, StreamExt};
-use std::{io, time::Duration};
+use std::io;
 use tokio::sync::mpsc;
 
 /// Terminal events
 #[derive(Debug, Clone)]
 pub enum Event {
-    /// Terminal tick (for regular updates)
-    Tick,
     /// Key press event
     Key(KeyEvent),
     /// Terminal resize (width, height) - reserved for future adaptive layouts
@@ -26,13 +24,12 @@ pub struct EventHandler {
 }
 
 impl EventHandler {
-    /// Create a new event handler with specified tick rate in milliseconds
-    pub fn new(tick_rate: u64) -> Self {
-        let tick_rate = Duration::from_millis(tick_rate);
+    /// Create a new event handler for terminal input and resize notifications.
+    pub fn new() -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
 
         tokio::spawn(async move {
-            run_event_pump(tx, tick_rate, EventStream::new()).await;
+            run_event_pump(tx, EventStream::new()).await;
         });
 
         Self { rx }
@@ -47,28 +44,18 @@ impl EventHandler {
     }
 }
 
-async fn run_event_pump<S>(tx: mpsc::UnboundedSender<Event>, tick_rate: Duration, mut reader: S)
+async fn run_event_pump<S>(tx: mpsc::UnboundedSender<Event>, mut reader: S)
 where
     S: Stream<Item = io::Result<CrosstermEvent>> + Unpin,
 {
-    loop {
-        let sleep = tokio::time::sleep(tick_rate);
-        tokio::pin!(sleep);
-
-        tokio::select! {
-            maybe_event = reader.next() => match maybe_event {
-                Some(Ok(event)) => {
-                    if !send_terminal_event(&tx, &event) {
-                        break;
-                    }
-                }
-                Some(Err(_)) | None => break,
-            },
-            () = &mut sleep => {
-                if tx.send(Event::Tick).is_err() {
+    while let Some(next_event) = reader.next().await {
+        match next_event {
+            Ok(event) => {
+                if !send_terminal_event(&tx, &event) {
                     break;
                 }
             }
+            Err(_) => break,
         }
     }
 }
@@ -99,7 +86,6 @@ mod tests {
         Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     };
     use futures::stream;
-    use std::{io, time::Duration};
     use tokio::sync::mpsc;
 
     #[test]
@@ -134,19 +120,15 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn pump_emits_tick_when_terminal_stream_is_idle() {
+    #[tokio::test]
+    async fn pump_forwards_resize_events() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let handle = tokio::spawn(run_event_pump(
             tx,
-            Duration::from_millis(100),
-            stream::pending::<io::Result<CrosstermEvent>>(),
+            stream::iter([Ok(CrosstermEvent::Resize(80, 24))]),
         ));
 
-        tokio::task::yield_now().await;
-        tokio::time::advance(Duration::from_millis(100)).await;
-
-        assert!(matches!(rx.recv().await, Some(Event::Tick)));
+        assert!(matches!(rx.recv().await, Some(Event::Resize(80, 24))));
 
         handle.abort();
     }

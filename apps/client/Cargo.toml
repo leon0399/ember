@@ -36,7 +36,7 @@ serde_json = { workspace = true }
 
 # async
 futures = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "time", "test-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "time"] }
 tokio-util = { workspace = true }
 
 # networking
