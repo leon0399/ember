@@ -48,7 +48,8 @@ pub enum TxtError {
 /// Encode discovery-relevant fields into a TXT record map.
 ///
 /// Produces keys: `v` (protocol version), `rk` (hex-encoded routing key),
-/// `port` (decimal port number), and optionally `caps` (comma-separated capability tokens).
+/// and `port` (decimal port number). See [`encode_txt_with_caps`] to include
+/// capability tokens.
 ///
 /// Note: the `port` value here is redundant with the port contained in the
 /// corresponding SRV record and/or [`RawDiscoveredPeer`] metadata. Callers
@@ -119,12 +120,17 @@ pub fn decode_txt(records: &HashMap<String, String>) -> Result<TxtFields, TxtErr
         .map_err(|_| TxtError::InvalidPort(port_str.clone()))?;
 
     // --- caps (optional) ---
-    let caps = records.get(TXT_KEY_CAPS).map(|caps_str| {
-        caps_str
+    let caps = records.get(TXT_KEY_CAPS).and_then(|caps_str| {
+        let caps_vec: Vec<String> = caps_str
             .split(',')
             .map(|s| s.trim().to_owned())
             .filter(|s| !s.is_empty())
-            .collect()
+            .collect();
+        if caps_vec.is_empty() {
+            None
+        } else {
+            Some(caps_vec)
+        }
     });
 
     Ok(TxtFields {
@@ -353,5 +359,16 @@ mod tests {
             fields.caps,
             Some(vec!["relay".to_owned(), "store".to_owned()])
         );
+    }
+
+    #[test]
+    fn caps_all_empty_tokens_normalizes_to_none() {
+        let rk = [0u8; 16];
+        let mut txt = encode_txt(&rk, 443);
+        txt.insert("caps".to_owned(), ",,  , ".to_owned());
+        let fields = decode_txt(&txt).unwrap();
+
+        // All-empty/whitespace caps should normalize to None, not Some(vec![])
+        assert_eq!(fields.caps, None);
     }
 }

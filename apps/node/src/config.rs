@@ -434,9 +434,9 @@ pub struct ServeArgs {
     #[arg(long, env = "REME_NODE_MAX_BATCH_SIZE")]
     pub max_batch_size: Option<u32>,
 
-    /// Enable LAN discovery (mDNS advertisement)
-    #[arg(long, env = "REME_NODE_LAN_DISCOVERY_ENABLED")]
-    pub lan_discovery_enabled: Option<bool>,
+    /// Enable LAN advertisement (mDNS service broadcast)
+    #[arg(long, env = "REME_NODE_LAN_ADVERTISEMENT")]
+    pub lan_advertisement: Option<bool>,
 }
 
 /// Arguments for the export subcommand
@@ -797,7 +797,7 @@ fn apply_serve_overrides(
     if let Some(v) = serve.max_batch_size {
         builder = builder.set_override("max_batch_size", i64::from(v))?;
     }
-    if let Some(v) = serve.lan_discovery_enabled {
+    if let Some(v) = serve.lan_advertisement {
         builder = builder.set_override("lan_discovery.enabled", v)?;
     }
     Ok(builder)
