@@ -328,8 +328,6 @@ pub enum MessageSource {
 pub enum Action {
     /// Keyboard input
     Key(KeyEvent),
-    /// Periodic tick (drives UI refresh)
-    Tick,
     /// Terminal resize
     Resize(u16, u16),
 
@@ -772,39 +770,49 @@ impl App<'_> {
 
     /// Run the application main loop
     pub async fn run(&mut self, terminal: &mut Terminal<impl Backend>) -> AppResult<()> {
-        let mut event_handler = EventHandler::new(100);
+        let mut event_handler = EventHandler::new();
+        let mut needs_render = true;
         self.spawn_background_tasks();
 
         while self.running {
+            if needs_render {
+                terminal.draw(|frame| ui::render(frame, self))?;
+                needs_render = false;
+            }
+
             tokio::select! {
                 event = event_handler.next() => {
                     let action = match event? {
                         Event::Key(k) => Action::Key(k),
-                        Event::Tick => Action::Tick,
                         Event::Resize(w, h) => Action::Resize(w, h),
                     };
-                    self.update(action);
+                    needs_render |= self.apply_action(action);
                 }
                 Some(action) = self.action_rx.recv() => {
-                    self.update(action);
+                    needs_render |= self.apply_action(action);
                 }
             }
 
             // Drain any additional queued actions (stop if shutdown requested)
             while self.running {
                 match self.action_rx.try_recv() {
-                    Ok(action) => self.update(action),
+                    Ok(action) => needs_render |= self.apply_action(action),
                     Err(_) => break,
                 }
             }
-
-            terminal.draw(|frame| ui::render(frame, self))?;
         }
 
         self.shutdown_discovery().await;
         self.shutdown_embedded_node().await;
 
         Ok(())
+    }
+
+    /// Apply a single action and report whether it should trigger a redraw.
+    fn apply_action(&mut self, action: Action) -> bool {
+        let needs_render = action_requires_render(&action);
+        self.update(action);
+        needs_render
     }
 
     /// Process a single action, updating application state.
@@ -818,7 +826,7 @@ impl App<'_> {
                     self.status = format!("Error: {e}");
                 }
             }
-            Action::Tick | Action::Resize(_, _) => {}
+            Action::Resize(_, _) => {}
             Action::SendComplete { send_id, result } => {
                 self.handle_send_complete(send_id, &result);
             }
@@ -1560,6 +1568,18 @@ impl App<'_> {
     }
 }
 
+const fn action_requires_render(action: &Action) -> bool {
+    match action {
+        Action::OutboxTick(_) => false,
+        Action::Key(_)
+        | Action::Resize(_, _)
+        | Action::SendComplete { .. }
+        | Action::MessageProcessed { .. }
+        | Action::NodeError(_)
+        | Action::UpstreamAdded { .. } => true,
+    }
+}
+
 /// Handle the result of an outbox tick (logging only, no UI state change).
 fn handle_outbox_tick(result: Result<(usize, usize, u64), String>) {
     match result {
@@ -2110,5 +2130,36 @@ fn format_delivery_status(phase: &TieredDeliveryPhase) -> String {
             }
         },
         TieredDeliveryPhase::Confirmed { .. } => "Sent (confirmed)".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{action_requires_render, Action};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn outbox_tick_does_not_require_render() {
+        assert!(!action_requires_render(&Action::OutboxTick(Ok((0, 0, 0)))));
+    }
+
+    #[test]
+    fn resize_requires_render() {
+        assert!(action_requires_render(&Action::Resize(80, 24)));
+    }
+
+    #[test]
+    fn key_requires_render() {
+        assert!(action_requires_render(&Action::Key(KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::NONE,
+        ))));
+    }
+
+    #[test]
+    fn node_error_requires_render() {
+        assert!(action_requires_render(&Action::NodeError(
+            "boom".to_string(),
+        )));
     }
 }
