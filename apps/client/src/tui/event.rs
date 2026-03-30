@@ -48,14 +48,19 @@ async fn run_event_pump<S>(tx: mpsc::UnboundedSender<Event>, mut reader: S)
 where
     S: Stream<Item = io::Result<CrosstermEvent>> + Unpin,
 {
-    while let Some(next_event) = reader.next().await {
-        match next_event {
-            Ok(event) => {
-                if !send_terminal_event(&tx, &event) {
-                    break;
+    loop {
+        let closed = tx.clone();
+
+        tokio::select! {
+            next_event = reader.next() => match next_event {
+                Some(Ok(event)) => {
+                    if !send_terminal_event(&tx, &event) {
+                        break;
+                    }
                 }
-            }
-            Err(_) => break,
+                Some(Err(_)) | None => break,
+            },
+            () = closed.closed() => break,
         }
     }
 }
@@ -63,7 +68,7 @@ where
 fn send_terminal_event(tx: &mpsc::UnboundedSender<Event>, event: &CrosstermEvent) -> bool {
     match map_terminal_event(event) {
         Some(event) => tx.send(event).is_ok(),
-        None => true,
+        None => !tx.is_closed(),
     }
 }
 
@@ -81,11 +86,12 @@ fn map_terminal_event(event: &CrosstermEvent) -> Option<Event> {
 
 #[cfg(test)]
 mod tests {
-    use super::{map_terminal_event, run_event_pump, Event};
+    use super::{map_terminal_event, run_event_pump, send_terminal_event, Event};
     use crossterm::event::{
         Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     };
     use futures::stream;
+    use std::{io, time::Duration};
     use tokio::sync::mpsc;
 
     #[test]
@@ -120,6 +126,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn ignored_event_stops_when_channel_is_closed() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        drop(rx);
+
+        assert!(!send_terminal_event(&tx, &CrosstermEvent::FocusGained));
+    }
+
     #[tokio::test]
     async fn pump_forwards_resize_events() {
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -131,5 +145,21 @@ mod tests {
         assert!(matches!(rx.recv().await, Some(Event::Resize(80, 24))));
 
         handle.abort();
+    }
+
+    #[tokio::test]
+    async fn pump_exits_when_receiver_is_dropped_while_idle() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let handle = tokio::spawn(run_event_pump(
+            tx,
+            stream::pending::<io::Result<CrosstermEvent>>(),
+        ));
+
+        drop(rx);
+
+        tokio::time::timeout(Duration::from_millis(100), handle)
+            .await
+            .expect("event pump should exit after the receiver drops")
+            .expect("event pump task should not panic");
     }
 }
