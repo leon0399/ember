@@ -254,9 +254,50 @@ impl ConversationList {
         ListItem::new(vec![line1, line2])
     }
 
-    /// Compact mode: trust + name + timestamp on one line.
+    /// Compact mode: `✓ Alice                  2m  (3)`
     fn render_compact(conv: &Conversation, width: u16, now: i64) -> ListItem<'static> {
-        ListItem::new(Self::build_name_line(conv, width as usize, now))
+        let w = width as usize;
+        let (icon, icon_color) = trust_icon(conv.trust_level);
+
+        // Build right side: timestamp + optional unread
+        let time_str = conv
+            .last_message_time
+            .map(|ts| format_relative_time(ts, now))
+            .unwrap_or_default();
+        let unread_str = if conv.unread_count > 0 {
+            format!("  ({})", conv.unread_count)
+        } else {
+            String::new()
+        };
+        let right = format!("{time_str}{unread_str}");
+        let right_len = right.chars().count();
+
+        // Truncate name if it would clip the right side
+        let icon_prefix = format!("{icon} ");
+        let icon_len = icon_prefix.chars().count();
+        let max_name = w.saturating_sub(icon_len + right_len + 1);
+        let name = truncate_str(&conv.name, max_name);
+        let name_len = name.chars().count();
+
+        let pad = w.saturating_sub(icon_len + name_len + right_len);
+
+        let mut spans = vec![
+            Span::styled(icon_prefix, Style::default().fg(icon_color)),
+            Span::styled(name, Style::default().fg(Color::White)),
+            Span::raw(" ".repeat(pad)),
+        ];
+
+        if !time_str.is_empty() {
+            spans.push(Span::styled(time_str, Style::default().fg(Color::Gray)));
+        }
+        if conv.unread_count > 0 {
+            spans.push(Span::styled(
+                format!("  ({})", conv.unread_count),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ));
+        }
+
+        ListItem::new(Line::from(spans))
     }
 
     /// Line 1: `✓ Alice                        2m`
@@ -265,23 +306,25 @@ impl ConversationList {
     fn build_name_line(conv: &Conversation, width: usize, now: i64) -> Line<'static> {
         let (icon, icon_color) = trust_icon(conv.trust_level);
 
-        // Left side: "✓ Name"
-        let left = format!("{icon} {}", conv.name);
-        let left_len = left.chars().count();
-
-        // Right side: timestamp (or empty)
+        // Build right side first to know how much space the name gets
         let right = conv
             .last_message_time
             .map(|ts| format_relative_time(ts, now))
             .unwrap_or_default();
         let right_len = right.chars().count();
 
-        // Padding to push right side to the edge
-        let pad = width.saturating_sub(left_len + right_len);
+        // Left side: "✓ Name" — truncate name if it would clip timestamp
+        let icon_prefix = format!("{icon} ");
+        let icon_len = icon_prefix.chars().count();
+        let max_name = width.saturating_sub(icon_len + right_len + 1);
+        let name = truncate_str(&conv.name, max_name);
+        let name_len = name.chars().count();
+
+        let pad = width.saturating_sub(icon_len + name_len + right_len);
 
         let mut spans = vec![
-            Span::styled(format!("{icon} "), Style::default().fg(icon_color)),
-            Span::styled(conv.name.clone(), Style::default().fg(Color::White)),
+            Span::styled(icon_prefix, Style::default().fg(icon_color)),
+            Span::styled(name, Style::default().fg(Color::White)),
             Span::raw(" ".repeat(pad)),
         ];
 
