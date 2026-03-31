@@ -1085,9 +1085,10 @@ impl Storage {
         Ok(messages)
     }
 
-    /// Get the most recent message for each of the given contact IDs.
+    /// Get the most recent message preview for each of the given contact IDs.
     ///
-    /// Returns a map from `contact_id` to the body of the latest text message.
+    /// Returns a map from `contact_id` to a [`LastMessagePreview`] containing
+    /// the message body and creation timestamp (unix seconds).
     /// Receipts and messages without a body are skipped.
     /// `SQLite` bound variable limit (matches `ember-node-core`).
     const SQLITE_MAX_BOUND_VARIABLES: usize = 999;

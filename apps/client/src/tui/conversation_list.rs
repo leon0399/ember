@@ -56,13 +56,14 @@ impl ConversationList {
         let selected_id = self.selected().map(|c| c.public_id);
         self.conversations = conversations;
 
-        if let Some(pid) = selected_id {
-            self.state.select(self.find_by_public_id(&pid));
-        } else if !self.conversations.is_empty() {
-            self.state.select(Some(0));
-        } else {
-            self.state.select(None);
-        }
+        let new_index = selected_id.and_then(|pid| self.find_by_public_id(&pid)).or(
+            if self.conversations.is_empty() {
+                None
+            } else {
+                Some(0)
+            },
+        );
+        self.state.select(new_index);
     }
 
     /// Sort conversations by `last_message_time` descending (`None` goes last).
@@ -71,12 +72,13 @@ impl ConversationList {
         let selected_id = self.selected().map(|c| c.public_id);
 
         self.conversations.sort_by(|a, b| {
-            match (&a.last_message_time, &b.last_message_time) {
+            let time_ord = match (&a.last_message_time, &b.last_message_time) {
                 (Some(at), Some(bt)) => bt.cmp(at),             // descending
                 (Some(_), None) => std::cmp::Ordering::Less,    // a (has time) before b (no time)
                 (None, Some(_)) => std::cmp::Ordering::Greater, // b (has time) before a (no time)
                 (None, None) => std::cmp::Ordering::Equal,
-            }
+            };
+            time_ord.then_with(|| a.name.cmp(&b.name))
         });
 
         if let Some(pid) = selected_id {
@@ -206,11 +208,12 @@ impl ConversationList {
 
         // Available width inside the block borders (2) minus highlight_symbol (2)
         let inner_width = area.width.saturating_sub(4);
+        let now = unix_now();
 
         let items: Vec<ListItem> = self
             .conversations
             .iter()
-            .map(|c| self.render_item(c, inner_width))
+            .map(|c| self.render_item(c, inner_width, now))
             .collect();
 
         let list = List::new(items)
@@ -231,10 +234,10 @@ impl ConversationList {
     }
 
     /// Dispatch to two-line or compact rendering.
-    fn render_item(&self, conv: &Conversation, width: u16) -> ListItem<'static> {
+    fn render_item(&self, conv: &Conversation, width: u16, now: i64) -> ListItem<'static> {
         match self.display_mode {
-            DisplayMode::TwoLine => Self::render_two_line(conv, width),
-            DisplayMode::Compact => Self::render_compact(conv, width),
+            DisplayMode::TwoLine => Self::render_two_line(conv, width, now),
+            DisplayMode::Compact => Self::render_compact(conv, width, now),
         }
     }
 
@@ -243,23 +246,23 @@ impl ConversationList {
     /// ✓ Alice                        2m
     ///   Hey, are you coming t...    (3)
     /// ```
-    fn render_two_line(conv: &Conversation, width: u16) -> ListItem<'static> {
+    fn render_two_line(conv: &Conversation, width: u16, now: i64) -> ListItem<'static> {
         let w = width as usize;
-        let line1 = Self::build_name_line(conv, w);
+        let line1 = Self::build_name_line(conv, w, now);
         let line2 = Self::build_preview_line(conv, w);
 
         ListItem::new(vec![line1, line2])
     }
 
     /// Compact mode: trust + name + timestamp on one line.
-    fn render_compact(conv: &Conversation, width: u16) -> ListItem<'static> {
-        ListItem::new(Self::build_name_line(conv, width as usize))
+    fn render_compact(conv: &Conversation, width: u16, now: i64) -> ListItem<'static> {
+        ListItem::new(Self::build_name_line(conv, width as usize, now))
     }
 
     /// Line 1: `✓ Alice                        2m`
     ///
     /// Trust icon + name on the left, timestamp right-pinned.
-    fn build_name_line(conv: &Conversation, width: usize) -> Line<'static> {
+    fn build_name_line(conv: &Conversation, width: usize, now: i64) -> Line<'static> {
         let (icon, icon_color) = trust_icon(conv.trust_level);
 
         // Left side: "✓ Name"
@@ -269,7 +272,7 @@ impl ConversationList {
         // Right side: timestamp (or empty)
         let right = conv
             .last_message_time
-            .map(format_relative_time)
+            .map(|ts| format_relative_time(ts, now))
             .unwrap_or_default();
         let right_len = right.chars().count();
 
@@ -346,6 +349,16 @@ impl ConversationList {
 // Helpers (module-level, private)
 // ---------------------------------------------------------------------------
 
+/// Current wall-clock time as Unix seconds.
+fn unix_now() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    #[allow(clippy::cast_possible_wrap)]
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// Map a `TrustLevel` to a display icon and colour.
 const fn trust_icon(level: TrustLevel) -> (&'static str, Color) {
     match level {
@@ -357,19 +370,7 @@ const fn trust_icon(level: TrustLevel) -> (&'static str, Color) {
 }
 
 /// Format a Unix timestamp (seconds) as a relative-time string.
-///
-/// Uses the current wall-clock time via `std::time::SystemTime`.
-fn format_relative_time(timestamp_secs: i64) -> String {
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| {
-            // Duration::as_secs() returns u64; timestamps within i64::MAX are safe.
-            #[allow(clippy::cast_possible_wrap)]
-            let s = d.as_secs() as i64;
-            s
-        })
-        .unwrap_or(0);
-
+fn format_relative_time(timestamp_secs: i64, now_secs: i64) -> String {
     let diff = now_secs.saturating_sub(timestamp_secs);
 
     // saturating_sub ensures diff >= 0 when now_secs >= 0 and timestamp_secs <= now_secs.
@@ -428,11 +429,14 @@ const fn civil_month_day(timestamp_secs: i64) -> (u32, u32) {
 
 /// Truncate a string to `max_len` characters, appending "..." if truncated.
 fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    let char_count = s.chars().count();
+    if char_count <= max_len {
         return s.to_string();
     }
-    let end = max_len.saturating_sub(3);
-    // Respect char boundaries.
+    if max_len <= 3 {
+        return ".".repeat(max_len);
+    }
+    let end = max_len - 3;
     let truncated: String = s.chars().take(end).collect();
     format!("{truncated}...")
 }

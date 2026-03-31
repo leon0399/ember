@@ -967,6 +967,7 @@ impl App<'_> {
             if let Some(conversation) = self.conversation_list.get_mut(idx) {
                 conversation.id = contact_id;
                 conversation.name = display_name;
+                conversation.trust_level = trust_level;
             }
             return idx;
         }
