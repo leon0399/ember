@@ -18,7 +18,7 @@ use ratatui::{
 
 /// A conversation entry shown in the sidebar.
 ///
-/// This struct will replace `app::Conversation` once wired in (Task 4).
+/// Owns the data needed to render a single row in the conversation sidebar.
 #[derive(Debug, Clone)]
 pub struct Conversation {
     pub id: i64,
@@ -164,11 +164,13 @@ impl ConversationList {
     }
 
     /// Number of conversations in the list.
+    #[allow(dead_code)] // Public API for component consumers
     pub fn len(&self) -> usize {
         self.conversations.len()
     }
 
     /// Whether the list is empty.
+    #[allow(dead_code)] // Public API for component consumers
     pub fn is_empty(&self) -> bool {
         self.conversations.is_empty()
     }
@@ -187,6 +189,7 @@ impl ConversationList {
     }
 
     /// Iterate over conversations.
+    #[allow(dead_code)] // Public API for component consumers
     pub fn iter(&self) -> std::slice::Iter<'_, Conversation> {
         self.conversations.iter()
     }
@@ -204,7 +207,7 @@ impl ConversationList {
         let items: Vec<ListItem> = self
             .conversations
             .iter()
-            .map(|c| self.render_item(c, area.width))
+            .map(|c| self.render_item(c))
             .collect();
 
         let list = List::new(items)
@@ -212,7 +215,7 @@ impl ConversationList {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(border_style)
-                    .title(" Chats "),
+                    .title(format!(" Conversations ({}) ", self.conversations.len())),
             )
             .highlight_style(
                 Style::default()
@@ -225,15 +228,15 @@ impl ConversationList {
     }
 
     /// Dispatch to two-line or compact rendering.
-    fn render_item(&self, conv: &Conversation, width: u16) -> ListItem<'static> {
+    fn render_item(&self, conv: &Conversation) -> ListItem<'static> {
         match self.display_mode {
-            DisplayMode::TwoLine => Self::render_two_line(conv, width),
-            DisplayMode::Compact => Self::render_compact(conv, width),
+            DisplayMode::TwoLine => Self::render_two_line(conv),
+            DisplayMode::Compact => Self::render_compact(conv),
         }
     }
 
     /// Two-line mode: header + optional message preview + blank separator.
-    fn render_two_line(conv: &Conversation, _width: u16) -> ListItem<'static> {
+    fn render_two_line(conv: &Conversation) -> ListItem<'static> {
         let header = Self::build_header_line(conv);
 
         let mut lines = vec![header];
@@ -253,7 +256,7 @@ impl ConversationList {
     }
 
     /// Compact mode: single header line, no preview or separator.
-    fn render_compact(conv: &Conversation, _width: u16) -> ListItem<'static> {
+    fn render_compact(conv: &Conversation) -> ListItem<'static> {
         ListItem::new(Self::build_header_line(conv))
     }
 

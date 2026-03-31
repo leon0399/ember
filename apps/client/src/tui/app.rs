@@ -1090,11 +1090,10 @@ impl App<'_> {
                 KeyCode::Char('l' | 'L') => {
                     // Alt+L: Toggle conversation list layout
                     self.conversation_list.toggle_display_mode();
-                    let mode = match self.conversation_list.display_mode() {
-                        crate::config::DisplayMode::TwoLine => "two-line",
-                        crate::config::DisplayMode::Compact => "compact",
-                    };
-                    self.status = format!("Display mode: {mode}");
+                    self.status = format!(
+                        "Display mode: {}",
+                        self.conversation_list.display_mode().as_str()
+                    );
                     return Ok(());
                 }
                 _ => {}

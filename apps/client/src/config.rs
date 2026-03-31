@@ -570,6 +570,16 @@ pub enum DisplayMode {
     Compact,
 }
 
+impl DisplayMode {
+    /// Human-readable label for status messages.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TwoLine => "two-line",
+            Self::Compact => "compact",
+        }
+    }
+}
+
 /// UI display configuration.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct UiConfig {
