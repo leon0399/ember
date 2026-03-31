@@ -6,6 +6,8 @@
 //! - Input area at the bottom
 
 mod app;
+#[allow(dead_code)] // Wired into App in a follow-up task
+pub mod conversation_list;
 mod event;
 pub mod http_server;
 mod ui;
