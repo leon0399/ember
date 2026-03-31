@@ -52,6 +52,14 @@ pub struct StoredMessage {
     pub read_at: Option<i64>,
 }
 
+/// Preview data for the most recent message in a conversation.
+/// Used by the TUI conversation list to show message snippets and timestamps.
+#[derive(Debug, Clone)]
+pub struct LastMessagePreview {
+    pub body: String,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum StorageError {
@@ -1087,7 +1095,7 @@ impl Storage {
     pub fn get_last_message_per_contact(
         &self,
         contact_ids: &[i64],
-    ) -> Result<HashMap<i64, String>, StorageError> {
+    ) -> Result<HashMap<i64, LastMessagePreview>, StorageError> {
         if contact_ids.is_empty() {
             return Ok(HashMap::new());
         }
@@ -1099,7 +1107,7 @@ impl Storage {
         for chunk in contact_ids.chunks(Self::SQLITE_MAX_BOUND_VARIABLES) {
             let placeholders: Vec<&str> = chunk.iter().map(|_| "?").collect();
             let sql = format!(
-                "SELECT m.contact_id, m.body
+                "SELECT m.contact_id, m.body, m.created_at
                  FROM messages m
                  INNER JOIN (
                      SELECT contact_id, MAX(id) AS max_id
@@ -1117,12 +1125,13 @@ impl Storage {
             let rows = stmt.query_map(params_iter, |row| {
                 let cid: i64 = row.get(0)?;
                 let body: String = row.get(1)?;
-                Ok((cid, body))
+                let created_at: i64 = row.get(2)?;
+                Ok((cid, LastMessagePreview { body, created_at }))
             })?;
 
             for row in rows {
-                let (cid, body) = row?;
-                result.insert(cid, body);
+                let (cid, preview) = row?;
+                result.insert(cid, preview);
             }
         }
         Ok(result)
@@ -3009,8 +3018,10 @@ mod tests {
         let last = storage
             .get_last_message_per_contact(&[alice_id, bob_id])
             .unwrap();
-        assert_eq!(last.get(&alice_id).map(String::as_str), Some("msg-2"));
-        assert_eq!(last.get(&bob_id).map(String::as_str), Some("msg-4"));
+        assert_eq!(last.get(&alice_id).map(|p| p.body.as_str()), Some("msg-2"));
+        assert_eq!(last.get(&bob_id).map(|p| p.body.as_str()), Some("msg-4"));
+        assert!(last.get(&alice_id).unwrap().created_at > 0);
+        assert!(last.get(&bob_id).unwrap().created_at > 0);
     }
 
     #[test]
@@ -3049,7 +3060,11 @@ mod tests {
 
         let last = storage.get_last_message_per_contact(&[contact_id]).unwrap();
         // Should return the text message, not the receipt
-        assert_eq!(last.get(&contact_id).map(String::as_str), Some("Hello"));
+        assert_eq!(
+            last.get(&contact_id).map(|p| p.body.as_str()),
+            Some("Hello")
+        );
+        assert!(last.get(&contact_id).unwrap().created_at > 0);
     }
 
     #[test]

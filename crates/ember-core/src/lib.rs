@@ -19,7 +19,7 @@ use ember_outbox::{
     AttemptError, AttemptResult, ClientOutbox, DeliveryState, OutboxConfig, OutboxEntryId,
     PendingMessage, TieredDeliveryPhase, TransportRetryPolicy,
 };
-use ember_storage::{Storage, StorageError};
+use ember_storage::{LastMessagePreview, Storage, StorageError};
 use ember_transport::{
     DeliveryResult, TargetId, TieredDeliveryConfig, Transport, TransportCoordinator, TransportError,
 };
@@ -501,7 +501,7 @@ impl<T: Transport> Client<T> {
     pub fn get_last_message_per_contact(
         &self,
         contact_ids: &[i64],
-    ) -> Result<std::collections::HashMap<i64, String>, ClientError> {
+    ) -> Result<HashMap<i64, LastMessagePreview>, ClientError> {
         Ok(self.storage.get_last_message_per_contact(contact_ids)?)
     }
 

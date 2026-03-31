@@ -295,6 +295,9 @@ pub struct Conversation {
     pub public_id: PublicID,
     pub name: String,
     pub last_message: Option<String>,
+    /// Unix timestamp (seconds) of the most recent message; `None` if no messages yet.
+    #[allow(dead_code)] // Will be used for timestamp display in the conversation list
+    pub last_message_at: Option<i64>,
     pub unread_count: u32,
 }
 
@@ -737,13 +740,16 @@ impl App<'_> {
 
             self.contacts_by_id.insert(contact.public_id, name.clone());
 
-            let last_message = last_messages.get(&contact.id).cloned();
+            let last_message_preview = last_messages.get(&contact.id);
+            let last_message = last_message_preview.map(|p| p.body.clone());
+            let last_message_at = last_message_preview.map(|p| p.created_at);
 
             self.conversations.push(Conversation {
                 id: contact.id,
                 public_id: contact.public_id,
                 name,
                 last_message,
+                last_message_at,
                 unread_count: 0,
             });
         }
@@ -981,6 +987,7 @@ impl App<'_> {
             public_id,
             name: display_name,
             last_message: None,
+            last_message_at: None,
             unread_count: 0,
         });
         self.conversations.len() - 1
