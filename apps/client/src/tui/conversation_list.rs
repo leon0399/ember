@@ -204,10 +204,13 @@ impl ConversationList {
             Style::default().fg(Color::DarkGray)
         };
 
+        // Available width inside the block borders (2) minus highlight_symbol (2)
+        let inner_width = area.width.saturating_sub(4);
+
         let items: Vec<ListItem> = self
             .conversations
             .iter()
-            .map(|c| self.render_item(c))
+            .map(|c| self.render_item(c, inner_width))
             .collect();
 
         let list = List::new(items)
@@ -228,68 +231,110 @@ impl ConversationList {
     }
 
     /// Dispatch to two-line or compact rendering.
-    fn render_item(&self, conv: &Conversation) -> ListItem<'static> {
+    fn render_item(&self, conv: &Conversation, width: u16) -> ListItem<'static> {
         match self.display_mode {
-            DisplayMode::TwoLine => Self::render_two_line(conv),
-            DisplayMode::Compact => Self::render_compact(conv),
+            DisplayMode::TwoLine => Self::render_two_line(conv, width),
+            DisplayMode::Compact => Self::render_compact(conv, width),
         }
     }
 
-    /// Two-line mode: header + optional message preview + blank separator.
-    fn render_two_line(conv: &Conversation) -> ListItem<'static> {
-        let header = Self::build_header_line(conv);
+    /// Two-line mode:
+    /// ```text
+    /// ✓ Alice                        2m
+    ///   Hey, are you coming t...    (3)
+    /// ```
+    /// Plus a trailing blank line for separation.
+    fn render_two_line(conv: &Conversation, width: u16) -> ListItem<'static> {
+        let w = width as usize;
+        let line1 = Self::build_name_line(conv, w);
+        let line2 = Self::build_preview_line(conv, w);
 
-        let mut lines = vec![header];
+        ListItem::new(vec![line1, line2, Line::from("")])
+    }
 
-        let preview_line = if let Some(msg) = &conv.last_message {
-            let preview = truncate_str(msg, 40);
-            Line::from(Span::styled(
-                format!("  {preview}"),
-                Style::default().fg(Color::White),
-            ))
+    /// Compact mode: trust + name + timestamp on one line.
+    fn render_compact(conv: &Conversation, width: u16) -> ListItem<'static> {
+        ListItem::new(Self::build_name_line(conv, width as usize))
+    }
+
+    /// Line 1: `✓ Alice                        2m`
+    ///
+    /// Trust icon + name on the left, timestamp right-pinned.
+    fn build_name_line(conv: &Conversation, width: usize) -> Line<'static> {
+        let (icon, icon_color) = trust_icon(conv.trust_level);
+
+        // Left side: "✓ Name"
+        let left = format!("{icon} {}", conv.name);
+        let left_len = left.chars().count();
+
+        // Right side: timestamp (or empty)
+        let right = conv
+            .last_message_time
+            .map(format_relative_time)
+            .unwrap_or_default();
+        let right_len = right.chars().count();
+
+        // Padding to push right side to the edge
+        let pad = width.saturating_sub(left_len + right_len);
+
+        let mut spans = vec![
+            Span::styled(format!("{icon} "), Style::default().fg(icon_color)),
+            Span::styled(conv.name.clone(), Style::default().fg(Color::White)),
+            Span::raw(" ".repeat(pad)),
+        ];
+
+        if !right.is_empty() {
+            spans.push(Span::styled(right, Style::default().fg(Color::Gray)));
+        }
+
+        Line::from(spans)
+    }
+
+    /// Line 2: `  Hey, are you coming t...    (3)`
+    ///
+    /// Message preview on the left, unread badge right-pinned.
+    fn build_preview_line(conv: &Conversation, width: usize) -> Line<'static> {
+        // Right side: unread badge
+        let right = if conv.unread_count > 0 {
+            format!("({})", conv.unread_count)
         } else {
-            Line::from(Span::styled(
-                "  <no messages>".to_string(),
+            String::new()
+        };
+        let right_len = right.chars().count();
+
+        // Left side: "  preview..." — reserve space for right + 1 gap
+        let prefix = "  ";
+        let max_preview = width
+            .saturating_sub(prefix.len())
+            .saturating_sub(right_len)
+            .saturating_sub(1); // gap between preview and badge
+
+        let (preview, preview_style) = if let Some(msg) = &conv.last_message {
+            (
+                truncate_str(msg, max_preview),
+                Style::default().fg(Color::White),
+            )
+        } else {
+            (
+                "<no messages>".to_string(),
                 Style::default()
                     .fg(Color::Gray)
                     .add_modifier(Modifier::ITALIC),
-            ))
+            )
         };
-        lines.push(preview_line);
 
-        // Blank separator line
-        lines.push(Line::from(""));
-
-        ListItem::new(lines)
-    }
-
-    /// Compact mode: single header line, no preview or separator.
-    fn render_compact(conv: &Conversation) -> ListItem<'static> {
-        ListItem::new(Self::build_header_line(conv))
-    }
-
-    /// Build the header line: name, trust icon, relative time, unread badge.
-    fn build_header_line(conv: &Conversation) -> Line<'static> {
-        let (icon, icon_color) = trust_icon(conv.trust_level);
+        let left = format!("{prefix}{preview}");
+        let left_len = left.chars().count();
+        let pad = width.saturating_sub(left_len + right_len);
 
         let mut spans = vec![
-            Span::styled(conv.name.clone(), Style::default().fg(Color::White)),
-            Span::raw("  "),
-            Span::styled(icon, Style::default().fg(icon_color)),
+            Span::styled(left, preview_style),
+            Span::raw(" ".repeat(pad)),
         ];
 
-        if let Some(ts) = conv.last_message_time {
-            spans.push(Span::raw("  "));
+        if !right.is_empty() {
             spans.push(Span::styled(
-                format_relative_time(ts),
-                Style::default().fg(Color::Gray),
-            ));
-        }
-
-        if conv.unread_count > 0 {
-            spans.push(Span::raw("  "));
-            spans.push(Span::styled(
-                format!("({})", conv.unread_count),
+                right,
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ));
         }
