@@ -1171,10 +1171,16 @@ impl App<'_> {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.conversation_list.select_previous();
+                if let Some(conv) = self.conversation_list.selected_mut() {
+                    conv.unread_count = 0;
+                }
                 self.load_conversation_messages();
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.conversation_list.select_next();
+                if let Some(conv) = self.conversation_list.selected_mut() {
+                    conv.unread_count = 0;
+                }
                 self.load_conversation_messages();
             }
             KeyCode::Enter => {
@@ -1250,6 +1256,7 @@ impl App<'_> {
                             if let Some(sel) = self.conversation_list.selected_mut() {
                                 sel.last_message = Some(text);
                                 sel.last_message_time = Some(now_secs());
+                                sel.unread_count = 0;
                             }
                             self.conversation_list.sort_by_recent();
 

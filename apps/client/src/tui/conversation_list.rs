@@ -243,13 +243,12 @@ impl ConversationList {
     /// ✓ Alice                        2m
     ///   Hey, are you coming t...    (3)
     /// ```
-    /// Plus a trailing blank line for separation.
     fn render_two_line(conv: &Conversation, width: u16) -> ListItem<'static> {
         let w = width as usize;
         let line1 = Self::build_name_line(conv, w);
         let line2 = Self::build_preview_line(conv, w);
 
-        ListItem::new(vec![line1, line2, Line::from("")])
+        ListItem::new(vec![line1, line2])
     }
 
     /// Compact mode: trust + name + timestamp on one line.
