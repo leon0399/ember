@@ -1,0 +1,1179 @@
+crates/ember-core/src/lib.rs
+  108d31d3c7a94c33 504
+apps/client/src/tui/app.rs
+  108d31d3c7a94c33 740
+crates/ember-storage/src/lib.rs
+  108d31d3c7a94c33 55-62,1098,1110,1128-1129,1133-1134,3021-3024,3064-3067
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "866dedc10f1732c264c185049f7229d0db672386",
+  "prompts": {
+    "108d31d3c7a94c33": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1e8aacdb-7925-4dcb-a5e4-e5759548d31c",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [
+        {
+          "type": "user",
+          "text": "Let's improve TUI, and implement the https://github.com/leon0399/ember/issues/175 + more\n\nI want to clearly see:\n- current selected chat highlighted\n- typical chat UI: name + last message (though, configurable, not everyone wants to show everything)\n- trust level marked somehow\n- unread indicator\n\nBrainstorm what else I might've missed",
+          "timestamp": "2026-03-31T00:46:33.715Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Skill",
+          "input": {
+            "skill": "superpowers:brainstorming"
+          },
+          "timestamp": "2026-03-31T00:46:39.052Z"
+        },
+        {
+          "type": "user",
+          "text": "Base directory for this skill: /home/leon0399/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.6/skills/brainstorming\n\n# Brainstorming Ideas Into Designs\n\nHelp turn ideas into fully formed designs and specs through natural collaborative dialogue.\n\nStart by understanding the current project context, then ask questions one at a time to refine the idea. Once you understand what you're building, present the design and get user approval.\n\n<HARD-GATE>\nDo NOT invoke any implementation skill, write any code, scaffold any project, or take any implementation action until you have presented a design and the user has approved it. This applies to EVERY project regardless of perceived simplicity.\n</HARD-GATE>\n\n## Anti-Pattern: \"This Is Too Simple To Need A Design\"\n\nEvery project goes through this process. A todo list, a single-function utility, a config change — all of them. \"Simple\" projects are where unexamined assumptions cause the most wasted work. The design can be short (a few sentences for truly simple projects), but you MUST present it and get approval.\n\n## Checklist\n\nYou MUST create a task for each of these items and complete them in order:\n\n1. **Explore project context** — check files, docs, recent commits\n2. **Offer visual companion** (if topic will involve visual questions) — this is its own message, not combined with a clarifying question. See the Visual Companion section below.\n3. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria\n4. **Propose 2-3 approaches** — with trade-offs and your recommendation\n5. **Present design** — in sections scaled to their complexity, get user approval after each section\n6. **Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit\n7. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below)\n8. **User reviews written spec** — ask user to review the spec file before proceeding\n9. **Transition to implementation** — invoke writing-plans skill to create implementation plan\n\n## Process Flow\n\n```dot\ndigraph brainstorming {\n    \"Explore project context\" [shape=box];\n    \"Visual questions ahead?\" [shape=diamond];\n    \"Offer Visual Companion\\n(own message, no other content)\" [shape=box];\n    \"Ask clarifying questions\" [shape=box];\n    \"Propose 2-3 approaches\" [shape=box];\n    \"Present design sections\" [shape=box];\n    \"User approves design?\" [shape=diamond];\n    \"Write design doc\" [shape=box];\n    \"Spec self-review\\n(fix inline)\" [shape=box];\n    \"User reviews spec?\" [shape=diamond];\n    \"Invoke writing-plans skill\" [shape=doublecircle];\n\n    \"Explore project context\" -> \"Visual questions ahead?\";\n    \"Visual questions ahead?\" -> \"Offer Visual Companion\\n(own message, no other content)\" [label=\"yes\"];\n    \"Visual questions ahead?\" -> \"Ask clarifying questions\" [label=\"no\"];\n    \"Offer Visual Companion\\n(own message, no other content)\" -> \"Ask clarifying questions\";\n    \"Ask clarifying questions\" -> \"Propose 2-3 approaches\";\n    \"Propose 2-3 approaches\" -> \"Present design sections\";\n    \"Present design sections\" -> \"User approves design?\";\n    \"User approves design?\" -> \"Present design sections\" [label=\"no, revise\"];\n    \"User approves design?\" -> \"Write design doc\" [label=\"yes\"];\n    \"Write design doc\" -> \"Spec self-review\\n(fix inline)\";\n    \"Spec self-review\\n(fix inline)\" -> \"User reviews spec?\";\n    \"User reviews spec?\" -> \"Write design doc\" [label=\"changes requested\"];\n    \"User reviews spec?\" -> \"Invoke writing-plans skill\" [label=\"approved\"];\n}\n```\n\n**The terminal state is invoking writing-plans.** Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skill you invoke after brainstorming is writing-plans.\n\n## The Process\n\n**Understanding the idea:**\n\n- Check out the current project state first (files, docs, recent commits)\n- Before asking detailed questions, assess scope: if the request describes multiple independent subsystems (e.g., \"build a platform with chat, file storage, billing, and analytics\"), flag this immediately. Don't spend questions refining details of a project that needs to be decomposed first.\n- If the project is too large for a single spec, help the user decompose into sub-projects: what are the independent pieces, how do they relate, what order should they be built? Then brainstorm the first sub-project through the normal design flow. Each sub-project gets its own spec → plan → implementation cycle.\n- For appropriately-scoped projects, ask questions one at a time to refine the idea\n- Prefer multiple choice questions when possible, but open-ended is fine too\n- Only one question per message - if a topic needs more exploration, break it into multiple questions\n- Focus on understanding: purpose, constraints, success criteria\n\n**Exploring approaches:**\n\n- Propose 2-3 different approaches with trade-offs\n- Present options conversationally with your recommendation and reasoning\n- Lead with your recommended option and explain why\n\n**Presenting the design:**\n\n- Once you believe you understand what you're building, present the design\n- Scale each section to its complexity: a few sentences if straightforward, up to 200-300 words if nuanced\n- Ask after each section whether it looks right so far\n- Cover: architecture, components, data flow, error handling, testing\n- Be ready to go back and clarify if something doesn't make sense\n\n**Design for isolation and clarity:**\n\n- Break the system into smaller units that each have one clear purpose, communicate through well-defined interfaces, and can be understood and tested independently\n- For each unit, you should be able to answer: what does it do, how do you use it, and what does it depend on?\n- Can someone understand what a unit does without reading its internals? Can you change the internals without breaking consumers? If not, the boundaries need work.\n- Smaller, well-bounded units are also easier for you to work with - you reason better about code you can hold in context at once, and your edits are more reliable when files are focused. When a file grows large, that's often a signal that it's doing too much.\n\n**Working in existing codebases:**\n\n- Explore the current structure before proposing changes. Follow existing patterns.\n- Where existing code has problems that affect the work (e.g., a file that's grown too large, unclear boundaries, tangled responsibilities), include targeted improvements as part of the design - the way a good developer improves code they're working in.\n- Don't propose unrelated refactoring. Stay focused on what serves the current goal.\n\n## After the Design\n\n**Documentation:**\n\n- Write the validated design (spec) to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`\n  - (User preferences for spec location override this default)\n- Use elements-of-style:writing-clearly-and-concisely skill if available\n- Commit the design document to git\n\n**Spec Self-Review:**\nAfter writing the spec document, look at it with fresh eyes:\n\n1. **Placeholder scan:** Any \"TBD\", \"TODO\", incomplete sections, or vague requirements? Fix them.\n2. **Internal consistency:** Do any sections contradict each other? Does the architecture match the feature descriptions?\n3. **Scope check:** Is this focused enough for a single implementation plan, or does it need decomposition?\n4. **Ambiguity check:** Could any requirement be interpreted two different ways? If so, pick one and make it explicit.\n\nFix any issues inline. No need to re-review — just fix and move on.\n\n**User Review Gate:**\nAfter the spec review loop passes, ask the user to review the written spec before proceeding:\n\n> \"Spec written and committed to `<path>`. Please review it and let me know if you want to make any changes before we start writing out the implementation plan.\"\n\nWait for the user's response. If they request changes, make them and re-run the spec review loop. Only proceed once the user approves.\n\n**Implementation:**\n\n- Invoke the writing-plans skill to create a detailed implementation plan\n- Do NOT invoke any other skill. writing-plans is the next step.\n\n## Key Principles\n\n- **One question at a time** - Don't overwhelm with multiple questions\n- **Multiple choice preferred** - Easier to answer than open-ended when possible\n- **YAGNI ruthlessly** - Remove unnecessary features from all designs\n- **Explore alternatives** - Always propose 2-3 approaches before settling\n- **Incremental validation** - Present design, get approval before moving on\n- **Be flexible** - Go back and clarify when something doesn't make sense\n\n## Visual Companion\n\nA browser-based companion for showing mockups, diagrams, and visual options during brainstorming. Available as a tool — not a mode. Accepting the companion means it's available for questions that benefit from visual treatment; it does NOT mean every question goes through the browser.\n\n**Offering the companion:** When you anticipate that upcoming questions will involve visual content (mockups, layouts, diagrams), offer it once for consent:\n> \"Some of what we're working on might be easier to explain if I can show it to you in a web browser. I can put together mockups, diagrams, comparisons, and other visuals as we go. This feature is still new and can be token-intensive. Want to try it? (Requires opening a local URL)\"\n\n**This offer MUST be its own message.** Do not combine it with clarifying questions, context summaries, or any other content. The message should contain ONLY the offer above and nothing else. Wait for the user's response before continuing. If they decline, proceed with text-only brainstorming.\n\n**Per-question decision:** Even after the user accepts, decide FOR EACH QUESTION whether to use the browser or the terminal. The test: **would the user understand this better by seeing it than reading it?**\n\n- **Use the browser** for content that IS visual — mockups, wireframes, layout comparisons, architecture diagrams, side-by-side visual designs\n- **Use the terminal** for content that is text — requirements questions, conceptual choices, tradeoff lists, A/B/C/D text options, scope decisions\n\nA question about a UI topic is not automatically a visual question. \"What does personality mean in this context?\" is a conceptual question — use the terminal. \"Which wizard layout works better?\" is a visual question — use the browser.\n\nIf they agree to the companion, read the detailed guide before proceeding:\n`skills/brainstorming/visual-companion.md`\n",
+          "timestamp": "2026-03-31T00:46:39.113Z"
+        },
+        {
+          "type": "assistant",
+          "text": "\n\nUsing brainstorming skill to design TUI chat list improvements.\n\nLet me explore the current state of the TUI and the referenced issue first.",
+          "timestamp": "2026-03-31T00:46:43.318Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskCreate",
+          "input": {
+            "activeForm": "Exploring project context",
+            "description": "Check current TUI code, issue #175, recent commits, and existing chat list implementation",
+            "subject": "Explore project context"
+          },
+          "timestamp": "2026-03-31T00:46:44.814Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskCreate",
+          "input": {
+            "description": "Offer browser-based visual companion for TUI mockups",
+            "subject": "Offer visual companion"
+          },
+          "timestamp": "2026-03-31T00:46:46.017Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskCreate",
+          "input": {
+            "description": "One at a time, understand purpose/constraints/success criteria for chat list UX",
+            "subject": "Ask clarifying questions"
+          },
+          "timestamp": "2026-03-31T00:46:50.596Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskCreate",
+          "input": {
+            "description": "Present approaches with trade-offs and recommendation",
+            "subject": "Propose 2-3 approaches"
+          },
+          "timestamp": "2026-03-31T00:46:53.415Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskCreate",
+          "input": {
+            "description": "Present design sections, get approval",
+            "subject": "Present design"
+          },
+          "timestamp": "2026-03-31T00:46:56.437Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskCreate",
+          "input": {
+            "description": "Write spec, run self-review, get user approval",
+            "subject": "Write design doc and self-review"
+          },
+          "timestamp": "2026-03-31T00:46:59.488Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskCreate",
+          "input": {
+            "description": "Invoke writing-plans skill",
+            "subject": "Transition to implementation"
+          },
+          "timestamp": "2026-03-31T00:47:02.654Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "in_progress",
+            "taskId": "1"
+          },
+          "timestamp": "2026-03-31T00:47:06.519Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Bash",
+          "input": {
+            "command": "gh issue view 175 --json title,body,labels,comments 2>/dev/null | head -200",
+            "description": "Fetch GitHub issue #175"
+          },
+          "timestamp": "2026-03-31T00:47:10.677Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Glob",
+          "input": {
+            "pattern": "apps/client/src/**/*.rs"
+          },
+          "timestamp": "2026-03-31T00:47:11.158Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Glob",
+          "input": {
+            "pattern": "**/tui/**/*.rs"
+          },
+          "timestamp": "2026-03-31T00:47:11.569Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/apps/client/src/tui/ui.rs"
+          },
+          "timestamp": "2026-03-31T00:47:13.571Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/apps/client/src/tui/app.rs"
+          },
+          "timestamp": "2026-03-31T00:47:14.141Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/apps/client/src/tui/app.rs",
+            "limit": 150
+          },
+          "timestamp": "2026-03-31T00:47:18.637Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Grep",
+          "input": {
+            "-A": 20,
+            "output_mode": "content",
+            "path": "/home/leon0399/Projects/reme/apps/client/src/tui/app.rs",
+            "pattern": "struct Conversation"
+          },
+          "timestamp": "2026-03-31T00:47:20.055Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Grep",
+          "input": {
+            "-C": 2,
+            "output_mode": "content",
+            "path": "/home/leon0399/Projects/reme/apps/client/src/tui/app.rs",
+            "pattern": "trust|TrustLevel"
+          },
+          "timestamp": "2026-03-31T00:47:21.209Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Grep",
+          "input": {
+            "output_mode": "files_with_matches",
+            "path": "/home/leon0399/Projects/reme/crates",
+            "pattern": "trust|TrustLevel"
+          },
+          "timestamp": "2026-03-31T00:47:25.086Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Grep",
+          "input": {
+            "-A": 15,
+            "output_mode": "content",
+            "path": "/home/leon0399/Projects/reme/crates",
+            "pattern": "struct Contact"
+          },
+          "timestamp": "2026-03-31T00:47:25.664Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/crates/ember-contact/src/lib.rs"
+          },
+          "timestamp": "2026-03-31T00:47:28.678Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Grep",
+          "input": {
+            "-C": 3,
+            "output_mode": "content",
+            "path": "/home/leon0399/Projects/reme/apps/client/src/tui/app.rs",
+            "pattern": "load_conversations|conversations"
+          },
+          "timestamp": "2026-03-31T00:47:29.834Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Grep",
+          "input": {
+            "-C": 2,
+            "output_mode": "content",
+            "path": "/home/leon0399/Projects/reme/apps/client/src/tui/app.rs",
+            "pattern": "trust_level"
+          },
+          "timestamp": "2026-03-31T00:47:33.266Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/apps/client/src/tui/app.rs",
+            "limit": 60,
+            "offset": 719
+          },
+          "timestamp": "2026-03-31T00:47:34.076Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Good — I now have the full picture. The `Conversation` struct currently lacks `trust_level`, and `load_contacts` doesn't carry it through. The rendering in `render_conversations` does manual index-based highlighting (the `ListState` bug from issue #169).",
+          "timestamp": "2026-03-31T00:47:40.363Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "completed",
+            "taskId": "1"
+          },
+          "timestamp": "2026-03-31T00:47:39.987Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "in_progress",
+            "taskId": "2"
+          },
+          "timestamp": "2026-03-31T00:47:38.793Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Some of what we're working on might be easier to explain if I can show it to you in a web browser. I can put together mockups, diagrams, comparisons, and other visuals as we go. This feature is still new and can be token-intensive. Want to try it? (Requires opening a local URL)",
+          "timestamp": "2026-03-31T00:47:44.230Z"
+        },
+        {
+          "type": "user",
+          "text": "Let's try, though, I'm not sure, since we are working on a TUI, which is text",
+          "timestamp": "2026-03-31T00:49:51.416Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Good point — TUI layouts are literally text, so ASCII mockups in the terminal might be just as effective. But colored side-by-side comparisons could still help. Let's keep it available and I'll use it only if a question genuinely benefits from visual rendering over plain text.",
+          "timestamp": "2026-03-31T00:49:56.138Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.6/skills/brainstorming/visual-companion.md"
+          },
+          "timestamp": "2026-03-31T00:49:57.561Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "completed",
+            "taskId": "2"
+          },
+          "timestamp": "2026-03-31T00:50:11.562Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Fair enough — TUI is literally text. I'll keep the visual companion available but default to ASCII mockups in the terminal unless something really warrants browser rendering.",
+          "timestamp": "2026-03-31T00:50:15.542Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "in_progress",
+            "taskId": "3"
+          },
+          "timestamp": "2026-03-31T00:50:16.494Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Let me start with the first clarifying question. Here's what I've gathered from the code:\n\n**Current state of the conversation list:**\n- Each row shows: `name` + ` (N)` unread count in red\n- Selection is broken — uses manual index coloring instead of `ListState` (issue #169)\n- No `highlight_symbol`, no scroll-follows-selection\n- `Conversation` struct has: `id`, `public_id`, `name`, `last_message`, `unread_count`\n- `trust_level` exists on `Contact` (Stranger/Known/Verified/Trusted) but is **not carried through** to `Conversation` or the UI\n- `last_message` is loaded but **never rendered** in the list\n\nSo your four asks (highlight, name+last message, trust level, unread) are all either broken or missing today.\n\nBefore I brainstorm what else you might be missing — first question:",
+          "timestamp": "2026-03-31T00:50:24.251Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "AskUserQuestion",
+          "input": {
+            "questions": [
+              {
+                "header": "Row density",
+                "multiSelect": false,
+                "options": [
+                  {
+                    "description": "Line 1: name + trust + unread. Line 2: last message preview (dimmed). Like Telegram/WhatsApp. More info at a glance, costs vertical space.",
+                    "label": "Two-line rows (Recommended)",
+                    "preview": "┌ Conversations (3) ────────┐\n│> Alice          ✓   (2) │\n│  Hey, are you coming t... │\n│  Bob             ?        │\n│  Sure, let me check th... │\n│  Charlie         ★        │\n│                            │\n└────────────────────────────┘"
+                  },
+                  {
+                    "description": "Everything on one line: name, trust icon, unread badge. No message preview in the list. Maximizes visible conversations.",
+                    "label": "Single-line compact",
+                    "preview": "┌ Conversations (3) ────────┐\n│> Alice       ✓        (2) │\n│  Bob         ?            │\n│  Charlie     ★            │\n│                            │\n│                            │\n│                            │\n└────────────────────────────┘"
+                  },
+                  {
+                    "description": "Default to two-line, but allow toggling to compact mode via config or keybind. More implementation work.",
+                    "label": "Configurable (both modes)"
+                  }
+                ],
+                "question": "For the chat list layout, how dense do you want it? This determines whether we can fit everything on one line or need two lines per conversation."
+              }
+            ]
+          },
+          "timestamp": "2026-03-31T00:50:35.206Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Got it — configurable with clear visual separation between chats. Next question:",
+          "timestamp": "2026-03-31T00:52:00.936Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "AskUserQuestion",
+          "input": {
+            "questions": [
+              {
+                "header": "Trust icons",
+                "multiSelect": false,
+                "options": [
+                  {
+                    "description": "One compact symbol: nothing for Stranger, ? for Known, checkmark for Verified, star/shield for Trusted. Minimal horizontal space.",
+                    "label": "Single icon per level (Recommended)",
+                    "preview": "Stranger:  Alice\nKnown:     Bob          ?\nVerified:  Charlie      ✓\nTrusted:   Dave         ★"
+                  },
+                  {
+                    "description": "No icon — the contact name itself changes color based on trust level (e.g., dim for Stranger, white for Known, green for Verified, gold for Trusted).",
+                    "label": "Colored name only",
+                    "preview": "Stranger:  \u001b[2mAlice\u001b[0m        (dim)\nKnown:     Bob          (white)\nVerified:  Charlie      (green)\nTrusted:   Dave         (gold)"
+                  },
+                  {
+                    "description": "Both: icon badge AND color-coded name. Maximum information density but potentially noisy.",
+                    "label": "Icon + colored name"
+                  }
+                ],
+                "question": "How should trust levels be displayed in the chat list?"
+              }
+            ]
+          },
+          "timestamp": "2026-03-31T00:52:07.006Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Fair point — `?` reads as \"who is this?\" which fits Stranger better than Known. Let me refine:",
+          "timestamp": "2026-03-31T00:53:40.877Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "AskUserQuestion",
+          "input": {
+            "questions": [
+              {
+                "header": "Icon mapping",
+                "multiSelect": false,
+                "options": [
+                  {
+                    "description": "Progressive trust: question mark -> person -> checkmark -> shield",
+                    "label": "Option A (Recommended)",
+                    "preview": "Stranger:  ?  (who is this?)\nKnown:     ○  (recognized, empty circle)\nVerified:  ✓  (identity confirmed)\nTrusted:   ★  (fully trusted, star)"
+                  },
+                  {
+                    "description": "Minimal: only mark strangers and trusted, leave middle levels unmarked",
+                    "label": "Option B",
+                    "preview": "Stranger:  ?  (unknown)\nKnown:        (no icon)\nVerified:  ✓  (verified)\nTrusted:   ★  (trusted)"
+                  },
+                  {
+                    "description": "Lock metaphor: progressive lock states",
+                    "label": "Option C",
+                    "preview": "Stranger:  ⚠  (warning)\nKnown:     ─  (dash/neutral)\nVerified:  ✓  (checkmark)\nTrusted:   ★  (star)"
+                  }
+                ],
+                "question": "Which icon mapping feels right for the trust levels?"
+              }
+            ]
+          },
+          "timestamp": "2026-03-31T00:53:46.804Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Good catch. Shield (`⛨` or `●`) would be less ambiguous for Trusted. Let me move on rather than iterate further on the exact glyph — we can finalize it during implementation. The mapping is:\n\n- Stranger: `?` — Known: `○` — Verified: `✓` — Trusted: `shield/filled-circle` (TBD exact glyph)\n\nNext question:",
+          "timestamp": "2026-03-31T00:54:11.047Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "AskUserQuestion",
+          "input": {
+            "questions": [
+              {
+                "header": "Unread style",
+                "multiSelect": false,
+                "options": [
+                  {
+                    "description": "Show the exact unread count like (3). Current behavior but with better styling — bold red or inverse background.",
+                    "label": "Count badge (Recommended)",
+                    "preview": "> Alice    ✓    (3)\n  Bob      ○"
+                  },
+                  {
+                    "description": "Just a colored dot/bullet for \"has unread\", no count. Cleaner but less informative.",
+                    "label": "Dot only",
+                    "preview": "> Alice    ✓    ●\n  Bob      ○"
+                  },
+                  {
+                    "description": "Unread conversations get bold name AND a count. Makes them visually pop from the list.",
+                    "label": "Bold name + count",
+                    "preview": "> \u001b[1mAlice\u001b[0m    ✓    (3)\n  Bob      ○"
+                  }
+                ],
+                "question": "For unread indicators, what style do you prefer?"
+              }
+            ]
+          },
+          "timestamp": "2026-03-31T00:54:16.316Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Now let me brainstorm what else you might be missing. Here's my list of things typical chat TUIs have that aren't in your request:",
+          "timestamp": "2026-03-31T00:54:30.808Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "AskUserQuestion",
+          "input": {
+            "questions": [
+              {
+                "header": "Extra features",
+                "multiSelect": true,
+                "options": [
+                  {
+                    "description": "Show relative time (2m, 1h, yesterday) next to the conversation. Standard in every messenger.",
+                    "label": "Timestamp on last message"
+                  },
+                  {
+                    "description": "Conversations with newest messages float to top. Currently they're in insertion order (from DB).",
+                    "label": "Sort by recent activity"
+                  },
+                  {
+                    "description": "Show if contact is online or typing. Requires protocol support (presence) which doesn't exist yet — likely out of scope.",
+                    "label": "Online/typing indicators"
+                  },
+                  {
+                    "description": "Stick to the original four: highlight, name+preview, trust, unread.",
+                    "label": "None of these"
+                  }
+                ],
+                "question": "Which of these additional chat list features should be in scope for this work?"
+              }
+            ]
+          },
+          "timestamp": "2026-03-31T00:54:35.661Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Good picks. Timestamp and sort-by-recent are high-value, low-effort additions. Online/typing would need protocol changes — agreed it's out of scope.\n\nOne more question before I move to approaches:",
+          "timestamp": "2026-03-31T00:55:09.690Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "AskUserQuestion",
+          "input": {
+            "questions": [
+              {
+                "header": "Scope: #169",
+                "multiSelect": false,
+                "options": [
+                  {
+                    "description": "Fix ListState as part of this work. The chat list rewrite naturally requires it — doing it separately means touching the same code twice.",
+                    "label": "Include #169 (Recommended)"
+                  },
+                  {
+                    "description": "Keep #169 as its own focused change. This PR would build on top of it (dependency).",
+                    "label": "Separate PR for #169"
+                  }
+                ],
+                "question": "Should this work also fix issue #169 (ListState for proper highlight/scroll) as a prerequisite, or do you want that as a separate PR?"
+              }
+            ]
+          },
+          "timestamp": "2026-03-31T00:55:13.762Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "completed",
+            "taskId": "3"
+          },
+          "timestamp": "2026-03-31T00:55:28.966Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "in_progress",
+            "taskId": "4"
+          },
+          "timestamp": "2026-03-31T00:55:29.336Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Here are two approaches for implementing this:\n\n---\n\n**Approach A: Incremental Enhancement (Recommended)**\n\nModify the existing `Conversation` struct and `render_conversations()` in place. Add fields (`trust_level`, `last_message_time`), fix `ListState`, rework the render function to support both compact and two-line modes via config.\n\n- Pros: Minimal diff, no architectural churn, directly addresses #169 + #175\n- Cons: `render_conversations()` grows more complex (but manageable)\n- Touches: `app.rs` (Conversation struct, load_contacts, sort), `ui.rs` (render_conversations), `config.rs` (new display settings)\n\n**Approach B: Extract ConversationList Component**\n\nCreate a new `tui/conversation_list.rs` module with its own `ConversationList` struct that owns `ListState`, display config, and rendering. This follows the Component pattern from #172 but only for this one widget.\n\n- Pros: Cleaner separation, aligns with future #172 component trait work\n- Cons: More churn for a single widget, might conflict with #172 when it lands (different boundaries), premature extraction\n\n---\n\nI recommend **Approach A**. The component extraction (#172) is a separate tracked issue with its own design — pulling one widget out now risks doing the decomposition twice. The incremental approach keeps changes focused on the actual UX improvements.",
+          "timestamp": "2026-03-31T00:55:41.395Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "AskUserQuestion",
+          "input": {
+            "questions": [
+              {
+                "header": "Approach",
+                "multiSelect": false,
+                "options": [
+                  {
+                    "description": "Enhance in place — modify existing Conversation struct and render function. Minimal diff, directly addresses the issues.",
+                    "label": "A: Incremental (Recommended)"
+                  },
+                  {
+                    "description": "Create a ConversationList module with owned state and rendering. Cleaner separation but risks conflicting with future #172 component work.",
+                    "label": "B: Extract component"
+                  }
+                ],
+                "question": "Which approach do you prefer for the chat list improvements?"
+              }
+            ]
+          },
+          "timestamp": "2026-03-31T00:55:44.053Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "completed",
+            "taskId": "4"
+          },
+          "timestamp": "2026-03-31T00:56:40.408Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "in_progress",
+            "taskId": "5"
+          },
+          "timestamp": "2026-03-31T00:56:40.834Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Alright, component extraction it is. Let me check what the existing config structure looks like before presenting the design.",
+          "timestamp": "2026-03-31T00:56:45.443Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Grep",
+          "input": {
+            "-C": 3,
+            "output_mode": "content",
+            "path": "/home/leon0399/Projects/reme/apps/client/src/config.rs",
+            "pattern": "struct.*Config|display|ui_config|tui_config"
+          },
+          "timestamp": "2026-03-31T00:56:47.481Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Grep",
+          "input": {
+            "-A": 40,
+            "output_mode": "content",
+            "path": "/home/leon0399/Projects/reme/apps/client/src/config.rs",
+            "pattern": "struct AppConfig"
+          },
+          "timestamp": "2026-03-31T00:56:49.428Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Good. Now I have the full picture. Let me present the design section by section.\n\n---\n\n## Design: Chat List Improvements\n\n### Section 1: Data Model Changes\n\n**`Conversation` struct** gains three fields:\n\n```rust\npub struct Conversation {\n    pub id: i64,\n    pub public_id: PublicID,\n    pub name: String,\n    pub last_message: Option<String>,\n    pub last_message_time: Option<i64>,  // NEW: unix timestamp\n    pub unread_count: u32,\n    pub trust_level: TrustLevel,         // NEW: from Contact\n}\n```\n\n**`load_contacts()`** carries `trust_level` and `last_message_time` through from `Contact` and the last-message query. After loading, conversations are sorted by `last_message_time` descending (most recent first), with conversations that have no messages sorted to the bottom.\n\nDoes this section look right so far?",
+          "timestamp": "2026-03-31T00:56:56.276Z"
+        },
+        {
+          "type": "user",
+          "text": "ok",
+          "timestamp": "2026-03-31T00:57:19.914Z"
+        },
+        {
+          "type": "assistant",
+          "text": "\n\n### Section 2: ConversationList Component\n\nNew file: `apps/client/src/tui/conversation_list.rs`\n\n```rust\npub struct ConversationList {\n    pub conversations: Vec<Conversation>,\n    pub state: ListState,           // ratatui ListState (fixes #169)\n    pub display_mode: DisplayMode,  // Compact | TwoLine\n}\n\npub enum DisplayMode {\n    Compact,  // single line: name + trust icon + unread\n    TwoLine,  // line 1: name + trust + unread + time, line 2: message preview\n}\n```\n\n**Responsibilities:**\n- Owns `ListState` — selection highlight and auto-scroll work correctly\n- Renders via `render_stateful_widget` instead of `render_widget`\n- Navigation methods: `select_next()`, `select_previous()`, `selected_conversation()` — encapsulates index management\n- `DisplayMode` toggle via keybind (e.g., `Alt+D` or configurable)\n\n**What moves out of `App`:**\n- `conversations: Vec<Conversation>` → owned by `ConversationList`\n- `selected_conversation: usize` → replaced by `ListState`\n- Selection logic in `handle_key_event_conversations()` → delegated to component\n\n**What stays in `App`:**\n- `load_contacts()` still fetches from storage, but passes results to `ConversationList`\n- `message_cache`, `contacts_by_id` — these serve purposes beyond the list\n\nDoes this decomposition make sense?",
+          "timestamp": "2026-03-31T00:57:30.536Z"
+        },
+        {
+          "type": "user",
+          "text": "yes",
+          "timestamp": "2026-03-31T00:57:54.744Z"
+        },
+        {
+          "type": "assistant",
+          "text": "\n\n### Section 3: Rendering\n\n**Two-line mode** (default):\n\n```\n┌ Conversations (3) ────────┐\n│                            │\n│> Alice            ✓   (2) │\n│  Hey, are you coming t... │\n│                            │\n│  Bob              ○       │\n│  Sure, let me check th... │\n│                            │\n│  Charlie          ?       │\n│                            │\n└────────────────────────────┘\n```\n\n- Row 1: name (left-aligned), trust icon + unread badge (right-aligned)\n- Row 2: last message preview, truncated to fit, dimmed (`DarkGray`). Omitted if no messages.\n- Blank line between conversations for separation (your note)\n- Selected row: `bg(DarkGray)` highlight spanning both lines + `\"> \"` symbol on first line\n- Unread count: bold red `(N)` only when > 0\n- Timestamp: relative time right-aligned on row 1, between trust icon and unread. Format: `2m`, `1h`, `3d`, `Mar 28`\n\n**Compact mode:**\n\n```\n┌ Conversations (3) ────────┐\n│> Alice       ✓  2m   (2) │\n│  Bob         ○  1h       │\n│  Charlie     ?           │\n└────────────────────────────┘\n```\n\n- Single line: name, trust icon, relative time, unread badge\n- No message preview, no separator lines\n- Same highlight and symbol behavior\n\n**Trust icons** (with color):\n\n| Level | Icon | Color |\n|-------|------|-------|\n| Stranger | `?` | Yellow |\n| Known | `○` | DarkGray |\n| Verified | `✓` | Green |\n| Trusted | `●` | Cyan |\n\nUsing filled circle `●` for Trusted avoids the star/favorite confusion. Cyan differentiates it from the green checkmark.\n\nDoes this look right?",
+          "timestamp": "2026-03-31T00:58:09.634Z"
+        },
+        {
+          "type": "user",
+          "text": "I do not see timestamp on the two-line example",
+          "timestamp": "2026-03-31T00:58:49.856Z"
+        },
+        {
+          "type": "assistant",
+          "text": "\n\nGood catch. Here's the corrected two-line layout:\n\n```\n┌ Conversations (3) ────────┐\n│                            │\n│> Alice        ✓  2m  (2) │\n│  Hey, are you coming t... │\n│                            │\n│  Bob          ○  1h       │\n│  Sure, let me check th... │\n│                            │\n│  Charlie      ?           │\n│                            │\n└────────────────────────────┘\n```\n\nRow 1: name (left), then right-aligned cluster of trust icon + relative time + unread badge. Same layout as compact mode, just with the preview line underneath.\n\nGood?",
+          "timestamp": "2026-03-31T00:58:55.333Z"
+        },
+        {
+          "type": "user",
+          "text": "good",
+          "timestamp": "2026-03-31T00:59:05.061Z"
+        },
+        {
+          "type": "assistant",
+          "text": "\n\n### Section 4: Configuration\n\nNew section in `config.toml`:\n\n```toml\n[ui]\n# Chat list display mode: \"two_line\" or \"compact\"\nconversation_display = \"two_line\"\n```\n\n**In code**, add to `AppConfig`:\n\n```rust\n#[serde(default)]\npub ui: UiConfig,\n```\n\n```rust\n#[derive(Debug, Clone, Deserialize, Serialize, Default)]\npub struct UiConfig {\n    #[serde(default = \"default_conversation_display\")]\n    pub conversation_display: DisplayMode,\n}\n```\n\n`DisplayMode` is also togglable at runtime via keybind (not persisted — just for the session). The config sets the default.\n\n**Keybind**: `Alt+L` to toggle between compact/two-line while running. Open to alternatives if that conflicts with something.\n\n### Section 5: Sort Order\n\nConversations sorted by `last_message_time` descending. Contacts with no messages go to the bottom, sorted by `created_at` descending (newest contacts first).\n\nRe-sort happens on:\n- `load_contacts()` (initial load)\n- Incoming message (bumps that conversation to top)\n- Sent message (bumps current conversation to top)\n\nSelection follows the conversation (not the index) — if you're chatting with Alice and Bob messages you, Alice stays selected even though she shifts down by one.\n\n---\n\nThat's the full design. Anything you'd want to change before I write it up as a spec?",
+          "timestamp": "2026-03-31T00:59:13.486Z"
+        },
+        {
+          "type": "user",
+          "text": "write a spec",
+          "timestamp": "2026-03-31T01:02:51.062Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "completed",
+            "taskId": "5"
+          },
+          "timestamp": "2026-03-31T01:02:56.678Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "in_progress",
+            "taskId": "6"
+          },
+          "timestamp": "2026-03-31T01:02:56.991Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Bash",
+          "input": {
+            "command": "ls /home/leon0399/Projects/reme/spec/plans/",
+            "description": "List existing spec plans"
+          },
+          "timestamp": "2026-03-31T01:03:01.233Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Write",
+          "input": {
+            "content": "# Chat List Improvements Design\n\n**Issues**: #175 (TUI Improvements tracking), #169 (ListState fix)\n**Scope**: Conversation list UX overhaul — extraction, rendering, configuration\n\n---\n\n## Summary\n\nRewrite the conversation list as an extracted `ConversationList` component with proper `ListState` selection, configurable display modes (two-line / compact), trust level indicators, unread badges, relative timestamps, and sort-by-recent-activity.\n\n## Data Model\n\n### Conversation struct\n\n```rust\npub struct Conversation {\n    pub id: i64,\n    pub public_id: PublicID,\n    pub name: String,\n    pub last_message: Option<String>,\n    pub last_message_time: Option<i64>,  // unix timestamp from storage\n    pub unread_count: u32,\n    pub trust_level: TrustLevel,         // Stranger | Known | Verified | Trusted\n}\n```\n\nNew fields: `last_message_time` and `trust_level`. Both are already available from the `Contact` and last-message queries — just not plumbed through to the UI today.\n\n### Sort order\n\nConversations sorted by `last_message_time` descending (most recent first). Contacts with no messages go to the bottom, sorted by `created_at` descending.\n\nRe-sort triggers:\n- `load_contacts()` (initial load)\n- Incoming message (bumps conversation to top)\n- Sent message (bumps current conversation to top)\n\nSelection follows the conversation identity (by `public_id`), not the index. If you're chatting with Alice and Bob messages you, Alice stays selected even though her position shifts.\n\n## ConversationList Component\n\nNew file: `apps/client/src/tui/conversation_list.rs`\n\n### Struct\n\n```rust\npub struct ConversationList {\n    pub conversations: Vec<Conversation>,\n    pub state: ListState,           // ratatui ListState — fixes #169\n    pub display_mode: DisplayMode,\n}\n\n#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]\npub enum DisplayMode {\n    #[default]\n    TwoLine,\n    Compact,\n}\n```\n\n### Responsibilities\n\n- Owns `ListState` — highlight and auto-scroll work via `render_stateful_widget`\n- Navigation: `select_next()`, `select_previous()`, `selected()` → `Option<&Conversation>`\n- Sort: `sort_by_recent()` applies the sort order described above\n- Display mode toggle: `toggle_display_mode()`\n\n### What moves out of App\n\n| From `App`                | To `ConversationList`          |\n|---------------------------|-------------------------------|\n| `conversations: Vec<Conversation>` | `conversations` field  |\n| `selected_conversation: usize`     | `state: ListState`     |\n| Up/down navigation in `handle_key_event_conversations()` | `select_next()` / `select_previous()` |\n\n### What stays in App\n\n- `load_contacts()` — fetches from storage, then calls `conversation_list.set_conversations()`\n- `message_cache`, `contacts_by_id` — serve purposes beyond the list\n- `get_or_create_conversation()` — mutates list via `conversation_list` methods\n\n## Rendering\n\n### Two-line mode (default)\n\n```\n┌ Conversations (3) ────────┐\n│                            │\n│> Alice        ✓  2m  (2) │\n│  Hey, are you coming t... │\n│                            │\n│  Bob          ○  1h       │\n│  Sure, let me check th... │\n│                            │\n│  Charlie      ?           │\n│                            │\n└────────────────────────────┘\n```\n\n- **Row 1**: Name (left-aligned). Right-aligned cluster: trust icon, relative time, unread badge.\n- **Row 2**: Last message preview, truncated to fit width, styled `DarkGray`. Omitted if no messages.\n- **Separator**: Blank line between each conversation.\n- **Selection**: `bg(DarkGray)` highlight spanning both lines. `\"> \"` prefix on first line.\n- **Unread**: Bold red `(N)` only when count > 0.\n\n### Compact mode\n\n```\n┌ Conversations (3) ────────┐\n│> Alice       ✓  2m   (2) │\n│  Bob         ○  1h       │\n│  Charlie     ?           │\n└────────────────────────────┘\n```\n\n- Single line: name, trust icon, relative time, unread badge.\n- No message preview, no separator lines.\n- Same highlight and symbol behavior.\n\n### Trust level icons\n\n| Level    | Icon | Color    |\n|----------|------|----------|\n| Stranger | `?`  | Yellow   |\n| Known    | `○`  | DarkGray |\n| Verified | `✓`  | Green    |\n| Trusted  | `●`  | Cyan     |\n\nFilled circle for Trusted avoids star/favorite confusion. Cyan differentiates from the green checkmark.\n\n### Relative timestamps\n\nFormat rules:\n- < 1 minute: `now`\n- < 60 minutes: `Nm` (e.g., `2m`)\n- < 24 hours: `Nh` (e.g., `3h`)\n- < 7 days: `Nd` (e.g., `2d`)\n- Otherwise: `Mon DD` (e.g., `Mar 28`)\n\nStyled `DarkGray`.\n\n## Configuration\n\n### Config file\n\nNew `[ui]` section in `config.toml`:\n\n```toml\n[ui]\n# Chat list display mode: \"two_line\" or \"compact\"\nconversation_display = \"two_line\"\n```\n\n### Code\n\nAdd to `AppConfig`:\n\n```rust\n#[serde(default)]\npub ui: UiConfig,\n\n#[derive(Debug, Clone, Deserialize, Serialize, Default)]\npub struct UiConfig {\n    #[serde(default)]\n    pub conversation_display: DisplayMode,\n}\n```\n\n### Runtime toggle\n\n`Alt+L` toggles between compact and two-line during a session (not persisted). The config value sets the initial mode.\n\n## Files Changed\n\n| File | Change |\n|------|--------|\n| `apps/client/src/tui/conversation_list.rs` | **New** — ConversationList component |\n| `apps/client/src/tui/mod.rs` | Add `pub mod conversation_list;` |\n| `apps/client/src/tui/app.rs` | Replace `conversations` + `selected_conversation` with `ConversationList`. Update `load_contacts()` to pass `trust_level` and `last_message_time`. Update key handling to delegate to component. Add sort-on-message logic. |\n| `apps/client/src/tui/ui.rs` | Replace `render_conversations()` with call to `ConversationList` rendering. Use `render_stateful_widget`. |\n| `apps/client/src/config.rs` | Add `UiConfig` struct, `DisplayMode` enum, wire into `AppConfig`. |\n\n## Out of Scope\n\n- Component trait (#172) — this extraction is a stepping stone, not the full trait system\n- Online/typing indicators — requires protocol-level presence support\n- `ratatui-macros` adoption (#170) — separate issue\n- Popup refactoring (#166, #171) — separate issues\n- Message list improvements (scrollback, selected-message) — separate feature\n",
+            "file_path": "/home/leon0399/Projects/reme/spec/plans/2026-03-31-chat-list-improvements-design.md"
+          },
+          "timestamp": "2026-03-31T01:03:30.147Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Now the self-review:\n\n1. **Placeholder scan**: No TBDs or TODOs. All sections are concrete.\n2. **Internal consistency**: Sort order, data model, rendering, and config all align. The `last_message_time` field is sourced from the existing `get_last_message_per_contact` query — need to verify it returns timestamps.\n3. **Scope check**: Focused on one component extraction + rendering. Appropriate for a single implementation plan.\n4. **Ambiguity check**: One thing — the `get_last_message_per_contact` return type. Let me verify it includes timestamps.",
+          "timestamp": "2026-03-31T01:03:37.530Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Grep",
+          "input": {
+            "-A": 15,
+            "output_mode": "content",
+            "path": "/home/leon0399/Projects/reme/crates",
+            "pattern": "get_last_message_per_contact"
+          },
+          "timestamp": "2026-03-31T01:03:38.746Z"
+        },
+        {
+          "type": "assistant",
+          "text": "The current `get_last_message_per_contact` returns `HashMap<i64, String>` — body text only, no timestamp. The spec needs to acknowledge this. We'll need either a new query or an extended return type.",
+          "timestamp": "2026-03-31T01:03:40.838Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/crates/ember-storage/src/lib.rs",
+            "limit": 35,
+            "offset": 1087
+          },
+          "timestamp": "2026-03-31T01:03:41.942Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Confirmed — the SQL only selects `contact_id, body`. I'll update the spec to note that the query needs extending to also return the timestamp.",
+          "timestamp": "2026-03-31T01:03:46.006Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Grep",
+          "input": {
+            "-C": 5,
+            "head_limit": 40,
+            "output_mode": "content",
+            "path": "/home/leon0399/Projects/reme/crates/ember-storage/src/lib.rs",
+            "pattern": "CREATE TABLE.*messages|timestamp|created_at|sent_at"
+          },
+          "timestamp": "2026-03-31T01:03:47.589Z"
+        },
+        {
+          "type": "assistant",
+          "text": "The messages table has `created_at` (unix seconds). Now I'll update the spec to reflect the storage query change.",
+          "timestamp": "2026-03-31T01:03:51.479Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Edit",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/spec/plans/2026-03-31-chat-list-improvements-design.md",
+            "new_string": "New fields: `last_message_time` and `trust_level`. `trust_level` is already on `Contact`. `last_message_time` requires extending the existing `get_last_message_per_contact` query — currently returns `HashMap<i64, String>` (body only). Must be changed to return a struct with both `body` and `created_at` timestamp (unix seconds, already in the `messages` table).",
+            "old_string": "New fields: `last_message_time` and `trust_level`. Both are already available from the `Contact` and last-message queries — just not plumbed through to the UI today.",
+            "replace_all": false
+          },
+          "timestamp": "2026-03-31T01:03:56.701Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Now update the files-changed table to include the storage layer:",
+          "timestamp": "2026-03-31T01:03:59.804Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Edit",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/spec/plans/2026-03-31-chat-list-improvements-design.md",
+            "new_string": "| File | Change |\n|------|--------|\n| `crates/ember-storage/src/lib.rs` | Extend `get_last_message_per_contact` to return `HashMap<i64, LastMessagePreview>` with both body and `created_at` timestamp. Add `LastMessagePreview` struct. |\n| `crates/ember-core/src/lib.rs` | Update `get_last_message_per_contact` passthrough to use new return type. |\n| `apps/client/src/tui/conversation_list.rs` | **New** — ConversationList component |\n| `apps/client/src/tui/mod.rs` | Add `pub mod conversation_list;` |\n| `apps/client/src/tui/app.rs` | Replace `conversations` + `selected_conversation` with `ConversationList`. Update `load_contacts()` to pass `trust_level` and `last_message_time`. Update key handling to delegate to component. Add sort-on-message logic. |\n| `apps/client/src/tui/ui.rs` | Replace `render_conversations()` with call to `ConversationList` rendering. Use `render_stateful_widget`. |\n| `apps/client/src/config.rs` | Add `UiConfig` struct, `DisplayMode` enum, wire into `AppConfig`. |",
+            "old_string": "| File | Change |\n|------|--------|\n| `apps/client/src/tui/conversation_list.rs` | **New** — ConversationList component |\n| `apps/client/src/tui/mod.rs` | Add `pub mod conversation_list;` |\n| `apps/client/src/tui/app.rs` | Replace `conversations` + `selected_conversation` with `ConversationList`. Update `load_contacts()` to pass `trust_level` and `last_message_time`. Update key handling to delegate to component. Add sort-on-message logic. |\n| `apps/client/src/tui/ui.rs` | Replace `render_conversations()` with call to `ConversationList` rendering. Use `render_stateful_widget`. |\n| `apps/client/src/config.rs` | Add `UiConfig` struct, `DisplayMode` enum, wire into `AppConfig`. |",
+            "replace_all": false
+          },
+          "timestamp": "2026-03-31T01:04:08.097Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Self-review complete. All sections are concrete, no placeholders, no contradictions, scope is focused. The one gap (storage query) is now addressed.\n\nSpec written to `spec/plans/2026-03-31-chat-list-improvements-design.md`. Please review it and let me know if you want to make any changes before we start writing out the implementation plan.",
+          "timestamp": "2026-03-31T01:04:11.298Z"
+        },
+        {
+          "type": "user",
+          "text": "all correct",
+          "timestamp": "2026-03-31T01:05:56.414Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "completed",
+            "taskId": "6"
+          },
+          "timestamp": "2026-03-31T01:06:01.414Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "in_progress",
+            "taskId": "7"
+          },
+          "timestamp": "2026-03-31T01:06:01.904Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Skill",
+          "input": {
+            "skill": "superpowers:writing-plans"
+          },
+          "timestamp": "2026-03-31T01:06:05.200Z"
+        },
+        {
+          "type": "user",
+          "text": "Base directory for this skill: /home/leon0399/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.6/skills/writing-plans\n\n# Writing Plans\n\n## Overview\n\nWrite comprehensive implementation plans assuming the engineer has zero context for our codebase and questionable taste. Document everything they need to know: which files to touch for each task, code, testing, docs they might need to check, how to test it. Give them the whole plan as bite-sized tasks. DRY. YAGNI. TDD. Frequent commits.\n\nAssume they are a skilled developer, but know almost nothing about our toolset or problem domain. Assume they don't know good test design very well.\n\n**Announce at start:** \"I'm using the writing-plans skill to create the implementation plan.\"\n\n**Context:** This should be run in a dedicated worktree (created by brainstorming skill).\n\n**Save plans to:** `docs/superpowers/plans/YYYY-MM-DD-<feature-name>.md`\n- (User preferences for plan location override this default)\n\n## Scope Check\n\nIf the spec covers multiple independent subsystems, it should have been broken into sub-project specs during brainstorming. If it wasn't, suggest breaking this into separate plans — one per subsystem. Each plan should produce working, testable software on its own.\n\n## File Structure\n\nBefore defining tasks, map out which files will be created or modified and what each one is responsible for. This is where decomposition decisions get locked in.\n\n- Design units with clear boundaries and well-defined interfaces. Each file should have one clear responsibility.\n- You reason best about code you can hold in context at once, and your edits are more reliable when files are focused. Prefer smaller, focused files over large ones that do too much.\n- Files that change together should live together. Split by responsibility, not by technical layer.\n- In existing codebases, follow established patterns. If the codebase uses large files, don't unilaterally restructure - but if a file you're modifying has grown unwieldy, including a split in the plan is reasonable.\n\nThis structure informs the task decomposition. Each task should produce self-contained changes that make sense independently.\n\n## Bite-Sized Task Granularity\n\n**Each step is one action (2-5 minutes):**\n- \"Write the failing test\" - step\n- \"Run it to make sure it fails\" - step\n- \"Implement the minimal code to make the test pass\" - step\n- \"Run the tests and make sure they pass\" - step\n- \"Commit\" - step\n\n## Plan Document Header\n\n**Every plan MUST start with this header:**\n\n```markdown\n# [Feature Name] Implementation Plan\n\n> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.\n\n**Goal:** [One sentence describing what this builds]\n\n**Architecture:** [2-3 sentences about approach]\n\n**Tech Stack:** [Key technologies/libraries]\n\n---\n```\n\n## Task Structure\n\n````markdown\n### Task N: [Component Name]\n\n**Files:**\n- Create: `exact/path/to/file.py`\n- Modify: `exact/path/to/existing.py:123-145`\n- Test: `tests/exact/path/to/test.py`\n\n- [ ] **Step 1: Write the failing test**\n\n```python\ndef test_specific_behavior():\n    result = function(input)\n    assert result == expected\n```\n\n- [ ] **Step 2: Run test to verify it fails**\n\nRun: `pytest tests/path/test.py::test_name -v`\nExpected: FAIL with \"function not defined\"\n\n- [ ] **Step 3: Write minimal implementation**\n\n```python\ndef function(input):\n    return expected\n```\n\n- [ ] **Step 4: Run test to verify it passes**\n\nRun: `pytest tests/path/test.py::test_name -v`\nExpected: PASS\n\n- [ ] **Step 5: Commit**\n\n```bash\ngit add tests/path/test.py src/path/file.py\ngit commit -m \"feat: add specific feature\"\n```\n````\n\n## No Placeholders\n\nEvery step must contain the actual content an engineer needs. These are **plan failures** — never write them:\n- \"TBD\", \"TODO\", \"implement later\", \"fill in details\"\n- \"Add appropriate error handling\" / \"add validation\" / \"handle edge cases\"\n- \"Write tests for the above\" (without actual test code)\n- \"Similar to Task N\" (repeat the code — the engineer may be reading tasks out of order)\n- Steps that describe what to do without showing how (code blocks required for code steps)\n- References to types, functions, or methods not defined in any task\n\n## Remember\n- Exact file paths always\n- Complete code in every step — if a step changes code, show the code\n- Exact commands with expected output\n- DRY, YAGNI, TDD, frequent commits\n\n## Self-Review\n\nAfter writing the complete plan, look at the spec with fresh eyes and check the plan against it. This is a checklist you run yourself — not a subagent dispatch.\n\n**1. Spec coverage:** Skim each section/requirement in the spec. Can you point to a task that implements it? List any gaps.\n\n**2. Placeholder scan:** Search your plan for red flags — any of the patterns from the \"No Placeholders\" section above. Fix them.\n\n**3. Type consistency:** Do the types, method signatures, and property names you used in later tasks match what you defined in earlier tasks? A function called `clearLayers()` in Task 3 but `clearFullLayers()` in Task 7 is a bug.\n\nIf you find issues, fix them inline. No need to re-review — just fix and move on. If you find a spec requirement with no task, add the task.\n\n## Execution Handoff\n\nAfter saving the plan, offer execution choice:\n\n**\"Plan complete and saved to `docs/superpowers/plans/<filename>.md`. Two execution options:**\n\n**1. Subagent-Driven (recommended)** - I dispatch a fresh subagent per task, review between tasks, fast iteration\n\n**2. Inline Execution** - Execute tasks in this session using executing-plans, batch execution with checkpoints\n\n**Which approach?\"**\n\n**If Subagent-Driven chosen:**\n- **REQUIRED SUB-SKILL:** Use superpowers:subagent-driven-development\n- Fresh subagent per task + two-stage review\n\n**If Inline Execution chosen:**\n- **REQUIRED SUB-SKILL:** Use superpowers:executing-plans\n- Batch execution with checkpoints for review\n",
+          "timestamp": "2026-03-31T01:06:05.233Z"
+        },
+        {
+          "type": "assistant",
+          "text": "\n\nI'm using the writing-plans skill to create the implementation plan.\n\nLet me read the full spec and explore the relevant code in more depth before writing the plan.",
+          "timestamp": "2026-03-31T01:06:09.038Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/spec/plans/2026-03-31-chat-list-improvements-design.md"
+          },
+          "timestamp": "2026-03-31T01:06:09.598Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/apps/client/src/tui/app.rs",
+            "limit": 120,
+            "offset": 290
+          },
+          "timestamp": "2026-03-31T01:06:13.401Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/apps/client/src/tui/app.rs",
+            "limit": 80,
+            "offset": 580
+          },
+          "timestamp": "2026-03-31T01:06:14.254Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/apps/client/src/tui/app.rs",
+            "limit": 100,
+            "offset": 1140
+          },
+          "timestamp": "2026-03-31T01:06:15.116Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/apps/client/src/tui/app.rs",
+            "limit": 80,
+            "offset": 940
+          },
+          "timestamp": "2026-03-31T01:06:18.599Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/apps/client/src/tui/app.rs",
+            "limit": 50,
+            "offset": 1270
+          },
+          "timestamp": "2026-03-31T01:06:19.304Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/apps/client/src/tui/app.rs",
+            "limit": 50,
+            "offset": 410
+          },
+          "timestamp": "2026-03-31T01:06:22.708Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Grep",
+          "input": {
+            "-A": 10,
+            "output_mode": "content",
+            "path": "/home/leon0399/Projects/reme/apps/client/src/tui/app.rs",
+            "pattern": "fn format_display_name|fn utc_time_now|fn format_unix_timestamp"
+          },
+          "timestamp": "2026-03-31T01:06:24.142Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/apps/client/src/tui/app.rs",
+            "limit": 80,
+            "offset": 1020
+          },
+          "timestamp": "2026-03-31T01:06:25.124Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/apps/client/src/tui/mod.rs"
+          },
+          "timestamp": "2026-03-31T01:06:25.661Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/apps/client/src/config.rs",
+            "limit": 90,
+            "offset": 560
+          },
+          "timestamp": "2026-03-31T01:06:26.624Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Now let me check the storage query details and the `list_contacts` return to understand how trust_level flows.",
+          "timestamp": "2026-03-31T01:06:36.184Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Grep",
+          "input": {
+            "-A": 10,
+            "output_mode": "content",
+            "path": "/home/leon0399/Projects/reme/crates/ember-core/src/lib.rs",
+            "pattern": "fn list_contacts|fn get_contact"
+          },
+          "timestamp": "2026-03-31T01:06:37.656Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Good — `list_contacts()` returns `Vec<Contact>` which already includes `trust_level`. I have everything I need. Let me write the plan.",
+          "timestamp": "2026-03-31T01:06:41.292Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Bash",
+          "input": {
+            "command": "ls /home/leon0399/Projects/reme/spec/plans/ | head -5",
+            "description": "Check plans dir exists"
+          },
+          "timestamp": "2026-03-31T01:06:42.277Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Write",
+          "input": {
+            "content": "# Chat List Improvements Implementation Plan\n\n> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.\n\n**Goal:** Rewrite the conversation list as an extracted `ConversationList` component with `ListState`, configurable two-line/compact display, trust icons, unread badges, relative timestamps, and sort-by-recent.\n\n**Architecture:** Extract conversation list state and rendering from the monolithic `App` into a standalone `ConversationList` struct in `tui/conversation_list.rs`. Extend the storage query to return timestamps alongside message previews. Add `UiConfig` to `AppConfig` for display mode persistence.\n\n**Tech Stack:** Rust, ratatui (`ListState`, `render_stateful_widget`), serde (config), ember-storage (SQLite)\n\n---\n\n## File Structure\n\n| File | Action | Responsibility |\n|------|--------|---------------|\n| `crates/ember-storage/src/lib.rs` | Modify | Add `LastMessagePreview` struct, extend `get_last_message_per_contact` to return it |\n| `crates/ember-core/src/lib.rs` | Modify | Update `get_last_message_per_contact` passthrough type |\n| `apps/client/src/config.rs` | Modify | Add `UiConfig` struct with `DisplayMode`, wire into `AppConfig` |\n| `apps/client/src/tui/conversation_list.rs` | Create | `ConversationList` component: state, navigation, sorting, rendering |\n| `apps/client/src/tui/mod.rs` | Modify | Add `pub mod conversation_list;` |\n| `apps/client/src/tui/app.rs` | Modify | Replace `conversations`/`selected_conversation` with `ConversationList`, update all call sites |\n| `apps/client/src/tui/ui.rs` | Modify | Replace `render_conversations()` with delegation to `ConversationList` |\n\n---\n\n### Task 1: Extend storage query to return timestamps\n\n**Files:**\n\n- Modify: `crates/ember-storage/src/lib.rs:1087-1130` (query) and add struct near line 40\n- Modify: `crates/ember-core/src/lib.rs:501-506` (passthrough)\n\n- [ ] **Step 1: Add `LastMessagePreview` struct to ember-storage**\n\nIn `crates/ember-storage/src/lib.rs`, add after the `StoredMessage` struct (around line 53):\n\n```rust\n/// Preview data for the most recent message in a conversation.\n/// Used by the TUI conversation list to show message snippets and timestamps.\n#[derive(Debug, Clone)]\npub struct LastMessagePreview {\n    pub body: String,\n    pub created_at: i64,\n}\n```\n\n- [ ] **Step 2: Update `get_last_message_per_contact` return type and SQL**\n\nIn `crates/ember-storage/src/lib.rs`, change the method signature and implementation:\n\n```rust\npub fn get_last_message_per_contact(\n    &self,\n    contact_ids: &[i64],\n) -> Result<HashMap<i64, LastMessagePreview>, StorageError> {\n    if contact_ids.is_empty() {\n        return Ok(HashMap::new());\n    }\n\n    let conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;\n    let mut result = HashMap::new();\n\n    // Chunk to stay within SQLite's bound-parameter limit\n    for chunk in contact_ids.chunks(Self::SQLITE_MAX_BOUND_VARIABLES) {\n        let placeholders: Vec<&str> = chunk.iter().map(|_| \"?\").collect();\n        let sql = format!(\n            \"SELECT m.contact_id, m.body, m.created_at\n             FROM messages m\n             INNER JOIN (\n                 SELECT contact_id, MAX(id) AS max_id\n                 FROM messages\n                 WHERE contact_id IN ({})\n                   AND content_type = 'text'\n                   AND body IS NOT NULL\n                 GROUP BY contact_id\n             ) latest ON m.id = latest.max_id\",\n            placeholders.join(\", \")\n        );\n\n        let mut stmt = conn.prepare(&sql)?;\n        let params_iter = rusqlite::params_from_iter(chunk.iter());\n        let rows = stmt.query_map(params_iter, |row| {\n            let cid: i64 = row.get(0)?;\n            let body: String = row.get(1)?;\n            let created_at: i64 = row.get(2)?;\n            Ok((cid, LastMessagePreview { body, created_at }))\n        })?;\n\n        for row in rows {\n            let (cid, preview) = row?;\n            result.insert(cid, preview);\n        }\n    }\n\n    Ok(result)\n}\n```\n\n- [ ] **Step 3: Update the `pub use` line to export `LastMessagePreview`**\n\nIn `crates/ember-storage/src/lib.rs`, find the existing public exports at the top and ensure `LastMessagePreview` is accessible. It's defined as `pub struct` so it's already exported from the crate.\n\n- [ ] **Step 4: Update ember-core passthrough**\n\nIn `crates/ember-core/src/lib.rs`, change:\n\n```rust\npub fn get_last_message_per_contact(\n    &self,\n    contact_ids: &[i64],\n) -> Result<std::collections::HashMap<i64, ember_storage::LastMessagePreview>, ClientError> {\n    Ok(self.storage.get_last_message_per_contact(contact_ids)?)\n}\n```\n\n- [ ] **Step 5: Update existing tests**\n\nIn `crates/ember-storage/src/lib.rs`, update `test_get_last_message_per_contact` (around line 2997):\n\n```rust\n#[test]\nfn test_get_last_message_per_contact() {\n    let storage = Storage::in_memory().unwrap();\n    let alice = Identity::generate();\n    let bob = Identity::generate();\n    let alice_id = storage\n        .add_contact(alice.public_id(), Some(\"Alice\"))\n        .unwrap();\n    let bob_id = storage.add_contact(bob.public_id(), Some(\"Bob\")).unwrap();\n\n    store_n_messages(&storage, alice_id, 3);\n    store_n_messages(&storage, bob_id, 5);\n\n    let last = storage\n        .get_last_message_per_contact(&[alice_id, bob_id])\n        .unwrap();\n    assert_eq!(\n        last.get(&alice_id).map(|p| p.body.as_str()),\n        Some(\"msg-2\")\n    );\n    assert_eq!(last.get(&bob_id).map(|p| p.body.as_str()), Some(\"msg-4\"));\n    // Verify timestamps are populated\n    assert!(last.get(&alice_id).unwrap().created_at > 0);\n    assert!(last.get(&bob_id).unwrap().created_at > 0);\n}\n```\n\nAlso update `test_get_last_message_skips_receipts` (around line 3024):\n\n```rust\nlet last = storage.get_last_message_per_contact(&[contact_id]).unwrap();\n// Should return the text message, not the receipt\nassert_eq!(\n    last.get(&contact_id).map(|p| p.body.as_str()),\n    Some(\"Hello\")\n);\n```\n\n- [ ] **Step 6: Run tests**\n\nRun: `cargo test -p ember-storage test_get_last_message`\n\nExpected: All `test_get_last_message*` tests PASS.\n\n- [ ] **Step 7: Run full workspace check**\n\nRun: `cargo test -p ember-storage && cargo test -p ember-core && cargo clippy --all-targets --all-features -- -D warnings`\n\nExpected: PASS (no compile errors from the type change).\n\n- [ ] **Step 8: Commit**\n\n```\nfeat(storage): return timestamps from last-message query\n\nExtend `get_last_message_per_contact` to return `LastMessagePreview`\n(body + created_at) instead of plain `String`. The TUI conversation\nlist needs timestamps for relative time display.\n```\n\n---\n\n### Task 2: Add `UiConfig` and `DisplayMode` to config\n\n**Files:**\n\n- Modify: `apps/client/src/config.rs`\n\n- [ ] **Step 1: Add `DisplayMode` enum and `UiConfig` struct**\n\nIn `apps/client/src/config.rs`, add before the `AppConfig` struct:\n\n```rust\n/// Display mode for the conversation list.\n#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]\n#[serde(rename_all = \"snake_case\")]\npub enum DisplayMode {\n    /// Two lines per conversation: name+trust+time+unread, then message preview\n    #[default]\n    TwoLine,\n    /// Single line per conversation: name+trust+time+unread, no preview\n    Compact,\n}\n\n/// UI display configuration.\n#[derive(Debug, Clone, Deserialize, Serialize, Default)]\npub struct UiConfig {\n    /// Conversation list display mode\n    #[serde(default)]\n    pub conversation_display: DisplayMode,\n}\n```\n\n- [ ] **Step 2: Wire `UiConfig` into `AppConfig`**\n\nAdd to the `AppConfig` struct:\n\n```rust\n    /// UI display configuration\n    #[serde(default)]\n    pub ui: UiConfig,\n```\n\nAdd to the `Default` impl for `AppConfig`:\n\n```rust\n    ui: UiConfig::default(),\n```\n\n- [ ] **Step 3: Run checks**\n\nRun: `cargo check -p client && cargo clippy -p client --all-targets -- -D warnings`\n\nExpected: PASS.\n\n- [ ] **Step 4: Commit**\n\n```\nfeat(config): add UiConfig with DisplayMode for conversation list\n```\n\n---\n\n### Task 3: Create `ConversationList` component\n\n**Files:**\n\n- Create: `apps/client/src/tui/conversation_list.rs`\n- Modify: `apps/client/src/tui/mod.rs`\n\n- [ ] **Step 1: Create `conversation_list.rs` with core types and state**\n\nCreate `apps/client/src/tui/conversation_list.rs`:\n\n```rust\n//! Conversation list component\n//!\n//! Extracted from the monolithic `App` to own its own `ListState`,\n//! display configuration, and rendering logic.\n\nuse ember_contact::TrustLevel;\nuse ember_identity::PublicID;\nuse ratatui::{\n    style::{Color, Modifier, Style},\n    text::{Line, Span},\n    widgets::{Block, Borders, List, ListItem, ListState},\n    Frame,\n};\n\nuse crate::config::DisplayMode;\n\n/// A conversation/contact entry in the sidebar list.\n#[derive(Debug, Clone)]\npub struct Conversation {\n    pub id: i64,\n    pub public_id: PublicID,\n    pub name: String,\n    pub last_message: Option<String>,\n    pub last_message_time: Option<i64>,\n    pub unread_count: u32,\n    pub trust_level: TrustLevel,\n}\n\n/// Manages the conversation list: data, selection state, display mode, and rendering.\npub struct ConversationList {\n    conversations: Vec<Conversation>,\n    state: ListState,\n    display_mode: DisplayMode,\n}\n\nimpl ConversationList {\n    /// Create an empty conversation list with the given display mode.\n    pub fn new(display_mode: DisplayMode) -> Self {\n        Self {\n            conversations: Vec::new(),\n            state: ListState::default(),\n            display_mode,\n        }\n    }\n\n    /// Replace all conversations and preserve selection by `PublicID`.\n    ///\n    /// If the previously selected conversation still exists after replacement,\n    /// the selection follows it. Otherwise, selection clamps to bounds.\n    pub fn set_conversations(&mut self, conversations: Vec<Conversation>) {\n        let selected_id = self.selected().map(|c| c.public_id);\n        self.conversations = conversations;\n\n        if self.conversations.is_empty() {\n            self.state.select(None);\n            return;\n        }\n\n        // Try to follow the previously selected conversation\n        let new_index = selected_id\n            .and_then(|id| self.conversations.iter().position(|c| c.public_id == id))\n            .unwrap_or(0);\n        self.state.select(Some(new_index));\n    }\n\n    /// Sort conversations: most recent message first, no-message contacts last by created_at.\n    pub fn sort_by_recent(&mut self) {\n        let selected_id = self.selected().map(|c| c.public_id);\n\n        self.conversations.sort_by(|a, b| {\n            match (a.last_message_time, b.last_message_time) {\n                (Some(ta), Some(tb)) => tb.cmp(&ta), // descending\n                (Some(_), None) => std::cmp::Ordering::Less,\n                (None, Some(_)) => std::cmp::Ordering::Greater,\n                (None, None) => std::cmp::Ordering::Equal,\n            }\n        });\n\n        // Restore selection\n        if let Some(id) = selected_id {\n            if let Some(pos) = self.conversations.iter().position(|c| c.public_id == id) {\n                self.state.select(Some(pos));\n            }\n        }\n    }\n\n    /// Move selection up.\n    pub fn select_previous(&mut self) {\n        if self.conversations.is_empty() {\n            return;\n        }\n        let i = self.state.selected().unwrap_or(0);\n        if i > 0 {\n            self.state.select(Some(i - 1));\n        }\n    }\n\n    /// Move selection down.\n    pub fn select_next(&mut self) {\n        if self.conversations.is_empty() {\n            return;\n        }\n        let i = self.state.selected().unwrap_or(0);\n        if i < self.conversations.len() - 1 {\n            self.state.select(Some(i + 1));\n        }\n    }\n\n    /// Get the currently selected conversation, if any.\n    pub fn selected(&self) -> Option<&Conversation> {\n        self.state\n            .selected()\n            .and_then(|i| self.conversations.get(i))\n    }\n\n    /// Get a mutable reference to the selected conversation.\n    pub fn selected_mut(&mut self) -> Option<&mut Conversation> {\n        self.state\n            .selected()\n            .and_then(|i| self.conversations.get_mut(i))\n    }\n\n    /// Get the selected index (for compatibility during migration).\n    pub fn selected_index(&self) -> Option<usize> {\n        self.state.selected()\n    }\n\n    /// Get a conversation by index.\n    pub fn get(&self, index: usize) -> Option<&Conversation> {\n        self.conversations.get(index)\n    }\n\n    /// Get a mutable conversation by index.\n    pub fn get_mut(&mut self, index: usize) -> Option<&mut Conversation> {\n        self.conversations.get_mut(index)\n    }\n\n    /// Find a conversation by `PublicID`, returning its index.\n    pub fn find_by_public_id(&self, public_id: &PublicID) -> Option<usize> {\n        self.conversations\n            .iter()\n            .position(|c| c.public_id == *public_id)\n    }\n\n    /// Push a new conversation and return its index.\n    pub fn push(&mut self, conversation: Conversation) -> usize {\n        self.conversations.push(conversation);\n        let idx = self.conversations.len() - 1;\n        // Select the first conversation if nothing is selected\n        if self.state.selected().is_none() {\n            self.state.select(Some(0));\n        }\n        idx\n    }\n\n    /// Number of conversations.\n    pub fn len(&self) -> usize {\n        self.conversations.len()\n    }\n\n    /// Whether the list is empty.\n    pub fn is_empty(&self) -> bool {\n        self.conversations.is_empty()\n    }\n\n    /// Toggle between two-line and compact display.\n    pub fn toggle_display_mode(&mut self) {\n        self.display_mode = match self.display_mode {\n            DisplayMode::TwoLine => DisplayMode::Compact,\n            DisplayMode::Compact => DisplayMode::TwoLine,\n        };\n    }\n\n    /// Current display mode.\n    pub fn display_mode(&self) -> DisplayMode {\n        self.display_mode\n    }\n\n    /// Iterator over conversations.\n    pub fn iter(&self) -> std::slice::Iter<'_, Conversation> {\n        self.conversations.iter()\n    }\n}\n```\n\n- [ ] **Step 2: Add rendering method**\n\nAppend to `conversation_list.rs`:\n\n```rust\nimpl ConversationList {\n    /// Render the conversation list into the given area.\n    pub fn render(&mut self, frame: &mut Frame, area: ratatui::layout::Rect, is_focused: bool) {\n        let border_style = if is_focused {\n            Style::default().fg(Color::Cyan)\n        } else {\n            Style::default().fg(Color::DarkGray)\n        };\n\n        let title = format!(\" Conversations ({}) \", self.conversations.len());\n\n        let items: Vec<ListItem> = self\n            .conversations\n            .iter()\n            .map(|conv| self.render_item(conv, area.width.saturating_sub(2)))\n            .collect();\n\n        let list = List::new(items)\n            .block(\n                Block::default()\n                    .borders(Borders::ALL)\n                    .border_style(border_style)\n                    .title(title),\n            )\n            .highlight_style(\n                Style::default()\n                    .bg(Color::DarkGray)\n                    .add_modifier(Modifier::BOLD),\n            )\n            .highlight_symbol(\"> \");\n\n        frame.render_stateful_widget(list, area, &mut self.state);\n    }\n\n    /// Build a `ListItem` for one conversation.\n    fn render_item(&self, conv: &Conversation, width: u16) -> ListItem {\n        match self.display_mode {\n            DisplayMode::TwoLine => self.render_two_line(conv, width),\n            DisplayMode::Compact => self.render_compact(conv, width),\n        }\n    }\n\n    /// Two-line layout:\n    /// ```text\n    /// Name          ✓  2m  (3)\n    /// Hey, are you coming t...\n    /// ```\n    /// Plus a trailing blank line for separation.\n    fn render_two_line(&self, conv: &Conversation, _width: u16) -> ListItem {\n        let mut lines = vec![self.build_header_line(conv)];\n\n        // Message preview line\n        if let Some(ref msg) = conv.last_message {\n            let preview = truncate_str(msg, 40);\n            lines.push(Line::from(Span::styled(\n                format!(\"  {preview}\"),\n                Style::default().fg(Color::DarkGray),\n            )));\n        }\n\n        // Separator blank line\n        lines.push(Line::from(\"\"));\n\n        ListItem::new(lines)\n    }\n\n    /// Compact layout: single line with name, trust, time, unread.\n    fn render_compact(&self, conv: &Conversation, _width: u16) -> ListItem {\n        ListItem::new(self.build_header_line(conv))\n    }\n\n    /// Build the shared header line: `Name    ✓  2m  (3)`\n    fn build_header_line(&self, conv: &Conversation) -> Line<'static> {\n        let mut spans = vec![Span::styled(\n            conv.name.clone(),\n            Style::default().fg(Color::White),\n        )];\n\n        // Trust icon\n        let (icon, color) = trust_icon(conv.trust_level);\n        spans.push(Span::raw(\"  \"));\n        spans.push(Span::styled(icon, Style::default().fg(color)));\n\n        // Relative timestamp\n        if let Some(ts) = conv.last_message_time {\n            spans.push(Span::raw(\"  \"));\n            spans.push(Span::styled(\n                format_relative_time(ts),\n                Style::default().fg(Color::DarkGray),\n            ));\n        }\n\n        // Unread badge\n        if conv.unread_count > 0 {\n            spans.push(Span::raw(\"  \"));\n            spans.push(Span::styled(\n                format!(\"({})\", conv.unread_count),\n                Style::default()\n                    .fg(Color::Red)\n                    .add_modifier(Modifier::BOLD),\n            ));\n        }\n\n        Line::from(spans)\n    }\n}\n\n/// Trust level icon and color.\nfn trust_icon(level: TrustLevel) -> (&'static str, Color) {\n    match level {\n        TrustLevel::Stranger => (\"?\", Color::Yellow),\n        TrustLevel::Known => (\"○\", Color::DarkGray),\n        TrustLevel::Verified => (\"✓\", Color::Green),\n        TrustLevel::Trusted => (\"●\", Color::Cyan),\n    }\n}\n\n/// Format a unix timestamp as a relative time string.\n///\n/// - < 60s: `\"now\"`\n/// - < 60m: `\"Nm\"`\n/// - < 24h: `\"Nh\"`\n/// - < 7d: `\"Nd\"`\n/// - otherwise: `\"Mon DD\"` (e.g. `\"Mar 28\"`)\nfn format_relative_time(timestamp_secs: i64) -> String {\n    use std::time::{SystemTime, UNIX_EPOCH};\n\n    let now = SystemTime::now()\n        .duration_since(UNIX_EPOCH)\n        .map(|d| d.as_secs())\n        .unwrap_or(0);\n\n    #[allow(clippy::cast_sign_loss)]\n    let ts = if timestamp_secs < 0 {\n        0u64\n    } else {\n        timestamp_secs as u64\n    };\n\n    let delta = now.saturating_sub(ts);\n\n    if delta < 60 {\n        \"now\".to_string()\n    } else if delta < 3600 {\n        format!(\"{}m\", delta / 60)\n    } else if delta < 86400 {\n        format!(\"{}h\", delta / 3600)\n    } else if delta < 604_800 {\n        format!(\"{}d\", delta / 86400)\n    } else {\n        // Month DD format\n        format_month_day(ts)\n    }\n}\n\n/// Format a unix timestamp as \"Mon DD\" (e.g. \"Mar 28\").\nfn format_month_day(timestamp_secs: u64) -> String {\n    // Simple days-from-epoch calculation (no chrono dependency needed)\n    let days = timestamp_secs / 86400;\n    // Civil date from days since epoch (algorithm from Howard Hinnant)\n    let z = days + 719_468;\n    let era = z / 146_097;\n    let doe = z - era * 146_097;\n    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;\n    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);\n    let mp = (5 * doy + 2) / 153;\n    let d = doy - (153 * mp + 2) / 5 + 1;\n    let m = if mp < 10 { mp + 3 } else { mp - 9 };\n\n    let month_name = match m {\n        1 => \"Jan\",\n        2 => \"Feb\",\n        3 => \"Mar\",\n        4 => \"Apr\",\n        5 => \"May\",\n        6 => \"Jun\",\n        7 => \"Jul\",\n        8 => \"Aug\",\n        9 => \"Sep\",\n        10 => \"Oct\",\n        11 => \"Nov\",\n        12 => \"Dec\",\n        _ => \"???\",\n    };\n\n    format!(\"{month_name} {d}\")\n}\n\n/// Truncate a string to `max_len` characters, appending \"...\" if truncated.\nfn truncate_str(s: &str, max_len: usize) -> String {\n    if s.len() <= max_len {\n        s.to_string()\n    } else {\n        let truncated: String = s.chars().take(max_len.saturating_sub(3)).collect();\n        format!(\"{truncated}...\")\n    }\n}\n```\n\n- [ ] **Step 3: Register the module**\n\nIn `apps/client/src/tui/mod.rs`, add:\n\n```rust\npub mod conversation_list;\n```\n\n- [ ] **Step 4: Run checks**\n\nRun: `cargo check -p client && cargo clippy -p client --all-targets -- -D warnings`\n\nExpected: PASS (the component compiles but isn't wired in yet).\n\n- [ ] **Step 5: Commit**\n\n```\nfeat(tui): add ConversationList component with ListState\n\nExtract conversation list into its own module with:\n- ListState for proper highlight/auto-scroll (fixes #169)\n- Two-line and compact display modes\n- Trust level icons (? ○ ✓ ●)\n- Relative timestamp formatting\n- Sort-by-recent-activity\n- Selection-follows-conversation on re-sort\n```\n\n---\n\n### Task 4: Wire `ConversationList` into `App`\n\n**Files:**\n\n- Modify: `apps/client/src/tui/app.rs`\n\nThis is the largest task — it replaces `conversations: Vec<Conversation>` and `selected_conversation: usize` with the new component and updates every call site.\n\n- [ ] **Step 1: Update imports and remove old `Conversation` struct**\n\nIn `apps/client/src/tui/app.rs`:\n\nRemove the old `Conversation` struct (lines 291-299).\n\nAdd import at the top:\n\n```rust\nuse crate::tui::conversation_list::{Conversation, ConversationList};\nuse ember_contact::TrustLevel;\n```\n\n- [ ] **Step 2: Replace fields in `App` struct**\n\nReplace:\n\n```rust\n    /// List of conversations\n    pub conversations: Vec<Conversation>,\n    /// Selected conversation index\n    pub selected_conversation: usize,\n```\n\nWith:\n\n```rust\n    /// Conversation list component (owns selection state and display config)\n    pub conversation_list: ConversationList,\n```\n\n- [ ] **Step 3: Update `App::new()` initialization**\n\nIn the `App::new()` method, replace:\n\n```rust\n            conversations: Vec::new(),\n            selected_conversation: 0,\n```\n\nWith:\n\n```rust\n            conversation_list: ConversationList::new(config.ui.conversation_display),\n```\n\n- [ ] **Step 4: Update `load_contacts()`**\n\nReplace the body of `load_contacts()`:\n\n```rust\n    fn load_contacts(&mut self) -> AppResult<()> {\n        let contacts = self.client.list_contacts()?;\n        self.contacts_by_id.clear();\n\n        // Collect contact IDs for batch last-message lookup\n        let contact_ids: Vec<i64> = contacts.iter().map(|c| c.id).collect();\n        let last_messages = self\n            .client\n            .get_last_message_per_contact(&contact_ids)\n            .unwrap_or_else(|e| {\n                tracing::warn!(\"Failed to load last message previews: {e}\");\n                HashMap::new()\n            });\n\n        let mut conversations = Vec::with_capacity(contacts.len());\n        for contact in contacts {\n            let name = format_display_name(contact.name.as_deref(), &contact.public_id);\n            self.contacts_by_id.insert(contact.public_id, name.clone());\n\n            let preview = last_messages.get(&contact.id);\n\n            conversations.push(Conversation {\n                id: contact.id,\n                public_id: contact.public_id,\n                name,\n                last_message: preview.map(|p| p.body.clone()),\n                last_message_time: preview.map(|p| p.created_at),\n                unread_count: 0,\n                trust_level: contact.trust_level,\n            });\n        }\n\n        self.conversation_list.set_conversations(conversations);\n        self.conversation_list.sort_by_recent();\n\n        Ok(())\n    }\n```\n\n- [ ] **Step 5: Update `get_or_create_conversation()`**\n\nReplace the method body:\n\n```rust\n    fn get_or_create_conversation(&mut self, public_id: PublicID) -> usize {\n        let (contact_id, display_name, trust_level) = match self.client.get_contact(&public_id) {\n            Ok(contact) => {\n                let name = format_display_name(contact.name.as_deref(), &public_id);\n                (contact.id, name, contact.trust_level)\n            }\n            Err(_) => (0, format_display_name(None, &public_id), TrustLevel::Stranger),\n        };\n\n        self.contacts_by_id.insert(public_id, display_name.clone());\n\n        if let Some(idx) = self.conversation_list.find_by_public_id(&public_id) {\n            if let Some(conv) = self.conversation_list.get_mut(idx) {\n                conv.id = contact_id;\n                conv.name = display_name;\n                conv.trust_level = trust_level;\n            }\n            return idx;\n        }\n\n        self.conversation_list.push(Conversation {\n            id: contact_id,\n            public_id,\n            name: display_name,\n            last_message: None,\n            last_message_time: None,\n            unread_count: 0,\n            trust_level,\n        })\n    }\n```\n\n- [ ] **Step 6: Update `handle_incoming_message()`**\n\nReplace all `self.conversations[conv_idx]` accesses with `self.conversation_list.get_mut(conv_idx)`:\n\n```rust\n    fn handle_incoming_message(&mut self, from: PublicID, content: String) {\n        let conv_idx = self.get_or_create_conversation(from);\n        let sender_name = self.contacts_by_id.get(&from).cloned().unwrap_or_default();\n\n        let message = Message {\n            from_me: false,\n            sender_name,\n            content: content.clone(),\n            timestamp: utc_time_now(),\n            status: DeliveryStatus::None,\n            send_id: None,\n        };\n\n        self.cache_message(from, message.clone());\n\n        // Update conversation preview and timestamp\n        if let Some(conv) = self.conversation_list.get_mut(conv_idx) {\n            conv.last_message = Some(content);\n            conv.last_message_time = Some(now_secs());\n        }\n\n        // Update UI\n        let is_selected = self.conversation_list.selected_index() == Some(conv_idx);\n        if is_selected {\n            self.messages.push(message);\n        } else if let Some(conv) = self.conversation_list.get_mut(conv_idx) {\n            conv.unread_count += 1;\n        }\n\n        // Re-sort so this conversation bubbles to top\n        self.conversation_list.sort_by_recent();\n\n        self.status = \"New message received\".to_string();\n        let _ = execute!(std::io::stdout(), crossterm::style::Print(\"\\x07\"));\n    }\n```\n\nAdd the helper near the other time functions at the bottom of the file:\n\n```rust\nfn now_secs() -> i64 {\n    use std::time::{SystemTime, UNIX_EPOCH};\n    #[allow(clippy::cast_possible_wrap)]\n    {\n        SystemTime::now()\n            .duration_since(UNIX_EPOCH)\n            .map(|d| d.as_secs() as i64)\n            .unwrap_or(0)\n    }\n}\n```\n\n- [ ] **Step 7: Update `handle_conversation_key()`**\n\nReplace the method:\n\n```rust\n    fn handle_conversation_key(&mut self, key: KeyEvent) -> AppResult<()> {\n        #[allow(clippy::wildcard_enum_match_arm)]\n        match key.code {\n            KeyCode::Up | KeyCode::Char('k') => {\n                self.conversation_list.select_previous();\n                self.load_conversation_messages();\n            }\n            KeyCode::Down | KeyCode::Char('j') => {\n                self.conversation_list.select_next();\n                self.load_conversation_messages();\n            }\n            KeyCode::Enter => {\n                self.focus = Focus::Input;\n                if let Some(conv) = self.conversation_list.selected_mut() {\n                    conv.unread_count = 0;\n                }\n            }\n            KeyCode::Char('h') => {\n                self.status = HELP_TEXT.to_string();\n            }\n            _ => {}\n        }\n        Ok(())\n    }\n```\n\n- [ ] **Step 8: Add `Alt+L` display mode toggle**\n\nIn `handle_key_event()`, inside the `ALT` match block (around line 1054), add a new arm:\n\n```rust\n                KeyCode::Char('l' | 'L') => {\n                    // Alt+L: Toggle conversation list display mode\n                    self.conversation_list.toggle_display_mode();\n                    let mode = match self.conversation_list.display_mode() {\n                        crate::config::DisplayMode::TwoLine => \"two-line\",\n                        crate::config::DisplayMode::Compact => \"compact\",\n                    };\n                    self.status = format!(\"Display mode: {mode}\");\n                    return Ok(());\n                }\n```\n\nAlso update `HELP_TEXT` to include the new shortcut:\n\n```rust\nconst HELP_TEXT: &str =\n    \"Alt+A/F2: add | Alt+U/F4: upstream | Alt+V/F5: view | Alt+I/F3: identity | Alt+L: layout | Ctrl+Q: quit\";\n```\n\n- [ ] **Step 9: Update all remaining `self.conversations` and `self.selected_conversation` references**\n\nSearch for remaining references and update:\n\n- `self.conversations.get(self.selected_conversation)` → `self.conversation_list.selected()`\n- `self.conversations.get_mut(self.selected_conversation)` → `self.conversation_list.selected_mut()`\n- `self.conversations.len()` → `self.conversation_list.len()`\n- `self.conversations[idx]` → `self.conversation_list.get(idx)` / `self.conversation_list.get_mut(idx)`\n\nKey locations to check:\n\n1. `handle_input_key()` — uses `self.conversations.get(self.selected_conversation)` to get `public_id` for sending\n2. `load_conversation_messages()` — uses `self.conversations.get(self.selected_conversation)` to get `public_id` and `contact_id`\n3. `update_delivery_status()` — iterates `self.conversations` looking for matching `send_id` in cache\n4. `handle_add_contact_confirm()` — uses `self.conversations[conv_idx]`\n\nFor `handle_input_key()`:\n\n```rust\nif let Some(conv) = self.conversation_list.selected() {\n    let public_id = conv.public_id;\n    // ... rest unchanged\n```\n\nFor `load_conversation_messages()`:\n\n```rust\nif let Some(conv) = self.conversation_list.selected() {\n    let public_id = conv.public_id;\n    let contact_id = conv.id;\n    // ... rest unchanged\n```\n\nFor `handle_add_contact_confirm()`, find lines that do `self.conversations[conv_idx]` and replace with `self.conversation_list.get(conv_idx)` / `self.conversation_list.get_mut(conv_idx)`.\n\nAlso update the sent-message path to bump `last_message_time` and re-sort:\n\nIn `handle_input_key()`, after the message is sent successfully and pushed to `self.messages`, add:\n\n```rust\n// Update conversation preview and re-sort\nif let Some(conv) = self.conversation_list.selected_mut() {\n    conv.last_message = Some(text.clone());\n    conv.last_message_time = Some(now_secs());\n}\nself.conversation_list.sort_by_recent();\n```\n\n- [ ] **Step 10: Run checks**\n\nRun: `cargo check -p client && cargo clippy -p client --all-targets -- -D warnings`\n\nExpected: PASS. Fix any remaining references to old fields.\n\n- [ ] **Step 11: Commit**\n\n```\nrefactor(tui): wire ConversationList into App\n\nReplace `conversations`/`selected_conversation` fields with\n`ConversationList` component. All navigation, selection, and\nmutation now goes through the component API. Conversations\nre-sort on send/receive to keep most-recent at top.\n```\n\n---\n\n### Task 5: Update UI rendering\n\n**Files:**\n\n- Modify: `apps/client/src/tui/ui.rs`\n\n- [ ] **Step 1: Replace `render_conversations()` with delegation**\n\nIn `apps/client/src/tui/ui.rs`, replace the `render_conversations()` function:\n\n```rust\n/// Render the conversation list\nfn render_conversations(frame: &mut Frame, app: &mut App, area: Rect) {\n    let is_focused = app.focus == Focus::Conversations;\n    app.conversation_list.render(frame, area, is_focused);\n}\n```\n\nNote: The function signature changes to take `&mut App` (was `&App`) because `render_stateful_widget` requires `&mut ListState`.\n\n- [ ] **Step 2: Update `render()` signature and call**\n\nThe `render()` function needs `&mut App` now. Update its signature:\n\n```rust\npub fn render(frame: &mut Frame, app: &mut App) {\n```\n\nAnd the call in the `app.rs` main loop — find where `ui::render(frame, &app)` is called and change to `ui::render(frame, &mut app)`. This is inside the `terminal.draw()` closure.\n\nActually, ratatui's `terminal.draw()` takes `|frame| { ... }` — since `app` is `&mut self` in the `run()` method, this should work with a reborrow. Find the draw call:\n\n```rust\nterminal.draw(|frame| ui::render(frame, app))?;\n```\n\nChange to:\n\n```rust\nterminal.draw(|frame| ui::render(frame, app))?;\n```\n\nSince `app` is already `&mut self`, this should work. The key change is in `ui::render`'s signature.\n\n- [ ] **Step 3: Update message panel title**\n\nIn `render_messages()`, replace:\n\n```rust\n    let title = if let Some(conv) = app.conversations.get(app.selected_conversation) {\n        format!(\" {} \", conv.name)\n    } else {\n        \" Messages \".to_string()\n    };\n```\n\nWith:\n\n```rust\n    let title = if let Some(conv) = app.conversation_list.selected() {\n        format!(\" {} \", conv.name)\n    } else {\n        \" Messages \".to_string()\n    };\n```\n\n- [ ] **Step 4: Remove old conversation rendering code**\n\nDelete the entire old `render_conversations()` function body (the one with manual index-based styling, lines 68-123 of the original `ui.rs`). It's fully replaced by the delegation in Step 1.\n\n- [ ] **Step 5: Clean up unused imports**\n\nRemove any imports that are no longer used in `ui.rs` after the change (e.g., `List`, `ListItem` if only used by the old conversation renderer — check carefully since other renderers may still use them).\n\n- [ ] **Step 6: Run full checks**\n\nRun: `cargo fmt --all -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --workspace --all-features --all-targets`\n\nExpected: All PASS.\n\n- [ ] **Step 7: Commit**\n\n```\nfeat(tui): render conversation list with trust icons, timestamps, and unread badges\n\nReplace manual index-based conversation rendering with the\nConversationList component. Uses render_stateful_widget for\nproper highlight and auto-scroll. Supports two-line (with\nmessage preview) and compact display modes.\n\nCloses #169\n```\n\n---\n\n### Task 6: Final integration test\n\n**Files:** None (manual verification)\n\n- [ ] **Step 1: Run the full pre-commit checklist**\n\n```bash\ncargo fmt --all -- --check\ncargo clippy --all-targets --all-features -- -D warnings\ncargo test --workspace --all-features --all-targets\n```\n\nExpected: All PASS.\n\n- [ ] **Step 2: Manual smoke test**\n\nRun: `cargo run --bin client`\n\nVerify:\n\n1. Conversation list shows with proper highlight (bg color + `>` symbol)\n2. Trust icons appear next to contact names\n3. Relative timestamps show for conversations with messages\n4. Unread count shows in red when messages arrive\n5. `Alt+L` toggles between two-line (with preview + separator) and compact mode\n6. Selecting a conversation and receiving a message for a different contact doesn't jump selection\n7. New messages cause the conversation to sort to the top\n8. Arrow keys / j/k navigate and the list scrolls when selection exceeds visible area\n\n- [ ] **Step 3: Commit any remaining fixes, if needed**\n",
+            "file_path": "/home/leon0399/Projects/reme/spec/plans/2026-03-31-chat-list-improvements-plan.md"
+          },
+          "timestamp": "2026-03-31T01:09:13.988Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Now let me self-review.\n\n**1. Spec coverage check:**\n- Selection highlight with ListState: Task 3 (component) + Task 5 (render_stateful_widget) — covered\n- Name + last message preview: Task 3 (two-line render) — covered\n- Trust level icons: Task 3 (trust_icon function) — covered\n- Unread indicator: Task 3 (build_header_line) — covered\n- Relative timestamps: Task 3 (format_relative_time) — covered\n- Sort by recent: Task 3 (sort_by_recent) + Task 4 (wired on send/receive) — covered\n- Configurable display mode: Task 2 (config) + Task 3 (toggle) + Task 4 (Alt+L) — covered\n- Storage query extension: Task 1 — covered\n- Separation between chats: Task 3 (trailing blank line in two-line mode) — covered\n\n**2. Placeholder scan:** No TBD/TODO. All code blocks are complete.\n\n**3. Type consistency:** \n- `Conversation` struct fields match between Task 3 (definition) and Task 4 (usage in `load_contacts`, `get_or_create_conversation`)\n- `LastMessagePreview` matches between Task 1 definition and Task 4 usage\n- `DisplayMode` matches between Task 2 and Task 3\n- `ConversationList` API (`set_conversations`, `sort_by_recent`, `selected`, etc.) matches between Task 3 and Task 4\n\nAll checks pass.",
+          "timestamp": "2026-03-31T01:09:25.198Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "completed",
+            "taskId": "7"
+          },
+          "timestamp": "2026-03-31T01:09:25.750Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Plan complete and saved to `spec/plans/2026-03-31-chat-list-improvements-plan.md`. Two execution options:\n\n**1. Subagent-Driven (recommended)** — I dispatch a fresh subagent per task, review between tasks, fast iteration\n\n**2. Inline Execution** — Execute tasks in this session using executing-plans, batch execution with checkpoints\n\nWhich approach?",
+          "timestamp": "2026-03-31T01:09:31.604Z"
+        },
+        {
+          "type": "user",
+          "text": "use subagents, and submit code-review, spec-review and code-simplifier agent between phases or/and at the end (depending on the amount of changes, check git diff counts after each phase)",
+          "timestamp": "2026-03-31T01:12:41.391Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Skill",
+          "input": {
+            "skill": "superpowers:subagent-driven-development"
+          },
+          "timestamp": "2026-03-31T01:12:46.606Z"
+        },
+        {
+          "type": "user",
+          "text": "Base directory for this skill: /home/leon0399/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.6/skills/subagent-driven-development\n\n# Subagent-Driven Development\n\nExecute plan by dispatching fresh subagent per task, with two-stage review after each: spec compliance review first, then code quality review.\n\n**Why subagents:** You delegate tasks to specialized agents with isolated context. By precisely crafting their instructions and context, you ensure they stay focused and succeed at their task. They should never inherit your session's context or history — you construct exactly what they need. This also preserves your own context for coordination work.\n\n**Core principle:** Fresh subagent per task + two-stage review (spec then quality) = high quality, fast iteration\n\n## When to Use\n\n```dot\ndigraph when_to_use {\n    \"Have implementation plan?\" [shape=diamond];\n    \"Tasks mostly independent?\" [shape=diamond];\n    \"Stay in this session?\" [shape=diamond];\n    \"subagent-driven-development\" [shape=box];\n    \"executing-plans\" [shape=box];\n    \"Manual execution or brainstorm first\" [shape=box];\n\n    \"Have implementation plan?\" -> \"Tasks mostly independent?\" [label=\"yes\"];\n    \"Have implementation plan?\" -> \"Manual execution or brainstorm first\" [label=\"no\"];\n    \"Tasks mostly independent?\" -> \"Stay in this session?\" [label=\"yes\"];\n    \"Tasks mostly independent?\" -> \"Manual execution or brainstorm first\" [label=\"no - tightly coupled\"];\n    \"Stay in this session?\" -> \"subagent-driven-development\" [label=\"yes\"];\n    \"Stay in this session?\" -> \"executing-plans\" [label=\"no - parallel session\"];\n}\n```\n\n**vs. Executing Plans (parallel session):**\n- Same session (no context switch)\n- Fresh subagent per task (no context pollution)\n- Two-stage review after each task: spec compliance first, then code quality\n- Faster iteration (no human-in-loop between tasks)\n\n## The Process\n\n```dot\ndigraph process {\n    rankdir=TB;\n\n    subgraph cluster_per_task {\n        label=\"Per Task\";\n        \"Dispatch implementer subagent (./implementer-prompt.md)\" [shape=box];\n        \"Implementer subagent asks questions?\" [shape=diamond];\n        \"Answer questions, provide context\" [shape=box];\n        \"Implementer subagent implements, tests, commits, self-reviews\" [shape=box];\n        \"Dispatch spec reviewer subagent (./spec-reviewer-prompt.md)\" [shape=box];\n        \"Spec reviewer subagent confirms code matches spec?\" [shape=diamond];\n        \"Implementer subagent fixes spec gaps\" [shape=box];\n        \"Dispatch code quality reviewer subagent (./code-quality-reviewer-prompt.md)\" [shape=box];\n        \"Code quality reviewer subagent approves?\" [shape=diamond];\n        \"Implementer subagent fixes quality issues\" [shape=box];\n        \"Mark task complete in TodoWrite\" [shape=box];\n    }\n\n    \"Read plan, extract all tasks with full text, note context, create TodoWrite\" [shape=box];\n    \"More tasks remain?\" [shape=diamond];\n    \"Dispatch final code reviewer subagent for entire implementation\" [shape=box];\n    \"Use superpowers:finishing-a-development-branch\" [shape=box style=filled fillcolor=lightgreen];\n\n    \"Read plan, extract all tasks with full text, note context, create TodoWrite\" -> \"Dispatch implementer subagent (./implementer-prompt.md)\";\n    \"Dispatch implementer subagent (./implementer-prompt.md)\" -> \"Implementer subagent asks questions?\";\n    \"Implementer subagent asks questions?\" -> \"Answer questions, provide context\" [label=\"yes\"];\n    \"Answer questions, provide context\" -> \"Dispatch implementer subagent (./implementer-prompt.md)\";\n    \"Implementer subagent asks questions?\" -> \"Implementer subagent implements, tests, commits, self-reviews\" [label=\"no\"];\n    \"Implementer subagent implements, tests, commits, self-reviews\" -> \"Dispatch spec reviewer subagent (./spec-reviewer-prompt.md)\";\n    \"Dispatch spec reviewer subagent (./spec-reviewer-prompt.md)\" -> \"Spec reviewer subagent confirms code matches spec?\";\n    \"Spec reviewer subagent confirms code matches spec?\" -> \"Implementer subagent fixes spec gaps\" [label=\"no\"];\n    \"Implementer subagent fixes spec gaps\" -> \"Dispatch spec reviewer subagent (./spec-reviewer-prompt.md)\" [label=\"re-review\"];\n    \"Spec reviewer subagent confirms code matches spec?\" -> \"Dispatch code quality reviewer subagent (./code-quality-reviewer-prompt.md)\" [label=\"yes\"];\n    \"Dispatch code quality reviewer subagent (./code-quality-reviewer-prompt.md)\" -> \"Code quality reviewer subagent approves?\";\n    \"Code quality reviewer subagent approves?\" -> \"Implementer subagent fixes quality issues\" [label=\"no\"];\n    \"Implementer subagent fixes quality issues\" -> \"Dispatch code quality reviewer subagent (./code-quality-reviewer-prompt.md)\" [label=\"re-review\"];\n    \"Code quality reviewer subagent approves?\" -> \"Mark task complete in TodoWrite\" [label=\"yes\"];\n    \"Mark task complete in TodoWrite\" -> \"More tasks remain?\";\n    \"More tasks remain?\" -> \"Dispatch implementer subagent (./implementer-prompt.md)\" [label=\"yes\"];\n    \"More tasks remain?\" -> \"Dispatch final code reviewer subagent for entire implementation\" [label=\"no\"];\n    \"Dispatch final code reviewer subagent for entire implementation\" -> \"Use superpowers:finishing-a-development-branch\";\n}\n```\n\n## Model Selection\n\nUse the least powerful model that can handle each role to conserve cost and increase speed.\n\n**Mechanical implementation tasks** (isolated functions, clear specs, 1-2 files): use a fast, cheap model. Most implementation tasks are mechanical when the plan is well-specified.\n\n**Integration and judgment tasks** (multi-file coordination, pattern matching, debugging): use a standard model.\n\n**Architecture, design, and review tasks**: use the most capable available model.\n\n**Task complexity signals:**\n- Touches 1-2 files with a complete spec → cheap model\n- Touches multiple files with integration concerns → standard model\n- Requires design judgment or broad codebase understanding → most capable model\n\n## Handling Implementer Status\n\nImplementer subagents report one of four statuses. Handle each appropriately:\n\n**DONE:** Proceed to spec compliance review.\n\n**DONE_WITH_CONCERNS:** The implementer completed the work but flagged doubts. Read the concerns before proceeding. If the concerns are about correctness or scope, address them before review. If they're observations (e.g., \"this file is getting large\"), note them and proceed to review.\n\n**NEEDS_CONTEXT:** The implementer needs information that wasn't provided. Provide the missing context and re-dispatch.\n\n**BLOCKED:** The implementer cannot complete the task. Assess the blocker:\n1. If it's a context problem, provide more context and re-dispatch with the same model\n2. If the task requires more reasoning, re-dispatch with a more capable model\n3. If the task is too large, break it into smaller pieces\n4. If the plan itself is wrong, escalate to the human\n\n**Never** ignore an escalation or force the same model to retry without changes. If the implementer said it's stuck, something needs to change.\n\n## Prompt Templates\n\n- `./implementer-prompt.md` - Dispatch implementer subagent\n- `./spec-reviewer-prompt.md` - Dispatch spec compliance reviewer subagent\n- `./code-quality-reviewer-prompt.md` - Dispatch code quality reviewer subagent\n\n## Example Workflow\n\n```\nYou: I'm using Subagent-Driven Development to execute this plan.\n\n[Read plan file once: docs/superpowers/plans/feature-plan.md]\n[Extract all 5 tasks with full text and context]\n[Create TodoWrite with all tasks]\n\nTask 1: Hook installation script\n\n[Get Task 1 text and context (already extracted)]\n[Dispatch implementation subagent with full task text + context]\n\nImplementer: \"Before I begin - should the hook be installed at user or system level?\"\n\nYou: \"User level (~/.config/superpowers/hooks/)\"\n\nImplementer: \"Got it. Implementing now...\"\n[Later] Implementer:\n  - Implemented install-hook command\n  - Added tests, 5/5 passing\n  - Self-review: Found I missed --force flag, added it\n  - Committed\n\n[Dispatch spec compliance reviewer]\nSpec reviewer: ✅ Spec compliant - all requirements met, nothing extra\n\n[Get git SHAs, dispatch code quality reviewer]\nCode reviewer: Strengths: Good test coverage, clean. Issues: None. Approved.\n\n[Mark Task 1 complete]\n\nTask 2: Recovery modes\n\n[Get Task 2 text and context (already extracted)]\n[Dispatch implementation subagent with full task text + context]\n\nImplementer: [No questions, proceeds]\nImplementer:\n  - Added verify/repair modes\n  - 8/8 tests passing\n  - Self-review: All good\n  - Committed\n\n[Dispatch spec compliance reviewer]\nSpec reviewer: ❌ Issues:\n  - Missing: Progress reporting (spec says \"report every 100 items\")\n  - Extra: Added --json flag (not requested)\n\n[Implementer fixes issues]\nImplementer: Removed --json flag, added progress reporting\n\n[Spec reviewer reviews again]\nSpec reviewer: ✅ Spec compliant now\n\n[Dispatch code quality reviewer]\nCode reviewer: Strengths: Solid. Issues (Important): Magic number (100)\n\n[Implementer fixes]\nImplementer: Extracted PROGRESS_INTERVAL constant\n\n[Code reviewer reviews again]\nCode reviewer: ✅ Approved\n\n[Mark Task 2 complete]\n\n...\n\n[After all tasks]\n[Dispatch final code-reviewer]\nFinal reviewer: All requirements met, ready to merge\n\nDone!\n```\n\n## Advantages\n\n**vs. Manual execution:**\n- Subagents follow TDD naturally\n- Fresh context per task (no confusion)\n- Parallel-safe (subagents don't interfere)\n- Subagent can ask questions (before AND during work)\n\n**vs. Executing Plans:**\n- Same session (no handoff)\n- Continuous progress (no waiting)\n- Review checkpoints automatic\n\n**Efficiency gains:**\n- No file reading overhead (controller provides full text)\n- Controller curates exactly what context is needed\n- Subagent gets complete information upfront\n- Questions surfaced before work begins (not after)\n\n**Quality gates:**\n- Self-review catches issues before handoff\n- Two-stage review: spec compliance, then code quality\n- Review loops ensure fixes actually work\n- Spec compliance prevents over/under-building\n- Code quality ensures implementation is well-built\n\n**Cost:**\n- More subagent invocations (implementer + 2 reviewers per task)\n- Controller does more prep work (extracting all tasks upfront)\n- Review loops add iterations\n- But catches issues early (cheaper than debugging later)\n\n## Red Flags\n\n**Never:**\n- Start implementation on main/master branch without explicit user consent\n- Skip reviews (spec compliance OR code quality)\n- Proceed with unfixed issues\n- Dispatch multiple implementation subagents in parallel (conflicts)\n- Make subagent read plan file (provide full text instead)\n- Skip scene-setting context (subagent needs to understand where task fits)\n- Ignore subagent questions (answer before letting them proceed)\n- Accept \"close enough\" on spec compliance (spec reviewer found issues = not done)\n- Skip review loops (reviewer found issues = implementer fixes = review again)\n- Let implementer self-review replace actual review (both are needed)\n- **Start code quality review before spec compliance is ✅** (wrong order)\n- Move to next task while either review has open issues\n\n**If subagent asks questions:**\n- Answer clearly and completely\n- Provide additional context if needed\n- Don't rush them into implementation\n\n**If reviewer finds issues:**\n- Implementer (same subagent) fixes them\n- Reviewer reviews again\n- Repeat until approved\n- Don't skip the re-review\n\n**If subagent fails task:**\n- Dispatch fix subagent with specific instructions\n- Don't try to fix manually (context pollution)\n\n## Integration\n\n**Required workflow skills:**\n- **superpowers:using-git-worktrees** - REQUIRED: Set up isolated workspace before starting\n- **superpowers:writing-plans** - Creates the plan this skill executes\n- **superpowers:requesting-code-review** - Code review template for reviewer subagents\n- **superpowers:finishing-a-development-branch** - Complete development after all tasks\n\n**Subagents should use:**\n- **superpowers:test-driven-development** - Subagents follow TDD for each task\n\n**Alternative workflow:**\n- **superpowers:executing-plans** - Use for parallel session instead of same-session execution\n",
+          "timestamp": "2026-03-31T01:12:46.681Z"
+        },
+        {
+          "type": "assistant",
+          "text": "I'm using Subagent-Driven Development to execute the chat list improvements plan.\n\nLet me read the prompt templates and set up the workflow.",
+          "timestamp": "2026-03-31T01:12:50.469Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.6/skills/subagent-driven-development/implementer-prompt.md"
+          },
+          "timestamp": "2026-03-31T01:12:51.108Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.6/skills/subagent-driven-development/spec-reviewer-prompt.md"
+          },
+          "timestamp": "2026-03-31T01:12:51.881Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.6/skills/subagent-driven-development/code-quality-reviewer-prompt.md"
+          },
+          "timestamp": "2026-03-31T01:12:52.212Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Now let me read the plan, extract tasks, and set up the todo list. First, let me create the worktree for isolation.",
+          "timestamp": "2026-03-31T01:13:08.871Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "EnterWorktree",
+          "input": {
+            "name": "feat/chat-list-improvements"
+          },
+          "timestamp": "2026-03-31T01:13:09.378Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/leon0399/Projects/reme/.claude/worktrees/feat+chat-list-improvements/spec/plans/2026-03-31-chat-list-improvements-plan.md"
+          },
+          "timestamp": "2026-03-31T01:13:14.163Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Bash",
+          "input": {
+            "command": "ls /home/leon0399/Projects/reme/.claude/worktrees/feat+chat-list-improvements/spec/plans/ 2>/dev/null || echo \"spec dir doesn't exist in worktree\"",
+            "description": "Check if spec dir exists in worktree"
+          },
+          "timestamp": "2026-03-31T01:13:16.448Z"
+        },
+        {
+          "type": "assistant",
+          "text": "The spec directory is gitignored so it's not in the worktree. I have the plan content from the earlier read. Let me set up todo tracking and get the base SHA.",
+          "timestamp": "2026-03-31T01:13:28.856Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Bash",
+          "input": {
+            "command": "git rev-parse HEAD",
+            "description": "Get base SHA"
+          },
+          "timestamp": "2026-03-31T01:13:29.723Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskCreate",
+          "input": {
+            "activeForm": "Implementing storage query extension",
+            "description": "Add LastMessagePreview struct, extend get_last_message_per_contact to return body + created_at, update ember-core passthrough, fix tests",
+            "subject": "Task 1: Extend storage query to return timestamps"
+          },
+          "timestamp": "2026-03-31T01:13:35.923Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskCreate",
+          "input": {
+            "activeForm": "Adding UI config types",
+            "description": "Add DisplayMode enum, UiConfig struct, wire into AppConfig",
+            "subject": "Task 2: Add UiConfig and DisplayMode to config"
+          },
+          "timestamp": "2026-03-31T01:13:37.460Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskCreate",
+          "input": {
+            "activeForm": "Creating ConversationList component",
+            "description": "New conversation_list.rs with state, navigation, sorting, rendering, trust icons, relative timestamps",
+            "subject": "Task 3: Create ConversationList component"
+          },
+          "timestamp": "2026-03-31T01:13:39.048Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskCreate",
+          "input": {
+            "activeForm": "Wiring ConversationList into App",
+            "description": "Replace conversations/selected_conversation with ConversationList, update all call sites in app.rs",
+            "subject": "Task 4: Wire ConversationList into App"
+          },
+          "timestamp": "2026-03-31T01:13:40.478Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskCreate",
+          "input": {
+            "activeForm": "Updating UI rendering",
+            "description": "Replace render_conversations() with delegation to ConversationList, update signatures",
+            "subject": "Task 5: Update UI rendering"
+          },
+          "timestamp": "2026-03-31T01:13:41.641Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskCreate",
+          "input": {
+            "activeForm": "Running final integration tests",
+            "description": "Run pre-commit checklist, manual smoke test",
+            "subject": "Task 6: Final integration test"
+          },
+          "timestamp": "2026-03-31T01:13:42.904Z"
+        },
+        {
+          "type": "assistant",
+          "text": "Starting with Task 1. This is a mechanical change (1-2 files, clear spec) — dispatching with sonnet.",
+          "timestamp": "2026-03-31T01:13:45.122Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "TaskUpdate",
+          "input": {
+            "status": "in_progress",
+            "taskId": "8"
+          },
+          "timestamp": "2026-03-31T01:13:45.706Z"
+        },
+        {
+          "type": "tool_use",
+          "name": "Agent",
+          "input": {
+            "description": "Implement Task 1: storage query timestamps",
+            "mode": "bypassPermissions",
+            "model": "sonnet",
+            "prompt": "You are implementing Task 1: Extend storage query to return timestamps\n\n## Task Description\n\n### Task 1: Extend storage query to return timestamps\n\n**Files:**\n\n- Modify: `crates/ember-storage/src/lib.rs` (query around line 1087, add struct near line 53)\n- Modify: `crates/ember-core/src/lib.rs` (passthrough around line 501-506)\n\nSteps:\n\n1. **Add `LastMessagePreview` struct to ember-storage** — near line 53, after `StoredMessage`:\n\n```rust\n/// Preview data for the most recent message in a conversation.\n/// Used by the TUI conversation list to show message snippets and timestamps.\n#[derive(Debug, Clone)]\npub struct LastMessagePreview {\n    pub body: String,\n    pub created_at: i64,\n}\n```\n\n2. **Update `get_last_message_per_contact` return type and SQL** — change signature from `Result<HashMap<i64, String>, StorageError>` to `Result<HashMap<i64, LastMessagePreview>, StorageError>`. The SQL needs to also SELECT `m.created_at`. The row mapper changes to return `(cid, LastMessagePreview { body, created_at })`.\n\n3. **Update ember-core passthrough** — in `crates/ember-core/src/lib.rs`, change the return type of `get_last_message_per_contact` to `Result<std::collections::HashMap<i64, ember_storage::LastMessagePreview>, ClientError>`.\n\n4. **Update existing tests** — `test_get_last_message_per_contact` (around line 2997) needs to change `.map(String::as_str)` to `.map(|p| p.body.as_str())`. Add assertion that `created_at > 0`. Also update `test_get_last_message_skips_receipts` similarly.\n\n5. **Run tests**: `cargo test -p ember-storage test_get_last_message`\n6. **Run full check**: `cargo test -p ember-storage && cargo test -p ember-core && cargo clippy --all-targets --all-features -- -D warnings`\n7. **Commit** with message:\n```\nfeat(storage): return timestamps from last-message query\n\nExtend `get_last_message_per_contact` to return `LastMessagePreview`\n(body + created_at) instead of plain `String`. The TUI conversation\nlist needs timestamps for relative time display.\n\nCo-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>\n```\n\n## Context\n\nThis is the first task of a chat list improvements feature. The storage layer currently returns only message body text for conversation previews. We need it to also return the timestamp so the TUI can show relative times (\"2m\", \"1h\", \"3d\") in the conversation list.\n\nThe existing query at `get_last_message_per_contact` uses a subquery to find MAX(id) per contact_id. The `messages` table has a `created_at` column (unix seconds i64) that we need to include in the SELECT.\n\n## Before You Begin\n\nIf you have questions about the requirements or approach, ask them now.\n\n## Your Job\n\nOnce you're clear on requirements:\n1. Implement exactly what the task specifies\n2. Verify tests pass\n3. Run clippy\n4. Commit your work\n5. Self-review\n6. Report back\n\nWork from: /home/leon0399/Projects/reme/.claude/worktrees/feat+chat-list-improvements\n\n## Before Reporting Back: Self-Review\n\nReview your work. Check:\n- Did I implement everything requested?\n- Did I only build what was requested (YAGNI)?\n- Are tests updated and passing?\n- Is the code clean?\n\n## Report Format\n\nWhen done, report:\n- **Status:** DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT\n- What you implemented\n- Test results\n- Files changed\n- Self-review findings\n"
+          },
+          "timestamp": "2026-03-31T01:14:09.874Z"
+        }
+      ],
+      "total_additions": 28,
+      "total_deletions": 10,
+      "accepted_lines": 24,
+      "overriden_lines": 0
+    }
+  }
+}
