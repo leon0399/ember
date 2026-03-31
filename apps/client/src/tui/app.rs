@@ -2,6 +2,7 @@
 
 use crate::config::AppConfig;
 use crate::discovery;
+use crate::tui::conversation_list::{Conversation, ConversationList};
 use crate::tui::event::{Event, EventHandler};
 use crate::tui::http_server;
 use crate::tui::ui;
@@ -16,7 +17,7 @@ use ember_node_core::{
     EmbeddedNode, EmbeddedNodeHandle, NodeEvent, PersistentMailboxStore, PersistentStoreConfig,
 };
 use ember_outbox::{OutboxConfig, TieredDeliveryPhase, TransportRetryPolicy};
-use ember_storage::Storage;
+use ember_storage::{Storage, TrustLevel};
 use ember_transport::http_target::{HttpTarget, HttpTargetConfig};
 use ember_transport::pool::TransportPool;
 use ember_transport::target::TargetKind;
@@ -42,7 +43,7 @@ const PUBLIC_ID_HEX_LENGTH: usize = 64;
 
 /// Help text shown in status bar (Alt+H or initial startup)
 const HELP_TEXT: &str =
-    "Alt+A/F2: add | Alt+U/F4: upstream | Alt+V/F5: view | Alt+I/F3: identity | Ctrl+Q: quit";
+    "Alt+A/F2: add | Alt+U/F4: upstream | Alt+V/F5: view | Alt+I/F3: identity | Alt+L: layout | Ctrl+Q: quit";
 
 /// Short help hint for status bar
 const HELP_HINT: &str = "Alt+H for help";
@@ -287,20 +288,6 @@ impl AddUpstreamPopup<'_> {
     }
 }
 
-/// A conversation/contact entry
-#[derive(Debug, Clone)]
-pub struct Conversation {
-    #[allow(dead_code)] // Field for future UI features (editing, deleting contacts)
-    pub id: i64,
-    pub public_id: PublicID,
-    pub name: String,
-    pub last_message: Option<String>,
-    /// Unix timestamp (seconds) of the most recent message; `None` if no messages yet.
-    #[allow(dead_code)] // Will be used for timestamp display in the conversation list
-    pub last_message_at: Option<i64>,
-    pub unread_count: u32,
-}
-
 /// Delivery status for sent messages. Displayed as a visual indicator in the TUI.
 /// This is a UI-only type — not persisted or sent over the wire.
 #[derive(Debug, Clone, Default)]
@@ -380,10 +367,8 @@ pub struct App<'a> {
     pub running: bool,
     /// Current focus
     pub focus: Focus,
-    /// List of conversations
-    pub conversations: Vec<Conversation>,
-    /// Selected conversation index
-    pub selected_conversation: usize,
+    /// Conversation list component (selection, display mode, sorting)
+    pub conversation_list: ConversationList,
     /// Messages in current conversation
     pub messages: Vec<Message>,
     /// Message scroll offset
@@ -598,8 +583,7 @@ impl App<'_> {
         let mut app = Self {
             running: true,
             focus: Focus::Conversations,
-            conversations: Vec::new(),
-            selected_conversation: 0,
+            conversation_list: ConversationList::new(config.ui.conversation_display),
             messages: Vec::new(),
             message_scroll: 0,
             input,
@@ -722,7 +706,6 @@ impl App<'_> {
     /// Load contacts from storage, including the most recent message preview
     fn load_contacts(&mut self) -> AppResult<()> {
         let contacts = self.client.list_contacts()?;
-        self.conversations.clear();
         self.contacts_by_id.clear();
 
         // Collect contact IDs for batch last-message lookup
@@ -735,6 +718,7 @@ impl App<'_> {
                 HashMap::new()
             });
 
+        let mut convs = Vec::with_capacity(contacts.len());
         for contact in contacts {
             let name = format_display_name(contact.name.as_deref(), &contact.public_id);
 
@@ -742,17 +726,21 @@ impl App<'_> {
 
             let last_message_preview = last_messages.get(&contact.id);
             let last_message = last_message_preview.map(|p| p.body.clone());
-            let last_message_at = last_message_preview.map(|p| p.created_at);
+            let last_message_time = last_message_preview.map(|p| p.created_at);
 
-            self.conversations.push(Conversation {
+            convs.push(Conversation {
                 id: contact.id,
                 public_id: contact.public_id,
                 name,
                 last_message,
-                last_message_at,
+                last_message_time,
                 unread_count: 0,
+                trust_level: contact.trust_level,
             });
         }
+
+        self.conversation_list.set_conversations(convs);
+        self.conversation_list.sort_by_recent();
 
         Ok(())
     }
@@ -962,35 +950,36 @@ impl App<'_> {
     fn get_or_create_conversation(&mut self, public_id: PublicID) -> usize {
         // Get contact info from storage (ember-core auto-adds on message receive)
         // Single call to avoid duplicate lookups
-        let (contact_id, display_name) = match self.client.get_contact(&public_id) {
+        let (contact_id, display_name, trust_level) = match self.client.get_contact(&public_id) {
             Ok(contact) => {
                 let name = format_display_name(contact.name.as_deref(), &public_id);
-                (contact.id, name)
+                (contact.id, name, contact.trust_level)
             }
-            Err(_) => (0, format_display_name(None, &public_id)),
+            Err(_) => (
+                0,
+                format_display_name(None, &public_id),
+                TrustLevel::Stranger,
+            ),
         };
 
         self.contacts_by_id.insert(public_id, display_name.clone());
-        if let Some(idx) = self
-            .conversations
-            .iter()
-            .position(|conversation| conversation.public_id == public_id)
-        {
-            let conversation = &mut self.conversations[idx];
-            conversation.id = contact_id;
-            conversation.name = display_name;
+        if let Some(idx) = self.conversation_list.find_by_public_id(&public_id) {
+            if let Some(conversation) = self.conversation_list.get_mut(idx) {
+                conversation.id = contact_id;
+                conversation.name = display_name;
+            }
             return idx;
         }
 
-        self.conversations.push(Conversation {
+        self.conversation_list.push(Conversation {
             id: contact_id,
             public_id,
             name: display_name,
             last_message: None,
-            last_message_at: None,
+            last_message_time: None,
             unread_count: 0,
-        });
-        self.conversations.len() - 1
+            trust_level,
+        })
     }
 
     /// Handle incoming message
@@ -1013,14 +1002,20 @@ impl App<'_> {
         self.cache_message(from, message.clone());
 
         // Update conversation
-        self.conversations[conv_idx].last_message = Some(content);
+        let is_selected = self.conversation_list.selected_index() == Some(conv_idx);
+        if let Some(conv) = self.conversation_list.get_mut(conv_idx) {
+            conv.last_message = Some(content);
+            conv.last_message_time = Some(now_secs());
 
-        // Update UI
-        if conv_idx == self.selected_conversation {
-            self.messages.push(message);
-        } else {
-            self.conversations[conv_idx].unread_count += 1;
+            // Update UI
+            if is_selected {
+                self.messages.push(message);
+            } else {
+                conv.unread_count += 1;
+            }
         }
+
+        self.conversation_list.sort_by_recent();
 
         self.status = "New message received".to_string();
 
@@ -1090,6 +1085,16 @@ impl App<'_> {
                 KeyCode::Char('h' | 'H') => {
                     // Alt+H: Show help
                     self.status = HELP_TEXT.to_string();
+                    return Ok(());
+                }
+                KeyCode::Char('l' | 'L') => {
+                    // Alt+L: Toggle conversation list layout
+                    self.conversation_list.toggle_display_mode();
+                    let mode = match self.conversation_list.display_mode() {
+                        crate::config::DisplayMode::TwoLine => "two-line",
+                        crate::config::DisplayMode::Compact => "compact",
+                    };
+                    self.status = format!("Display mode: {mode}");
                     return Ok(());
                 }
                 _ => {}
@@ -1166,21 +1171,17 @@ impl App<'_> {
         #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
-                if self.selected_conversation > 0 {
-                    self.selected_conversation -= 1;
-                    self.load_conversation_messages();
-                }
+                self.conversation_list.select_previous();
+                self.load_conversation_messages();
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if self.selected_conversation < self.conversations.len().saturating_sub(1) {
-                    self.selected_conversation += 1;
-                    self.load_conversation_messages();
-                }
+                self.conversation_list.select_next();
+                self.load_conversation_messages();
             }
             KeyCode::Enter => {
                 self.focus = Focus::Input;
                 // Clear unread count
-                if let Some(conv) = self.conversations.get_mut(self.selected_conversation) {
+                if let Some(conv) = self.conversation_list.selected_mut() {
                     conv.unread_count = 0;
                 }
             }
@@ -1222,7 +1223,7 @@ impl App<'_> {
         if key.code == KeyCode::Enter {
             let text = self.input.lines().join("\n");
             if !text.trim().is_empty() {
-                if let Some(conv) = self.conversations.get(self.selected_conversation) {
+                if let Some(conv) = self.conversation_list.selected() {
                     let public_id = conv.public_id;
                     let content = Content::Text(ember_message::TextContent { body: text.clone() });
 
@@ -1234,7 +1235,7 @@ impl App<'_> {
                             let message = Message {
                                 from_me: true,
                                 sender_name: "You".to_string(),
-                                content: text,
+                                content: text.clone(),
                                 timestamp: utc_time_now(),
                                 status: DeliveryStatus::Sending,
                                 send_id: Some(send_id),
@@ -1245,6 +1246,13 @@ impl App<'_> {
                             self.input = TextArea::default();
                             self.input.set_placeholder_text("Type a message...");
                             self.status = "Sending...".to_string();
+
+                            // Update conversation preview and timestamp
+                            if let Some(sel) = self.conversation_list.selected_mut() {
+                                sel.last_message = Some(text);
+                                sel.last_message_time = Some(now_secs());
+                            }
+                            self.conversation_list.sort_by_recent();
 
                             let client = self.client.clone();
                             let tx = self.action_tx.clone();
@@ -1287,7 +1295,7 @@ impl App<'_> {
         self.messages.clear();
         self.message_scroll = 0;
 
-        if let Some(conv) = self.conversations.get(self.selected_conversation) {
+        if let Some(conv) = self.conversation_list.selected() {
             let public_id = conv.public_id;
             let contact_id = conv.id;
 
@@ -1427,10 +1435,14 @@ impl App<'_> {
                 }
 
                 let conv_idx = self.get_or_create_conversation(contact.public_id);
-                let display_name = self.conversations[conv_idx].name.clone();
+                let display_name = self
+                    .conversation_list
+                    .get(conv_idx)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default();
 
                 // Select the new or updated contact and move to input
-                self.selected_conversation = conv_idx;
+                self.conversation_list.select(conv_idx);
                 self.load_conversation_messages();
                 self.focus = Focus::Input;
 
@@ -2186,6 +2198,18 @@ fn format_delivery_status(phase: &TieredDeliveryPhase) -> String {
             }
         },
         TieredDeliveryPhase::Confirmed { .. } => "Sent (confirmed)".to_string(),
+    }
+}
+
+/// Current wall-clock time as Unix seconds.
+fn now_secs() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    #[allow(clippy::cast_possible_wrap)]
+    {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
     }
 }
 

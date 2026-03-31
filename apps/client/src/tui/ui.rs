@@ -17,7 +17,7 @@ use super::app::{AddContactField, AddUpstreamField, App, DeliveryStatus, Focus, 
 use ember_transport::DeliveryTier;
 
 /// Render the entire UI
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
     // Reserve bottom row for status bar
@@ -64,62 +64,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
 }
 
-/// Render the conversation list
-fn render_conversations(frame: &mut Frame, app: &App, area: Rect) {
+/// Render the conversation list (delegates to `ConversationList::render`)
+fn render_conversations(frame: &mut Frame, app: &mut App, area: Rect) {
     let is_focused = app.focus == Focus::Conversations;
-
-    let items: Vec<ListItem> = app
-        .conversations
-        .iter()
-        .enumerate()
-        .map(|(i, conv)| {
-            let style = if i == app.selected_conversation {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-
-            // Show unread indicator
-            let unread = if conv.unread_count > 0 {
-                format!(" ({})", conv.unread_count)
-            } else {
-                String::new()
-            };
-
-            let content = Line::from(vec![
-                Span::styled(&conv.name, style),
-                Span::styled(unread, Style::default().fg(Color::Red)),
-            ]);
-
-            ListItem::new(content)
-        })
-        .collect();
-
-    let border_style = if is_focused {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
-    let title = format!(" Conversations ({}) ", app.conversations.len());
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(border_style)
-                .title(title),
-        )
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("> ");
-
-    // We need to render with state for highlighting
-    frame.render_widget(list, area);
+    app.conversation_list.render(frame, area, is_focused);
 }
 
 /// Render the message view
@@ -133,7 +81,7 @@ fn render_messages(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     // Get conversation name for title
-    let title = if let Some(conv) = app.conversations.get(app.selected_conversation) {
+    let title = if let Some(conv) = app.conversation_list.selected() {
         format!(" {} ", conv.name)
     } else {
         " Messages ".to_string()

@@ -156,6 +156,13 @@ impl ConversationList {
         idx
     }
 
+    /// Select a conversation by index.
+    pub fn select(&mut self, index: usize) {
+        if index < self.conversations.len() {
+            self.state.select(Some(index));
+        }
+    }
+
     /// Number of conversations in the list.
     pub fn len(&self) -> usize {
         self.conversations.len()
