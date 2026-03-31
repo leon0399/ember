@@ -251,7 +251,7 @@ impl ConversationList {
             Line::from(Span::styled(
                 "  <no messages>".to_string(),
                 Style::default()
-                    .fg(Color::DarkGray)
+                    .fg(Color::Gray)
                     .add_modifier(Modifier::ITALIC),
             ))
         };
@@ -282,7 +282,7 @@ impl ConversationList {
             spans.push(Span::raw("  "));
             spans.push(Span::styled(
                 format_relative_time(ts),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::Gray),
             ));
         }
 
@@ -306,9 +306,9 @@ impl ConversationList {
 const fn trust_icon(level: TrustLevel) -> (&'static str, Color) {
     match level {
         TrustLevel::Stranger => ("?", Color::Yellow),
-        TrustLevel::Known => ("\u{25CB}", Color::DarkGray), // ○
+        TrustLevel::Known => ("\u{25CB}", Color::Gray), // ○
         TrustLevel::Verified => ("\u{2713}", Color::Green), // ✓
-        TrustLevel::Trusted => ("\u{25CF}", Color::Cyan),   // ●
+        TrustLevel::Trusted => ("\u{25CF}", Color::Cyan), // ●
     }
 }
 
