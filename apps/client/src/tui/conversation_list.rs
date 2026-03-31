@@ -241,13 +241,21 @@ impl ConversationList {
 
         let mut lines = vec![header];
 
-        if let Some(msg) = &conv.last_message {
+        let preview_line = if let Some(msg) = &conv.last_message {
             let preview = truncate_str(msg, 40);
-            lines.push(Line::from(Span::styled(
+            Line::from(Span::styled(
                 format!("  {preview}"),
-                Style::default().fg(Color::DarkGray),
-            )));
-        }
+                Style::default().fg(Color::White),
+            ))
+        } else {
+            Line::from(Span::styled(
+                "  <no messages>".to_string(),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            ))
+        };
+        lines.push(preview_line);
 
         // Blank separator line
         lines.push(Line::from(""));
