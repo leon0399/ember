@@ -6,6 +6,7 @@
 //! - Input area at the bottom
 
 mod app;
+pub mod conversation_list;
 mod event;
 pub mod http_server;
 mod ui;

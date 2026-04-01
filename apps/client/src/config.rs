@@ -559,6 +559,35 @@ pub struct DirectPeerConfig {
     pub name: Option<String>,
 }
 
+/// Display mode for the conversation list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayMode {
+    /// Two lines per conversation: name+trust+time+unread, then message preview
+    #[default]
+    TwoLine,
+    /// Single line per conversation: name+trust+time+unread, no preview
+    Compact,
+}
+
+impl DisplayMode {
+    /// Human-readable label for status messages.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TwoLine => "two-line",
+            Self::Compact => "compact",
+        }
+    }
+}
+
+/// UI display configuration.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct UiConfig {
+    /// Conversation list display mode
+    #[serde(default)]
+    pub conversation_display: DisplayMode,
+}
+
 /// Final resolved configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
@@ -591,6 +620,10 @@ pub struct AppConfig {
     /// LAN discovery configuration
     #[serde(default)]
     pub lan_discovery: LanDiscoveryConfig,
+
+    /// UI display configuration
+    #[serde(default)]
+    pub ui: UiConfig,
 }
 
 fn default_peers() -> PeersConfig {
@@ -622,6 +655,7 @@ impl Default for AppConfig {
             outbox: OutboxAppConfig::default(),
             delivery: DeliveryAppConfig::default(),
             lan_discovery: LanDiscoveryConfig::default(),
+            ui: UiConfig::default(),
         }
     }
 }
@@ -658,6 +692,9 @@ struct RawConfig {
     /// LAN discovery config section
     #[serde(default)]
     lan_discovery: Option<LanDiscoveryConfig>,
+    /// UI display configuration
+    #[serde(default)]
+    ui: UiConfig,
 }
 
 /// Raw outbox config from file/env
@@ -729,6 +766,7 @@ pub fn load_config_from(
         outbox,
         delivery,
         lan_discovery,
+        ui: raw.ui,
     })
 }
 
