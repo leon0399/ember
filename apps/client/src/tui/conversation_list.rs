@@ -414,11 +414,9 @@ const fn trust_icon(level: TrustLevel) -> (&'static str, Color) {
 
 /// Format a Unix timestamp (seconds) as a relative-time string.
 fn format_relative_time(timestamp_secs: i64, now_secs: i64) -> String {
-    let diff = now_secs.saturating_sub(timestamp_secs);
-
-    // saturating_sub ensures diff >= 0 when now_secs >= 0 and timestamp_secs <= now_secs.
+    // Clamp to 0 so future timestamps (clock skew, imported messages) show "now"
     #[allow(clippy::cast_sign_loss)]
-    let diff = diff as u64;
+    let diff = now_secs.saturating_sub(timestamp_secs).max(0) as u64;
 
     if diff < 60 {
         return "now".to_string();
