@@ -1,0 +1,23 @@
+apps/node/src/config.rs
+  cbde3b7efa8f67ee 632,635,645,648,827,830,833,836,863,866,869,872,875,878,881,884
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "ff111a0e4153b07cb80a4be9f50cd6b06e3e819f",
+  "prompts": {
+    "cbde3b7efa8f67ee": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dfcb0052-14c6-4f66-bbfa-b1d00bafa3d7",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 16,
+      "total_deletions": 32,
+      "accepted_lines": 16,
+      "overriden_lines": 0
+    }
+  }
+}
