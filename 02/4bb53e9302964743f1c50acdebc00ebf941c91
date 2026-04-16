@@ -1,0 +1,29 @@
+apps/client/src/tui/commands/popup.rs
+  df96c0f304b263e6 3,21
+apps/client/src/tui/commands/parser.rs
+  df96c0f304b263e6 16-20,24-30
+apps/client/src/tui/commands/mod.rs
+  df96c0f304b263e6 8
+apps/client/src/tui/app.rs
+  df96c0f304b263e6 429,1148-1150,1270,1301,1337-1344,1359,1364,1376-1378,1391,1400
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "024bb53e9302964743f1c50acdebc00ebf941c91",
+  "prompts": {
+    "df96c0f304b263e6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "192a8ceb-8d70-4e6b-903d-61010487abda",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 45,
+      "total_deletions": 64,
+      "accepted_lines": 38,
+      "overriden_lines": 0
+    }
+  }
+}
