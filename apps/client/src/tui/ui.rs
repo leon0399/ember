@@ -253,24 +253,15 @@ fn render_add_contact_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(popup_block, area);
 
     // Layout inside popup: instructions, public_id field, name field, error, buttons
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(1)
-        .constraints([
-            Constraint::Length(1), // Instructions
-            Constraint::Length(3), // Public ID label + input
-            Constraint::Length(3), // Name label + input
-            Constraint::Length(1), // Error message area
-            Constraint::Length(1), // Button hints
-        ])
-        .split(inner);
+    let [instructions_area, public_id_area, name_area, error_area, hints_area] =
+        vertical![==1, ==3, ==3, ==1, ==1].margin(1).areas(inner);
 
     // Instructions
     let instructions =
         Paragraph::new("Enter contact's Public ID (64-char hex) and optional display name")
             .style(Style::default().fg(Color::DarkGray))
             .wrap(Wrap { trim: true });
-    frame.render_widget(instructions, chunks[0]);
+    frame.render_widget(instructions, instructions_area);
 
     // Public ID field
     let public_id_focused = app.add_contact_popup.focused_field == AddContactField::PublicId;
@@ -283,8 +274,8 @@ fn render_add_contact_popup(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(public_id_border_style)
         .title(" Public ID (required) ");
-    let public_id_inner = public_id_block.inner(chunks[1]);
-    frame.render_widget(public_id_block, chunks[1]);
+    let public_id_inner = public_id_block.inner(public_id_area);
+    frame.render_widget(public_id_block, public_id_area);
     frame.render_widget(&app.add_contact_popup.public_id_input, public_id_inner);
 
     // Name field
@@ -298,8 +289,8 @@ fn render_add_contact_popup(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(name_border_style)
         .title(" Name (optional) ");
-    let name_inner = name_block.inner(chunks[2]);
-    frame.render_widget(name_block, chunks[2]);
+    let name_inner = name_block.inner(name_area);
+    frame.render_widget(name_block, name_area);
     frame.render_widget(&app.add_contact_popup.name_input, name_inner);
 
     // Error message
@@ -307,14 +298,14 @@ fn render_add_contact_popup(frame: &mut Frame, app: &App) {
         let error_text = Paragraph::new(error.as_str())
             .style(Style::default().fg(Color::Red))
             .wrap(Wrap { trim: true });
-        frame.render_widget(error_text, chunks[3]);
+        frame.render_widget(error_text, error_area);
     }
 
     // Button hints
     let hints = Paragraph::new("Tab: switch field | Enter: confirm | Esc: cancel")
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
-    frame.render_widget(hints, chunks[4]);
+    frame.render_widget(hints, hints_area);
 }
 
 /// Render the "My Identity" popup
