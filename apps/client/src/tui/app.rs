@@ -426,6 +426,7 @@ pub struct App<'a> {
     action_rx: mpsc::UnboundedReceiver<Action>,
     /// Monotonic counter for correlating send results to optimistic messages.
     next_send_id: u64,
+    pub(crate) command_completion: super::commands::CommandCompletionState,
 }
 
 impl App<'_> {
@@ -612,6 +613,9 @@ impl App<'_> {
             action_tx,
             action_rx,
             next_send_id: 0,
+            command_completion: super::commands::CommandCompletionState::new(
+                super::commands::Registry::builtin(),
+            ),
         };
 
         // Surface mDNS init failure in TUI status bar (M14)
@@ -1132,6 +1136,39 @@ impl App<'_> {
             _ => {}
         }
 
+        // Slash command completion popup — intercepts keys before the
+        // global Esc/Tab focus-switch block below. Only active when
+        // input is focused and the user is currently typing a command.
+        if self.focus == Focus::Input && self.command_completion.is_active() {
+            use super::commands::CompletionOutcome;
+            match self.command_completion.handle_key(key) {
+                CompletionOutcome::Consumed => {
+                    if key.code == KeyCode::Tab {
+                        if let Some(insertion) = self.command_completion.tab_insertion() {
+                            // TODO(#232): modify self.input in place (preserves undo
+                            // history) and splice the arg portion when arg completion
+                            // lands, instead of replacing the whole textarea.
+                            let mut input = Self::fresh_input();
+                            input.insert_str(&insertion);
+                            self.input = input;
+                            let line = self.input.lines()[0].clone();
+                            self.command_completion.update_from_input(&line);
+                        }
+                    }
+                    return Ok(());
+                }
+                CompletionOutcome::Exit => {
+                    self.command_completion.suppress();
+                    return Ok(());
+                }
+                CompletionOutcome::Dispatch(parsed) => {
+                    self.dispatch_command(&parsed);
+                    return Ok(());
+                }
+                CompletionOutcome::PassThrough => {}
+            }
+        }
+
         #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
         match key.code {
             KeyCode::Esc => {
@@ -1227,7 +1264,22 @@ impl App<'_> {
     #[allow(clippy::unnecessary_wraps)] // Returns Result for consistency with other handlers
     fn handle_input_key(&mut self, key: KeyEvent) -> AppResult<()> {
         if key.code == KeyCode::Enter {
-            let text = self.input.lines().join("\n");
+            let raw = self.input.lines().join("\n");
+
+            // Command-mode Enter dispatch for the popup-inactive case
+            // (e.g. user pressed Esc after typing, then pressed Enter).
+            if super::commands::is_command_mode(&raw) {
+                if let Ok(parsed) = super::commands::parse(&raw) {
+                    self.dispatch_command(&parsed.into_owned());
+                } else {
+                    self.status = "Invalid command".to_string();
+                }
+                return Ok(());
+            }
+
+            // Escape sequence: '//foo' sends literal '/foo'.
+            let text = super::commands::strip_escape(&raw).to_string();
+
             if !text.trim().is_empty() {
                 if let Some(conv) = self.conversation_list.selected() {
                     let public_id = conv.public_id;
@@ -1249,11 +1301,9 @@ impl App<'_> {
 
                             self.cache_message(public_id, message.clone());
                             self.messages.push(message);
-                            self.input = TextArea::default();
-                            self.input.set_placeholder_text("Type a message...");
+                            self.input = Self::fresh_input();
                             self.status = "Sending...".to_string();
 
-                            // Update conversation preview and timestamp
                             if let Some(sel) = self.conversation_list.selected_mut() {
                                 sel.last_message = Some(text);
                                 sel.last_message_time = Some(now_secs());
@@ -1280,8 +1330,86 @@ impl App<'_> {
         } else {
             let input = Input::from(key);
             self.input.input(input);
+
+            let text = self.input.lines().join("\n");
+            self.command_completion.update_from_input(&text);
         }
         Ok(())
+    }
+
+    fn fresh_input() -> TextArea<'static> {
+        let mut input = TextArea::default();
+        input.set_placeholder_text("Type a message...");
+        input.set_cursor_line_style(Style::default());
+        input
+    }
+
+    fn dispatch_command(&mut self, parsed: &super::commands::ParsedCommandOwned) {
+        use super::commands::{CommandAction, CommandContext, Registry};
+
+        // TODO(#232): reuse registry from self.command_completion via a getter
+        // instead of allocating a fresh one. Blocked on borrow-checker work
+        // (apply_command_action needs &mut self while registry is borrowed).
+        let registry = Registry::builtin();
+
+        // TODO(#232): move this into Help::execute when CommandContext gains
+        // a registry reference — eliminates both the special case here and
+        // the hardcoded list in builtin::Help.
+        if parsed.name == "help" && !parsed.args.is_empty() {
+            let raw_target = parsed.args.split_whitespace().next().unwrap_or("");
+            let target = raw_target.strip_prefix('/').unwrap_or(raw_target);
+            let status = match registry.find(target) {
+                Some(cmd) => format!("{} — {}", cmd.usage(), cmd.help()),
+                None => format!("Unknown command: /{target}"),
+            };
+            self.apply_command_action(CommandAction::Status(status));
+            return;
+        }
+
+        let Some(cmd) = registry.find(&parsed.name) else {
+            self.status = format!("Unknown command: /{}", parsed.name);
+            return;
+        };
+        let ctx = CommandContext::new();
+        let actions = cmd.execute(&ctx, &parsed.args);
+        for action in actions {
+            self.apply_command_action(action);
+        }
+    }
+
+    /// Apply a single `CommandAction` to the app state.
+    fn apply_command_action(&mut self, action: super::commands::CommandAction) {
+        use super::commands::CommandAction;
+
+        match action {
+            CommandAction::ReplaceInput(text) => {
+                let mut input = Self::fresh_input();
+                input.insert_str(&text);
+                self.input = input;
+                self.command_completion.reset();
+            }
+            CommandAction::ClearScrollback => {
+                self.messages.clear();
+                self.message_scroll = 0;
+                if let Some(conv) = self.conversation_list.selected() {
+                    let public_id = conv.public_id;
+                    if let Some(cache) = self.message_cache.get_mut(&public_id) {
+                        cache.clear();
+                    }
+                }
+                self.command_completion.reset();
+                self.input = Self::fresh_input();
+            }
+            CommandAction::Quit => {
+                self.running = false;
+                self.command_completion.reset();
+            }
+            CommandAction::Status(msg) => {
+                self.status = msg;
+                self.command_completion.reset();
+                self.input = Self::fresh_input();
+            }
+        }
     }
 
     /// Cache a message with size limit (O(1) eviction using `VecDeque`)

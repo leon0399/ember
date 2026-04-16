@@ -187,6 +187,20 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
 
     // Render the textarea widget
     frame.render_widget(&app.input, inner);
+
+    // Slash command completion popup (rendered above the input area).
+    app.command_completion.render(frame, area);
+
+    // Ghost text overlay: dimmed suffix of the selected completion candidate.
+    let (row, col) = app.input.cursor();
+    if row == 0 {
+        let cursor_x = inner
+            .x
+            .saturating_add(u16::try_from(col).unwrap_or(u16::MAX));
+        let cursor_y = inner.y;
+        app.command_completion
+            .render_ghost_text(frame, (cursor_x, cursor_y));
+    }
 }
 
 /// Render the status bar
