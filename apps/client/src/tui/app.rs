@@ -106,6 +106,7 @@ pub enum AddUpstreamField {
 }
 
 /// State for the add contact popup
+#[derive(Debug)]
 pub struct AddContactPopup<'a> {
     /// Currently focused field
     pub focused_field: AddContactField,
@@ -139,6 +140,7 @@ impl Default for AddContactPopup<'_> {
 
 impl AddContactPopup<'_> {
     /// Reset the popup to initial state
+    #[allow(dead_code)] // Preserved for potential future use
     pub fn reset(&mut self) {
         *self = Self::default();
     }
@@ -195,6 +197,7 @@ impl AddContactPopup<'_> {
 }
 
 /// State for the add upstream popup
+#[derive(Debug)]
 pub struct AddUpstreamPopup<'a> {
     /// Currently focused field
     pub focused_field: AddUpstreamField,
@@ -226,6 +229,7 @@ impl Default for AddUpstreamPopup<'_> {
 
 impl AddUpstreamPopup<'_> {
     /// Reset the popup to initial state
+    #[allow(dead_code)] // Preserved for potential future use
     pub fn reset(&mut self) {
         *self = Self::default();
     }
@@ -360,8 +364,16 @@ pub struct Message {
     pub send_id: Option<u64>,
 }
 
+/// Active popup kind
+#[derive(Debug)]
+pub enum PopupKind<'a> {
+    AddContact(Box<AddContactPopup<'a>>),
+    MyIdentity,
+    AddUpstream(Box<AddUpstreamPopup<'a>>),
+    ViewUpstreams,
+}
+
 /// Application state
-#[allow(clippy::struct_excessive_bools)] // UI state naturally has many boolean flags
 pub struct App<'a> {
     /// Is the application running?
     pub running: bool,
@@ -398,18 +410,8 @@ pub struct App<'a> {
     message_cache: HashMap<PublicID, VecDeque<Message>>,
     /// Tracks contacts whose message history has been loaded from storage
     history_loaded: std::collections::HashSet<PublicID>,
-    /// Whether the add contact popup is visible
-    pub show_add_contact_popup: bool,
-    /// Add contact popup state
-    pub add_contact_popup: AddContactPopup<'a>,
-    /// Whether the "my identity" popup is visible
-    pub show_my_id_popup: bool,
-    /// Whether the add upstream popup is visible
-    pub show_add_upstream_popup: bool,
-    /// Add upstream popup state
-    pub add_upstream_popup: AddUpstreamPopup<'a>,
-    /// Whether the view upstreams popup is visible
-    pub show_upstreams_popup: bool,
+    /// Active popup (if any)
+    pub active_popup: Option<PopupKind<'a>>,
     /// Transport registry for querying and managing transports
     pub registry: Arc<TransportRegistry>,
     /// Outbox tick interval from config
@@ -599,12 +601,7 @@ impl App<'_> {
             contacts_by_id: HashMap::new(),
             message_cache: HashMap::new(),
             history_loaded: std::collections::HashSet::new(),
-            show_add_contact_popup: false,
-            add_contact_popup: AddContactPopup::default(),
-            show_my_id_popup: false,
-            show_add_upstream_popup: false,
-            add_upstream_popup: AddUpstreamPopup::default(),
-            show_upstreams_popup: false,
+            active_popup: None,
             registry,
             outbox_tick_interval,
             discovery: discovery_state,
@@ -920,12 +917,13 @@ impl App<'_> {
     ) {
         match result {
             Ok(()) => {
-                self.show_add_upstream_popup = false;
-                self.add_upstream_popup.reset();
+                self.active_popup = None;
                 self.status = format!("Added {} upstream: {url}", transport_type.as_str());
             }
             Err(e) => {
-                self.add_upstream_popup.error = Some(e);
+                if let Some(PopupKind::AddUpstream(ref mut popup)) = self.active_popup {
+                    popup.error = Some(e);
+                }
             }
         }
     }
@@ -1035,17 +1033,13 @@ impl App<'_> {
     )]
     fn handle_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
         // Handle popups first if visible
-        if self.show_add_contact_popup {
-            return self.handle_popup_key_event(key);
-        }
-        if self.show_my_id_popup {
-            return self.handle_my_id_popup_key_event(key);
-        }
-        if self.show_add_upstream_popup {
-            return self.handle_add_upstream_popup_key_event(key);
-        }
-        if self.show_upstreams_popup {
-            return self.handle_upstreams_popup_key_event(key);
+        if let Some(ref popup) = self.active_popup {
+            return match popup {
+                PopupKind::AddContact(_) => self.handle_popup_key_event(key),
+                PopupKind::MyIdentity => self.handle_my_id_popup_key_event(key),
+                PopupKind::AddUpstream(_) => self.handle_add_upstream_popup_key_event(key),
+                PopupKind::ViewUpstreams => self.handle_upstreams_popup_key_event(key),
+            };
         }
 
         // Global shortcuts
@@ -1063,28 +1057,22 @@ impl App<'_> {
             match key.code {
                 KeyCode::Char('a' | 'A') => {
                     // Alt+A: Add contact
-                    self.show_add_contact_popup = true;
-                    self.add_contact_popup.reset();
-                    self.status =
-                        "Add Contact (Tab: switch, Enter: confirm, Esc: cancel)".to_string();
+                    self.open_add_contact_popup();
                     return Ok(());
                 }
                 KeyCode::Char('i' | 'I') => {
                     // Alt+I: Show identity
-                    self.show_my_id_popup = true;
+                    self.open_my_id_popup();
                     return Ok(());
                 }
                 KeyCode::Char('u' | 'U') => {
                     // Alt+U: Add upstream
-                    self.show_add_upstream_popup = true;
-                    self.add_upstream_popup.reset();
-                    self.status = "Add Upstream (Tab: switch, ←/→: type, Enter: add, Esc: cancel)"
-                        .to_string();
+                    self.open_add_upstream_popup();
                     return Ok(());
                 }
                 KeyCode::Char('v' | 'V') => {
                     // Alt+V: View upstreams
-                    self.show_upstreams_popup = true;
+                    self.open_upstreams_popup();
                     return Ok(());
                 }
                 KeyCode::Char('h' | 'H') => {
@@ -1110,27 +1098,22 @@ impl App<'_> {
         match key.code {
             KeyCode::F(2) => {
                 // F2: Add contact (fallback for Alt+A)
-                self.show_add_contact_popup = true;
-                self.add_contact_popup.reset();
-                self.status = "Add Contact (Tab: switch, Enter: confirm, Esc: cancel)".to_string();
+                self.open_add_contact_popup();
                 return Ok(());
             }
             KeyCode::F(3) => {
                 // F3: Show identity (fallback for Alt+I)
-                self.show_my_id_popup = true;
+                self.open_my_id_popup();
                 return Ok(());
             }
             KeyCode::F(4) => {
                 // F4: Add upstream (fallback for Alt+U)
-                self.show_add_upstream_popup = true;
-                self.add_upstream_popup.reset();
-                self.status =
-                    "Add Upstream (Tab: switch, ←/→: type, Enter: add, Esc: cancel)".to_string();
+                self.open_add_upstream_popup();
                 return Ok(());
             }
             KeyCode::F(5) => {
                 // F5: View upstreams (fallback for Alt+V)
-                self.show_upstreams_popup = true;
+                self.open_upstreams_popup();
                 return Ok(());
             }
             _ => {}
@@ -1484,20 +1467,47 @@ impl App<'_> {
         }
     }
 
+    /// Open the add contact popup
+    fn open_add_contact_popup(&mut self) {
+        self.active_popup = Some(PopupKind::AddContact(Box::new(AddContactPopup::default())));
+        self.status = "Add Contact (Tab: switch, Enter: confirm, Esc: cancel)".to_string();
+    }
+
+    /// Open the my identity popup
+    fn open_my_id_popup(&mut self) {
+        self.active_popup = Some(PopupKind::MyIdentity);
+    }
+
+    /// Open the add upstream popup
+    fn open_add_upstream_popup(&mut self) {
+        self.active_popup = Some(PopupKind::AddUpstream(
+            Box::new(AddUpstreamPopup::default()),
+        ));
+        self.status = "Add Upstream (Tab: switch, ←/→: type, Enter: add, Esc: cancel)".to_string();
+    }
+
+    /// Open the view upstreams popup
+    fn open_upstreams_popup(&mut self) {
+        self.active_popup = Some(PopupKind::ViewUpstreams);
+    }
+
     /// Handle key events when add contact popup is visible
     fn handle_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
+        let Some(PopupKind::AddContact(ref mut popup)) = self.active_popup else {
+            return Ok(());
+        };
+
         #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
         match key.code {
             KeyCode::Esc => {
                 // Cancel and close popup
-                self.show_add_contact_popup = false;
-                self.add_contact_popup.reset();
+                self.active_popup = None;
                 self.status = "Add contact cancelled".to_string();
             }
             KeyCode::Tab | KeyCode::BackTab => {
                 // Switch between fields
-                self.add_contact_popup.toggle_field();
-                let field_name = match self.add_contact_popup.focused_field {
+                popup.toggle_field();
+                let field_name = match popup.focused_field {
                     AddContactField::PublicId => "Public ID",
                     AddContactField::Name => "Name",
                 };
@@ -1510,16 +1520,16 @@ impl App<'_> {
             _ => {
                 // Forward to appropriate textarea
                 let input = Input::from(key);
-                match self.add_contact_popup.focused_field {
+                match popup.focused_field {
                     AddContactField::PublicId => {
-                        self.add_contact_popup.public_id_input.input(input);
+                        popup.public_id_input.input(input);
                     }
                     AddContactField::Name => {
-                        self.add_contact_popup.name_input.input(input);
+                        popup.name_input.input(input);
                     }
                 }
                 // Clear error when user starts typing
-                self.add_contact_popup.error = None;
+                popup.error = None;
             }
         }
         Ok(())
@@ -1528,21 +1538,25 @@ impl App<'_> {
     /// Attempt to add contact from popup data
     #[allow(clippy::unnecessary_wraps)] // Returns Result for consistency with other handlers
     fn try_add_contact(&mut self) -> AppResult<()> {
+        let Some(PopupKind::AddContact(ref mut popup)) = self.active_popup else {
+            return Ok(());
+        };
+
         // Validate public ID
-        let public_id = match self.add_contact_popup.validate_public_id() {
+        let public_id = match popup.validate_public_id() {
             Ok(id) => id,
             Err(e) => {
-                self.add_contact_popup.error = Some(e);
+                popup.error = Some(e);
                 return Ok(());
             }
         };
 
         // Get optional name
-        let name = self.add_contact_popup.get_name();
+        let name = popup.get_name();
 
         // Check if trying to add self
         if &public_id == self.client.public_id() {
-            self.add_contact_popup.error = Some("Cannot add yourself as a contact".to_string());
+            popup.error = Some("Cannot add yourself as a contact".to_string());
             return Ok(());
         }
 
@@ -1582,12 +1596,11 @@ impl App<'_> {
                 self.focus = Focus::Input;
 
                 // Close popup and show success
-                self.show_add_contact_popup = false;
-                self.add_contact_popup.reset();
+                self.active_popup = None;
                 self.status = format!("{status_prefix}: {display_name}");
             }
             Err(e) => {
-                self.add_contact_popup.error = Some(format!("Failed to add contact: {e}"));
+                popup.error = Some(format!("Failed to add contact: {e}"));
             }
         }
 
@@ -1601,7 +1614,7 @@ impl App<'_> {
         match key.code {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | 'i') => {
                 // Close popup
-                self.show_my_id_popup = false;
+                self.active_popup = None;
             }
             _ => {}
         }
@@ -1615,7 +1628,7 @@ impl App<'_> {
         match key.code {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | 'v') => {
                 // Close popup
-                self.show_upstreams_popup = false;
+                self.active_popup = None;
             }
             _ => {}
         }
@@ -1625,96 +1638,114 @@ impl App<'_> {
     /// Handle key events when add upstream popup is visible
     #[allow(clippy::unnecessary_wraps)] // Returns Result for consistency with other handlers
     fn handle_add_upstream_popup_key_event(&mut self, key: KeyEvent) -> AppResult<()> {
+        // First, handle the Enter key specially to avoid borrow conflicts
+        if key.code == KeyCode::Enter {
+            return self.handle_add_upstream_enter();
+        }
+
+        let Some(PopupKind::AddUpstream(ref mut popup)) = self.active_popup else {
+            return Ok(());
+        };
+
         #[allow(clippy::wildcard_enum_match_arm)] // KeyCode has 27+ variants
         match key.code {
             KeyCode::Esc => {
                 // Cancel
-                self.show_add_upstream_popup = false;
-                self.add_upstream_popup.reset();
+                self.active_popup = None;
                 self.status = HELP_HINT.to_string();
             }
             KeyCode::Tab => {
                 // Toggle field focus
-                self.add_upstream_popup.toggle_field();
+                popup.toggle_field();
             }
             KeyCode::Left | KeyCode::Right => {
-                match self.add_upstream_popup.focused_field {
+                match popup.focused_field {
                     AddUpstreamField::Type => {
                         // Toggle transport type
-                        self.add_upstream_popup.transport_type.toggle();
-                        self.add_upstream_popup.error = None;
+                        popup.transport_type.toggle();
+                        popup.error = None;
                         // Update placeholder based on type
-                        let placeholder = match self.add_upstream_popup.transport_type {
+                        let placeholder = match popup.transport_type {
                             UpstreamType::Http => "http://192.168.1.50:23003",
                             UpstreamType::Mqtt => "mqtt://192.168.1.50:1883",
                         };
-                        self.add_upstream_popup
-                            .url_input
-                            .set_placeholder_text(placeholder);
+                        popup.url_input.set_placeholder_text(placeholder);
                     }
                     AddUpstreamField::Tier => {
                         // Toggle delivery tier
-                        self.add_upstream_popup.toggle_tier();
-                        self.add_upstream_popup.error = None;
+                        popup.toggle_tier();
+                        popup.error = None;
                     }
                     AddUpstreamField::Url => {
                         // Pass to text input
-                        self.add_upstream_popup.url_input.input(Input::from(key));
-                    }
-                }
-            }
-            KeyCode::Enter => {
-                // Try to add the upstream
-                match self.add_upstream_popup.validate_url() {
-                    Ok(url) => {
-                        let transport_type = self.add_upstream_popup.transport_type;
-                        match transport_type {
-                            UpstreamType::Http => match self.add_upstream_http(&url) {
-                                Ok(()) => {
-                                    self.show_add_upstream_popup = false;
-                                    self.add_upstream_popup.reset();
-                                    self.status = format!("Added HTTP upstream: {url}");
-                                }
-                                Err(e) => {
-                                    self.add_upstream_popup.error = Some(e);
-                                }
-                            },
-                            UpstreamType::Mqtt => {
-                                // MQTT connect is async — spawn and send result back
-                                let tier = self.add_upstream_popup.tier;
-                                let registry = self.registry.clone();
-                                let tx = self.action_tx.clone();
-                                self.status = "Connecting to MQTT...".to_string();
-                                tokio::spawn(async move {
-                                    let result = connect_mqtt_upstream(&url, tier, &registry).await;
-                                    let _ = tx.send(Action::UpstreamAdded {
-                                        url,
-                                        transport_type: UpstreamType::Mqtt,
-                                        result,
-                                    });
-                                });
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        self.add_upstream_popup.error = Some(e);
+                        popup.url_input.input(Input::from(key));
                     }
                 }
             }
             _ => {
                 // Pass other keys to URL input when focused
-                if self.add_upstream_popup.focused_field == AddUpstreamField::Url {
-                    self.add_upstream_popup.url_input.input(Input::from(key));
-                    self.add_upstream_popup.error = None;
+                if popup.focused_field == AddUpstreamField::Url {
+                    popup.url_input.input(Input::from(key));
+                    popup.error = None;
                 }
             }
         }
         Ok(())
     }
 
+    /// Handle the Enter key in the add upstream popup
+    #[allow(clippy::unnecessary_wraps)] // Returns Result for consistency with other handlers
+    fn handle_add_upstream_enter(&mut self) -> AppResult<()> {
+        // Extract values from popup in a separate scope to release the borrow
+        let (url_result, transport_type, tier) = {
+            let Some(PopupKind::AddUpstream(ref mut popup)) = self.active_popup else {
+                return Ok(());
+            };
+            (popup.validate_url(), popup.transport_type, popup.tier)
+        };
+
+        match url_result {
+            Ok(url) => {
+                match transport_type {
+                    UpstreamType::Http => match self.add_upstream_http(&url, tier) {
+                        Ok(()) => {
+                            self.active_popup = None;
+                            self.status = format!("Added HTTP upstream: {url}");
+                        }
+                        Err(e) => {
+                            if let Some(PopupKind::AddUpstream(ref mut p)) = self.active_popup {
+                                p.error = Some(e);
+                            }
+                        }
+                    },
+                    UpstreamType::Mqtt => {
+                        // MQTT connect is async — spawn and send result back
+                        let registry = self.registry.clone();
+                        let tx = self.action_tx.clone();
+                        self.status = "Connecting to MQTT...".to_string();
+                        tokio::spawn(async move {
+                            let result = connect_mqtt_upstream(&url, tier, &registry).await;
+                            let _ = tx.send(Action::UpstreamAdded {
+                                url,
+                                transport_type: UpstreamType::Mqtt,
+                                result,
+                            });
+                        });
+                    }
+                }
+            }
+            Err(e) => {
+                if let Some(PopupKind::AddUpstream(ref mut popup)) = self.active_popup {
+                    popup.error = Some(e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Add an HTTP upstream synchronously (no network I/O required).
-    fn add_upstream_http(&self, url: &str) -> Result<(), String> {
-        let tier = self.add_upstream_popup.tier;
+    fn add_upstream_http(&self, url: &str, tier: DeliveryTier) -> Result<(), String> {
         // TODO: Add UI fields for username/password when adding ephemeral HTTP upstreams
         // TODO: Create stable (FETCH + QUORUM_CREDIT) targets when user selects Quorum tier,
         // not always ephemeral (SEND-only) — currently tier selection is cosmetic

@@ -42,17 +42,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_status(frame, app);
 
     // Render popups on top if visible (covers status bar too)
-    if app.show_add_contact_popup {
-        render_add_contact_popup(frame, app);
-    }
-    if app.show_my_id_popup {
-        render_my_id_popup(frame, app);
-    }
-    if app.show_add_upstream_popup {
-        render_add_upstream_popup(frame, app);
-    }
-    if app.show_upstreams_popup {
-        render_upstreams_popup(frame, app);
+    if let Some(ref popup) = app.active_popup {
+        match popup {
+            super::app::PopupKind::AddContact(_) => render_add_contact_popup(frame, app),
+            super::app::PopupKind::MyIdentity => render_my_id_popup(frame, app),
+            super::app::PopupKind::AddUpstream(_) => render_add_upstream_popup(frame, app),
+            super::app::PopupKind::ViewUpstreams => render_upstreams_popup(frame, app),
+        }
     }
 }
 
@@ -237,6 +233,10 @@ fn popup_area_fixed(area: Rect, percent_x: u16, min_height: u16) -> Rect {
 
 /// Render the add contact popup
 fn render_add_contact_popup(frame: &mut Frame, app: &App) {
+    let Some(super::app::PopupKind::AddContact(ref popup)) = app.active_popup else {
+        return;
+    };
+
     // Fixed height: border(2) + margin(2) + instructions(1) + public_id(3) + name(3) + error(1) + hints(1) = 13
     let area = popup_area_fixed(frame.area(), 60, 13);
 
@@ -264,7 +264,7 @@ fn render_add_contact_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(instructions, instructions_area);
 
     // Public ID field
-    let public_id_focused = app.add_contact_popup.focused_field == AddContactField::PublicId;
+    let public_id_focused = popup.focused_field == AddContactField::PublicId;
     let public_id_border_style = if public_id_focused {
         Style::default().fg(Color::Yellow)
     } else {
@@ -276,10 +276,10 @@ fn render_add_contact_popup(frame: &mut Frame, app: &App) {
         .title(" Public ID (required) ");
     let public_id_inner = public_id_block.inner(public_id_area);
     frame.render_widget(public_id_block, public_id_area);
-    frame.render_widget(&app.add_contact_popup.public_id_input, public_id_inner);
+    frame.render_widget(&popup.public_id_input, public_id_inner);
 
     // Name field
-    let name_focused = app.add_contact_popup.focused_field == AddContactField::Name;
+    let name_focused = popup.focused_field == AddContactField::Name;
     let name_border_style = if name_focused {
         Style::default().fg(Color::Yellow)
     } else {
@@ -291,10 +291,10 @@ fn render_add_contact_popup(frame: &mut Frame, app: &App) {
         .title(" Name (optional) ");
     let name_inner = name_block.inner(name_area);
     frame.render_widget(name_block, name_area);
-    frame.render_widget(&app.add_contact_popup.name_input, name_inner);
+    frame.render_widget(&popup.name_input, name_inner);
 
     // Error message
-    if let Some(ref error) = app.add_contact_popup.error {
+    if let Some(ref error) = popup.error {
         let error_text = Paragraph::new(error.as_str())
             .style(Style::default().fg(Color::Red))
             .wrap(Wrap { trim: true });
@@ -363,6 +363,10 @@ fn render_my_id_popup(frame: &mut Frame, app: &App) {
     reason = "popup layout is easier to follow when rendered in one place"
 )]
 fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
+    let Some(super::app::PopupKind::AddUpstream(ref popup)) = app.active_popup else {
+        return;
+    };
+
     // Fixed height: border(2) + margin(2) + instructions(1) + type(3) + tier(3) + url(3) + error(1) + hints(1) = 16
     let area = popup_area_fixed(frame.area(), 60, 16);
 
@@ -391,21 +395,21 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(instructions, instructions_area);
 
     // Type selector
-    let type_focused = app.add_upstream_popup.focused_field == AddUpstreamField::Type;
+    let type_focused = popup.focused_field == AddUpstreamField::Type;
     let type_border_style = if type_focused {
         Style::default().fg(Color::Yellow)
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
-    let http_style = if app.add_upstream_popup.transport_type == UpstreamType::Http {
+    let http_style = if popup.transport_type == UpstreamType::Http {
         Style::default()
             .fg(Color::Green)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
-    let mqtt_style = if app.add_upstream_popup.transport_type == UpstreamType::Mqtt {
+    let mqtt_style = if popup.transport_type == UpstreamType::Mqtt {
         Style::default()
             .fg(Color::Green)
             .add_modifier(Modifier::BOLD)
@@ -434,28 +438,28 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(type_selector, type_inner);
 
     // Tier selector
-    let tier_focused = app.add_upstream_popup.focused_field == AddUpstreamField::Tier;
+    let tier_focused = popup.focused_field == AddUpstreamField::Tier;
     let tier_border_style = if tier_focused {
         Style::default().fg(Color::Yellow)
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
-    let direct_style = if app.add_upstream_popup.tier == DeliveryTier::Direct {
+    let direct_style = if popup.tier == DeliveryTier::Direct {
         Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
-    let quorum_style = if app.add_upstream_popup.tier == DeliveryTier::Quorum {
+    let quorum_style = if popup.tier == DeliveryTier::Quorum {
         Style::default()
             .fg(Color::Green)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
-    let besteffort_style = if app.add_upstream_popup.tier == DeliveryTier::BestEffort {
+    let besteffort_style = if popup.tier == DeliveryTier::BestEffort {
         Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD)
@@ -488,7 +492,7 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(tier_selector, tier_inner);
 
     // URL field
-    let url_focused = app.add_upstream_popup.focused_field == AddUpstreamField::Url;
+    let url_focused = popup.focused_field == AddUpstreamField::Url;
     let url_border_style = if url_focused {
         Style::default().fg(Color::Yellow)
     } else {
@@ -500,10 +504,10 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
         .title(" URL ");
     let url_inner = url_block.inner(url_area);
     frame.render_widget(url_block, url_area);
-    frame.render_widget(&app.add_upstream_popup.url_input, url_inner);
+    frame.render_widget(&popup.url_input, url_inner);
 
     // Error message
-    if let Some(ref error) = app.add_upstream_popup.error {
+    if let Some(ref error) = popup.error {
         let error_text = Paragraph::new(error.as_str())
             .style(Style::default().fg(Color::Red))
             .wrap(Wrap { trim: true });
