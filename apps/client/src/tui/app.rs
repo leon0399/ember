@@ -1328,8 +1328,8 @@ impl App<'_> {
             let input = Input::from(key);
             self.input.input(input);
 
-            let line = self.input.lines().first().cloned().unwrap_or_default();
-            self.command_completion.update_from_input(&line);
+            let text = self.input.lines().join("\n");
+            self.command_completion.update_from_input(&text);
         }
         Ok(())
     }

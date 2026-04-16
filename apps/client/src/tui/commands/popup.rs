@@ -83,8 +83,8 @@ impl CommandCompletionState {
             return;
         }
 
-        let (before_space, after_space) = match line.find(char::is_whitespace) {
-            Some(idx) => (&line[..idx], Some(&line[idx + 1..])),
+        let (before_space, after_space) = match line.split_once(char::is_whitespace) {
+            Some((name, rest)) => (name, Some(rest)),
             None => (line, None),
         };
 
