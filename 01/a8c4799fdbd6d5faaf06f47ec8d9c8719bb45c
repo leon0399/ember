@@ -1,0 +1,37 @@
+apps/client/src/tui/commands/mod.rs
+  df96c0f304b263e6 1-211
+apps/client/src/tui/ui.rs
+  df96c0f304b263e6 190-203
+apps/client/src/tui/commands/complete.rs
+  df96c0f304b263e6 1-23
+apps/client/src/tui/commands/builtin.rs
+  df96c0f304b263e6 1-255
+apps/client/src/tui/commands/popup.rs
+  df96c0f304b263e6 1-584
+apps/client/src/tui/mod.rs
+  df96c0f304b263e6 9
+apps/client/src/tui/app.rs
+  df96c0f304b263e6 429-430,617-619,1140-1170,1266-1281,1333-1335,1340-1408
+apps/client/src/tui/commands/parser.rs
+  df96c0f304b263e6 1-223
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "01a8c4799fdbd6d5faaf06f47ec8d9c8719bb45c",
+  "prompts": {
+    "df96c0f304b263e6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "192a8ceb-8d70-4e6b-903d-61010487abda",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 1510,
+      "total_deletions": 79,
+      "accepted_lines": 1435,
+      "overriden_lines": 0
+    }
+  }
+}
