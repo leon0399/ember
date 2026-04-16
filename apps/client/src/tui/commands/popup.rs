@@ -1,13 +1,6 @@
 //! Command completion popup: state machine + rendering.
-//!
-//! `CommandCompletionState` is self-contained: `App` owns it as a field and
-//! interacts only through the narrow interface (`is_active`, `handle_key`,
-//! `update_from_input`, `suppress`, `reset`, `tab_insertion`, `render`,
-//! `render_ghost_text`). All command-mode logic lives inside this module.
-//! When the `Component` trait (#172) lands this struct becomes a
-//! straightforward `impl Component` with near-zero migration.
 
-use super::{CompletionEntry, ParsedCommand, Registry};
+use super::{CompletionEntry, ParsedCommandOwned, Registry};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     layout::Rect,
@@ -25,7 +18,7 @@ pub enum CompletionOutcome {
     /// The popup handled the key, no further processing needed.
     Consumed,
     /// The user pressed Enter on a parseable command; app should dispatch it.
-    Dispatch(ParsedCommand<'static>),
+    Dispatch(ParsedCommandOwned),
     /// The user pressed Esc; app should call `suppress()`.
     Exit,
 }

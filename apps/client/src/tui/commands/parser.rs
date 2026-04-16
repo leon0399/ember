@@ -12,19 +12,22 @@ pub struct ParsedCommand<'a> {
 }
 
 impl ParsedCommand<'_> {
-    /// Convert to a `'static` lifetime by leaking owned strings.
-    ///
-    /// Used by `CompletionOutcome::Dispatch` so the outcome can be passed
-    /// back through `App` without borrowing from the textarea state.
-    /// Leak is bounded: one dispatch per user Enter press, small strings.
-    /// If this ever becomes a memory concern, replace with a
-    /// `ParsedCommandOwned { name: String, args: String }` struct.
     #[must_use]
-    pub fn into_owned(self) -> ParsedCommand<'static> {
-        let name = Box::leak(self.name.to_string().into_boxed_str());
-        let args = Box::leak(self.args.to_string().into_boxed_str());
-        ParsedCommand { name, args }
+    pub fn into_owned(self) -> ParsedCommandOwned {
+        ParsedCommandOwned {
+            name: self.name.to_string(),
+            args: self.args.to_string(),
+        }
     }
+}
+
+/// Owned variant of [`ParsedCommand`] that doesn't borrow from the input.
+/// Carried by [`super::CompletionOutcome::Dispatch`] so the parsed command
+/// can outlive the textarea state it was parsed from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedCommandOwned {
+    pub name: String,
+    pub args: String,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]

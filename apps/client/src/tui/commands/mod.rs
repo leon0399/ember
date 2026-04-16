@@ -1,22 +1,11 @@
 //! Chat slash commands: framework + cosmetic commands.
-//!
-//! See `spec/plans/2026-04-16-slash-commands-design.md` for the full design
-//! and `spec/plans/2026-04-16-slash-commands-v1-plan.md` for the
-//! implementation plan. Tracking: #234 (parent), #231 (this work).
-//!
-//! # Layout
-//!
-//! - [`parser`] — single-responsibility string parsing
-//! - [`complete`] — name-prefix completion + per-command arg completion hook
-//! - [`builtin`] — six v1 commands: `/help /tableflip /shrug /me /clear /quit`
-//! - [`popup`] — `CommandCompletionState`: popup + ghost text state machine
 
 pub mod builtin;
 pub mod complete;
 pub mod parser;
 pub mod popup;
 
-pub use parser::{is_command_mode, parse, strip_escape, ParsedCommand};
+pub use parser::{is_command_mode, parse, strip_escape, ParsedCommandOwned};
 pub use popup::{CommandCompletionState, CompletionOutcome};
 
 /// A single slash command, e.g. `/tableflip`.

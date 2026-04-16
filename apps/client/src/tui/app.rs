@@ -426,8 +426,7 @@ pub struct App<'a> {
     action_rx: mpsc::UnboundedReceiver<Action>,
     /// Monotonic counter for correlating send results to optimistic messages.
     next_send_id: u64,
-    /// Slash command completion popup state.
-    pub command_completion: super::commands::CommandCompletionState,
+    pub(crate) command_completion: super::commands::CommandCompletionState,
 }
 
 impl App<'_> {
@@ -1146,10 +1145,9 @@ impl App<'_> {
                 CompletionOutcome::Consumed => {
                     if key.code == KeyCode::Tab {
                         if let Some(insertion) = self.command_completion.tab_insertion() {
-                            let mut new_input = TextArea::default();
-                            new_input.set_placeholder_text("Type a message...");
-                            new_input.insert_str(&insertion);
-                            self.input = new_input;
+                            let mut input = Self::fresh_input();
+                            input.insert_str(&insertion);
+                            self.input = input;
                             let line = self.input.lines()[0].clone();
                             self.command_completion.update_from_input(&line);
                         }
@@ -1269,7 +1267,7 @@ impl App<'_> {
             // (e.g. user pressed Esc after typing, then pressed Enter).
             if super::commands::is_command_mode(&raw) {
                 if let Ok(parsed) = super::commands::parse(&raw) {
-                    self.dispatch_command(&parsed);
+                    self.dispatch_command(&parsed.into_owned());
                 } else {
                     self.status = "Invalid command".to_string();
                 }
@@ -1300,8 +1298,7 @@ impl App<'_> {
 
                             self.cache_message(public_id, message.clone());
                             self.messages.push(message);
-                            self.input = TextArea::default();
-                            self.input.set_placeholder_text("Type a message...");
+                            self.input = Self::fresh_input();
                             self.status = "Sending...".to_string();
 
                             if let Some(sel) = self.conversation_list.selected_mut() {
@@ -1337,10 +1334,14 @@ impl App<'_> {
         Ok(())
     }
 
-    /// Dispatch a parsed slash command. Resolves the command name against a
-    /// fresh registry and executes it. `/help <name>` is special-cased here
-    /// because `Help::execute` can't see the registry at the trait level.
-    fn dispatch_command(&mut self, parsed: &super::commands::ParsedCommand<'_>) {
+    fn fresh_input() -> TextArea<'static> {
+        let mut input = TextArea::default();
+        input.set_placeholder_text("Type a message...");
+        input.set_cursor_line_style(Style::default());
+        input
+    }
+
+    fn dispatch_command(&mut self, parsed: &super::commands::ParsedCommandOwned) {
         use super::commands::{CommandAction, CommandContext, Registry};
 
         let registry = Registry::builtin();
@@ -1355,12 +1356,12 @@ impl App<'_> {
             return;
         }
 
-        let Some(cmd) = registry.find(parsed.name) else {
+        let Some(cmd) = registry.find(&parsed.name) else {
             self.status = format!("Unknown command: /{}", parsed.name);
             return;
         };
         let ctx = CommandContext::new();
-        let actions = cmd.execute(&ctx, parsed.args);
+        let actions = cmd.execute(&ctx, &parsed.args);
         for action in actions {
             self.apply_command_action(action);
         }
@@ -1372,10 +1373,9 @@ impl App<'_> {
 
         match action {
             CommandAction::ReplaceInput(text) => {
-                let mut new_input = TextArea::default();
-                new_input.set_placeholder_text("Type a message...");
-                new_input.insert_str(&text);
-                self.input = new_input;
+                let mut input = Self::fresh_input();
+                input.insert_str(&text);
+                self.input = input;
                 self.command_completion.reset();
             }
             CommandAction::ClearScrollback => {
@@ -1388,9 +1388,7 @@ impl App<'_> {
                     }
                 }
                 self.command_completion.reset();
-                let mut new_input = TextArea::default();
-                new_input.set_placeholder_text("Type a message...");
-                self.input = new_input;
+                self.input = Self::fresh_input();
             }
             CommandAction::Quit => {
                 self.running = false;
@@ -1399,9 +1397,7 @@ impl App<'_> {
             CommandAction::Status(msg) => {
                 self.status = msg;
                 self.command_completion.reset();
-                let mut new_input = TextArea::default();
-                new_input.set_placeholder_text("Type a message...");
-                self.input = new_input;
+                self.input = Self::fresh_input();
             }
         }
     }
