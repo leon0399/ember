@@ -133,9 +133,8 @@ impl Command for Help {
         "/help [command]"
     }
     fn execute(&self, _ctx: &CommandContext<'_>, _args: &str) -> Vec<CommandAction> {
-        // Always list-only. The `/help <name>` case is intercepted in
-        // `App::dispatch_command` (see Task 16) because `execute` can't
-        // see the registry to resolve target-command usage + help.
+        // TODO(#232): generate dynamically from the registry when
+        // CommandContext gains a registry reference.
         vec![CommandAction::Status(
             "/help /tableflip /shrug /me /clear /quit".to_string(),
         )]

@@ -90,10 +90,19 @@ impl CommandCompletionState {
 
         self.candidates = if let Some(args_so_far) = after_space {
             let name = before_space.strip_prefix('/').unwrap_or(before_space);
-            self.registry
+            let args = self
+                .registry
                 .find(name)
                 .map(|cmd| cmd.complete_args(args_so_far))
-                .unwrap_or_default()
+                .unwrap_or_default();
+            // No arg completions available — deactivate so Tab/Esc aren't
+            // swallowed by an invisible popup.
+            if args.is_empty() {
+                self.active = false;
+                self.selected = 0;
+                return;
+            }
+            args
         } else {
             self.registry.complete(before_space)
         };
@@ -140,9 +149,9 @@ impl CommandCompletionState {
         self.candidates.get(self.selected)
     }
 
-    /// What Tab should insert into the textarea. Trailing space lets the
-    /// user immediately start typing arguments. Returns `None` when
+    /// What Tab should insert into the textarea. Returns `None` when
     /// inactive or no candidates.
+    // TODO(#232): only append trailing space when the command accepts args
     #[must_use]
     pub fn tab_insertion(&self) -> Option<String> {
         if !self.active {
@@ -487,14 +496,14 @@ mod tests {
     }
 
     #[test]
-    fn enter_returns_dispatch_with_parsed_command() {
+    fn enter_dispatches_selected_entry() {
         let mut s = state();
-        s.update_from_input("/tableflip hi");
+        s.update_from_input("/ta");
         let outcome = s.handle_key(key(KeyCode::Enter));
         match outcome {
             CompletionOutcome::Dispatch(parsed) => {
                 assert_eq!(parsed.name, "tableflip");
-                assert_eq!(parsed.args, "hi");
+                assert_eq!(parsed.args, "");
             }
             other @ (CompletionOutcome::PassThrough
             | CompletionOutcome::Consumed
@@ -508,6 +517,21 @@ mod tests {
         s.update_from_input("/nonsense");
         let outcome = s.handle_key(key(KeyCode::Enter));
         assert!(matches!(outcome, CompletionOutcome::Dispatch(_)));
+    }
+
+    #[test]
+    fn popup_deactivates_when_arg_completion_is_empty() {
+        let mut s = state();
+        s.update_from_input("/help ");
+        assert!(
+            !s.is_active(),
+            "no arg completions → popup should deactivate"
+        );
+        let outcome = s.handle_key(key(KeyCode::Tab));
+        assert!(
+            matches!(outcome, CompletionOutcome::PassThrough),
+            "Tab should pass through when popup is inactive"
+        );
     }
 
     #[test]

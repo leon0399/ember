@@ -1145,6 +1145,9 @@ impl App<'_> {
                 CompletionOutcome::Consumed => {
                     if key.code == KeyCode::Tab {
                         if let Some(insertion) = self.command_completion.tab_insertion() {
+                            // TODO(#232): modify self.input in place (preserves undo
+                            // history) and splice the arg portion when arg completion
+                            // lands, instead of replacing the whole textarea.
                             let mut input = Self::fresh_input();
                             input.insert_str(&insertion);
                             self.input = input;
@@ -1344,10 +1347,17 @@ impl App<'_> {
     fn dispatch_command(&mut self, parsed: &super::commands::ParsedCommandOwned) {
         use super::commands::{CommandAction, CommandContext, Registry};
 
+        // TODO(#232): reuse registry from self.command_completion via a getter
+        // instead of allocating a fresh one. Blocked on borrow-checker work
+        // (apply_command_action needs &mut self while registry is borrowed).
         let registry = Registry::builtin();
 
+        // TODO(#232): move this into Help::execute when CommandContext gains
+        // a registry reference — eliminates both the special case here and
+        // the hardcoded list in builtin::Help.
         if parsed.name == "help" && !parsed.args.is_empty() {
-            let target = parsed.args.split_whitespace().next().unwrap_or("");
+            let raw_target = parsed.args.split_whitespace().next().unwrap_or("");
+            let target = raw_target.strip_prefix('/').unwrap_or(raw_target);
             let status = match registry.find(target) {
                 Some(cmd) => format!("{} — {}", cmd.usage(), cmd.help()),
                 None => format!("Unknown command: /{target}"),
