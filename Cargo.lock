@@ -521,7 +521,7 @@ dependencies = [
  "percent-encoding",
  "postcard",
  "rand 0.9.2",
- "ratatui 0.29.0",
+ "ratatui",
  "ratatui-macros",
  "reqwest",
  "rpassword",
@@ -2782,27 +2782,6 @@ dependencies = [
 
 [[package]]
 name = "ratatui"
-version = "0.28.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdef7f9be5c0122f890d58bdf4d964349ba6a6161f705907526d891efabba57d"
-dependencies = [
- "bitflags",
- "cassowary",
- "compact_str",
- "crossterm",
- "instability",
- "itertools",
- "lru",
- "paste",
- "strum 0.26.3",
- "strum_macros 0.26.4",
- "unicode-segmentation",
- "unicode-truncate",
- "unicode-width 0.1.14",
-]
-
-[[package]]
-name = "ratatui"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eabd94c2f37801c20583fc49dd5cd6b0ba68c716787c2dd6ed18571e1e63117b"
@@ -2824,11 +2803,11 @@ dependencies = [
 
 [[package]]
 name = "ratatui-macros"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "142d72442aff1ba834b80f50a22a48302e665e90b3a43eaab52bf99b037df0c0"
+checksum = "6fef540f80dbe8a0773266fa6077788ceb65ef624cdbf36e131aaf90b4a52df4"
 dependencies = [
- "ratatui 0.28.1",
+ "ratatui",
 ]
 
 [[package]]
@@ -3956,7 +3935,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0a5318dd619ed73c52a9417ad19046724effc1287fb75cdcc4eca1d6ac1acbae"
 dependencies = [
  "crossterm",
- "ratatui 0.29.0",
+ "ratatui",
  "unicode-width 0.2.0",
 ]
 
