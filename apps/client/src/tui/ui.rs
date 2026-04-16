@@ -326,28 +326,20 @@ fn render_my_id_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(popup_block, area);
 
     // Layout inside popup
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(1)
-        .constraints([
-            Constraint::Length(1), // Label
-            Constraint::Length(3), // Public ID (with border)
-            Constraint::Length(1), // Hints
-        ])
-        .split(inner);
+    let [label_area, id_area, hints_area] = vertical![==1, ==3, ==1].margin(1).areas(inner);
 
     // Label
     let label = Paragraph::new("Your Public ID (share with others):")
         .style(Style::default().fg(Color::White));
-    frame.render_widget(label, chunks[0]);
+    frame.render_widget(label, label_area);
 
     // Full Public ID in a bordered box for easy copying
     let full_id = app.my_full_id();
     let id_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow));
-    let id_inner = id_block.inner(chunks[1]);
-    frame.render_widget(id_block, chunks[1]);
+    let id_inner = id_block.inner(id_area);
+    frame.render_widget(id_block, id_area);
 
     let id_text = Paragraph::new(full_id)
         .style(
@@ -362,7 +354,7 @@ fn render_my_id_popup(frame: &mut Frame, app: &App) {
     let hints = Paragraph::new("Esc to close")
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
-    frame.render_widget(hints, chunks[2]);
+    frame.render_widget(hints, hints_area);
 }
 
 /// Render the add upstream popup
