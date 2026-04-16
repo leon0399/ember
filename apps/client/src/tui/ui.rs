@@ -6,7 +6,7 @@
 //! - Input area at the bottom
 
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
+    layout::{Alignment, Constraint, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
@@ -548,22 +548,14 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(popup_block, area);
 
     // Layout inside popup
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(1)
-        .constraints([
-            Constraint::Min(1),    // Upstream list
-            Constraint::Length(2), // Legend (2 lines for health + tier)
-            Constraint::Length(1), // Hints
-        ])
-        .split(inner);
+    let [list_area, legend_area, hints_area] = vertical![>=1, ==2, ==1].margin(1).areas(inner);
 
     // Build upstream list
     if targets.is_empty() {
         let empty_text = Paragraph::new("No upstreams configured")
             .style(Style::default().fg(Color::DarkGray))
             .alignment(Alignment::Center);
-        frame.render_widget(empty_text, chunks[0]);
+        frame.render_widget(empty_text, list_area);
     } else {
         let items: Vec<ListItem> = targets
             .iter()
@@ -642,7 +634,7 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
             .collect();
 
         let list = List::new(items);
-        frame.render_widget(list, chunks[0]);
+        frame.render_widget(list, list_area);
     }
 
     // Legend: health + tier explanations (2 lines)
@@ -667,11 +659,11 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
         ]),
     ];
     let legend_para = Paragraph::new(legend_lines).alignment(Alignment::Center);
-    frame.render_widget(legend_para, chunks[1]);
+    frame.render_widget(legend_para, legend_area);
 
     // Hints
     let hints = Paragraph::new("Esc to close")
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
-    frame.render_widget(hints, chunks[2]);
+    frame.render_widget(hints, hints_area);
 }
