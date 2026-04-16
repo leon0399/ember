@@ -1,0 +1,23 @@
+apps/client/src/tui/ui.rs
+  cbde3b7efa8f67ee 256-257,264,277-278,292-293,301,308
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "b069a4004d864c0f4ee0a4d1bd7f28a4b19f7377",
+  "prompts": {
+    "cbde3b7efa8f67ee": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dfcb0052-14c6-4f66-bbfa-b1d00bafa3d7",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 9,
+      "total_deletions": 18,
+      "accepted_lines": 9,
+      "overriden_lines": 0
+    }
+  }
+}
