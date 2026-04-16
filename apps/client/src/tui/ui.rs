@@ -6,12 +6,13 @@
 //! - Input area at the bottom
 
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
+    layout::{Alignment, Constraint, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
     Frame,
 };
+use ratatui_macros::{horizontal, vertical};
 
 use super::app::{AddContactField, AddUpstreamField, App, DeliveryStatus, Focus, UpstreamType};
 use ember_transport::DeliveryTier;
@@ -29,22 +30,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     };
 
     // Main layout: conversations (1/3) | messages (2/3)
-    let main_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(2, 3)])
-        .split(main_area);
-
-    // Left panel: conversations
-    render_conversations(frame, app, main_chunks[0]);
+    let [conversations_area, right_area] = horizontal![==1/3, ==2/3].areas(main_area);
+    render_conversations(frame, app, conversations_area);
 
     // Right panel: messages + input
-    let right_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(3)])
-        .split(main_chunks[1]);
-
-    render_messages(frame, app, right_chunks[0]);
-    render_input(frame, app, right_chunks[1]);
+    let [messages_area, input_area] = vertical![>=3, ==3].areas(right_area);
+    render_messages(frame, app, messages_area);
+    render_input(frame, app, input_area);
 
     // Status bar at the very bottom
     render_status(frame, app);
@@ -261,24 +253,15 @@ fn render_add_contact_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(popup_block, area);
 
     // Layout inside popup: instructions, public_id field, name field, error, buttons
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(1)
-        .constraints([
-            Constraint::Length(1), // Instructions
-            Constraint::Length(3), // Public ID label + input
-            Constraint::Length(3), // Name label + input
-            Constraint::Length(1), // Error message area
-            Constraint::Length(1), // Button hints
-        ])
-        .split(inner);
+    let [instructions_area, public_id_area, name_area, error_area, hints_area] =
+        vertical![==1, ==3, ==3, ==1, ==1].margin(1).areas(inner);
 
     // Instructions
     let instructions =
         Paragraph::new("Enter contact's Public ID (64-char hex) and optional display name")
             .style(Style::default().fg(Color::DarkGray))
             .wrap(Wrap { trim: true });
-    frame.render_widget(instructions, chunks[0]);
+    frame.render_widget(instructions, instructions_area);
 
     // Public ID field
     let public_id_focused = app.add_contact_popup.focused_field == AddContactField::PublicId;
@@ -291,8 +274,8 @@ fn render_add_contact_popup(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(public_id_border_style)
         .title(" Public ID (required) ");
-    let public_id_inner = public_id_block.inner(chunks[1]);
-    frame.render_widget(public_id_block, chunks[1]);
+    let public_id_inner = public_id_block.inner(public_id_area);
+    frame.render_widget(public_id_block, public_id_area);
     frame.render_widget(&app.add_contact_popup.public_id_input, public_id_inner);
 
     // Name field
@@ -306,8 +289,8 @@ fn render_add_contact_popup(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(name_border_style)
         .title(" Name (optional) ");
-    let name_inner = name_block.inner(chunks[2]);
-    frame.render_widget(name_block, chunks[2]);
+    let name_inner = name_block.inner(name_area);
+    frame.render_widget(name_block, name_area);
     frame.render_widget(&app.add_contact_popup.name_input, name_inner);
 
     // Error message
@@ -315,14 +298,14 @@ fn render_add_contact_popup(frame: &mut Frame, app: &App) {
         let error_text = Paragraph::new(error.as_str())
             .style(Style::default().fg(Color::Red))
             .wrap(Wrap { trim: true });
-        frame.render_widget(error_text, chunks[3]);
+        frame.render_widget(error_text, error_area);
     }
 
     // Button hints
     let hints = Paragraph::new("Tab: switch field | Enter: confirm | Esc: cancel")
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
-    frame.render_widget(hints, chunks[4]);
+    frame.render_widget(hints, hints_area);
 }
 
 /// Render the "My Identity" popup
@@ -343,28 +326,20 @@ fn render_my_id_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(popup_block, area);
 
     // Layout inside popup
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(1)
-        .constraints([
-            Constraint::Length(1), // Label
-            Constraint::Length(3), // Public ID (with border)
-            Constraint::Length(1), // Hints
-        ])
-        .split(inner);
+    let [label_area, id_area, hints_area] = vertical![==1, ==3, ==1].margin(1).areas(inner);
 
     // Label
     let label = Paragraph::new("Your Public ID (share with others):")
         .style(Style::default().fg(Color::White));
-    frame.render_widget(label, chunks[0]);
+    frame.render_widget(label, label_area);
 
     // Full Public ID in a bordered box for easy copying
     let full_id = app.my_full_id();
     let id_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow));
-    let id_inner = id_block.inner(chunks[1]);
-    frame.render_widget(id_block, chunks[1]);
+    let id_inner = id_block.inner(id_area);
+    frame.render_widget(id_block, id_area);
 
     let id_text = Paragraph::new(full_id)
         .style(
@@ -379,7 +354,7 @@ fn render_my_id_popup(frame: &mut Frame, app: &App) {
     let hints = Paragraph::new("Esc to close")
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
-    frame.render_widget(hints, chunks[2]);
+    frame.render_widget(hints, hints_area);
 }
 
 /// Render the add upstream popup
@@ -404,24 +379,16 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(popup_block, area);
 
     // Layout inside popup: instructions, type selector, tier selector, URL field, error, buttons
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(1)
-        .constraints([
-            Constraint::Length(1), // Instructions
-            Constraint::Length(3), // Type selector
-            Constraint::Length(3), // Tier selector
-            Constraint::Length(3), // URL input
-            Constraint::Length(1), // Error message area
-            Constraint::Length(1), // Button hints
-        ])
-        .split(inner);
+    let [instructions_area, type_area, tier_area, url_area, error_area, hints_area] =
+        vertical![==1, ==3, ==3, ==3, ==1, ==1]
+            .margin(1)
+            .areas(inner);
 
     // Instructions
     let instructions = Paragraph::new("Add HTTP or MQTT upstream for this session")
         .style(Style::default().fg(Color::DarkGray))
         .wrap(Wrap { trim: true });
-    frame.render_widget(instructions, chunks[0]);
+    frame.render_widget(instructions, instructions_area);
 
     // Type selector
     let type_focused = app.add_upstream_popup.focused_field == AddUpstreamField::Type;
@@ -460,8 +427,8 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(type_border_style)
         .title(" Type (←/→ to switch) ");
-    let type_inner = type_block.inner(chunks[1]);
-    frame.render_widget(type_block, chunks[1]);
+    let type_inner = type_block.inner(type_area);
+    frame.render_widget(type_block, type_area);
 
     let type_selector = Paragraph::new(type_line).alignment(Alignment::Center);
     frame.render_widget(type_selector, type_inner);
@@ -514,8 +481,8 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(tier_border_style)
         .title(" Tier (←/→ to switch) ");
-    let tier_inner = tier_block.inner(chunks[2]);
-    frame.render_widget(tier_block, chunks[2]);
+    let tier_inner = tier_block.inner(tier_area);
+    frame.render_widget(tier_block, tier_area);
 
     let tier_selector = Paragraph::new(tier_line).alignment(Alignment::Center);
     frame.render_widget(tier_selector, tier_inner);
@@ -531,8 +498,8 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(url_border_style)
         .title(" URL ");
-    let url_inner = url_block.inner(chunks[3]);
-    frame.render_widget(url_block, chunks[3]);
+    let url_inner = url_block.inner(url_area);
+    frame.render_widget(url_block, url_area);
     frame.render_widget(&app.add_upstream_popup.url_input, url_inner);
 
     // Error message
@@ -540,14 +507,14 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
         let error_text = Paragraph::new(error.as_str())
             .style(Style::default().fg(Color::Red))
             .wrap(Wrap { trim: true });
-        frame.render_widget(error_text, chunks[4]);
+        frame.render_widget(error_text, error_area);
     }
 
     // Button hints
     let hints = Paragraph::new("Tab: switch | ←/→: select | Enter: add | Esc: cancel")
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
-    frame.render_widget(hints, chunks[5]);
+    frame.render_widget(hints, hints_area);
 }
 
 /// Render the view upstreams popup
@@ -581,22 +548,14 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(popup_block, area);
 
     // Layout inside popup
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(1)
-        .constraints([
-            Constraint::Min(1),    // Upstream list
-            Constraint::Length(2), // Legend (2 lines for health + tier)
-            Constraint::Length(1), // Hints
-        ])
-        .split(inner);
+    let [list_area, legend_area, hints_area] = vertical![>=1, ==2, ==1].margin(1).areas(inner);
 
     // Build upstream list
     if targets.is_empty() {
         let empty_text = Paragraph::new("No upstreams configured")
             .style(Style::default().fg(Color::DarkGray))
             .alignment(Alignment::Center);
-        frame.render_widget(empty_text, chunks[0]);
+        frame.render_widget(empty_text, list_area);
     } else {
         let items: Vec<ListItem> = targets
             .iter()
@@ -675,7 +634,7 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
             .collect();
 
         let list = List::new(items);
-        frame.render_widget(list, chunks[0]);
+        frame.render_widget(list, list_area);
     }
 
     // Legend: health + tier explanations (2 lines)
@@ -700,11 +659,11 @@ fn render_upstreams_popup(frame: &mut Frame, app: &App) {
         ]),
     ];
     let legend_para = Paragraph::new(legend_lines).alignment(Alignment::Center);
-    frame.render_widget(legend_para, chunks[1]);
+    frame.render_widget(legend_para, legend_area);
 
     // Hints
     let hints = Paragraph::new("Esc to close")
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
-    frame.render_widget(hints, chunks[2]);
+    frame.render_widget(hints, hints_area);
 }

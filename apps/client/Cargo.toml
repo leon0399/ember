@@ -54,6 +54,7 @@ directories = { workspace = true }
 
 # TUI
 ratatui = { workspace = true }
+ratatui-macros = { workspace = true }
 crossterm = { workspace = true, features = ["event-stream"] }
 tui-textarea = { workspace = true }
 
