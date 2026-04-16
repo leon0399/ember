@@ -27,16 +27,14 @@ pub const HOUR_SECS: u64 = 60 * 60;
 pub fn now_hours() -> u32 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| (d.as_secs() / HOUR_SECS) as u32)
-        .unwrap_or(0)
+        .map_or(0, |d| (d.as_secs() / HOUR_SECS) as u32)
 }
 
 /// Get current time in seconds since Unix epoch
 pub fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 pub use tombstone::{
