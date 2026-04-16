@@ -1,0 +1,25 @@
+Cargo.toml
+  cbde3b7efa8f67ee 102
+apps/client/src/tui/ui.rs
+  cbde3b7efa8f67ee 15,33-34,37-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.6",
+  "base_commit_sha": "372d1d94cf325e81706459556a549eadfb1ec3dd",
+  "prompts": {
+    "cbde3b7efa8f67ee": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dfcb0052-14c6-4f66-bbfa-b1d00bafa3d7",
+        "model": "unknown"
+      },
+      "human_author": "Leonid Meleshin <leon.03.99@gmail.com>",
+      "messages": [],
+      "total_additions": 13,
+      "total_deletions": 21,
+      "accepted_lines": 8,
+      "overriden_lines": 0
+    }
+  }
+}
