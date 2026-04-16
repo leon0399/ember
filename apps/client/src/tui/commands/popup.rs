@@ -179,10 +179,19 @@ impl CommandCompletionState {
                 CompletionOutcome::Consumed
             }
             KeyCode::Tab => CompletionOutcome::Consumed,
-            KeyCode::Enter => match super::parser::parse(&self.current_line) {
-                Ok(parsed) => CompletionOutcome::Dispatch(parsed.into_owned()),
-                Err(_) => CompletionOutcome::Consumed,
-            },
+            KeyCode::Enter => {
+                // Prefer the selected popup entry over the raw typed text.
+                // User types "/cl", arrows to "/clear", presses Enter → dispatch /clear.
+                if let Some(entry) = self.selected_entry() {
+                    if let Ok(parsed) = super::parser::parse(&entry.insert) {
+                        return CompletionOutcome::Dispatch(parsed.into_owned());
+                    }
+                }
+                match super::parser::parse(&self.current_line) {
+                    Ok(parsed) => CompletionOutcome::Dispatch(parsed.into_owned()),
+                    Err(_) => CompletionOutcome::Consumed,
+                }
+            }
             KeyCode::Esc => CompletionOutcome::Exit,
             KeyCode::Backspace
             | KeyCode::Left
@@ -221,7 +230,7 @@ impl CommandCompletionState {
         if popup_height > input_area.y {
             return; // not enough room above the input
         }
-        let popup_width = input_area.width.min(60);
+        let popup_width = input_area.width;
         let popup_area = Rect {
             x: input_area.x,
             y: input_area.y - popup_height,
