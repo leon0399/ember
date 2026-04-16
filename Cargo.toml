@@ -99,6 +99,7 @@ chacha20poly1305 = "^0.10.1"
 ratatui = "^0.29"
 crossterm = "^0.28"
 tui-textarea = "^0.7"
+ratatui-macros = "^0.7"
 
 # Workspace-wide lint configuration
 # All crates should add `[lints] workspace = true` to inherit these
