@@ -629,12 +629,10 @@ pub fn load_config_from(
         .unwrap_or_else(|_| defaults.bind_addr.clone());
     let max_messages: usize = config
         .get::<i64>("max_messages")
-        .map(i64_to_usize_clamped)
-        .unwrap_or(defaults.max_messages);
+        .map_or(defaults.max_messages, i64_to_usize_clamped);
     let default_ttl: u32 = config
         .get::<i64>("default_ttl")
-        .map(i64_to_u32_clamped)
-        .unwrap_or(defaults.default_ttl);
+        .map_or(defaults.default_ttl, i64_to_u32_clamped);
     let log_level: String = config
         .get("log_level")
         .unwrap_or_else(|_| defaults.log_level.clone());
@@ -644,12 +642,10 @@ pub fn load_config_from(
     let storage_path: Option<String> = config.get("storage_path").ok();
     let max_body_size: usize = config
         .get::<i64>("max_body_size")
-        .map(i64_to_usize_clamped)
-        .unwrap_or(defaults.max_body_size);
+        .map_or(defaults.max_body_size, i64_to_usize_clamped);
     let max_batch_size: u32 = config
         .get::<i64>("max_batch_size")
-        .map(i64_to_u32_clamped)
-        .unwrap_or(defaults.max_batch_size);
+        .map_or(defaults.max_batch_size, i64_to_u32_clamped);
     let allow_insecure_destination = config
         .get::<bool>("allow_insecure_destination")
         .unwrap_or(false);
@@ -828,20 +824,16 @@ fn extract_cleanup(config: &Config, defaults: &NodeConfig) -> CleanupConfig {
             .unwrap_or(defaults.cleanup.enabled),
         interval_secs: config
             .get::<i64>("cleanup.interval_secs")
-            .map(i64_to_u64_clamped)
-            .unwrap_or(defaults.cleanup.interval_secs),
+            .map_or(defaults.cleanup.interval_secs, i64_to_u64_clamped),
         tombstone_delay_secs: config
             .get::<i64>("cleanup.tombstone_delay_secs")
-            .map(i64_to_u64_clamped)
-            .unwrap_or(defaults.cleanup.tombstone_delay_secs),
+            .map_or(defaults.cleanup.tombstone_delay_secs, i64_to_u64_clamped),
         orphan_delay_secs: config
             .get::<i64>("cleanup.orphan_delay_secs")
-            .map(i64_to_u64_clamped)
-            .unwrap_or(defaults.cleanup.orphan_delay_secs),
+            .map_or(defaults.cleanup.orphan_delay_secs, i64_to_u64_clamped),
         rate_limit_delay_secs: config
             .get::<i64>("cleanup.rate_limit_delay_secs")
-            .map(i64_to_u64_clamped)
-            .unwrap_or(defaults.cleanup.rate_limit_delay_secs),
+            .map_or(defaults.cleanup.rate_limit_delay_secs, i64_to_u64_clamped),
     }
 }
 
@@ -868,36 +860,28 @@ fn extract_rate_limit(
     let mut rl = RateLimitConfig {
         submit_ip_rps: config
             .get::<i64>("rate_limit.submit_ip_rps")
-            .map(i64_to_u32_clamped)
-            .unwrap_or(defaults.rate_limit.submit_ip_rps),
+            .map_or(defaults.rate_limit.submit_ip_rps, i64_to_u32_clamped),
         submit_ip_burst: config
             .get::<i64>("rate_limit.submit_ip_burst")
-            .map(i64_to_u32_clamped)
-            .unwrap_or(defaults.rate_limit.submit_ip_burst),
+            .map_or(defaults.rate_limit.submit_ip_burst, i64_to_u32_clamped),
         submit_key_rps: config
             .get::<i64>("rate_limit.submit_key_rps")
-            .map(i64_to_u32_clamped)
-            .unwrap_or(defaults.rate_limit.submit_key_rps),
+            .map_or(defaults.rate_limit.submit_key_rps, i64_to_u32_clamped),
         submit_key_burst: config
             .get::<i64>("rate_limit.submit_key_burst")
-            .map(i64_to_u32_clamped)
-            .unwrap_or(defaults.rate_limit.submit_key_burst),
+            .map_or(defaults.rate_limit.submit_key_burst, i64_to_u32_clamped),
         fetch_ip_rps: config
             .get::<i64>("rate_limit.fetch_ip_rps")
-            .map(i64_to_u32_clamped)
-            .unwrap_or(defaults.rate_limit.fetch_ip_rps),
+            .map_or(defaults.rate_limit.fetch_ip_rps, i64_to_u32_clamped),
         fetch_ip_burst: config
             .get::<i64>("rate_limit.fetch_ip_burst")
-            .map(i64_to_u32_clamped)
-            .unwrap_or(defaults.rate_limit.fetch_ip_burst),
+            .map_or(defaults.rate_limit.fetch_ip_burst, i64_to_u32_clamped),
         fetch_key_rps: config
             .get::<i64>("rate_limit.fetch_key_rps")
-            .map(i64_to_u32_clamped)
-            .unwrap_or(defaults.rate_limit.fetch_key_rps),
+            .map_or(defaults.rate_limit.fetch_key_rps, i64_to_u32_clamped),
         fetch_key_burst: config
             .get::<i64>("rate_limit.fetch_key_burst")
-            .map(i64_to_u32_clamped)
-            .unwrap_or(defaults.rate_limit.fetch_key_burst),
+            .map_or(defaults.rate_limit.fetch_key_burst, i64_to_u32_clamped),
     };
 
     if let Some(serve) = serve_args {
