@@ -379,24 +379,16 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(popup_block, area);
 
     // Layout inside popup: instructions, type selector, tier selector, URL field, error, buttons
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(1)
-        .constraints([
-            Constraint::Length(1), // Instructions
-            Constraint::Length(3), // Type selector
-            Constraint::Length(3), // Tier selector
-            Constraint::Length(3), // URL input
-            Constraint::Length(1), // Error message area
-            Constraint::Length(1), // Button hints
-        ])
-        .split(inner);
+    let [instructions_area, type_area, tier_area, url_area, error_area, hints_area] =
+        vertical![==1, ==3, ==3, ==3, ==1, ==1]
+            .margin(1)
+            .areas(inner);
 
     // Instructions
     let instructions = Paragraph::new("Add HTTP or MQTT upstream for this session")
         .style(Style::default().fg(Color::DarkGray))
         .wrap(Wrap { trim: true });
-    frame.render_widget(instructions, chunks[0]);
+    frame.render_widget(instructions, instructions_area);
 
     // Type selector
     let type_focused = app.add_upstream_popup.focused_field == AddUpstreamField::Type;
@@ -435,8 +427,8 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(type_border_style)
         .title(" Type (←/→ to switch) ");
-    let type_inner = type_block.inner(chunks[1]);
-    frame.render_widget(type_block, chunks[1]);
+    let type_inner = type_block.inner(type_area);
+    frame.render_widget(type_block, type_area);
 
     let type_selector = Paragraph::new(type_line).alignment(Alignment::Center);
     frame.render_widget(type_selector, type_inner);
@@ -489,8 +481,8 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(tier_border_style)
         .title(" Tier (←/→ to switch) ");
-    let tier_inner = tier_block.inner(chunks[2]);
-    frame.render_widget(tier_block, chunks[2]);
+    let tier_inner = tier_block.inner(tier_area);
+    frame.render_widget(tier_block, tier_area);
 
     let tier_selector = Paragraph::new(tier_line).alignment(Alignment::Center);
     frame.render_widget(tier_selector, tier_inner);
@@ -506,8 +498,8 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(url_border_style)
         .title(" URL ");
-    let url_inner = url_block.inner(chunks[3]);
-    frame.render_widget(url_block, chunks[3]);
+    let url_inner = url_block.inner(url_area);
+    frame.render_widget(url_block, url_area);
     frame.render_widget(&app.add_upstream_popup.url_input, url_inner);
 
     // Error message
@@ -515,14 +507,14 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
         let error_text = Paragraph::new(error.as_str())
             .style(Style::default().fg(Color::Red))
             .wrap(Wrap { trim: true });
-        frame.render_widget(error_text, chunks[4]);
+        frame.render_widget(error_text, error_area);
     }
 
     // Button hints
     let hints = Paragraph::new("Tab: switch | ←/→: select | Enter: add | Esc: cancel")
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
-    frame.render_widget(hints, chunks[5]);
+    frame.render_widget(hints, hints_area);
 }
 
 /// Render the view upstreams popup
