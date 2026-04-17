@@ -10,12 +10,14 @@
 //! - `ember` or `ember tui` -- Launch the interactive TUI (default)
 //! - `ember export <FILE>` -- Export pending messages to a .ember bundle
 //! - `ember import <FILE>` -- Import messages from a .ember bundle
+//! - `ember send --to <PUBLIC_ID> --text <MESSAGE> [--no-deliver]` -- Non-interactive send
 
 mod config;
 mod discovery;
 mod export;
 mod identity;
 mod import;
+mod send;
 mod tui;
 
 use crate::config::{load_config_from, Cli, Commands};
@@ -52,5 +54,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(Commands::Export(ref args)) => export::run_export(&config, args),
         Some(Commands::Import(ref args)) => import::run_import(&config, args),
+        Some(Commands::Send(ref args)) => send::run_send(&config, args).await,
     }
 }
