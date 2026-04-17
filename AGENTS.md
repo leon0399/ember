@@ -216,3 +216,25 @@ Hard rules:
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` — linting
 - [ ] `cargo test --workspace --all-features --all-targets` — all tests pass
 - [ ] No new `unwrap()` in library crates (use proper error handling)
+
+## Finishing Gates
+
+Before concluding any plan or execution as **fully complete**, all of the following gates MUST pass. Do not declare "done" until every gate is green.
+
+**Execution rules:**
+- Run all gates autonomously — do NOT prompt the user between gates or ask for confirmation to proceed.
+- Create a task list (via `TaskCreate`) with one task per gate BEFORE starting execution, then mark each `in_progress` / `completed` as you go. This gives the user visibility into progress without requiring interaction.
+- If a gate produces findings, fix them inline and re-verify before marking the gate complete. Only stop to ask the user if a finding is ambiguous or requires a product decision.
+
+**The gates:**
+
+1. **Simplification pass** — invoke the `/simplify` skill and apply its revisions. Remove dead code, unnecessary abstractions, and premature complexity before review.
+2. **Parallel review fan-out** — run all three reviewers concurrently, all in background mode:
+   1. **First**, invoke the `/codex:review` skill via the `Skill` tool. This loads Codex's review prompt examples and framing, which are also relevant context for the other Agent reviewers below. The skill itself will then dispatch the actual Codex review via `Bash` with `run_in_background: true` (pass `--background` to skip the wait/background prompt).
+   2. **Immediately after**, in a single message, launch the remaining reviewers as `Agent` tool calls with `run_in_background: true` so they execute in parallel alongside the Codex run:
+      - `code-review` agent — correctness, bugs, style, conventions
+      - `spec-review` agent — adherence to `spec/` documents and architectural intent
+   3. Wait for all three background tasks to complete, then address every finding (fix, justify, or explicitly defer with rationale) before proceeding.
+3. **Pre-commit checklist** — every item in the Pre-commit Checklist above passes cleanly. No warnings suppressed, no tests skipped, no `cargo fmt` drift.
+
+Only after all three gates pass may the task be reported as complete.
