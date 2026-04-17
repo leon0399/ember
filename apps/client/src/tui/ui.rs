@@ -14,7 +14,9 @@ use ratatui::{
 };
 use ratatui_macros::{horizontal, vertical};
 
-use super::app::{AddContactField, AddUpstreamField, App, DeliveryStatus, Focus, UpstreamType};
+use super::app::{
+    AddContactField, AddUpstreamField, App, DeliveryStatus, Focus, PopupKind, UpstreamType,
+};
 use ember_transport::DeliveryTier;
 
 /// Render the entire UI
@@ -44,10 +46,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Render popups on top if visible (covers status bar too)
     if let Some(ref popup) = app.active_popup {
         match popup {
-            super::app::PopupKind::AddContact(_) => render_add_contact_popup(frame, app),
-            super::app::PopupKind::MyIdentity => render_my_id_popup(frame, app),
-            super::app::PopupKind::AddUpstream(_) => render_add_upstream_popup(frame, app),
-            super::app::PopupKind::ViewUpstreams => render_upstreams_popup(frame, app),
+            PopupKind::AddContact(_) => render_add_contact_popup(frame, app),
+            PopupKind::MyIdentity => render_my_id_popup(frame, app),
+            PopupKind::AddUpstream(_) => render_add_upstream_popup(frame, app),
+            PopupKind::ViewUpstreams => render_upstreams_popup(frame, app),
         }
     }
 }
@@ -233,7 +235,7 @@ fn popup_area_fixed(area: Rect, percent_x: u16, min_height: u16) -> Rect {
 
 /// Render the add contact popup
 fn render_add_contact_popup(frame: &mut Frame, app: &App) {
-    let Some(super::app::PopupKind::AddContact(ref popup)) = app.active_popup else {
+    let Some(PopupKind::AddContact(ref popup)) = app.active_popup else {
         return;
     };
 
@@ -310,6 +312,10 @@ fn render_add_contact_popup(frame: &mut Frame, app: &App) {
 
 /// Render the "My Identity" popup
 fn render_my_id_popup(frame: &mut Frame, app: &App) {
+    if !matches!(app.active_popup, Some(PopupKind::MyIdentity)) {
+        return;
+    }
+
     // Fixed height: border(2) + margin(2) + label(1) + id_box(3) + hints(1) = 9
     let area = popup_area_fixed(frame.area(), 70, 9);
 
@@ -363,7 +369,7 @@ fn render_my_id_popup(frame: &mut Frame, app: &App) {
     reason = "popup layout is easier to follow when rendered in one place"
 )]
 fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
-    let Some(super::app::PopupKind::AddUpstream(ref popup)) = app.active_popup else {
+    let Some(PopupKind::AddUpstream(ref popup)) = app.active_popup else {
         return;
     };
 
@@ -528,6 +534,10 @@ fn render_add_upstream_popup(frame: &mut Frame, app: &App) {
 )]
 fn render_upstreams_popup(frame: &mut Frame, app: &App) {
     use ember_transport::HealthState;
+
+    if !matches!(app.active_popup, Some(PopupKind::ViewUpstreams)) {
+        return;
+    }
 
     // Query the registry for current targets
     let targets = app.registry.list_all_targets();

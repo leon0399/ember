@@ -139,12 +139,6 @@ impl Default for AddContactPopup<'_> {
 }
 
 impl AddContactPopup<'_> {
-    /// Reset the popup to initial state
-    #[allow(dead_code)] // Preserved for potential future use
-    pub fn reset(&mut self) {
-        *self = Self::default();
-    }
-
     /// Toggle focus between fields
     pub fn toggle_field(&mut self) {
         self.focused_field = match self.focused_field {
@@ -228,12 +222,6 @@ impl Default for AddUpstreamPopup<'_> {
 }
 
 impl AddUpstreamPopup<'_> {
-    /// Reset the popup to initial state
-    #[allow(dead_code)] // Preserved for potential future use
-    pub fn reset(&mut self) {
-        *self = Self::default();
-    }
-
     /// Toggle focus between fields
     pub fn toggle_field(&mut self) {
         self.focused_field = match self.focused_field {
