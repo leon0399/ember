@@ -93,6 +93,8 @@ pub enum Commands {
     Export(ExportArgs),
     /// Import messages from a .ember bundle file
     Import(ImportArgs),
+    /// Non-interactive send (enqueue and optionally deliver a message)
+    Send(SendArgs),
 }
 
 /// TUI-specific CLI arguments
@@ -192,6 +194,22 @@ pub struct ExportArgs {
 pub struct ImportArgs {
     /// Path to a .ember bundle file to import
     pub file: PathBuf,
+}
+
+/// Arguments for the send subcommand
+#[derive(Parser, Debug, Clone)]
+pub struct SendArgs {
+    /// Recipient hex-encoded public ID
+    #[arg(long)]
+    pub to: String,
+
+    /// Message body text
+    #[arg(long)]
+    pub text: String,
+
+    /// Skip delivery attempt (enqueue only)
+    #[arg(long)]
+    pub no_deliver: bool,
 }
 
 // =============================================================================
