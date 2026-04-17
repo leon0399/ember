@@ -905,7 +905,11 @@ impl App<'_> {
     ) {
         match result {
             Ok(()) => {
-                self.active_popup = None;
+                // Only close the popup if it's still the AddUpstream popup
+                // (user may have opened a different popup after starting the async connection)
+                if matches!(self.active_popup, Some(PopupKind::AddUpstream(_))) {
+                    self.active_popup = None;
+                }
                 self.status = format!("Added {} upstream: {url}", transport_type.as_str());
             }
             Err(e) => {
