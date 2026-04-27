@@ -18,7 +18,7 @@ tokio = { workspace = true, features = ["sync", "rt"] }
 thiserror = { workspace = true }
 hex = { workspace = true }
 tracing = { workspace = true }
-mdns-sd = { version = "0.18", optional = true }
+mdns-sd = { version = "0.19", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread"] }
