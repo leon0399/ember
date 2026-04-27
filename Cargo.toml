@@ -26,16 +26,16 @@ ember-discovery = { path = "crates/ember-discovery" }
 ember-bundle = { path = "crates/ember-bundle" }
 
 anyhow = "^1.0.99"
-thiserror = "^2.0.16"
+thiserror = "^2.0.18"
 tracing = "^0.1.41"
-tracing-subscriber = { version = "^0.3.20", features = ["env-filter"] }
+tracing-subscriber = { version = "^0.3.23", features = ["env-filter"] }
 
 # common helpers
 derivative = "^2.2.0"
-derive_more = "^2.0.1"
+derive_more = "^2.1.1"
 getset = "^0.1.6"
 lazy_static = "^1.5.0"
-strum = "^0.27.2"
+strum = "^0.28.0"
 
 approx = "^0.5.1"
 
@@ -45,38 +45,38 @@ postcard = { version = "^1.1", features = ["alloc"] }
 hex = "^0.4.3"
 humantime = "2"
 serde = "^1.0.219"
-serde_json = "^1.0.143"
+serde_json = "^1.0.149"
 serde_with = "^3.14.0"
 serde-inline-default = "^1.0.0"
 serde_repr = "^0.1.20"
 
 # async
 async-trait = "^0.1.89"
-futures = "^0.3.31"
+futures = "^0.3.32"
 futures-util = "^0.3.31"
-tokio = "^1.47.1"
-tokio-stream = "^0.1.17"
-tokio-util = "^0.7.16"
+tokio = "^1.50.0"
+tokio-stream = "^0.1.18"
+tokio-util = "^0.7.18"
 
 # web / networking
-axum = "^0.8.4"
-axum-server = "^0.7.2"
-tower = "^0.5.2"
+axum = "^0.8.9"
+axum-server = "^0.8.0"
+tower = "^0.5.3"
 tower-http = "^0.6.6"
 tokio-tungstenite = "^0.26.2"
 
 reqwest = "^0.12.23"
 
 # cryptography / randomness
-rand = "^0.9.2"
+rand = "^0.10.1"
 rand_core = "^0.9.3"
 rand_chacha = "^0.9.0"
-rustls = "^0.23.31"
+rustls = "^0.23.39"
 argon2 = "^0.5"
 
-uuid = "^1.19.0"
+uuid = "^1.23.1"
 
-blake3 = "^1.8.2"
+blake3 = "^1.8.5"
 
 curve25519-dalek = "4"
 subtle = "^2.6"
@@ -85,21 +85,21 @@ x25519-dalek = { version = "2", features = ["zeroize"] }
 
 # configuration
 clap = { version = "^4.5", features = ["derive", "env"] }
-config = "^0.14"
-toml = "^0.8"
+config = "^0.15"
+toml = "^1.1"
 directories = "^6.0"
 
 # sqlite
-rusqlite = { version = "^0.32.1", features = ["bundled"] }
-hkdf = "^0.12.4"
-sha2 = "^0.10.9"
+rusqlite = { version = "^0.39.0", features = ["bundled"] }
+hkdf = "^0.13.0"
+sha2 = "^0.11.0"
 chacha20poly1305 = "^0.10.1"
 
 # TUI
-ratatui = "^0.29"
-crossterm = "^0.28"
+ratatui = "^0.30"
+crossterm = "^0.29"
 tui-textarea = "^0.7"
-ratatui-macros = "^0.6"
+ratatui-macros = "^0.7"
 
 # Workspace-wide lint configuration
 # All crates should add `[lints] workspace = true` to inherit these

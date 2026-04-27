@@ -15,14 +15,14 @@ getset = { workspace = true }
 strum = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 
-rand_chacha = { version = "0.3.1" }
+rand_chacha = { version = "0.9.0" }
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 x25519-dalek = { workspace = true, features = ["static_secrets"] }
 curve25519-dalek = { workspace = true }
 blake3 = { workspace = true }
-hkdf = "0.12"
-sha2 = "0.10"
+hkdf = "0.13"
+sha2 = "0.11"
 xeddsa = { version = "1.0", features = ["xed25519"] }
 
 hex = "0.4.3"
