@@ -43,7 +43,7 @@ hex = "0.4"
 rustls = { workspace = true, features = ["ring"] }
 sha2 = { workspace = true }
 webpki-roots = "1"
-x509-parser = "0.17"
+x509-parser = "0.18"
 
 # Challenge generation
 rand = { workspace = true }
